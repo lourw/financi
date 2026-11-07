@@ -13,6 +13,13 @@ use rusqlite::Connection;
 mod worker;
 pub use worker::{DbWorker, WorkerGone};
 
+pub mod accounts;
+pub use accounts::{
+    Account, Institution, create_account, get_account, list_accounts, list_institutions,
+};
+
+pub mod import;
+
 #[cfg(feature = "dev-seed")]
 pub mod seed;
 
@@ -31,6 +38,12 @@ pub enum DbError {
     },
     #[error("database schema version {found} is newer than this build supports ({supported})")]
     TooNew { found: u32, supported: u32 },
+    #[error("unknown institution {0:?}")]
+    UnknownInstitution(String),
+    #[error("no account with id {0}")]
+    UnknownAccount(i64),
+    #[error("an account named {name:?} already exists at this institution")]
+    DuplicateAccount { name: String },
 }
 
 pub type Result<T, E = DbError> = std::result::Result<T, E>;
@@ -95,16 +108,6 @@ pub fn migrate(conn: &mut Connection) -> Result<()> {
         tx.commit()?;
     }
     Ok(())
-}
-
-/// Create an account with a fresh stable `account_key`. Returns its row id.
-pub fn create_account(conn: &Connection, institution: &str, name: &str, kind: &str) -> Result<i64> {
-    let key = uuid::Uuid::new_v4().to_string();
-    conn.execute(
-        "INSERT INTO accounts (account_key, institution, name, kind) VALUES (?1, ?2, ?3, ?4)",
-        (&key, institution, name, kind),
-    )?;
-    Ok(conn.last_insert_rowid())
 }
 
 /// Spend per top-level category (parents roll up their children), largest
@@ -188,7 +191,8 @@ mod tests {
     #[test]
     fn undo_import_cascades_to_transactions_and_aliases() {
         let conn = open_in_memory().unwrap();
-        let acct = create_account(&conn, "amex", "Amex Test", "credit").unwrap();
+        let acct =
+            create_account(&conn, "amex", "Test", financi_core::AccountKind::CreditCard).unwrap();
         conn.execute(
             "INSERT INTO imports (account_id, parser_id, file_name, imported_at, header_raw,
                                   encoding, has_bom, line_ending, trailing_newline, row_count)

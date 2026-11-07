@@ -1603,6 +1603,7 @@ dependencies = [
  "chrono",
  "directories",
  "financi-core",
+ "financi-parsers",
  "futures-channel",
  "futures-executor",
  "rusqlite",

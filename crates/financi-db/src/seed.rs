@@ -146,7 +146,12 @@ pub fn seed(conn: &mut Connection, end: NaiveDate, months: u32) -> Result<SeedSu
         )?;
     }
 
-    let account_id = crate::create_account(&tx, "amex", "Dev Amex (synthetic)", "credit")?;
+    let account_id = crate::create_account(
+        &tx,
+        "amex",
+        "Dev Cobalt (synthetic)",
+        financi_core::AccountKind::CreditCard,
+    )?;
     let account_key = AccountKey(tx.query_row(
         "SELECT account_key FROM accounts WHERE id = ?1",
         [account_id],

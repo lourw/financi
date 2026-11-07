@@ -1,12 +1,24 @@
 -- financi initial schema. See "Data model" in the plan doc.
 
+-- Institution (parent) -> accounts (siblings under it), each with a type.
+CREATE TABLE institutions (
+  id    INTEGER PRIMARY KEY,
+  key   TEXT NOT NULL UNIQUE,            -- matches StatementParser::institution()
+  name  TEXT NOT NULL                    -- display name
+);
+-- Institutions with a parser are built in.
+INSERT INTO institutions (key, name) VALUES
+  ('amex', 'American Express'),
+  ('simplii', 'Simplii Financial');
+
 CREATE TABLE accounts (
-  id            INTEGER PRIMARY KEY,
-  account_key   TEXT NOT NULL UNIQUE,    -- UUID; used in row_hash and the export manifest
-  institution   TEXT NOT NULL,           -- 'amex', 'simplii'
-  name          TEXT NOT NULL,           -- 'Amex Cobalt'
-  kind          TEXT NOT NULL CHECK (kind IN ('credit', 'chequing', 'savings')),
-  currency      TEXT NOT NULL DEFAULT 'CAD'
+  id             INTEGER PRIMARY KEY,
+  account_key    TEXT NOT NULL UNIQUE,   -- UUID; used in row_hash and the export manifest
+  institution_id INTEGER NOT NULL REFERENCES institutions(id),
+  name           TEXT NOT NULL,          -- 'Cobalt', 'No Fee Chequing'
+  kind           TEXT NOT NULL CHECK (kind IN ('chequing', 'savings', 'credit_card')),
+  currency       TEXT NOT NULL DEFAULT 'CAD',
+  UNIQUE (institution_id, name)
 );
 
 CREATE TABLE categories (
