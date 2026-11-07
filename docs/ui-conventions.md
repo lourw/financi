@@ -30,7 +30,6 @@ dashboard gets its own page.
 ```
 ┌────────────────┬──────────────────────────────────────────────────────┐
 │ financi        │ Page header: filters (Dashboard) or title + actions  │
-│ [+ Import CSV…]│                                                      │
 │                │ ┌ Spending by category ─────┐ ┌ Monthly summary ──┐ │
 │ ▣ Dashboard    │ │ BarChart + legend (~45%)  │ │ parents × months  │ │
 │                │ └───────────────────────────┘ └───────────────────┘ │
@@ -50,8 +49,8 @@ dashboard gets its own page.
 
 - gpui-kit `Sidebar`, ~210px, background `sidebar`, `border` on the right.
   Not collapsible in v1.
-- **Header:** the app name (`font_semibold`), then **Import CSV…** as the
-  only `primary()` button in the window.
+- **Header:** the app name (`font_semibold`) only. No buttons in the
+  sidebar: it's navigation, and importing has its own page.
 - **Items** (`SidebarMenuItem` with a Lucide icon, `.active(...)` on the
   current page), in groups:
   - Dashboard
@@ -78,13 +77,14 @@ header row is the filters.
 | **To categorize** | The Uncategorized queue (2.7) as a table: merchant, transactions, total, dates, category picker. Choosing a category adds a rule. |
 | **Categories** | Category tree on the left (~300px panel); the selected category on the right: name, Rename…/Delete…, its rules table, and an add-rule row with a live "matches N transactions" count. Rules live here; there's no Rules page. Header action: New category…. |
 | **Transfers** | Open transfer reviews (4.2): each row with its candidates and "Not a transfer". |
-| **Imports** | The import preview (while a file is open) on top, then import history (time, file, account, rows added, dates). Undo… on the newest row only. |
+| **Imports** | Header action: Import CSV… (a normal button). The import preview (while a file is open) on top, then import history (time, file, account, rows added, dates). Undo… on the newest row only. |
 
 - **Dashboard middle row:** chart and summary side by side, ~45/55, same
   fixed height (~340px). The summary scrolls if it overflows. The chart
   never scrolls.
 - **Tables** take `flex_1` and scroll. Minimum window size: 1200 × 720.
-- **Opening a file** (drop anywhere, Import CSV…, ⌘O, `FINANCI_DEV_OPEN`)
+- **Opening a file** (drop anywhere on any page, ⌘O, Imports → Import CSV…,
+  `FINANCI_DEV_OPEN`)
   switches to the Imports page with the preview open.
 - **Import preview:** two lines in a bordered panel. Line one: file name,
   institution (muted), then Cancel and the primary action at the right end.
@@ -142,7 +142,7 @@ Use gpui's spacing helpers only, in these steps:
 | Text | `foreground` | everything by default |
 | Secondary text | `muted_foreground` | captions, Uncategorized label, hints |
 | Lines | `border` | panel borders, dividers |
-| Main action | `primary` (button) | Import CSV… in the sidebar; the one confirming action on a page (Import 32 transactions, Add rule) |
+| Main action | `primary` (button) | at most one per page: the confirming action (Import 32 transactions, Add rule) |
 | Money in | `success` | positive amounts in the table |
 | Problems | `danger` | errors, negative Net in the summary |
 | Needs action | sidebar count pill | work waiting is a count in the sidebar, never a banner or filled box |
@@ -219,7 +219,7 @@ case, and a table full of red reads as an alarm.
 
 | Region | Empty | Loading | Error |
 |---|---|---|---|
-| Whole window (no data) | Centered: "Drop an Amex or Simplii CSV export here, or use Import CSV…" plus "Restore from export…" link (5.2) | none | none |
+| Whole window (no data) | Centered: "Drop an Amex or Simplii CSV export here, or press ⌘O" plus "Restore from export…" link (5.2) | none | none |
 | Chart / summary | "No spending in this range" (muted, centered) | previous content, dimmed | `danger` line inside the panel |
 | Table | "No transactions match these filters" + "Clear filters" link | previous rows | `danger` line above the table |
 
@@ -237,6 +237,7 @@ Decided from mockups. Don't reopen these without asking.
 | D6 | Hints | Hover tooltips instead of caption text in panel titles. |
 | D7 | Panels | Bordered, never filled; compact two-line import preview. |
 | D8 | Navigation | Sidebar of pages (Dashboard, To categorize, Categories, Transfers, Imports). No side sheets, no banners; counts in the sidebar. |
+| D9 | Import button | Not in the sidebar. Import CSV… is the Imports page's header action, plus ⌘O and drop anywhere. |
 
 ## Testing UI conventions
 

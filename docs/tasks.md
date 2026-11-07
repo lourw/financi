@@ -159,7 +159,7 @@ frozen from here on; real databases may exist).
 
 - [ ] **2.8 Sidebar shell + category pages.** Layout and look:
   `docs/ui-conventions.md` (*Window layout*). Replace the M1 top bar with a
-  gpui-kit `Sidebar` (Import CSV…, Dashboard, To categorize, Categories,
+  gpui-kit `Sidebar` (Dashboard, To categorize, Categories,
   Transfers, Imports; counts in item suffixes) and one page area. Move the
   import preview and Undo to the Imports page (with import history). Then
   the category pages, which together cover:
@@ -247,8 +247,8 @@ beside the monthly summary (right); then the transaction table.
 
 - [ ] **3.7 Native menus + shortcuts.** macOS menu bar via GPUI menus:
   File → Import CSV… (⌘O), Undo last import, Export… (⌘E, wired in M5),
-  Restore… (wired in M5), Quit (⌘Q). Import CSV… stays at the top of the
-  sidebar; Undo lives on the Imports page and in the File menu
+  Restore… (wired in M5), Quit (⌘Q). Import CSV… is the Imports page's
+  header action (not in the sidebar); Undo lives on the Imports page and in the File menu
   (`docs/ui-conventions.md`, D4).
 
 - [ ] **3.8 UI tests** for: preset change updates totals, legend drill-down
