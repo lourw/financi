@@ -62,7 +62,7 @@ Where the two disagree, **this file wins** for M2–M5 detail. Older parts of
 Schema changes go in a **new** migration `0002_categorize.sql` (0001 is
 frozen from here on; real databases may exist).
 
-- [ ] **2.1 Migration 0002.**
+- [x] **2.1 Migration 0002.**
   - `category_rules`: add `is_regex INTEGER NOT NULL DEFAULT 0`.
   - `categories`: add `is_system INTEGER NOT NULL DEFAULT 0`.
   - Insert the system categories: parent `Transfers` (kind `transfer`,

@@ -37,7 +37,8 @@ const CATEGORIES: &[(&str, CategoryKind, &[&str])] = &[
     ),
     ("Travel", CategoryKind::Spend, &["Flights", "Hotels"]),
     ("Income", CategoryKind::Income, &["Refunds & Credits"]),
-    ("Transfers", CategoryKind::Transfer, &["Card Payment"]),
+    // `Transfers` / `Card Payment` are system categories inserted by
+    // migration 0002; the rules and rows below reference them by name.
 ];
 
 /// (merchant, city, child category, typical charge in cents, charges per month)
@@ -275,8 +276,32 @@ mod tests {
     #[test]
     fn seeds_two_level_categories_rules_and_transactions() {
         let (conn, s) = seeded();
-        assert_eq!(s.categories, 24, "8 parents + 16 children");
+        assert_eq!(s.categories, 22, "7 parents + 15 children");
         assert_eq!(s.rules, RULES.len());
+        // The system Transfers/Card Payment from migration 0002 are reused,
+        // not duplicated, and card payments point at the system row.
+        let dupes: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM categories WHERE name = 'Transfers'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(dupes, 1);
+        let on_system_category: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM transactions t
+                   JOIN categories c ON c.id = t.category_id
+                  WHERE t.description_raw LIKE 'PAYMENT RECEIVED%'
+                    AND c.name = 'Card Payment' AND c.is_system = 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            on_system_category > 0,
+            "card payments use the system category"
+        );
         // ~38 a month over 18 months
         assert!(
             (600..800).contains(&s.transactions),

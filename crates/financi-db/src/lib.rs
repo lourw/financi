@@ -49,7 +49,10 @@ pub enum DbError {
 pub type Result<T, E = DbError> = std::result::Result<T, E>;
 
 /// Ordered migrations. Index + 1 is the schema version (`PRAGMA user_version`).
-const MIGRATIONS: &[&str] = &[include_str!("../migrations/0001_init.sql")];
+const MIGRATIONS: &[&str] = &[
+    include_str!("../migrations/0001_init.sql"),
+    include_str!("../migrations/0002_categorize.sql"),
+];
 
 pub const SCHEMA_VERSION: u32 = MIGRATIONS.len() as u32;
 
@@ -171,6 +174,118 @@ mod tests {
         assert_eq!(mode, "wal");
         drop(conn);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn fresh_database_has_only_the_system_transfer_categories() {
+        let conn = open_in_memory().unwrap();
+        let rows = conn
+            .prepare(
+                "SELECT c.name, p.name, c.kind, c.is_system FROM categories c
+                   LEFT JOIN categories p ON p.id = c.parent_id
+                  ORDER BY c.name",
+            )
+            .unwrap()
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, Option<String>>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, i64>(3)?,
+                ))
+            })
+            .unwrap()
+            .map(Result::unwrap)
+            .collect::<Vec<_>>();
+        let transfers = Some("Transfers".to_string());
+        assert_eq!(
+            rows,
+            vec![
+                (
+                    "Between Accounts".to_string(),
+                    transfers.clone(),
+                    "transfer".to_string(),
+                    1
+                ),
+                (
+                    "Card Payment".to_string(),
+                    transfers.clone(),
+                    "transfer".to_string(),
+                    1
+                ),
+                ("Transfers".to_string(), None, "transfer".to_string(), 1),
+            ]
+        );
+        // The 0002 columns exist (is_system was exercised above via the query).
+        let has_is_regex: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('category_rules')
+                  WHERE name = 'is_regex'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(has_is_regex, 1);
+    }
+
+    #[test]
+    fn migrating_a_version_one_database_keeps_existing_transactions() {
+        // Build a database the way the M1 build left them: only 0001 applied,
+        // user_version = 1, and a transaction already stored.
+        let mut conn = Connection::open_in_memory().unwrap();
+        configure(&conn).unwrap();
+        conn.execute_batch(MIGRATIONS[0]).unwrap();
+        conn.pragma_update(None, "user_version", 1u32).unwrap();
+
+        let acct = create_account(
+            &conn,
+            "amex",
+            "Cobalt",
+            financi_core::AccountKind::CreditCard,
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO imports (account_id, parser_id, file_name, imported_at, header_raw,
+                                  encoding, has_bom, line_ending, trailing_newline, row_count)
+             VALUES (?1, 'amex', 'activity.csv', '2026-11-01', X'00', 'utf-8', 0, 'lf', 0, 1)",
+            [acct],
+        )
+        .unwrap();
+        let import = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO transactions (account_id, import_id, source_line, raw_bytes, row_hash,
+                                       posted_date, amount_cents, description_raw)
+             VALUES (?1, ?2, 0, X'00', 'h1', '2026-10-31', -450, 'COFFEE')",
+            (acct, import),
+        )
+        .unwrap();
+
+        migrate(&mut conn).unwrap();
+
+        let v: u32 = conn
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, SCHEMA_VERSION);
+        let kept: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM transactions
+                  WHERE row_hash = 'h1' AND amount_cents = -450 AND description_raw = 'COFFEE'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(kept, 1, "pre-existing transactions survive the migration");
+        let system: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM categories WHERE is_system = 1 AND kind = 'transfer'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            system, 3,
+            "the migration inserts exactly the 3 system categories"
+        );
     }
 
     #[test]
