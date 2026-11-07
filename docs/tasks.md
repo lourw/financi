@@ -31,6 +31,7 @@ Where the two disagree, **this file wins** for M2–M5 detail. Older parts of
 | `crates/financi/src/ui_tests.rs` | headless UI tests (pattern to copy) |
 | `fixtures/demo/` | synthetic exports + `expected.json` reference totals |
 | `spikes/gpui-spike` | sandbox for UI experiments; keep, don't ship |
+| `docs/ui-conventions.md` | layout, spacing, colors, formats; read before any UI task |
 
 ## GPUI / gpui-kit pitfalls (already hit — don't rediscover)
 
@@ -241,8 +242,10 @@ beside the monthly summary (right); then the transaction table.
   amounts are positive `$1,234.56`.
 
 - [ ] **3.7 Native menus + shortcuts.** macOS menu bar via GPUI menus:
-  File → Import CSV… (⌘O), Export… (⌘E, wired in M5), Restore… (wired in
-  M5), Quit (⌘Q). Keep the toolbar buttons too.
+  File → Import CSV… (⌘O), Undo last import, Export… (⌘E, wired in M5),
+  Restore… (wired in M5), Quit (⌘Q). The toolbar keeps Import CSV… and
+  Categories. Undo leaves the toolbar: it's offered in the success message
+  after an import and in the File menu (`docs/ui-conventions.md`, D4).
 
 - [ ] **3.8 UI tests** for: preset change updates totals, legend drill-down
   and back, summary cell click filters the table, search, hidden toggle.

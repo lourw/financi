@@ -59,3 +59,5 @@ financi-parsers --test real_samples -- --ignored --nocapture`
   strings; don't normalize before hashing.
 - All DB access from the UI goes through `DbWorker`.
 - GPUI pitfalls are listed in `docs/tasks.md`; read them before UI work.
+- Layout, spacing, colors and formats for every view are in
+  `docs/ui-conventions.md`; follow it for any UI change.
