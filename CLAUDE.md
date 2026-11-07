@@ -8,6 +8,10 @@ Linux.
 (the task checklist; it wins over plan.md on M2–M5 detail). Work one
 milestone at a time and stop after each. Ask before deviating from a task.
 
+**Agent workflow:** `AGENTS.md` defines the roles (one orchestrator, one
+implementer sub-agent, one reviewer sub-agent), the 130k-token context
+budget, and the handoff templates. Follow it.
+
 ## Commands
 
 ```sh
