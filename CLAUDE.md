@@ -1,0 +1,57 @@
+# financi
+
+Personal finance desktop app: imports bank CSV exports (Amex, Simplii) into
+SQLite and shows spending in a GPUI window. Single user, offline. macOS and
+Linux.
+
+**Read first:** `plan.md` (requirements and decisions) and `docs/tasks.md`
+(the task checklist; it wins over plan.md on M2–M5 detail). Work one
+milestone at a time and stop after each. Ask before deviating from a task.
+
+## Commands
+
+```sh
+cargo build --workspace
+cargo test --workspace --features financi-db/dev-seed      # all tests
+cargo clippy --workspace --all-targets --features financi-db/dev-seed
+cargo fmt --all
+cargo run -p financi                                          # the app
+```
+
+Dev switches (debug builds only):
+
+- `FINANCI_DB=/tmp/dev.sqlite` — use a scratch DB, never the real one in the
+  OS app data dir.
+- `FINANCI_DEV_SEED=1` — fill an empty DB with synthetic data.
+- `FINANCI_DEV_OPEN=fixtures/demo/amex-sep-nov.csv` — open a file's import
+  preview at startup.
+
+Opt-in check against real exports on this machine (prints counts only):
+`FINANCI_SAMPLE_AMEX=… FINANCI_SAMPLE_SIMPLII_CHEQUING=… cargo test -p
+financi-parsers --test real_samples -- --ignored --nocapture`
+
+## Rules
+
+- **Tests and synthetic data with every change.** Unit tests for logic,
+  fixture files for parsers, UI tests in the style of
+  `crates/financi/src/ui_tests.rs`. Never commit real bank data (CSV files
+  are git-ignored except under `**/fixtures/**`).
+- **Commit after each logical piece** (usually one task), Conventional
+  Commits: `feat(scope): …`, `fix: …`, `test: …`, `docs: …`, `refactor: …`,
+  `chore: …`. Keep every commit building with tests passing. Never push.
+- **Verify each commit in a clean checkout** with its own target dir
+  (sharing the main `target/` reuses test binaries with the worktree's
+  `CARGO_MANIFEST_DIR` baked in and breaks fixture tests later):
+
+  ```sh
+  git worktree add --detach /tmp/financi-verify HEAD
+  (cd /tmp/financi-verify && CARGO_TARGET_DIR=/tmp/financi-verify-target \
+     cargo test --workspace --features financi-db/dev-seed)
+  git worktree remove --force /tmp/financi-verify
+  ```
+
+- Migrations: `0001_init.sql` is frozen. Add new numbered files.
+- Money is integer cents; negative = money out. Row hashes use raw exported
+  strings; don't normalize before hashing.
+- All DB access from the UI goes through `DbWorker`.
+- GPUI pitfalls are listed in `docs/tasks.md`; read them before UI work.

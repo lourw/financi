@@ -1,0 +1,50 @@
+{
+  "_about": "Reference totals per demo export and calendar month (posted date), computed independently of financi by a Python script. money_out/money_in are unsigned sums of rows leaving/entering the account, before any categorization or transfer exclusion.",
+  "amex-sep-oct.csv": {
+    "account_kind": "credit_card",
+    "months": {
+      "2026-09": {
+        "money_out_cents": 178471,
+        "money_in_cents": 150000
+      },
+      "2026-10": {
+        "money_out_cents": 73439,
+        "money_in_cents": 0
+      }
+    }
+  },
+  "amex-sep-nov.csv": {
+    "account_kind": "credit_card",
+    "months": {
+      "2026-09": {
+        "money_out_cents": 178471,
+        "money_in_cents": 150000
+      },
+      "2026-10": {
+        "money_out_cents": 176975,
+        "money_in_cents": 150000
+      },
+      "2026-11": {
+        "money_out_cents": 33529,
+        "money_in_cents": 0
+      }
+    }
+  },
+  "simplii-chequing.csv": {
+    "account_kind": "chequing",
+    "months": {
+      "2026-09": {
+        "money_out_cents": 295000,
+        "money_in_cents": 534000
+      },
+      "2026-10": {
+        "money_out_cents": 295000,
+        "money_in_cents": 534000
+      },
+      "2026-11": {
+        "money_out_cents": 145000,
+        "money_in_cents": 0
+      }
+    }
+  }
+}

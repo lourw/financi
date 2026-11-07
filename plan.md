@@ -353,6 +353,32 @@ Three independent reviews (data integrity, Rust/GPUI feasibility, product scope)
 | v1 scope | Import, categorize workflow, category bar chart, transaction table, monthly summary with income, spend and net, Simplii, export/restore. |
 | After v1 | Spend-over-time line and top merchants (v1.1), flags (v1.2), recurring/subscriptions (v1.3). |
 
+### Implementation decisions for M2–M5 (2026-11-07)
+
+M1 is done (commit 215c87d). These answers drive the task checklist in the repo's `docs/tasks.md`, which a cheaper agent will follow one milestone at a time.
+
+| Area | Decision |
+| --- | --- |
+| Rule matching | Substring (case-insensitive) or regex on the description. Substring rules win over regex; within each kind the longest pattern wins. No account or sign filters. |
+| Rule timing | Applied at import, and re-run over all unlocked rows whenever a rule is created, edited or deleted. |
+| Manual edit | Changing a row's category locks it against rules and offers "Apply to all matching MERCHANT", which creates a rule. |
+| Uncategorized queue | Grouped by merchant with count and total; choosing a category creates a rule for the group. |
+| Category assignment | Children only. Deleting a category requires choosing where its transactions and rules go. |
+| System categories | Only Transfers (Card Payment, Between Accounts) exists by default and can't be deleted. Card payments are detected by a built-in per-parser rule that beats user rules. |
+| Category UI | A side sheet with the category tree, rules with a match preview, and the Uncategorized queue. Right-click a row: Change category, Hide, Unhide. |
+| Date range | Default Last 3 months, as whole calendar months; presets plus a custom range with date pickers; remembered between launches. |
+| Category chart | gpui-kit BarChart beside a clickable legend list (the chart takes no clicks). Clicking a parent filters the table and drills into its children. |
+| Transaction table | Search, sort by date or amount, "Uncategorized only" and "Show hidden" toggles. |
+| Monthly summary | Parent rows, expandable to children, then Income, Spend and Net. Uncategorized rows count as spend. |
+| Money display | `$1,234.56`; spend positive in charts and summaries; signed in the table with money in shown green. |
+| Simplii Visa | No sample yet: assume the chequing format, using one Simplii parser for both account types. Revisit when a sample arrives. |
+| Transfer pairing | Automatic after each import (card payments within 5 days, own-account transfers within 2). Any ambiguity goes to a review sheet behind a dashboard banner; rows can be unpaired. |
+| Near-match | Reviewed in the import preview; same cleaned merchant, within 20% and ±3 days. Confirming keeps the old hash as an alias, and undo restores the replaced values. |
+| Export / restore | Save dialog defaulting to the Desktop; hidden rows stay in the CSVs; Restore is in the File menu and on the empty screen. |
+| Menus | Native menu bar: File > Import CSV… ⌘O, Export… ⌘E, Restore…, Quit ⌘Q. |
+| Acceptance | Overlapping re-import adds 0 rows; totals match the independent reference totals in `fixtures/demo/expected.json`; export round-trip is byte-exact. |
+| Agent workflow | One milestone at a time, stopping after each; follow `docs/tasks.md`; tests and synthetic data with every change; Conventional Commits per logical piece, each verified in a clean checkout; ask before deviating. `CLAUDE.md` in the repo carries these rules. |
+
 ## Open questions
 
 Each answer gets folded back into the sections above.
@@ -360,7 +386,7 @@ Each answer gets folded back into the sections above.
 **Data and import**
 
 - [ ] Share the Simplii Visa CSV as it is on disk, unedited, so the encoding, BOM, sign convention and any balance column can be checked. Needed by M4, not M0.
-- [ ] Agree on acceptance criteria (see review finding 12).
+- [ ] Acceptance criteria agreed: see Implementation decisions for M2–M5.
 
 ## Milestones
 
