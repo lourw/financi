@@ -5,6 +5,9 @@
 //!   per-OS app data directory, so dev data never touches the real file.
 //! - `FINANCI_DEV_SEED=1` fills an empty database with synthetic data.
 
+#[allow(dead_code)] // wired into the import UI in the next commit
+mod flow;
+
 use std::path::PathBuf;
 
 use anyhow::Context as _;
