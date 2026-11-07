@@ -14,3 +14,8 @@ gpui-platform.workspace = true
 chrono.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+# gpui-kit's own test-support trips a Cargo weak-dependency lockfile bug
+# (it resolves gpui-fast, whose exact pins conflict); GPUI's is enough.
+gpui = { workspace = true, features = ["test-support"] }
