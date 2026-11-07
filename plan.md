@@ -388,14 +388,14 @@ M1 is done (commit 215c87d). These answers drive the task checklist in the repo'
 | Uncategorized queue | Grouped by merchant with count and total; choosing a category creates a rule for the group. |
 | Category assignment | Children only. Deleting a category requires choosing where its transactions and rules go. |
 | System categories | Only Transfers (Card Payment, Between Accounts) exists by default and can't be deleted. Card payments are detected by a built-in per-parser rule that beats user rules. |
-| Category UI | A side sheet with the category tree, rules with a match preview, and the Uncategorized queue. Right-click a row: Change category, Hide, Unhide. |
+| Category UI | Sidebar pages (see `docs/ui-conventions.md`): Categories (tree, plus each category's rules with a match preview) and To categorize (the Uncategorized queue). Right-click a row: Change category, Hide, Unhide. |
 | Date range | Default Last 3 months, as whole calendar months; presets plus a custom range with date pickers; remembered between launches. |
 | Category chart | gpui-kit BarChart beside a clickable legend list (the chart takes no clicks). Clicking a parent filters the table and drills into its children. |
 | Transaction table | Search, sort by date or amount, "Uncategorized only" and "Show hidden" toggles. |
 | Monthly summary | Parent rows, expandable to children, then Income, Spend and Net. Uncategorized rows count as spend. |
 | Money display | `$1,234.56`; spend positive in charts and summaries; signed in the table with money in shown green. |
 | Simplii Visa | No sample yet: assume the chequing format, using one Simplii parser for both account types. Revisit when a sample arrives. |
-| Transfer pairing | Automatic after each import (card payments within 5 days, own-account transfers within 2). Any ambiguity goes to a review sheet behind a dashboard banner; rows can be unpaired. |
+| Transfer pairing | Automatic after each import (card payments within 5 days, own-account transfers within 2). Any ambiguity goes to the Transfers page, with a count in the sidebar; rows can be unpaired. |
 | Near-match | Reviewed in the import preview; same cleaned merchant, within 20% and ±3 days. Confirming keeps the old hash as an alias, and undo restores the replaced values. |
 | Master CSVs (added 2026-11-07) | Collation moves from export to import: one file per account per year, written after each commit that changes rows. Built in M2 (task 2.2), since import already ships in M1. |
 | Export / restore | Save dialog defaulting to the Desktop; export copies the master CSVs; hidden rows stay in the CSVs; Restore is in the File menu and on the empty screen. |

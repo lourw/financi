@@ -12,6 +12,12 @@ milestone at a time and stop after each. Ask before deviating from a task.
 implementer sub-agent, one reviewer sub-agent), the 130k-token context
 budget, and the handoff templates. Follow it.
 
+**UI docs are for UI work only.** Read `docs/ui-conventions.md` and the
+*GPUI pitfalls* in `docs/tasks.md` only when the task changes the GPUI app
+(`crates/financi/src/ui*.rs` or other view code). Skip them for backend
+work (parsers, `financi-core`, `financi-db`, migrations, `flow.rs`
+helpers); they cost context and don't apply.
+
 ## Commands
 
 ```sh
@@ -59,3 +65,5 @@ financi-parsers --test real_samples -- --ignored --nocapture`
   strings; don't normalize before hashing.
 - All DB access from the UI goes through `DbWorker`.
 - GPUI pitfalls are listed in `docs/tasks.md`; read them before UI work.
+- Layout, spacing, colors and formats for every view are in
+  `docs/ui-conventions.md`; follow it for any UI change.
