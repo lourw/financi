@@ -1,0 +1,7 @@
+/target
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+# Never commit real bank exports
+*.csv
+!**/fixtures/**/*.csv

@@ -1,0 +1,11 @@
+[package]
+name = "gpui-spike"
+description = "M0 throwaway: proves the GPUI + gpui-kit dependency (file drop, bar chart, virtual table, dropdown)."
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+gpui-platform.workspace = true
+gpui-kit.workspace = true
+anyhow.workspace = true

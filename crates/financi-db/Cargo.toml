@@ -1,0 +1,23 @@
+[package]
+name = "financi-db"
+description = "SQLite schema, migrations, DB worker thread and dev seed for financi."
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[features]
+# Synthetic categories, rules and transactions for development and tests.
+# The app compiles it in but only runs it in debug builds (FINANCI_DEV_SEED=1).
+dev-seed = ["dep:chrono"]
+
+[dependencies]
+financi-core.workspace = true
+rusqlite.workspace = true
+directories.workspace = true
+uuid.workspace = true
+thiserror.workspace = true
+futures-channel = "0.3"
+chrono = { workspace = true, optional = true }
+
+[dev-dependencies]
+futures-executor = "0.3"

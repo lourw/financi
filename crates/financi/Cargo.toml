@@ -1,0 +1,15 @@
+[package]
+name = "financi"
+description = "Personal finance: import bank CSV exports into SQLite and see where the money goes."
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+financi-core.workspace = true
+financi-db = { workspace = true, features = ["dev-seed"] }
+financi-parsers.workspace = true
+gpui-kit.workspace = true
+gpui-platform.workspace = true
+chrono.workspace = true
+anyhow.workspace = true

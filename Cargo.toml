@@ -1,0 +1,27 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "spikes/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[workspace.dependencies]
+financi-core = { path = "crates/financi-core" }
+financi-db = { path = "crates/financi-db" }
+financi-parsers = { path = "crates/financi-parsers" }
+
+# GPUI is pre-1.0 and churns weekly: pin exactly and commit Cargo.lock.
+# gpui-kit 0.9.0 itself pins gpui-pre =0.3.11.
+gpui = { package = "gpui-pre", version = "=0.3.11" }
+gpui-platform = { package = "gpui-pre-platform", version = "=0.3.11", features = ["runtime_shaders"] }
+gpui-kit = { version = "=0.9.0" }
+
+rusqlite = { version = "0.37", features = ["bundled"] }
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+sha2 = "0.10"
+uuid = { version = "1", features = ["v4"] }
+directories = "6"
+thiserror = "2"
+anyhow = "1"

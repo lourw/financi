@@ -1,0 +1,9 @@
+[package]
+name = "financi-parsers"
+description = "One StatementParser per institution export format."
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+financi-core.workspace = true
