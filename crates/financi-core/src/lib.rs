@@ -6,6 +6,10 @@
 
 use sha2::{Digest, Sha256};
 
+pub mod parse;
+mod raw;
+pub use raw::{ReadError, read_raw_file};
+
 /// Money in integer cents. Negative = money out.
 pub type Cents = i64;
 
@@ -90,6 +94,43 @@ pub struct RawRecord {
     pub fields: Vec<String>,
 }
 
+/// The type of an account within its institution. Stored as
+/// `accounts.kind`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AccountKind {
+    Chequing,
+    Savings,
+    CreditCard,
+}
+
+impl AccountKind {
+    pub const ALL: [AccountKind; 3] = [
+        AccountKind::Chequing,
+        AccountKind::Savings,
+        AccountKind::CreditCard,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AccountKind::Chequing => "chequing",
+            AccountKind::Savings => "savings",
+            AccountKind::CreditCard => "credit_card",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|k| k.as_str() == s)
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            AccountKind::Chequing => "Chequing",
+            AccountKind::Savings => "Savings",
+            AccountKind::CreditCard => "Credit card",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CategoryKind {
     Spend,
@@ -141,6 +182,12 @@ pub enum ParseError {
 pub trait StatementParser {
     /// Stable id, e.g. `"amex"`, `"simplii-chequing"`.
     fn id(&self) -> &'static str;
+    /// The institution an account must belong to for this format, matching
+    /// `institutions.key`, e.g. `"amex"`, `"simplii"`.
+    fn institution(&self) -> &'static str;
+    /// The account types this export format comes from. Simplii chequing and
+    /// Simplii Visa share an institution but not a format.
+    fn account_kinds(&self) -> &'static [AccountKind];
     /// True if this header row looks like ours (auto-detect).
     fn detect(&self, header: &[String]) -> bool;
     /// Map one record into the shared model (sign flip, date parsing, ...).
@@ -156,6 +203,14 @@ mod tests {
 
     fn key() -> AccountKey {
         AccountKey("6f1c2a5e-0000-4000-8000-000000000001".into())
+    }
+
+    #[test]
+    fn account_kind_round_trips() {
+        for k in AccountKind::ALL {
+            assert_eq!(AccountKind::parse(k.as_str()), Some(k));
+        }
+        assert_eq!(AccountKind::parse("credit"), None);
     }
 
     #[test]
