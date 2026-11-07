@@ -28,6 +28,10 @@ to those files, it doesn't replace them.
   tokens, `docs/tasks.md` ~4.5k and `docs/ui-conventions.md` ~3.5k; read
   only the parts for the current task. Never read anything under `target/`, `Cargo.lock`, or whole
   fixture CSVs.
+- **UI docs only for UI tasks.** `docs/ui-conventions.md` and the *GPUI
+  pitfalls* in `docs/tasks.md` are read only when a task touches GPUI view
+  code. Backend tasks (parsers, `financi-core`, `financi-db`, migrations)
+  skip them, and their briefs don't name them.
 - **Trim command output.** Cargo output can be thousands of lines:
   - `cargo build --workspace 2>&1 | grep -E '^(error|warning)' -A 6 | head -80`
   - `cargo test --workspace --features financi-db/dev-seed 2>&1 | grep -E '^(test result|failures:|---- |error)' -A 15 | head -120`
