@@ -23,48 +23,76 @@ specific layout or control, that file wins. This one covers everything else.
 
 ## Window layout
 
-The window is a single vertical stack inside `p_4` padding, with `gap_3`
-between regions:
+The window is a gpui-kit `Sidebar` on the left and one page on the right.
+Pages replace side sheets, modals and banners: anything that isn't the
+dashboard gets its own page.
 
 ```
-┌──────────────────────────────────────────────────────────────────────┐
-│ Toolbar: financi · [date range ▾] [accounts ▾] [☐ transfers]  … [Categories] [Import CSV…] │
-│ Banner (only when something needs action, e.g. "2 transfers need review") │
-│ Import preview panel (only while importing)                          │
-├───────────────────────────────┬──────────────────────────────────────┤
-│ Spending by category          │ Monthly summary                      │
-│ chart + clickable legend      │ parents × months + Total             │
-│ (~40% width)                  │ (~60% width)                         │
-├───────────────────────────────┴──────────────────────────────────────┤
-│ Filter chips · search · toggles                                      │
-│ Transaction table (fills remaining height, scrolls)                  │
-├──────────────────────────────────────────────────────────────────────┤
-│ Status bar: 1,284 transactions · ~/…/financi.sqlite                  │
-└──────────────────────────────────────────────────────────────────────┘
+┌────────────────┬──────────────────────────────────────────────────────┐
+│ financi        │ Page header: filters (Dashboard) or title + actions  │
+│ [+ Import CSV…]│                                                      │
+│                │ ┌ Spending by category ─────┐ ┌ Monthly summary ──┐ │
+│ ▣ Dashboard    │ │ BarChart + legend (~45%)  │ │ parents × months  │ │
+│                │ └───────────────────────────┘ └───────────────────┘ │
+│ ORGANIZE       │ chips · search · toggles                             │
+│ ☑ To categorize 12                                                    │
+│ ◇ Categories   │ Transaction table (fills remaining height)           │
+│ ⇄ Transfers  2 │                                                      │
+│ DATA           │                                                      │
+│ ⇩ Imports      │                                                      │
+│                │                                                      │
+│ 1,284 transactions                                                    │
+│ ~/…/financi.sqlite                                                    │
+└────────────────┴──────────────────────────────────────────────────────┘
 ```
 
-- **Toolbar.** Filters on the left (date range, accounts, transfers toggle).
-  Actions on the right (Categories, Import CSV…). Import CSV… is the only
-  `primary()` button in the window. Undo last import moves into the File menu
-  and the import success message (M3, 3.7).
-- **Middle row.** Chart and summary sit side by side in an `h_flex` with
-  `gap_3`, and both have the same height (fixed, ~280px). The summary scrolls
-  sideways if there are many months. The chart region never scrolls.
-- **Table.** Takes `flex_1`, so it gets whatever height is left. Minimum
-  window size: 1100 × 720.
-- **Side sheets.** Categories (2.8) and transfer review (4.2) open as a
-  gpui-kit `sheet` from the right, ~420px wide, over the dashboard. Only one
-  sheet is open at a time.
-- **Inline panels.** The import preview stays inline above the dashboard, as
-  in M1. It's part of the main flow, so it isn't put in a modal. Keep it to
-  two lines: the title (file name, then the institution in muted text) with
-  Cancel and the primary action at the right end of the same row; then
-  `Into [account ▾] | 32 new of 84 rows · 52 already imported, skipped ·
-  Oct 1 – Dec 4, 2026` in muted text with the key number in `foreground`.
-  No big stat blocks.
-- **Banners.** One line in a bordered panel (no fill): a small `warning`
-  dot, a bold sentence saying what needs doing, a muted reason, and one
-  button at the right. Only for things that need a decision.
+### Sidebar
+
+- gpui-kit `Sidebar`, ~210px, background `sidebar`, `border` on the right.
+  Not collapsible in v1.
+- **Header:** the app name (`font_semibold`), then **Import CSV…** as the
+  only `primary()` button in the window.
+- **Items** (`SidebarMenuItem` with a Lucide icon, `.active(...)` on the
+  current page), in groups:
+  - Dashboard
+  - *Organize:* To categorize, Categories, Transfers
+  - *Data:* Imports
+- **Counts:** an item with work waiting shows a count pill in its
+  `suffix` (To categorize: uncategorized transactions; Transfers: reviews
+  open). Hide the pill at 0. The counts replace dashboard banners: there
+  are no banners.
+- **Footer:** transaction count and database path, `text_xs`,
+  `muted_foreground`, path ellipsized.
+- The selected page isn't persisted; launch opens Dashboard.
+
+### Pages
+
+Every page has `p_4` padding and `gap_3` between regions. The first row is
+the page header: title (`text_lg`, `font_semibold`) and a muted summary on
+the left, page actions on the right. Dashboard is the exception: its
+header row is the filters.
+
+| Page | Contents |
+|---|---|
+| **Dashboard** | Filters (date range, accounts, include transfers); chart + legend beside the monthly summary; filter chips, search, toggles; transaction table. |
+| **To categorize** | The Uncategorized queue (2.7) as a table: merchant, transactions, total, dates, category picker. Choosing a category adds a rule. |
+| **Categories** | Category tree on the left (~300px panel); the selected category on the right: name, Rename…/Delete…, its rules table, and an add-rule row with a live "matches N transactions" count. Rules live here; there's no Rules page. Header action: New category…. |
+| **Transfers** | Open transfer reviews (4.2): each row with its candidates and "Not a transfer". |
+| **Imports** | The import preview (while a file is open) on top, then import history (time, file, account, rows added, dates). Undo… on the newest row only. |
+
+- **Dashboard middle row:** chart and summary side by side, ~45/55, same
+  fixed height (~340px). The summary scrolls if it overflows. The chart
+  never scrolls.
+- **Tables** take `flex_1` and scroll. Minimum window size: 1200 × 720.
+- **Opening a file** (drop anywhere, Import CSV…, ⌘O, `FINANCI_DEV_OPEN`)
+  switches to the Imports page with the preview open.
+- **Import preview:** two lines in a bordered panel. Line one: file name,
+  institution (muted), then Cancel and the primary action at the right end.
+  Line two: `Into [account ▾] | 32 new of 84 rows · 52 already imported,
+  skipped · Oct 1 – Dec 4, 2026` in muted text with the key number in
+  `foreground`. No big stat blocks.
+- **No side sheets, no modals** for app content. Native file dialogs and
+  in-place confirmation ("Click again to undo") are the only exceptions.
 
 ## Spacing and sizing
 
@@ -74,10 +102,10 @@ Use gpui's spacing helpers only, in these steps:
 |---|---|---|
 | 4px | `gap_1` | icon next to its label, chip contents |
 | 8px | `gap_2` | controls inside one group (buttons in a row, label + input) |
-| 12px | `gap_3` | between window regions; between toolbar groups |
-| 16px | `p_4` | window padding; padding inside a panel or sheet |
+| 12px | `gap_3` | between page regions; between filter groups |
+| 16px | `p_4` | page padding; padding inside a panel |
 
-- Panels (import preview, banners, chart, summary): `border_1`,
+- Panels (import preview, chart, summary, category tree): `border_1`,
   `theme.border`, `rounded(theme.radius)`, background `theme.background`.
   **No filled panels.** A grey `secondary` fill or a tinted warning box
   looked heavy in the mockups and was rejected.
@@ -87,7 +115,7 @@ Use gpui's spacing helpers only, in these steps:
 - **Text never pushes its container wider.** Any flex child that holds text
   (legend rows, summary cells, select labels) gets `min_w_0()` plus
   `overflow_hidden()`/`text_ellipsis()`, and amount and percent columns get
-  fixed widths. Selects in the toolbar get a width that fits their longest
+  fixed widths. Filter selects get a width that fits their longest
   label on one line. The first mockups broke exactly here: legend amounts
   spilled into the summary, and the date range label wrapped.
 
@@ -96,7 +124,8 @@ Use gpui's spacing helpers only, in these steps:
 - Font: the theme's system UI font. Base size 16px (gpui-kit default), but
   **data regions use `text_sm` (14px)**: table, summary, legend.
 - Region titles: `text_sm`, `font_semibold`, `theme.foreground`. No larger
-  headings inside the dashboard. The app name in the toolbar is `text_lg`.
+  headings inside a page. Page titles are `text_lg`; the app name in the
+  sidebar header is `font_semibold`.
 - Secondary text (counts, captions, the status bar, hints): `text_xs` or
   `text_sm` in `theme.muted_foreground`.
 - Numbers line up: right-align every amount column. If the system font's
@@ -113,10 +142,10 @@ Use gpui's spacing helpers only, in these steps:
 | Text | `foreground` | everything by default |
 | Secondary text | `muted_foreground` | captions, Uncategorized label, hints |
 | Lines | `border` | panel borders, dividers |
-| Main action | `primary` (button) | Import CSV…, the confirm button in a sheet |
+| Main action | `primary` (button) | Import CSV… in the sidebar; the one confirming action on a page (Import 32 transactions, Add rule) |
 | Money in | `success` | positive amounts in the table |
 | Problems | `danger` | errors, negative Net in the summary |
-| Needs action | `warning` | the small dot in a banner; never a filled box |
+| Needs action | sidebar count pill | work waiting is a count in the sidebar, never a banner or filled box |
 | Selection | `list_active` / `table_active` | selected legend row, selected summary cell |
 | Category colors | `blue`, `cyan`, `magenta`, `yellow`, `green`, `red`, then their `_light` variants | one color per category; see *Category colors* below |
 | Hidden rows | `muted_foreground` text | "Show hidden" mode |
@@ -140,7 +169,7 @@ before its name in the monthly summary.
   category colors.
 
 Expected behavior isn't a warning. "Rows you already have are skipped" is
-plain muted text. Use `warning` only for something the user must decide.
+plain muted text. Something the user must decide shows as a sidebar count, not a warning box.
 
 Money out is drawn in plain `foreground`, not red. Spending is the normal
 case, and a table full of red reads as an alarm.
@@ -176,12 +205,12 @@ case, and a table full of red reads as an alarm.
   share (`Restaurants · $642.15 · 31.4% of Food`).
 - **Filter chips.** Each active narrowing filter (category, month, search,
   "Uncategorized only") shows as a chip with a × above the table. The
-  toolbar filters (date, accounts, transfers) aren't chips, because the
-  toolbar already shows them.
+  header filters (date, accounts, transfers) aren't chips, because the
+  header already shows them.
 - **Row actions:** right-click context menu (2.9). No action buttons inside
   rows.
 - **Destructive actions:** ask for confirmation inside the control (the
-  current "Click again to undo" pattern) or in the sheet itself. Never use a
+  current "Click again to undo" pattern) or on the page itself. Never use a
   native alert.
 - **Keyboard:** Esc clears the innermost selection first (chip, then
   drill-down). ⌘O import, ⌘E export (3.7).
@@ -203,9 +232,11 @@ Decided from mockups. Don't reopen these without asking.
 | D1 | Category chart | gpui-kit `BarChart` beside a clickable legend, as task 3.5 says. Bars aren't drawn into the legend rows. |
 | D2 | Category label in the table | `Parent › Child`, with the parent muted. |
 | D3 | Color of money going out | Normal `foreground`. Only money in is colored (green). |
-| D4 | Undo last import | Not in the toolbar. It's offered in the message shown after an import, and in File → Undo last import. |
+| D4 | Undo last import | On the Imports page (newest row) and in File → Undo last import. |
 | D5 | Category colors | Each category has its own stable color (see *Category colors*). |
 | D6 | Hints | Hover tooltips instead of caption text in panel titles. |
+| D7 | Panels | Bordered, never filled; compact two-line import preview. |
+| D8 | Navigation | Sidebar of pages (Dashboard, To categorize, Categories, Transfers, Imports). No side sheets, no banners; counts in the sidebar. |
 
 ## Testing UI conventions
 

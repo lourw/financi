@@ -157,8 +157,12 @@ frozen from here on; real databases may exist).
   count descending. Choosing a category for a group creates a substring rule
   on that merchant (which categorizes the whole group via 2.5).
 
-- [ ] **2.8 Categories sheet UI.** A "Categories" button opens a side panel
-  (gpui-kit `sheet`) with:
+- [ ] **2.8 Sidebar shell + category pages.** Layout and look:
+  `docs/ui-conventions.md` (*Window layout*). Replace the M1 top bar with a
+  gpui-kit `Sidebar` (Import CSV…, Dashboard, To categorize, Categories,
+  Transfers, Imports; counts in item suffixes) and one page area. Move the
+  import preview and Undo to the Imports page (with import history). Then
+  the category pages, which together cover:
   - a parent/child tree: add parent (name + kind), add child, rename, move
     child, delete (with a "move its transactions to…" picker);
   - a rules list: pattern, substring/regex toggle, target category, and a
@@ -243,9 +247,9 @@ beside the monthly summary (right); then the transaction table.
 
 - [ ] **3.7 Native menus + shortcuts.** macOS menu bar via GPUI menus:
   File → Import CSV… (⌘O), Undo last import, Export… (⌘E, wired in M5),
-  Restore… (wired in M5), Quit (⌘Q). The toolbar keeps Import CSV… and
-  Categories. Undo leaves the toolbar: it's offered in the success message
-  after an import and in the File menu (`docs/ui-conventions.md`, D4).
+  Restore… (wired in M5), Quit (⌘Q). Import CSV… stays at the top of the
+  sidebar; Undo lives on the Imports page and in the File menu
+  (`docs/ui-conventions.md`, D4).
 
 - [ ] **3.8 UI tests** for: preset change updates totals, legend drill-down
   and back, summary cell click filters the table, search, hidden toggle.
@@ -285,7 +289,8 @@ beside the monthly summary (right); then the transaction table.
       candidate_ids  TEXT NOT NULL  -- comma-separated transaction ids
     );
     ```
-  - UI: a dashboard banner ("2 transfers need review") opens a sheet; for
+  - UI: the sidebar's Transfers item shows the open-review count and opens
+    the Transfers page (no banner, no sheet); for
     each, pick the matching row or "Not a transfer".
   - Paired rows show a link icon in the table; context menu *Unpair* clears
     both sides and re-applies rules.
@@ -342,7 +347,7 @@ exist from 2.2; export copies them instead of rebuilding anything.
   - `manifest.json`: financi version, schema version, exported_at, and per
     file: account_key, institution, account name, kind, year, row count,
     SHA-256; plus the database file's SHA-256.
-  - UI: File → Export… (and a toolbar entry) opens a save dialog defaulting
+  - UI: File → Export… (and an Export… button on the Imports page) opens a save dialog defaulting
     to `~/Desktop/financi-export-YYYY-MM-DD.zip`.
 
 - [ ] **5.2 Restore.**
