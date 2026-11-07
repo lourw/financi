@@ -108,8 +108,26 @@ Use gpui's spacing helpers only, in these steps:
 | Problems | `danger` | errors, negative Net in the summary |
 | Needs action | `warning` | banners (transfers to review, near-matches) |
 | Selection | `list_active` / `table_active` | selected legend row, selected summary cell |
-| Chart bars | `chart_2` | every category bar is the same color, and the labels say which is which; Uncategorized uses `chart_1` (lighter) |
+| Category colors | `blue`, `cyan`, `magenta`, `yellow`, `green`, `red`, then their `_light` variants | one color per category; see *Category colors* below |
 | Hidden rows | `muted_foreground` text | "Show hidden" mode |
+
+### Category colors
+
+Every category gets its own color, the same everywhere it appears: its bar
+(`BarChart::fill` takes a closure per bar), its legend swatch, and a swatch
+before its name in the monthly summary.
+
+- Palette, in order: the theme's `blue`, `cyan`, `magenta`, `yellow`,
+  `green`, `red`, then `blue_light` … `red_light` (12 colors, light and dark
+  handled by the theme). Red and green come last because they also mean
+  danger and money in.
+- **Stable, not by rank.** Assign by position among siblings sorted by
+  category id (`index % 12`), so a category keeps its color when the date
+  range changes the order. Drilling into a parent gives its children their
+  own colors from the start of the palette.
+- Uncategorized is always `muted_foreground` grey, never a palette color.
+- The swatch is a 10×10 square with a 2px radius. Don't color text with
+  category colors.
 
 Money out is drawn in plain `foreground`, not red. Spending is the normal
 case, and a table full of red reads as an alarm.
@@ -137,6 +155,12 @@ case, and a table full of red reads as an alarm.
 - **Click to filter.** Legend rows, summary cells and summary row headers
   all set the shared filter. The selected item uses the active color. Click
   it again, or press Esc, to clear it.
+- **Hints go in hover tooltips, not captions.** Don't put instructions like
+  "click a cell to filter" in panel titles. Use `.tooltip(...)` on the
+  element (it needs an `id`). Summary cell: `Shopping · Oct 2026 · 14
+  transactions`, with "Click to show them in the table" under it. Chart bar
+  (BarChart's own `tooltip_title`/`tooltip_value`): name, exact amount and
+  share (`Restaurants · $642.15 · 31.4% of Food`).
 - **Filter chips.** Each active narrowing filter (category, month, search,
   "Uncategorized only") shows as a chip with a × above the table. The
   toolbar filters (date, accounts, transfers) aren't chips, because the
@@ -167,6 +191,8 @@ Decided from mockups. Don't reopen these without asking.
 | D2 | Category label in the table | `Parent › Child`, with the parent muted. |
 | D3 | Color of money going out | Normal `foreground`. Only money in is colored (green). |
 | D4 | Undo last import | Not in the toolbar. It's offered in the message shown after an import, and in File → Undo last import. |
+| D5 | Category colors | Each category has its own stable color (see *Category colors*). |
+| D6 | Hints | Hover tooltips instead of caption text in panel titles. |
 
 ## Testing UI conventions
 
