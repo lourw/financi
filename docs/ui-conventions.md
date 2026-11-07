@@ -56,7 +56,15 @@ between regions:
   gpui-kit `sheet` from the right, ~420px wide, over the dashboard. Only one
   sheet is open at a time.
 - **Inline panels.** The import preview stays inline above the dashboard, as
-  in M1. It's part of the main flow, so it isn't put in a modal.
+  in M1. It's part of the main flow, so it isn't put in a modal. Keep it to
+  two lines: the title (file name, then the institution in muted text) with
+  Cancel and the primary action at the right end of the same row; then
+  `Into [account ▾] | 32 new of 84 rows · 52 already imported, skipped ·
+  Oct 1 – Dec 4, 2026` in muted text with the key number in `foreground`.
+  No big stat blocks.
+- **Banners.** One line in a bordered panel (no fill): a small `warning`
+  dot, a bold sentence saying what needs doing, a muted reason, and one
+  button at the right. Only for things that need a decision.
 
 ## Spacing and sizing
 
@@ -69,10 +77,12 @@ Use gpui's spacing helpers only, in these steps:
 | 12px | `gap_3` | between window regions; between toolbar groups |
 | 16px | `p_4` | window padding; padding inside a panel or sheet |
 
-- Panels (import preview, chart, summary): `border_1`, `theme.border`,
-  `rounded(theme.radius)`, background `theme.background`. Only the import
-  preview uses `theme.secondary` as its fill, because it's a temporary
-  state.
+- Panels (import preview, banners, chart, summary): `border_1`,
+  `theme.border`, `rounded(theme.radius)`, background `theme.background`.
+  **No filled panels.** A grey `secondary` fill or a tinted warning box
+  looked heavy in the mockups and was rejected.
+- **Button order in a row of actions:** Cancel first, then the primary
+  action last, at the right end (the macOS order).
 - Table rows: default gpui-kit row height, striped (`.stripe(true)`).
 - **Text never pushes its container wider.** Any flex child that holds text
   (legend rows, summary cells, select labels) gets `min_w_0()` plus
@@ -106,7 +116,7 @@ Use gpui's spacing helpers only, in these steps:
 | Main action | `primary` (button) | Import CSV…, the confirm button in a sheet |
 | Money in | `success` | positive amounts in the table |
 | Problems | `danger` | errors, negative Net in the summary |
-| Needs action | `warning` | banners (transfers to review, near-matches) |
+| Needs action | `warning` | the small dot in a banner; never a filled box |
 | Selection | `list_active` / `table_active` | selected legend row, selected summary cell |
 | Category colors | `blue`, `cyan`, `magenta`, `yellow`, `green`, `red`, then their `_light` variants | one color per category; see *Category colors* below |
 | Hidden rows | `muted_foreground` text | "Show hidden" mode |
@@ -128,6 +138,9 @@ before its name in the monthly summary.
 - Uncategorized is always `muted_foreground` grey, never a palette color.
 - The swatch is a 10×10 square with a 2px radius. Don't color text with
   category colors.
+
+Expected behavior isn't a warning. "Rows you already have are skipped" is
+plain muted text. Use `warning` only for something the user must decide.
 
 Money out is drawn in plain `foreground`, not red. Spending is the normal
 case, and a table full of red reads as an alarm.
