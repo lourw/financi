@@ -27,7 +27,8 @@ One binary that opens a GPUI window; importing happens inside it, with no separa
 3. The matching parser turns each row into a `Transaction` struct.
 4. Normalize: sign convention, dates, merchant cleanup, category assignment.
 5. Deduplicate against existing rows and insert into SQLite in one database transaction per file; record the import batch.
-6. Pick a date range, read the category bar chart, click a bar to filter the transaction table, and scan the monthly summary.
+6. Merge the newly inserted rows into financi's master CSV for each account and year they fall in (see **Master CSVs** below).
+7. Pick a date range, read the category bar chart, click a bar to filter the transaction table, and scan the monthly summary.
 
 ## Import and deduplication
 
@@ -37,6 +38,8 @@ Re-importing overlapping exports must never create duplicates or drop real repea
 2. **Count reconciliation.** Rows are grouped by `row_hash`. If the file has n rows with a hash and the account already has m (transactions plus aliases), insert max(0, n − m). Real repeats survive, and overlapping days never double-count.
 3. **Near-match review.** A new row in the same account with a similar description, an amount within 20% and a date within ±3 days of an existing row, but a different hash, is shown in the preview as a possibly changed charge (a tip added, a description rewritten on posting). On confirm, the newer version replaces the transaction's fields and raw bytes, and the old hash is kept in row_aliases, so later overlapping exports match it silently.
 4. **Raw bytes kept.** Each record's exact bytes are stored with the transaction, and the file's encoding, BOM, line ending and trailing newline are stored on the import, so export can reproduce every row.
+
+5. **Master CSVs.** Every import also merges its rows into financi's own copy of the provider CSV: **one file per account per calendar year**, so overlapping chunks (Sep–Nov, then Oct–Dec) collapse into a single `2026.csv` instead of piling up as separate files. See **Master CSVs** below.
 
 **Account safety.** The account is always confirmed in the preview, never guessed from the filename (every Amex card downloads as `activity.csv`). If a large share of the file's hashes already exists under a different account, the preview warns before importing.
 
@@ -85,40 +88,59 @@ The import preview shows rows to add, rows skipped as already present, and near-
 
 **Simplii Visa:** sample still needed.
 
+## Master CSVs
+
+financi keeps its own provider-format CSV for every account and year, built at import time. It holds every row the account has, deduplicated exactly as the database is, with each row's bytes untouched. The uploaded files themselves are not kept; these files replace them.
+
+```
+<app data dir>/financi/
+├── financi.sqlite
+└── csv/
+    ├── amex/
+    │   └── <account_key>/
+    │       ├── account.json      # name, institution, kind (the Amex CSV has no account column)
+    │       ├── 2025.csv
+    │       └── 2026.csv
+    └── simplii/
+        └── <account_key>/
+            ├── account.json
+            └── 2026.csv
+```
+
+1. **Location.** A `csv/` directory beside the database file. `FINANCI_DB` moves it along with the database, so dev runs never touch the real copy. Folders are named by institution key and `account_key`, so renaming an account doesn't move files; `account.json` carries the readable name and is rewritten on rename.
+2. **Which file.** A row goes in the file for the calendar year of its transaction date (Amex `Date`, Simplii `Date`), parsed by the institution's parser. A file that spans Dec–Jan splits across two year files.
+3. **Contents.** Same rules as before for rebuilding CSVs, now applied per year file: the provider's original header; each row is the stored `raw_bytes`, written exactly as read; deduplicated rows appear once and real identical repeats appear as many times as they occurred; hidden rows stay. Rows are in the provider's order (Amex newest first, Simplii oldest first), then import order, then `source_line`. Encoding, BOM, line ending and trailing newline come from the earliest import in that file. Rows whose import has a different header, encoding or BOM go to `<year>-v2.csv`, `-v3`…
+4. **When written.** After any database commit that changes an account's rows (import, undo import, near-match confirm), financi rewrites each affected year file from the stored raw records, on the `DbWorker` thread. Writes are atomic (temp file, fsync, rename), so a crash leaves the old file or the new one, never half of one. The database stays the source the app queries; the year files are always regenerable from it, and the round-trip guarantee means the database is regenerable from them.
+5. **Undo and near-match.** Undoing an import removes its rows from the year files. Confirming a near-match replaces the old row's bytes with the newer version in the file, as it does in the database.
+6. **Self-check.** On startup, if a year file is missing or its row count doesn't match the database, it is rewritten and a notice is logged.
+
 ## Export
 
-**File > Export…** writes one zip that holds a copy of the database plus the provider CSVs rebuilt from it. Every row matches the original export byte for byte.
+**File > Export…** writes one zip that holds a copy of the database plus the master CSVs (see **Master CSVs**), copied as they are. Every row matches the original export byte for byte.
 
 ```
 financi-export-2026-11-07.zip
 ├── financi.sqlite          # snapshot via SQLite backup API / VACUUM INTO
 ├── manifest.json           # versions, accounts, per-file row count + sha256
-└── csv/
-    ├── amex-cobalt.csv
-    ├── simplii-chequing.csv
-    └── simplii-visa.csv
+└── csv/                    # the master CSVs, same layout as on disk
+    ├── amex/<account_key>/{account.json, 2025.csv, 2026.csv}
+    └── simplii/<account_key>/{account.json, 2026.csv}
 ```
 
-**Rebuilding the CSVs**
-
-1. One file per account, with all imports for that account merged into it. Deduplicated rows appear once; real identical repeats appear as many times as they occurred.
-2. The header is the provider's original header line, stored with each import. If an account's imports have different headers (a format change), the file is split by header and named with a `-v2` suffix.
-3. Each row is the stored raw record, written exactly as read: quoting, spacing and amount text untouched. It is captured as the original bytes of the record, not re-serialized from parsed fields.
-4. Rows are in the provider's order (Amex: newest first by `Date`), with ties kept in their original file order.
-5. Line endings and the trailing newline match the source files.
+Export does no rebuilding of its own: the collation into per-account, per-year files already happened at import time.
 
 **Round-trip guarantee (tested):** importing the export's CSVs into an empty database yields the same multiset of (account_key, row_hash) with identical row bytes, and importing them into the source database adds 0 rows. Rows from different imports are ordered by date, then import order, then `source_line`.
 
-**manifest.json** records the financi and schema versions, the export time, and each CSV's account (name, institution, kind), because the Amex file itself has no account column. It also lists each file's row count and SHA-256.
+**manifest.json** records the financi and schema versions, the export time, and each CSV's account (account_key, name, institution, kind) and year, because the Amex file itself has no account column. It also lists each file's row count and SHA-256.
 
 Your edits (categories, rules, overrides, flag decisions) exist only in `financi.sqlite`. The CSVs hold the provider's data and nothing else.
 
 **Decided**
 
-- One CSV per account, never merged per institution.
-- Rebuilt CSVs only. Original files are not archived; the stored raw records and the round-trip test make them redundant.
+- One CSV per account per calendar year, never merged per institution. Built at import time, not at export.
+- Uploaded files are not archived as-is; the master CSVs hold every row of them, deduplicated, with bytes untouched.
 - Deleting in the app only hides a row (`transactions.hidden INTEGER NOT NULL DEFAULT 0`). Hidden rows stay in the exported CSVs, and their stored hash means a re-import never brings them back.
-- **File > Restore…** checks every file against its manifest SHA-256 and the schema version, backs up the current database to `financi.sqlite.bak`, then swaps in the saved one. Categories, rules, overrides and flag decisions come back with it.
+- **File > Restore…** checks every file against its manifest SHA-256 and the schema version, backs up the current database to `financi.sqlite.bak` and the current `csv/` directory to `csv.bak/`, then swaps in the saved ones. Categories, rules, overrides and flag decisions come back with it.
 
 ## Architecture
 
@@ -336,11 +358,12 @@ Three independent reviews (data integrity, Rust/GPUI feasibility, product scope)
 | Topic | Decision |
 | --- | --- |
 | Platforms | macOS and Linux. Windows is not a v1 target. |
-| Database location | Per-OS app data directory via the `directories` crate: `~/Library/Application Support/financi/financi.sqlite` on macOS, `$XDG_DATA_HOME/financi/financi.sqlite` (default `~/.local/share/financi/`) on Linux. Plain SQLite; disk encryption (FileVault / LUKS) is relied on. |
+| Database location | Per-OS app data directory via the `directories` crate: `~/Library/Application Support/financi/financi.sqlite` on macOS, `$XDG_DATA_HOME/financi/financi.sqlite` (default `~/.local/share/financi/`) on Linux. Plain SQLite; disk encryption (FileVault / LUKS) is relied on. The master CSVs live in `csv/` beside it. |
 | Accounts (v1) | Amex credit cards (more than one), Simplii chequing, Simplii Visa. Accounts sit under an institution (American Express, Simplii Financial) and have a type: chequing, savings or credit card. Each parser declares its institution and the account types it applies to, so a Simplii Visa file can't go into Simplii chequing. |
 | Account mapping | Always confirmed in the import preview, never guessed from the filename. New accounts are created inline from the preview's account picker. If even one row of the file already exists under a different account, the import is blocked with an error naming that account, and goes ahead only if you explicitly override. |
 | Import cadence | Exports of the last 30 to 90 days every so often, so overlapping ranges are normal. |
 | Dedup | Per-institution hash of the stable account key plus that source's raw identity fields (Amex: Date, Description, Amount), combined with count reconciliation and near-match aliases. No file hash. |
+| Master CSVs | One provider-format CSV per account per calendar year, kept beside the database and updated on every import, undo and near-match confirm. Holds all rows, deduplicated, bytes untouched. Export copies them. |
 | Undo | The latest import per account can be undone (hard delete). Deleting a single transaction only hides it. |
 | Import UI | GUI only: drag-and-drop into the GPUI window, with a preview before you confirm. No CLI. |
 | Export / restore | GUI menu items only. No CLI anywhere; the binary just launches the app. |
@@ -374,7 +397,8 @@ M1 is done (commit 215c87d). These answers drive the task checklist in the repo'
 | Simplii Visa | No sample yet: assume the chequing format, using one Simplii parser for both account types. Revisit when a sample arrives. |
 | Transfer pairing | Automatic after each import (card payments within 5 days, own-account transfers within 2). Any ambiguity goes to a review sheet behind a dashboard banner; rows can be unpaired. |
 | Near-match | Reviewed in the import preview; same cleaned merchant, within 20% and ±3 days. Confirming keeps the old hash as an alias, and undo restores the replaced values. |
-| Export / restore | Save dialog defaulting to the Desktop; hidden rows stay in the CSVs; Restore is in the File menu and on the empty screen. |
+| Master CSVs (added 2026-11-07) | Collation moves from export to import: one file per account per year, written after each commit that changes rows. Built as task 5.1, ahead of export. |
+| Export / restore | Save dialog defaulting to the Desktop; export copies the master CSVs; hidden rows stay in the CSVs; Restore is in the File menu and on the empty screen. |
 | Menus | Native menu bar: File > Import CSV… ⌘O, Export… ⌘E, Restore…, Quit ⌘Q. |
 | Acceptance | Overlapping re-import adds 0 rows; totals match the independent reference totals in `fixtures/demo/expected.json`; export round-trip is byte-exact. |
 | Agent workflow | One milestone at a time, stopping after each; follow `docs/tasks.md`; tests and synthetic data with every change; Conventional Commits per logical piece, each verified in a clean checkout; ask before deviating. `CLAUDE.md` in the repo carries these rules. |
@@ -399,7 +423,7 @@ Each phase ends with something usable; dates are not set yet.
 3. **M2: Categorize.** Category editor (two levels), rules with a match preview, Uncategorized queue, bulk assign, rule from merchant, re-run rules. The card-payment rule marks transfers.
 4. **M3: Core views.** Date range and account filters, category bar chart, transaction table with bar-click filtering, monthly summary with income, spend and net.
 5. **M4: Simplii + near-match.** Simplii Visa parser (once a sample arrives), transfer pairing across accounts, near-match review with aliases.
-6. **M5: Export / restore.** File menu items, manifest, round-trip test.
+6. **M5: Master CSVs + export / restore.** Per-account, per-year master CSVs written at import, File menu items, manifest, round-trip test.
 
 **After v1**
 

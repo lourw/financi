@@ -291,45 +291,70 @@ beside the monthly summary (right); then the transaction table.
 
 ---
 
-## M5 — Export / restore
+## M5 — Master CSVs, export / restore
 
-- [ ] **5.1 Export** (`financi-db/src/export.rs`, crates `zip`, `serde_json`).
-  - Zip contents: `financi.sqlite` (snapshot via `VACUUM INTO` or the backup
-    API), `manifest.json`, and `csv/<institution-key>-<account-name-slug>.csv`
-    per account.
-  - Rows in each CSV are the stored `raw_bytes`, **including hidden rows**,
-    written with the import's header, line ending, BOM and trailing-newline
-    settings. Imports with a different header/encoding/BOM go to a separate
-    file with a `-v2`, `-v3`… suffix.
+Design: `plan.md` → *Master CSVs* and *Export*. Collation into per-account
+files happens at **import** time, one file per account per calendar year;
+export just copies those files.
+
+- [ ] **5.1 Master CSVs** (`financi-db/src/master_csv.rs`).
+  - Layout: `<db dir>/csv/<institution-key>/<account_key>/<YYYY>.csv`, plus
+    `account.json` (name, institution, kind) per account folder, rewritten on
+    account rename. The directory follows `FINANCI_DB`.
+  - Year = calendar year of the row's parsed transaction date. Rows are the
+    stored `raw_bytes`, **including hidden rows**, written with the earliest
+    import's header, encoding, BOM, line ending and trailing-newline settings
+    for that year. Rows whose import has a different header/encoding/BOM go
+    to `<YYYY>-v2.csv`, `-v3`…
   - Order: by posted date (newest first for Amex, oldest first for Simplii —
     add `fn newest_first(&self) -> bool` to the parser trait), then import
     order, then `source_line`.
+  - `rewrite_years(conn, root, account_id, years)` regenerates the given year
+    files from the database. Called on the `DbWorker` thread after the commit
+    of: import, undo import, near-match confirm (4.3). Atomic write: temp
+    file in the same dir, fsync, rename. Empty year → delete the file.
+  - Startup self-check: any year file missing, extra, or with a row count
+    that doesn't match the database is rewritten; log a notice.
+  - Tests: overlapping imports (Sep–Nov then Oct–Dec) give one file whose
+    rows equal the DB rows, byte-exact; a Dec–Jan file splits into two year
+    files; real identical repeats appear twice; undo removes exactly the
+    import's rows (and deletes a now-empty year file); hidden rows stay; a
+    header change produces `-v2`; a near-match confirm swaps the row bytes;
+    a deleted year file is restored by the startup check.
+
+- [ ] **5.2 Export** (`financi-db/src/export.rs`, crates `zip`, `serde_json`).
+  - Run the 5.1 self-check, then zip: `financi.sqlite` (snapshot via
+    `VACUUM INTO` or the backup API), `manifest.json`, and the `csv/` tree
+    copied as-is (no rebuilding in export).
   - `manifest.json`: financi version, schema version, exported_at, and per
-    file: account_key, institution, account name, kind, row count, SHA-256;
-    plus the database file's SHA-256.
+    file: account_key, institution, account name, kind, year, row count,
+    SHA-256; plus the database file's SHA-256.
   - UI: File → Export… (and a toolbar entry) opens a save dialog defaulting
     to `~/Desktop/financi-export-YYYY-MM-DD.zip`.
 
-- [ ] **5.2 Restore.**
+- [ ] **5.3 Restore.**
   - File → Restore…, and a "Restore from export…" link in the empty-state
     screen.
   - Verify every file against the manifest SHA-256s; refuse if the schema
     version is newer than this build; migrate if older.
-  - Back up the current database to `financi.sqlite.bak` (backup API), then
-    restore into the live connection with rusqlite's backup/restore API on the
-    worker thread (no file swapping), then refresh all views.
+  - Back up the current database to `financi.sqlite.bak` (backup API) and
+    the current `csv/` to `csv.bak/`, then restore into the live connection
+    with rusqlite's backup/restore API on the worker thread (no file
+    swapping), replace `csv/` with the zip's tree, then refresh all views.
 
-- [ ] **5.3 Acceptance tests** (all must pass):
-  - Overlapping re-import adds 0 rows (exists; keep it).
+- [ ] **5.4 Acceptance tests** (all must pass):
+  - Overlapping re-import adds 0 rows (exists; keep it) and leaves the
+    master CSVs byte-identical.
   - Totals match `fixtures/demo/expected.json` (from 3.1).
   - **Export round-trip, byte-exact:** import every demo file, hide a row,
     export, then import the zip's CSVs into a fresh database whose accounts
     use the manifest's account keys → same multiset of
-    `(account_key, row_hash)` and identical row bytes; re-importing into the
-    source database adds 0 rows; restore from the zip gives an identical
-    database (same rows, categories, rules, locks, hidden flags).
+    `(account_key, row_hash)` and identical row bytes, and the fresh
+    database's master CSVs are byte-identical to the zip's; re-importing into
+    the source database adds 0 rows; restore from the zip gives an identical
+    database (same rows, categories, rules, locks, hidden flags) and `csv/`.
 
-**Done when:** 5.1–5.3 pass. v1 complete. Stop and report.
+**Done when:** 5.1–5.4 pass. v1 complete. Stop and report.
 
 ---
 
