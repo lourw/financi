@@ -319,7 +319,9 @@ export just copies those files.
     rows equal the DB rows, byte-exact; a Dec–Jan file splits into two year
     files; real identical repeats appear twice; undo removes exactly the
     import's rows (and deletes a now-empty year file); hidden rows stay; a
-    header change produces `-v2`; a near-match confirm swaps the row bytes;
+    header change produces `-v2`; a near-match confirm removes the old row
+    and adds the new one, and every row in every file still equals some
+    import's original record bytes;
     a deleted year file is restored by the startup check.
 
 - [ ] **5.2 Export** (`financi-db/src/export.rs`, crates `zip`, `serde_json`).
