@@ -57,7 +57,7 @@ Where the two disagree, **this file wins** for M2–M5 detail. Older parts of
 
 ---
 
-## M2 — Categorize
+## M2 — Master CSVs, categorize
 
 Schema changes go in a **new** migration `0002_categorize.sql` (0001 is
 frozen from here on; real databases may exist).
@@ -73,7 +73,38 @@ frozen from here on; real databases may exist).
   - Update `seed.rs` so its own categories don't collide with the system
     ones (reuse the system Transfers/Card Payment instead of creating them).
 
-- [ ] **2.2 Category model** (`financi-db/src/categories.rs`).
+- [ ] **2.2 Master CSVs** (`financi-db/src/master_csv.rs`).
+  - Design: `plan.md` → *Master CSVs*. Rows are only ever added or
+    removed; a row's bytes are never edited.
+  - Existing databases: the startup self-check builds the files for data
+    imported before this task.
+  - Layout: `<db dir>/csv/<institution-key>/<account_key>/<YYYY>.csv`, plus
+    `account.json` (name, institution, kind) per account folder, rewritten on
+    account rename. The directory follows `FINANCI_DB`.
+  - Year = calendar year of the row's parsed transaction date. Rows are the
+    stored `raw_bytes`, **including hidden rows**, written with the earliest
+    import's header, encoding, BOM, line ending and trailing-newline settings
+    for that year. Rows whose import has a different header/encoding/BOM go
+    to `<YYYY>-v2.csv`, `-v3`…
+  - Order: by posted date (newest first for Amex, oldest first for Simplii —
+    add `fn newest_first(&self) -> bool` to the parser trait), then import
+    order, then `source_line`.
+  - `rewrite_years(conn, root, account_id, years)` regenerates the given year
+    files from the database. Called on the `DbWorker` thread after the commit
+    of: import and undo import (near-match confirm hooks in at 4.3).
+    Atomic write: temp file in the same dir, fsync, rename. Empty year →
+    delete the file.
+  - Startup self-check: any year file missing, extra, or with a row count
+    that doesn't match the database is rewritten; log a notice.
+  - Tests: overlapping imports (Sep–Nov then Oct–Dec) give one file whose
+    rows equal the DB rows, byte-exact; a Dec–Jan file splits into two year
+    files; real identical repeats appear twice; undo removes exactly the
+    import's rows (and deletes a now-empty year file); hidden rows stay; a
+    header change produces `-v2`; every row in every file equals some
+    import's original record bytes; a deleted year file is restored by the
+    startup check.
+
+- [ ] **2.3 Category model** (`financi-db/src/categories.rs`).
   - `list_categories(conn) -> Vec<CategoryNode>` (parents with children,
     sorted by name), `create_parent(name, kind)`, `create_child(parent_id,
     name)` (child inherits the parent's kind), `rename(id, name)`,
@@ -86,7 +117,7 @@ frozen from here on; real databases may exist).
   - Transactions may only be assigned to **children**, never parents.
   - Tests for every rule above, including the refusals.
 
-- [ ] **2.3 Rule engine** (`financi-core` for matching, `financi-db` for
+- [ ] **2.4 Rule engine** (`financi-core` for matching, `financi-db` for
   storage).
   - A rule is `pattern` + `is_regex` + `category_id` (a child).
   - Substring rules: case-insensitive, matched against `description_raw`.
@@ -100,7 +131,7 @@ frozen from here on; real databases may exist).
   - Pure function `pick_category(rules, description) -> Option<category_id>`
     with unit tests for each ordering case.
 
-- [ ] **2.4 Applying rules.**
+- [ ] **2.5 Applying rules.**
   - At import (`commit_import`): after inserting, categorize the new rows.
   - When a rule is created, edited or deleted: re-run all rules over every
     transaction with `category_locked = 0` (rows matching nothing become
@@ -113,35 +144,35 @@ frozen from here on; real databases may exist).
   - Tests: import categorizes; new rule recategorizes unlocked rows only;
     deleting a rule uncategorizes its rows; card payments ignore user rules.
 
-- [ ] **2.5 Manual edits.**
+- [ ] **2.6 Manual edits.**
   - `set_category(transaction_id, category_id)` sets the category and
     `category_locked = 1`. `clear_override(id)` unlocks and re-applies rules.
   - After a manual edit the UI offers *"Apply to all matching \"MERCHANT\""*,
     which creates a substring rule from the cleaned merchant.
   - Tests for lock/unlock behaviour.
 
-- [ ] **2.6 Uncategorized queue query.** `uncategorized_by_merchant(conn) ->
+- [ ] **2.7 Uncategorized queue query.** `uncategorized_by_merchant(conn) ->
   Vec<{merchant, count, total_cents, first_date, last_date}>`, sorted by
   count descending. Choosing a category for a group creates a substring rule
-  on that merchant (which categorizes the whole group via 2.4).
+  on that merchant (which categorizes the whole group via 2.5).
 
-- [ ] **2.7 Categories sheet UI.** A "Categories" button opens a side panel
+- [ ] **2.8 Categories sheet UI.** A "Categories" button opens a side panel
   (gpui-kit `sheet`) with:
   - a parent/child tree: add parent (name + kind), add child, rename, move
     child, delete (with a "move its transactions to…" picker);
   - a rules list: pattern, substring/regex toggle, target category, and a
     live match preview ("matches 14 transactions") before saving;
-  - the Uncategorized queue (2.6) grouped by merchant, each with a category
+  - the Uncategorized queue (2.7) grouped by merchant, each with a category
     picker.
   - UI tests in `ui_tests.rs` style for: create parent+child, create a rule
     and see rows categorized, categorize a queue group, delete with reassign.
 
-- [ ] **2.8 Table context menu.** Right-click a transaction row (use
+- [ ] **2.9 Table context menu.** Right-click a transaction row (use
   `TableDelegate::context_menu`): *Change category…* (then offer the rule as
-  in 2.5), *Hide*, and *Unhide* (only when hidden rows are shown, see 3.4).
+  in 2.6), *Hide*, and *Unhide* (only when hidden rows are shown, see 3.4).
 
 **Done when:** the demo files import and every row can be categorized from
-the UI; tests cover 2.1–2.8. Stop and report.
+the UI; tests cover 2.1–2.9. Stop and report.
 
 ---
 
@@ -283,49 +314,26 @@ beside the monthly summary (right); then the transaction table.
     ```
     `undo_last_import` restores every replaced transaction from this table
     *before* deleting the import.
+  - Master CSVs (2.2): after a commit with "Same charge" rows, and after
+    undoing one, rewrite the year files for both the old and new dates. The
+    old row is removed and the new one added exactly as exported; no row's
+    bytes are edited.
   - Tests: tip-added charge is offered; "same" replaces and aliases; a later
     overlapping export then adds 0; undo restores the old values; "different"
-    imports as new.
+    imports as new; the master CSV drops the old row and holds the new one,
+    and undo puts the old row back.
 
 **Done when:** tests cover 4.1–4.3. Stop and report.
 
 ---
 
-## M5 — Master CSVs, export / restore
+## M5 — Export / restore
 
-Design: `plan.md` → *Master CSVs* and *Export*. Collation into per-account
-files happens at **import** time, one file per account per calendar year;
-export just copies those files.
+Design: `plan.md` → *Export*. The per-account, per-year master CSVs already
+exist from 2.2; export copies them instead of rebuilding anything.
 
-- [ ] **5.1 Master CSVs** (`financi-db/src/master_csv.rs`).
-  - Layout: `<db dir>/csv/<institution-key>/<account_key>/<YYYY>.csv`, plus
-    `account.json` (name, institution, kind) per account folder, rewritten on
-    account rename. The directory follows `FINANCI_DB`.
-  - Year = calendar year of the row's parsed transaction date. Rows are the
-    stored `raw_bytes`, **including hidden rows**, written with the earliest
-    import's header, encoding, BOM, line ending and trailing-newline settings
-    for that year. Rows whose import has a different header/encoding/BOM go
-    to `<YYYY>-v2.csv`, `-v3`…
-  - Order: by posted date (newest first for Amex, oldest first for Simplii —
-    add `fn newest_first(&self) -> bool` to the parser trait), then import
-    order, then `source_line`.
-  - `rewrite_years(conn, root, account_id, years)` regenerates the given year
-    files from the database. Called on the `DbWorker` thread after the commit
-    of: import, undo import, near-match confirm (4.3). Atomic write: temp
-    file in the same dir, fsync, rename. Empty year → delete the file.
-  - Startup self-check: any year file missing, extra, or with a row count
-    that doesn't match the database is rewritten; log a notice.
-  - Tests: overlapping imports (Sep–Nov then Oct–Dec) give one file whose
-    rows equal the DB rows, byte-exact; a Dec–Jan file splits into two year
-    files; real identical repeats appear twice; undo removes exactly the
-    import's rows (and deletes a now-empty year file); hidden rows stay; a
-    header change produces `-v2`; a near-match confirm removes the old row
-    and adds the new one, and every row in every file still equals some
-    import's original record bytes;
-    a deleted year file is restored by the startup check.
-
-- [ ] **5.2 Export** (`financi-db/src/export.rs`, crates `zip`, `serde_json`).
-  - Run the 5.1 self-check, then zip: `financi.sqlite` (snapshot via
+- [ ] **5.1 Export** (`financi-db/src/export.rs`, crates `zip`, `serde_json`).
+  - Run the 2.2 self-check, then zip: `financi.sqlite` (snapshot via
     `VACUUM INTO` or the backup API), `manifest.json`, and the `csv/` tree
     copied as-is (no rebuilding in export).
   - `manifest.json`: financi version, schema version, exported_at, and per
@@ -334,7 +342,7 @@ export just copies those files.
   - UI: File → Export… (and a toolbar entry) opens a save dialog defaulting
     to `~/Desktop/financi-export-YYYY-MM-DD.zip`.
 
-- [ ] **5.3 Restore.**
+- [ ] **5.2 Restore.**
   - File → Restore…, and a "Restore from export…" link in the empty-state
     screen.
   - Verify every file against the manifest SHA-256s; refuse if the schema
@@ -344,7 +352,7 @@ export just copies those files.
     with rusqlite's backup/restore API on the worker thread (no file
     swapping), replace `csv/` with the zip's tree, then refresh all views.
 
-- [ ] **5.4 Acceptance tests** (all must pass):
+- [ ] **5.3 Acceptance tests** (all must pass):
   - Overlapping re-import adds 0 rows (exists; keep it) and leaves the
     master CSVs byte-identical.
   - Totals match `fixtures/demo/expected.json` (from 3.1).
@@ -356,7 +364,7 @@ export just copies those files.
     the source database adds 0 rows; restore from the zip gives an identical
     database (same rows, categories, rules, locks, hidden flags) and `csv/`.
 
-**Done when:** 5.1–5.4 pass. v1 complete. Stop and report.
+**Done when:** 5.1–5.3 pass. v1 complete. Stop and report.
 
 ---
 

@@ -397,7 +397,7 @@ M1 is done (commit 215c87d). These answers drive the task checklist in the repo'
 | Simplii Visa | No sample yet: assume the chequing format, using one Simplii parser for both account types. Revisit when a sample arrives. |
 | Transfer pairing | Automatic after each import (card payments within 5 days, own-account transfers within 2). Any ambiguity goes to a review sheet behind a dashboard banner; rows can be unpaired. |
 | Near-match | Reviewed in the import preview; same cleaned merchant, within 20% and ±3 days. Confirming keeps the old hash as an alias, and undo restores the replaced values. |
-| Master CSVs (added 2026-11-07) | Collation moves from export to import: one file per account per year, written after each commit that changes rows. Built as task 5.1, ahead of export. |
+| Master CSVs (added 2026-11-07) | Collation moves from export to import: one file per account per year, written after each commit that changes rows. Built in M2 (task 2.2), since import already ships in M1. |
 | Export / restore | Save dialog defaulting to the Desktop; export copies the master CSVs; hidden rows stay in the CSVs; Restore is in the File menu and on the empty screen. |
 | Menus | Native menu bar: File > Import CSV… ⌘O, Export… ⌘E, Restore…, Quit ⌘Q. |
 | Acceptance | Overlapping re-import adds 0 rows; totals match the independent reference totals in `fixtures/demo/expected.json`; export round-trip is byte-exact. |
@@ -420,10 +420,10 @@ Each phase ends with something usable; dates are not set yet.
 
 1. **M0: Skeleton + GPUI spike.** Workspace, merged schema migration, DB worker thread, and a dev-only seed (categories, rules, synthetic transactions) for testing. A throwaway window proving the GPUI dependency and component kit: file drop, a bar chart, a virtual table, a dropdown. Pin the versions exactly and commit `Cargo.lock`.
 2. **M1: Amex import, end to end.** Raw-record reader, Amex and Simplii chequing parsers, hashing, count reconciliation. Account setup, the import preview with account confirm and overlap warning, undo import. Usable: drop an Amex file and browse its rows.
-3. **M2: Categorize.** Category editor (two levels), rules with a match preview, Uncategorized queue, bulk assign, rule from merchant, re-run rules. The card-payment rule marks transfers.
+3. **M2: Master CSVs + categorize.** Per-account, per-year master CSVs written at import. Category editor (two levels), rules with a match preview, Uncategorized queue, bulk assign, rule from merchant, re-run rules. The card-payment rule marks transfers.
 4. **M3: Core views.** Date range and account filters, category bar chart, transaction table with bar-click filtering, monthly summary with income, spend and net.
 5. **M4: Simplii + near-match.** Simplii Visa parser (once a sample arrives), transfer pairing across accounts, near-match review with aliases.
-6. **M5: Master CSVs + export / restore.** Per-account, per-year master CSVs written at import, File menu items, manifest, round-trip test.
+6. **M5: Export / restore.** File menu items, manifest, round-trip test.
 
 **After v1**
 

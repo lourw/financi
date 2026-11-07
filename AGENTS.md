@@ -140,7 +140,7 @@ Read-only: verification and code review. Does not edit files or commit.
 ### Task brief (orchestrator → implementer)
 
 ```
-TASK: <id and title, e.g. 2.2 Category model>
+TASK: <id and title, e.g. 2.3 Category model>
 SPEC (verbatim from docs/tasks.md):
 <task text>
 LIKELY FILES: <paths>
