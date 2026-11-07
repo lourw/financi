@@ -12,7 +12,9 @@ single context has to hold the whole project:
 
 Project rules live in `CLAUDE.md` (commands, testing, commit style, clean
 checkout verification). Requirements are in `plan.md`; the task checklist is
-`docs/tasks.md`, which wins over `plan.md` for M2–M5. Everything below adds
+`docs/tasks.md`, which wins over `plan.md` for M2–M5. The UI design
+(layout, spacing, colors, formats, confirmed decisions) is
+`docs/ui-conventions.md`; every UI change follows it. Everything below adds
 to those files, it doesn't replace them.
 
 ---
@@ -23,8 +25,8 @@ to those files, it doesn't replace them.
 
 - **Read sections, not files.** Find what you need with `grep -n` first,
   then read a line range (`sed -n 120,180p file`). `plan.md` is ~7.5k
-  tokens and `docs/tasks.md` ~4.5k; read only the parts for the current
-  task. Never read anything under `target/`, `Cargo.lock`, or whole
+  tokens, `docs/tasks.md` ~4.5k and `docs/ui-conventions.md` ~3.5k; read
+  only the parts for the current task. Never read anything under `target/`, `Cargo.lock`, or whole
   fixture CSVs.
 - **Trim command output.** Cargo output can be thousands of lines:
   - `cargo build --workspace 2>&1 | grep -E '^(error|warning)' -A 6 | head -80`
@@ -61,7 +63,9 @@ Loop, one task at a time:
 1. **Delegate** the task to the implementer with the *Task brief*
    template. Include the task text verbatim from `docs/tasks.md`, the files
    it will likely touch, and any relevant pitfalls. Point to `plan.md`
-   sections by heading instead of pasting them.
+   and `docs/ui-conventions.md` sections by heading instead of pasting
+   them; every UI task's brief names the `docs/ui-conventions.md` sections
+   that apply.
 2. **Receive** the implementer's report. If it says `BLOCKED` or has a
    question, ask the user. Don't guess (`CLAUDE.md`: ask before deviating).
 3. **Delegate review** to the reviewer with the *Review brief*: the commit
@@ -94,7 +98,9 @@ put it in the report to the user. Don't create a scratch file in the repo.
 Does exactly one task (or one fix list) and returns.
 
 1. Read the brief. Read `CLAUDE.md` and only the code and doc sections the
-   task needs. Before UI work, read *GPUI pitfalls* in `docs/tasks.md`.
+   task needs. Before UI work, read *GPUI pitfalls* in `docs/tasks.md`
+   and the relevant sections of `docs/ui-conventions.md` (always
+   *Decisions*, plus whatever the brief names).
 2. Implement with tests and synthetic data (`CLAUDE.md` rules: integer
    cents, raw strings in hashes, new numbered migrations only, DB access
    from UI through `DbWorker`, UI tests in the style of
@@ -129,6 +135,8 @@ Read-only: verification and code review. Does not edit files or commit.
    - Tests: do they cover the rules and refusals the task lists? Would they
      fail if the code were wrong?
    - GPUI pitfalls from `docs/tasks.md` for UI changes.
+   - UI changes match `docs/ui-conventions.md` (layout, spacing, theme
+     tokens instead of raw colors, number/date formats, decisions).
 4. Return the *Review report*. Only report findings you can point to in the
    code with a concrete failure; skip style nits that `cargo fmt`/clippy
    don't flag.
@@ -144,7 +152,7 @@ TASK: <id and title, e.g. 2.3 Category model>
 SPEC (verbatim from docs/tasks.md):
 <task text>
 LIKELY FILES: <paths>
-READ: <plan.md / tasks.md section headings, pitfalls that apply>
+READ: <plan.md / tasks.md / ui-conventions.md section headings, pitfalls that apply>
 NOTES: <user decisions, prior review findings to fix, or "none">
 ```
 
