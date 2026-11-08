@@ -24,6 +24,9 @@ pub mod import;
 
 pub mod master_csv;
 
+pub mod overrides;
+pub use overrides::{apply_rule_from_merchant, clear_override, set_category};
+
 pub mod rules;
 pub use rules::{add_rule, delete_rule, list_rules, update_rule};
 
@@ -75,6 +78,10 @@ pub enum DbError {
     CategoryReassignToSelf(i64),
     #[error("no rule with id {0}")]
     UnknownRule(i64),
+    #[error("no transaction with id {0}")]
+    UnknownTransaction(i64),
+    #[error("transaction {0} has no merchant to build a rule from")]
+    EmptyMerchant(i64),
     #[error("a rule needs a non-empty pattern")]
     EmptyRulePattern,
     #[error("invalid regex pattern {pattern:?}: {message}")]

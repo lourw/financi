@@ -145,7 +145,7 @@ frozen from here on; real databases may exist).
   - Tests: import categorizes; new rule recategorizes unlocked rows only;
     deleting a rule uncategorizes its rows; card payments ignore user rules.
 
-- [ ] **2.6 Manual edits.**
+- [x] **2.6 Manual edits.**
   - `set_category(transaction_id, category_id)` sets the category and
     `category_locked = 1`. `clear_override(id)` unlocks and re-applies rules.
   - After a manual edit the UI offers *"Apply to all matching \"MERCHANT\""*,
