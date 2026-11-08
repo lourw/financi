@@ -1,0 +1,21 @@
+# Toolchain for financi. `mise install` sets up everything cargo needs.
+# Linux also needs the GPUI system libraries (X11/Wayland, Vulkan, fontconfig)
+# from the distro's package manager; mise can't provide those.
+
+[tools]
+rust = { version = "1.99.1", components = "clippy,rustfmt", profile = "minimal" }
+
+[tasks.build]
+run = "cargo build --workspace"
+
+[tasks.test]
+run = "cargo test --workspace --features financi-db/dev-seed"
+
+[tasks.lint]
+run = "cargo clippy --workspace --all-targets --features financi-db/dev-seed"
+
+[tasks.fmt]
+run = "cargo fmt --all"
+
+[tasks.run]
+run = "cargo run -p financi"

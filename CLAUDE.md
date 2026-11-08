@@ -20,6 +20,9 @@ helpers); they cost context and don't apply.
 
 ## Commands
 
+Toolchain is pinned in `mise.toml` (`mise install`; tasks: `mise run
+build|test|lint|fmt|run`).
+
 ```sh
 cargo build --workspace
 cargo test --workspace --features financi-db/dev-seed      # all tests
