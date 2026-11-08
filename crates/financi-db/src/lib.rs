@@ -18,6 +18,8 @@ pub use accounts::{
     Account, Institution, create_account, get_account, list_accounts, list_institutions,
 };
 
+pub mod categories;
+
 pub mod import;
 
 pub mod master_csv;
@@ -48,6 +50,24 @@ pub enum DbError {
     UnknownAccount(i64),
     #[error("an account named {name:?} already exists at this institution")]
     DuplicateAccount { name: String },
+    #[error("no category with id {0}")]
+    UnknownCategory(i64),
+    #[error("a category named {name:?} already exists under the same parent")]
+    DuplicateCategory { name: String },
+    #[error("category {0} is a parent; only child categories can hold transactions and rules")]
+    ParentCategoryNotAssignable(i64),
+    #[error("only child categories can be moved; category {0} is a parent")]
+    CannotMoveParent(i64),
+    #[error("category {0} is a child; children cannot have children")]
+    CategoryHasParent(i64),
+    #[error("category {0} still has children; delete or move them first")]
+    CategoryHasChildren(i64),
+    #[error("cannot move category {child} under category {parent}: the kinds differ")]
+    CategoryKindMismatch { child: i64, parent: i64 },
+    #[error("category {id} is a system category and cannot be {action}")]
+    SystemCategory { id: i64, action: &'static str },
+    #[error("cannot reassign category {0} to itself")]
+    CategoryReassignToSelf(i64),
 }
 
 pub type Result<T, E = DbError> = std::result::Result<T, E>;

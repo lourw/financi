@@ -105,7 +105,7 @@ frozen from here on; real databases may exist).
     import's original record bytes; a deleted year file is restored by the
     startup check.
 
-- [ ] **2.3 Category model** (`financi-db/src/categories.rs`).
+- [x] **2.3 Category model** (`financi-db/src/categories.rs`).
   - `list_categories(conn) -> Vec<CategoryNode>` (parents with children,
     sorted by name), `create_parent(name, kind)`, `create_child(parent_id,
     name)` (child inherits the parent's kind), `rename(id, name)`,
