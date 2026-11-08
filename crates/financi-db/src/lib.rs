@@ -24,6 +24,9 @@ pub mod import;
 
 pub mod master_csv;
 
+pub mod rules;
+pub use rules::{add_rule, delete_rule, list_rules, update_rule};
+
 #[cfg(feature = "dev-seed")]
 pub mod seed;
 
@@ -68,6 +71,12 @@ pub enum DbError {
     SystemCategory { id: i64, action: &'static str },
     #[error("cannot reassign category {0} to itself")]
     CategoryReassignToSelf(i64),
+    #[error("no rule with id {0}")]
+    UnknownRule(i64),
+    #[error("a rule needs a non-empty pattern")]
+    EmptyRulePattern,
+    #[error("invalid regex pattern {pattern:?}: {message}")]
+    InvalidRulePattern { pattern: String, message: String },
 }
 
 pub type Result<T, E = DbError> = std::result::Result<T, E>;

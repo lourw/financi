@@ -8,6 +8,7 @@ use sha2::{Digest, Sha256};
 
 pub mod parse;
 mod raw;
+pub mod rules;
 pub use raw::{ReadError, read_raw_file};
 
 /// Money in integer cents. Negative = money out.

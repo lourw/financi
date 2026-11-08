@@ -118,7 +118,7 @@ frozen from here on; real databases may exist).
   - Transactions may only be assigned to **children**, never parents.
   - Tests for every rule above, including the refusals.
 
-- [ ] **2.4 Rule engine** (`financi-core` for matching, `financi-db` for
+- [x] **2.4 Rule engine** (`financi-core` for matching, `financi-db` for
   storage).
   - A rule is `pattern` + `is_regex` + `category_id` (a child).
   - Substring rules: case-insensitive, matched against `description_raw`.

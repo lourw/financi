@@ -25,6 +25,7 @@ uuid = { version = "1", features = ["v4"] }
 directories = "6"
 thiserror = "2"
 anyhow = "1"
+regex = "1"
 
 # Smaller debug builds (~5 GB -> roughly half): our crates keep file:line for
 # panics and backtraces; dependencies (GPUI, wgpu, ...) carry no debug info.
