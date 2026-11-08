@@ -431,3 +431,14 @@ Each phase ends with something usable; dates are not set yet.
 - v1.2: flags (large, new merchant, FX/fees) and flag review.
 - v1.3: recurring / subscriptions.
 - Later: more institutions, CSV export of filtered rows.
+
+## Prototype fixes
+
+Feedback from using the prototype (2026-11-08). Each item is one piece of work.
+
+- [ ] **Ship a default set of categories.** Create a built-in list of common spending categories automatically with the app, so users don't have to categorize their transactions by hand after their first import. Open question: categories alone don't sort transactions, so decide whether this also includes default merchant rules.
+- [ ] **Keep the app responsive with thousands of rows.** Profile the slowdown after large imports, then render only the rows on screen in every long list, starting with the To-categorize queue. Create its per-row category dropdowns only when they're needed.
+- [ ] **Align the columns in the To-categorize table.** Make every column line up from row to row. Cut off text that exceeds the column's length limit with an ellipsis (…), and show the full text on hover.
+- [ ] **Rename the "Spend" category type to "Expense."** Use "Expense" as the name of this category type throughout the app.
+- [ ] **Label the category type dropdown.** Add a visible "Category type" label to the dropdown so it's clear what the user is selecting.
+- [ ] **Make account selection on import clearer.** Show the detected institution (e.g. Amex) prominently next to the account selection, and make it obvious whether the account name should include it, so users aren't left choosing between "Cobalt" and "Amex Cobalt."
