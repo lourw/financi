@@ -81,6 +81,10 @@ impl StatementParser for Amex {
             &[field(DATE), field(DESCRIPTION), field(AMOUNT)],
         )
     }
+
+    fn newest_first(&self) -> bool {
+        true
+    }
 }
 
 #[cfg(test)]

@@ -34,6 +34,13 @@ fn open_shell(
     let conn = open_in_memory().unwrap();
     setup(&conn);
     let db = DbWorker::spawn(conn);
+    // A real path beside a scratch directory so master CSV writes during
+    // import/undo never land in the repository. The database itself stays
+    // in memory.
+    let db_path = std::env::temp_dir().join(format!(
+        "financi-ui-db-{}/financi.sqlite",
+        std::process::id()
+    ));
     cx.update(|cx| {
         let bounds = Bounds {
             origin: Point::default(),
@@ -45,7 +52,7 @@ fn open_shell(
                 ..Default::default()
             },
             cx,
-            |window, cx| cx.new(|cx| Shell::new(PathBuf::from(":memory:"), db, window, cx)),
+            |window, cx| cx.new(|cx| Shell::new(db_path, db, window, cx)),
         )
         .unwrap();
         (window, shell)

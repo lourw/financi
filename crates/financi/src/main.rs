@@ -44,6 +44,15 @@ fn open_db() -> anyhow::Result<(PathBuf, DbWorker)> {
             );
         }
     }
+
+    // Build or repair the master CSVs for data imported by older builds.
+    // The database is the source of truth, so a failure here is logged and
+    // the app still starts.
+    let csv_root = financi_db::master_csv::root_for_db(&path);
+    if let Err(e) = financi_db::master_csv::self_check(&conn, &csv_root) {
+        eprintln!("financi: master CSV self-check failed: {e}");
+    }
+
     Ok((path, DbWorker::spawn(conn)))
 }
 

@@ -91,6 +91,10 @@ impl StatementParser for SimpliiChequing {
             &[field(DATE), field(DETAILS), field(OUT), field(IN)],
         )
     }
+
+    fn newest_first(&self) -> bool {
+        false
+    }
 }
 
 #[cfg(test)]

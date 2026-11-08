@@ -195,6 +195,11 @@ pub trait StatementParser {
     /// This institution's own dedup hash over its identity columns,
     /// normally a call to [`row_hash`] with the right fields.
     fn row_hash(&self, account_key: &AccountKey, record: &RawRecord) -> RowHash;
+    /// Provider order in the export: `true` when the newest rows come first
+    /// (Amex), `false` when the oldest come first (Simplii).
+    fn newest_first(&self) -> bool {
+        false
+    }
 }
 
 #[cfg(test)]

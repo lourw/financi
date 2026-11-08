@@ -74,7 +74,7 @@ frozen from here on; real databases may exist).
   - Update `seed.rs` so its own categories don't collide with the system
     ones (reuse the system Transfers/Card Payment instead of creating them).
 
-- [ ] **2.2 Master CSVs** (`financi-db/src/master_csv.rs`).
+- [x] **2.2 Master CSVs** (`financi-db/src/master_csv.rs`).
   - Design: `plan.md` → *Master CSVs*. Rows are only ever added or
     removed; a row's bytes are never edited.
   - Existing databases: the startup self-check builds the files for data

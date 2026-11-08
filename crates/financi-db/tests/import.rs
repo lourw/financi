@@ -104,7 +104,8 @@ fn reimporting_the_same_file_adds_nothing_and_records_no_import() {
         ImportOutcome {
             import_id: None,
             inserted: 0,
-            already_present: 5
+            already_present: 5,
+            affected_years: Default::default(),
         }
     );
     assert_eq!(count(&conn, acct), 5);

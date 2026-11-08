@@ -20,6 +20,8 @@ pub use accounts::{
 
 pub mod import;
 
+pub mod master_csv;
+
 #[cfg(feature = "dev-seed")]
 pub mod seed;
 
@@ -40,6 +42,8 @@ pub enum DbError {
     TooNew { found: u32, supported: u32 },
     #[error("unknown institution {0:?}")]
     UnknownInstitution(String),
+    #[error("no parser with id {0:?}")]
+    UnknownParser(String),
     #[error("no account with id {0}")]
     UnknownAccount(i64),
     #[error("an account named {name:?} already exists at this institution")]

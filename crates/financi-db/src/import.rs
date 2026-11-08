@@ -11,7 +11,7 @@
 //! [`commit_import`] re-plans inside its own transaction, so a stale preview
 //! can never insert duplicates.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use financi_core::{ParseError, RawFile, RawTransaction, RowHash, StatementParser};
 use rusqlite::{Connection, params};
@@ -86,6 +86,8 @@ pub struct ImportOutcome {
     pub import_id: Option<i64>,
     pub inserted: usize,
     pub already_present: usize,
+    /// Calendar years of the inserted rows, whose master CSVs need rewriting.
+    pub affected_years: BTreeSet<i32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -93,6 +95,8 @@ pub struct UndoneImport {
     pub import_id: i64,
     pub file_name: String,
     pub removed: usize,
+    /// Calendar years of the removed rows, whose master CSVs need rewriting.
+    pub affected_years: BTreeSet<i32>,
 }
 
 /// Map and hash every row, then reconcile against the account.
@@ -180,6 +184,7 @@ pub fn commit_import(
             import_id: None,
             inserted: 0,
             already_present: plan.already_present,
+            affected_years: BTreeSet::new(),
         });
     }
 
@@ -232,6 +237,7 @@ pub fn commit_import(
         import_id: Some(import_id),
         inserted: plan.new_rows.len(),
         already_present: plan.already_present,
+        affected_years: years_of(plan.new_rows.iter().map(|row| row.txn.posted_date.as_str())),
     })
 }
 
@@ -261,13 +267,34 @@ pub fn undo_last_import(
         [import_id],
         |r| r.get(0),
     )?;
+    let affected_years: BTreeSet<i32> = {
+        let mut stmt = tx.prepare("SELECT posted_date FROM transactions WHERE import_id = ?1")?;
+        let dates = stmt.query_map([import_id], |r| r.get::<_, String>(0))?;
+        years_of(dates.filter_map(|r| r.ok()))
+    };
     tx.execute("DELETE FROM imports WHERE id = ?1", [import_id])?;
     tx.commit()?;
     Ok(Some(UndoneImport {
         import_id,
         file_name,
         removed,
+        affected_years,
     }))
+}
+
+/// The calendar years present in a sequence of ISO `yyyy-mm-dd` dates.
+fn years_of<I, S>(dates: I) -> BTreeSet<i32>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    dates
+        .into_iter()
+        .filter_map(|date| {
+            let date = date.as_ref();
+            date.get(0..4).and_then(|year| year.parse().ok())
+        })
+        .collect()
 }
 
 /// How many times each hash is already present in the account, counting

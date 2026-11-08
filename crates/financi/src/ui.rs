@@ -91,7 +91,7 @@ impl TxTable {
 // Import preview panel
 
 pub enum ImportEvent {
-    Imported(String),
+    Imported { message: String, is_error: bool },
     AccountsChanged,
     Cancelled,
 }
@@ -105,6 +105,7 @@ enum PlanState {
 
 pub struct ImportPanel {
     db: DbWorker,
+    csv_root: PathBuf,
     file: Arc<LoadedFile>,
     format: String,
     accounts: Vec<Account>,
@@ -130,6 +131,7 @@ impl ImportPanel {
     /// it never depends on the main window having finished loading.
     pub fn new(
         db: DbWorker,
+        csv_root: PathBuf,
         file: LoadedFile,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -163,6 +165,7 @@ impl ImportPanel {
         };
         Self {
             db,
+            csv_root,
             format: flow::format_label(parser.as_ref()),
             file: Arc::new(file),
             accounts,
@@ -287,6 +290,7 @@ impl ImportPanel {
             return;
         };
         let (db, file) = (self.db.clone(), self.file.clone());
+        let csv_root = self.csv_root.clone();
         let options = CommitOptions {
             allow_other_account_overlap: self.override_overlap,
         };
@@ -295,7 +299,7 @@ impl ImportPanel {
             let name = file.file_name.clone();
             let result = on_db(&db, move |c| {
                 let parser = flow::parser(file.parser_id);
-                commit_import(
+                let out = commit_import(
                     c,
                     account_id,
                     parser.as_ref(),
@@ -303,16 +307,33 @@ impl ImportPanel {
                     &file.file_name,
                     &now_iso(),
                     options,
-                )
+                )?;
+                let csv_error = if out.import_id.is_some() {
+                    let years: Vec<i32> = out.affected_years.iter().copied().collect();
+                    financi_db::master_csv::rewrite_years(c, &csv_root, account_id, &years)
+                        .err()
+                        .map(|e| e.to_string())
+                } else {
+                    None
+                };
+                Ok::<_, financi_db::import::ImportError>((out, csv_error))
             })
             .await;
             let _ = this.update(cx, |this, cx| {
                 this.busy = false;
                 match result {
-                    Ok(out) => cx.emit(ImportEvent::Imported(format!(
-                        "Imported {name}: {} new, {} already imported",
-                        out.inserted, out.already_present
-                    ))),
+                    Ok((out, csv_error)) => {
+                        let mut message = format!(
+                            "Imported {name}: {} new, {} already imported",
+                            out.inserted, out.already_present
+                        );
+                        let mut is_error = false;
+                        if let Some(e) = csv_error {
+                            message.push_str(&format!(" (master CSV update failed: {e})"));
+                            is_error = true;
+                        }
+                        cx.emit(ImportEvent::Imported { message, is_error });
+                    }
                     Err(e) => this.error = Some(e),
                 }
                 cx.notify();
@@ -431,6 +452,7 @@ impl Render for ImportPanel {
 pub struct Shell {
     db: DbWorker,
     db_path: PathBuf,
+    csv_root: PathBuf,
     accounts: Vec<Account>,
     filter: Entity<SelectState<Names>>,
     selected_account: Option<i64>,
@@ -477,9 +499,11 @@ impl Shell {
                 this.refresh(window, cx);
             },
         );
+        let csv_root = financi_db::master_csv::root_for_db(&db_path);
         let mut shell = Self {
             db,
             db_path,
+            csv_root,
             accounts: Vec::new(),
             filter,
             selected_account: None,
@@ -542,12 +566,13 @@ impl Shell {
         match flow::load_file(&path) {
             Ok(file) => {
                 let db = self.db.clone();
-                let panel = cx.new(|cx| ImportPanel::new(db, file, window, cx));
+                let csv_root = self.csv_root.clone();
+                let panel = cx.new(|cx| ImportPanel::new(db, csv_root, file, window, cx));
                 let sub =
                     cx.subscribe_in(&panel, window, |this, _, ev: &ImportEvent, window, cx| {
                         match ev {
-                            ImportEvent::Imported(msg) => {
-                                this.status = Some((msg.clone(), false));
+                            ImportEvent::Imported { message, is_error } => {
+                                this.status = Some((message.clone(), *is_error));
                                 this.import = None;
                             }
                             ImportEvent::Cancelled => this.import = None,
@@ -591,18 +616,37 @@ impl Shell {
         }
         self.confirm_undo = false;
         let db = self.db.clone();
+        let csv_root = self.csv_root.clone();
         self.task = Some(cx.spawn_in(window, async move |this, cx| {
-            let result = on_db(&db, move |c| undo_last_import(c, account_id)).await;
+            let result = on_db(&db, move |c| {
+                let undone = undo_last_import(c, account_id)?;
+                let csv_error = match &undone {
+                    Some(u) => {
+                        let years: Vec<i32> = u.affected_years.iter().copied().collect();
+                        financi_db::master_csv::rewrite_years(c, &csv_root, account_id, &years)
+                            .err()
+                            .map(|e| e.to_string())
+                    }
+                    None => None,
+                };
+                Ok::<_, financi_db::DbError>((undone, csv_error))
+            })
+            .await;
             let _ = this.update_in(cx, |this, window, cx| {
                 this.status = Some(match result {
-                    Ok(Some(u)) => (
-                        format!(
+                    Ok((Some(u), csv_error)) => {
+                        let mut message = format!(
                             "Undid import of {}: removed {} rows",
                             u.file_name, u.removed
-                        ),
-                        false,
-                    ),
-                    Ok(None) => ("This account has no imports to undo.".into(), false),
+                        );
+                        let mut is_error = false;
+                        if let Some(e) = csv_error {
+                            message.push_str(&format!(" (master CSV update failed: {e})"));
+                            is_error = true;
+                        }
+                        (message, is_error)
+                    }
+                    Ok((None, _)) => ("This account has no imports to undo.".into(), false),
                     Err(e) => (e, true),
                 });
                 this.refresh(window, cx);
