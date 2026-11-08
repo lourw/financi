@@ -78,10 +78,13 @@ pub struct MonthlySummaryRow {
 
 /// The monthly grid: every month between [`ViewFilter::from`] and
 /// [`ViewFilter::to`] inclusive (`YYYY-MM`, ascending; zero columns for
-/// empty months), then rows = one row per spend parent category (plus
-/// `Uncategorized`, plus `Transfers` when the filter includes transfers),
-/// each followed by its children, and finally the `Income`, `Spend` and
-/// `Net` rows (`Net = Income - Spend`; transfers are never part of it).
+/// empty months), clamped to the months the data spans when the range is
+/// wider than the summary cap (an open-ended filter like [`Default`]
+/// therefore shows only months with data). Then rows = one row per spend
+/// parent category (plus `Uncategorized`, plus `Transfers` when the filter
+/// includes transfers), each followed by its children, and finally the
+/// `Income`, `Spend` and `Net` rows (`Net = Income - Spend`; transfers count
+/// in `Spend` and `Net` when the filter includes them).
 #[derive(Clone, Debug, PartialEq)]
 pub struct MonthlySummary {
     pub months: Vec<String>,
