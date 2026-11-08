@@ -8,7 +8,7 @@ publish = false
 [features]
 # Synthetic categories, rules and transactions for development and tests.
 # The app compiles it in but only runs it in debug builds (FINANCI_DEV_SEED=1).
-dev-seed = ["dep:chrono"]
+dev-seed = []
 
 [dependencies]
 financi-core.workspace = true
@@ -18,7 +18,8 @@ directories.workspace = true
 uuid.workspace = true
 thiserror.workspace = true
 futures-channel = "0.3"
-chrono = { workspace = true, optional = true }
+chrono = { workspace = true }
 
 [dev-dependencies]
 futures-executor = "0.3"
+serde_json = "1"

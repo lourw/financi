@@ -33,6 +33,12 @@ pub use queue::{UncategorizedGroup, categorize_group, uncategorized_by_merchant}
 pub mod rules;
 pub use rules::{add_rule, delete_rule, list_rules, update_rule};
 
+pub mod views;
+pub use views::{
+    CategorySpend, MonthlySummary, MonthlySummaryRow, ViewFilter, monthly_summary,
+    spend_by_category,
+};
+
 #[cfg(feature = "dev-seed")]
 pub mod seed;
 

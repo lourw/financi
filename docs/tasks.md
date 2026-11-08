@@ -186,7 +186,7 @@ the UI; tests cover 2.1–2.9. Stop and report.
 Layout, top to bottom: filter bar; then the category chart + legend (left)
 beside the monthly summary (right); then the transaction table.
 
-- [ ] **3.1 Filter model + queries** (`financi-db/src/views.rs`), all taking
+- [x] **3.1 Filter model + queries** (`financi-db/src/views.rs`), all taking
   one `ViewFilter { from: NaiveDate, to: NaiveDate, account_ids: Vec<i64>
   (empty = all), include_transfers: bool }`.
   - Spend/income rules: a row counts as **spend** if its category's kind is

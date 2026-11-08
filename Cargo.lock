@@ -1791,6 +1791,7 @@ dependencies = [
  "futures-channel",
  "futures-executor",
  "rusqlite",
+ "serde_json",
  "thiserror 2.0.21",
  "uuid",
 ]
