@@ -242,6 +242,22 @@ pub fn ensure_assignable(conn: &Connection, category_id: i64) -> Result<()> {
     Ok(())
 }
 
+/// The system `Transfers > Card Payment` category that migration 0002 puts
+/// in every database, looked up by name and parent — ids are never
+/// hardcoded. A missing category means a broken database.
+pub fn card_payment_category(conn: &Connection) -> Result<i64> {
+    conn.query_row(
+        "SELECT c.id
+           FROM categories c
+           JOIN categories p ON p.id = c.parent_id
+          WHERE c.name = 'Card Payment' AND p.name = 'Transfers' AND p.parent_id IS NULL",
+        [],
+        |r| r.get(0),
+    )
+    .optional()?
+    .ok_or(DbError::MissingSystemCategory("Transfers > Card Payment"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -607,6 +623,25 @@ mod tests {
         assert!(matches!(
             ensure_assignable(&conn, 999).unwrap_err(),
             DbError::UnknownCategory(999)
+        ));
+    }
+
+    #[test]
+    fn card_payment_category_finds_the_system_child() {
+        let conn = open_in_memory().unwrap();
+        let id = card_payment_category(&conn).unwrap();
+        assert_eq!(id, category_id_of(&conn, "Card Payment"));
+        assert_eq!(
+            parent_id_of(&conn, id),
+            Some(category_id_of(&conn, "Transfers"))
+        );
+
+        // A database without it (a broken one) is reported, not hardcoded to.
+        conn.execute("DELETE FROM categories WHERE id = ?1", [id])
+            .unwrap();
+        assert!(matches!(
+            card_payment_category(&conn).unwrap_err(),
+            DbError::MissingSystemCategory(_)
         ));
     }
 }

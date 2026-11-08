@@ -69,6 +69,8 @@ pub enum DbError {
     CategoryKindMismatch { child: i64, parent: i64 },
     #[error("category {id} is a system category and cannot be {action}")]
     SystemCategory { id: i64, action: &'static str },
+    #[error("the system category {0:?} is missing from the database")]
+    MissingSystemCategory(&'static str),
     #[error("cannot reassign category {0} to itself")]
     CategoryReassignToSelf(i64),
     #[error("no rule with id {0}")]

@@ -17,6 +17,9 @@ const PROCESSED: usize = 1;
 const DESCRIPTION: usize = 2;
 const AMOUNT: usize = 3;
 
+/// Card payments read `PAYMENT RECEIVED - THANK YOU` in the export.
+const CARD_PAYMENT_PREFIX: &str = "PAYMENT RECEIVED";
+
 pub struct Amex;
 
 impl StatementParser for Amex {
@@ -85,6 +88,14 @@ impl StatementParser for Amex {
     fn newest_first(&self) -> bool {
         true
     }
+
+    fn is_card_payment(&self, txn: &RawTransaction) -> bool {
+        // Amex exports the marker in upper case; fold like the rule engine
+        // does, and match only as a prefix of the description.
+        txn.description_raw
+            .get(..CARD_PAYMENT_PREFIX.len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(CARD_PAYMENT_PREFIX))
+    }
 }
 
 #[cfg(test)]
@@ -135,6 +146,34 @@ mod tests {
             ))
             .unwrap();
         assert_eq!(t.amount_cents, 204_240);
+    }
+
+    fn mapped(description: &str) -> RawTransaction {
+        Amex.map(&record(&format!(
+            "04 Nov 2026,04 Nov 2026,{description},-2042.40"
+        )))
+        .unwrap()
+    }
+
+    #[test]
+    fn card_payment_is_a_case_insensitive_prefix_match() {
+        assert!(Amex.is_card_payment(&mapped("PAYMENT RECEIVED - THANK YOU")));
+        assert!(
+            Amex.is_card_payment(&mapped("payment received - thank you")),
+            "case-insensitive like the rule engine"
+        );
+        assert!(!Amex.is_card_payment(&mapped("COFFEE VANCOUVER")));
+        assert!(
+            !Amex.is_card_payment(&mapped("CREDIT PAYMENT RECEIVED")),
+            "only a prefix counts"
+        );
+        assert!(!Amex.is_card_payment(&mapped("PAYMENT")), "too short");
+    }
+
+    #[test]
+    fn parsers_without_a_payment_marker_never_match() {
+        use crate::simplii_chequing::SimpliiChequing;
+        assert!(!SimpliiChequing.is_card_payment(&mapped("PAYMENT RECEIVED - THANK YOU")));
     }
 
     #[test]

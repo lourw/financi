@@ -1,11 +1,12 @@
 //! Import pipeline tests through the real Amex parser.
 
-use financi_core::{AccountKind, RawFile, StatementParser, read_raw_file};
+use financi_core::{AccountKind, CategoryKind, RawFile, StatementParser, read_raw_file};
+use financi_db::categories::{card_payment_category, create_child, create_parent};
 use financi_db::import::{
     CommitOptions, ImportError, ImportOutcome, commit_import, list_transactions, plan_import,
     undo_last_import,
 };
-use financi_db::{create_account, get_account, open_in_memory, rusqlite::Connection};
+use financi_db::{add_rule, create_account, get_account, open_in_memory, rusqlite::Connection};
 use financi_parsers::amex::Amex;
 
 const HEADER: &str = "Date,Date Processed,Description,Amount";
@@ -339,4 +340,64 @@ fn two_years_of_rows_import_quickly() {
         "took {:?}",
         start.elapsed()
     );
+}
+
+/// The stored `(category_id, category_locked)` of the row with this exact
+/// description. Panics when there is none or more than one.
+fn stored(conn: &Connection, description: &str) -> (Option<i64>, bool) {
+    conn.query_row(
+        "SELECT category_id, category_locked FROM transactions WHERE description_raw = ?1",
+        [description],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+    .unwrap()
+}
+
+#[test]
+fn import_categorizes_new_rows_with_rules() {
+    let (mut conn, acct) = setup();
+    let food = create_parent(&conn, "Food", CategoryKind::Spend).unwrap();
+    let coffee = create_child(&conn, food, "Coffee").unwrap();
+    add_rule(&conn, "COFFEE", false, coffee).unwrap();
+
+    import(
+        &mut conn,
+        acct,
+        &csv(&[
+            "06 Nov 2026,06 Nov 2026,COFFEE VANCOUVER,5.75",
+            "06 Nov 2026,06 Nov 2026,BISTRO VANCOUVER,40.00",
+        ]),
+    );
+
+    let (cat, locked) = stored(&conn, "COFFEE VANCOUVER");
+    assert_eq!(cat, Some(coffee), "the rule applies at import");
+    assert!(!locked, "rule-categorized rows stay unlocked");
+    assert_eq!(stored(&conn, "BISTRO VANCOUVER"), (None, false));
+}
+
+#[test]
+fn card_payment_beats_conflicting_user_rules_and_locks_the_row() {
+    let (mut conn, acct) = setup();
+    let food = create_parent(&conn, "Food", CategoryKind::Spend).unwrap();
+    let payments = create_child(&conn, food, "Payments").unwrap();
+    add_rule(&conn, "PAYMENT", false, payments).unwrap();
+
+    import(
+        &mut conn,
+        acct,
+        &csv(&[
+            "25 Oct 2026,25 Oct 2026,PAYMENT RECEIVED - THANK YOU,-1500.00",
+            "06 Nov 2026,06 Nov 2026,COFFEE VANCOUVER,5.75",
+        ]),
+    );
+
+    let (cat, locked) = stored(&conn, "PAYMENT RECEIVED - THANK YOU");
+    assert_eq!(cat, Some(card_payment_category(&conn).unwrap()));
+    assert_ne!(cat, Some(payments), "user rules lose to the built-in check");
+    assert!(locked, "card payments are locked against rule re-runs");
+
+    // A later rule change re-runs over unlocked rows and leaves it alone.
+    let more = create_child(&conn, food, "More").unwrap();
+    add_rule(&conn, "RECEIVED", false, more).unwrap();
+    assert_eq!(stored(&conn, "PAYMENT RECEIVED - THANK YOU"), (cat, true));
 }

@@ -9,13 +9,17 @@
 //!   overlapping exports never double-count.
 //!
 //! [`commit_import`] re-plans inside its own transaction, so a stale preview
-//! can never insert duplicates.
+//! can never insert duplicates. New rows are categorized in the same
+//! transaction: built-in card-payment detection first, then the user rules.
 
 use std::collections::{BTreeSet, HashMap};
 
+use financi_core::rules::pick_category;
 use financi_core::{ParseError, RawFile, RawTransaction, RowHash, StatementParser};
 use rusqlite::{Connection, params};
 
+use crate::categories::card_payment_category;
+use crate::rules::list_rules;
 use crate::{Account, DbError, get_account, list_accounts};
 
 /// Whether to import even though some rows already exist under a different
@@ -206,15 +210,16 @@ pub fn commit_import(
         ],
     )?;
     let import_id = tx.last_insert_rowid();
+    let categories = categorize_new_rows(&tx, parser, &plan.new_rows)?;
     {
         let mut insert = tx.prepare(
             "INSERT INTO transactions
                (account_id, import_id, source_line, raw_bytes, row_hash, posted_date,
                 processed_date, amount_cents, original_currency, original_amount_cents,
-                description_raw, merchant)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                description_raw, merchant, category_id, category_locked)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
         )?;
-        for row in &plan.new_rows {
+        for (row, (category_id, category_locked)) in plan.new_rows.iter().zip(&categories) {
             let t = &row.txn;
             insert.execute(params![
                 account_id,
@@ -229,6 +234,8 @@ pub fn commit_import(
                 t.original_amount_cents,
                 t.description_raw,
                 t.merchant,
+                category_id,
+                *category_locked,
             ])?;
         }
     }
@@ -239,6 +246,37 @@ pub fn commit_import(
         already_present: plan.already_present,
         affected_years: years_of(plan.new_rows.iter().map(|row| row.txn.posted_date.as_str())),
     })
+}
+
+/// The `(category_id, category_locked)` pair for each new row, in order.
+/// The parser's built-in card-payment check runs first and beats user
+/// rules: those rows get `Transfers > Card Payment` and are locked, so
+/// re-running rules on rule changes never moves them. Every other row takes
+/// the winning rule, or stays `NULL` (Uncategorized).
+fn categorize_new_rows(
+    conn: &Connection,
+    parser: &dyn StatementParser,
+    rows: &[PreparedRow],
+) -> Result<Vec<(Option<i64>, bool)>, ImportError> {
+    let rules = list_rules(conn)?;
+    let mut card_payment: Option<i64> = None;
+    let mut out = Vec::with_capacity(rows.len());
+    for row in rows {
+        if parser.is_card_payment(&row.txn) {
+            let id = match card_payment {
+                Some(id) => id,
+                None => {
+                    let id = card_payment_category(conn)?;
+                    card_payment = Some(id);
+                    id
+                }
+            };
+            out.push((Some(id), true));
+        } else {
+            out.push((pick_category(&rules, &row.txn.description_raw), false));
+        }
+    }
+    Ok(out)
 }
 
 /// Hard-delete the most recent import of an account, with its rows and

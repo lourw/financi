@@ -132,7 +132,7 @@ frozen from here on; real databases may exist).
   - Pure function `pick_category(rules, description) -> Option<category_id>`
     with unit tests for each ordering case.
 
-- [ ] **2.5 Applying rules.**
+- [x] **2.5 Applying rules.**
   - At import (`commit_import`): after inserting, categorize the new rows.
   - When a rule is created, edited or deleted: re-run all rules over every
     transaction with `category_locked = 0` (rows matching nothing become

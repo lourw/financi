@@ -201,6 +201,13 @@ pub trait StatementParser {
     fn newest_first(&self) -> bool {
         false
     }
+    /// Built-in transfer detection, checked before user rules at import:
+    /// `true` when this row moves the owner's own money instead of spending
+    /// it (Amex's `PAYMENT RECEIVED`). Matching rows become
+    /// `Transfers > Card Payment` and are locked against rules.
+    fn is_card_payment(&self, _txn: &RawTransaction) -> bool {
+        false
+    }
 }
 
 #[cfg(test)]

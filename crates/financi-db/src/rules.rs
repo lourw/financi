@@ -1,10 +1,11 @@
 //! Storage for category rules (table `category_rules`): CRUD plus
 //! validation-on-save. The matching semantics live in
 //! [`financi_core::rules`]; a rule targets a child category, enforced here
-//! with [`ensure_assignable`]. Re-running rules over transactions on
-//! create/edit/delete is task 2.5.
+//! with [`ensure_assignable`]. Every create, edit and delete re-runs all
+//! rules over the unlocked transactions ([`reapply_rules`]) in the same SQL
+//! transaction as the rule change.
 
-use financi_core::rules::{Rule, validate_regex};
+use financi_core::rules::{Rule, pick_category, validate_regex};
 use rusqlite::{Connection, OptionalExtension};
 
 use crate::categories::ensure_assignable;
@@ -68,12 +69,16 @@ pub fn list_rules(conn: &Connection) -> Result<Vec<Rule>> {
 /// Create a rule targeting the child category `category_id`. Returns its
 /// id. Rejects empty patterns, invalid regex patterns and parent targets.
 pub fn add_rule(conn: &Connection, pattern: &str, is_regex: bool, category_id: i64) -> Result<i64> {
-    let pattern = validate_rule(conn, pattern, is_regex, category_id)?;
-    conn.execute(
+    let tx = conn.unchecked_transaction()?;
+    let pattern = validate_rule(&tx, pattern, is_regex, category_id)?;
+    tx.execute(
         "INSERT INTO category_rules (pattern, is_regex, category_id) VALUES (?1, ?2, ?3)",
         (pattern, is_regex, category_id),
     )?;
-    Ok(conn.last_insert_rowid())
+    let id = tx.last_insert_rowid();
+    reapply_rules(&tx)?;
+    tx.commit()?;
+    Ok(id)
 }
 
 /// Replace a rule's pattern, kind and target category, with the same
@@ -85,22 +90,53 @@ pub fn update_rule(
     is_regex: bool,
     category_id: i64,
 ) -> Result<()> {
-    let pattern = validate_rule(conn, pattern, is_regex, category_id)?;
-    let updated = conn.execute(
+    let tx = conn.unchecked_transaction()?;
+    let pattern = validate_rule(&tx, pattern, is_regex, category_id)?;
+    let updated = tx.execute(
         "UPDATE category_rules SET pattern = ?1, is_regex = ?2, category_id = ?3 WHERE id = ?4",
         (pattern, is_regex, category_id, id),
     )?;
     if updated == 0 {
         return Err(DbError::UnknownRule(id));
     }
+    reapply_rules(&tx)?;
+    tx.commit()?;
     Ok(())
 }
 
-/// Delete a rule. Rows it used to match are left as they are; re-running
-/// the remaining rules over them is task 2.5.
+/// Delete a rule. Rows it used to match are recategorized by the remaining
+/// rules (or become Uncategorized) via [`reapply_rules`].
 pub fn delete_rule(conn: &Connection, id: i64) -> Result<()> {
-    fetch_rule(conn, id)?;
-    conn.execute("DELETE FROM category_rules WHERE id = ?1", [id])?;
+    let tx = conn.unchecked_transaction()?;
+    fetch_rule(&tx, id)?;
+    tx.execute("DELETE FROM category_rules WHERE id = ?1", [id])?;
+    reapply_rules(&tx)?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// Re-run every rule over all unlocked transactions: each row gets the
+/// winning rule's category, or `NULL` (Uncategorized) when nothing matches.
+/// Locked rows (`category_locked = 1`) are never touched — manual overrides
+/// (2.6) and the card payments locked at import keep their category.
+pub fn reapply_rules(conn: &Connection) -> Result<()> {
+    let rules = list_rules(conn)?;
+    let rows: Vec<(i64, String, Option<i64>)> = {
+        let mut stmt = conn.prepare(
+            "SELECT id, description_raw, category_id FROM transactions WHERE category_locked = 0",
+        )?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+        rows.collect::<Result<_, _>>()?
+    };
+    for (id, description, current) in rows {
+        let category_id = pick_category(&rules, &description);
+        if category_id != current {
+            conn.execute(
+                "UPDATE transactions SET category_id = ?1 WHERE id = ?2",
+                (category_id, id),
+            )?;
+        }
+    }
     Ok(())
 }
 
@@ -114,6 +150,56 @@ mod tests {
     fn child_category(conn: &Connection) -> i64 {
         let parent = create_parent(conn, "Food", CategoryKind::Spend).unwrap();
         create_child(conn, parent, "Groceries").unwrap()
+    }
+
+    /// A stored transaction on its own account and import, so re-runs see
+    /// it. Returns the transaction id.
+    fn add_transaction(
+        conn: &Connection,
+        description: &str,
+        locked: bool,
+        category_id: Option<i64>,
+    ) -> i64 {
+        let account = crate::create_account(
+            conn,
+            "amex",
+            &uuid::Uuid::new_v4().to_string(),
+            financi_core::AccountKind::CreditCard,
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO imports (account_id, parser_id, file_name, imported_at, header_raw,
+                                  encoding, has_bom, line_ending, trailing_newline, row_count)
+             VALUES (?1, 'amex', 'activity.csv', '2026-11-01', X'00', 'utf-8', 0, 'lf', 0, 1)",
+            [account],
+        )
+        .unwrap();
+        let import = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO transactions (account_id, import_id, source_line, raw_bytes, row_hash,
+                                       posted_date, amount_cents, description_raw,
+                                       category_id, category_locked)
+             VALUES (?1, ?2, 0, X'00', ?3, '2026-10-31', -450, ?4, ?5, ?6)",
+            (
+                account,
+                import,
+                uuid::Uuid::new_v4().to_string(),
+                description,
+                category_id,
+                locked,
+            ),
+        )
+        .unwrap();
+        conn.last_insert_rowid()
+    }
+
+    fn category_of(conn: &Connection, id: i64) -> Option<i64> {
+        conn.query_row(
+            "SELECT category_id FROM transactions WHERE id = ?1",
+            [id],
+            |r| r.get(0),
+        )
+        .unwrap()
     }
 
     #[test]
@@ -268,5 +354,77 @@ mod tests {
             delete_rule(&conn, gone).unwrap_err(),
             DbError::UnknownRule(id) if id == gone
         ));
+    }
+
+    #[test]
+    fn adding_a_rule_categorizes_unlocked_rows_only() {
+        let conn = open_in_memory().unwrap();
+        let cat = child_category(&conn);
+        let other_parent = create_parent(&conn, "Home", CategoryKind::Spend).unwrap();
+        let other = create_child(&conn, other_parent, "Utilities").unwrap();
+
+        let coffee = add_transaction(&conn, "COFFEE VANCOUVER", false, None);
+        let bistro = add_transaction(&conn, "BISTRO VANCOUVER", false, None);
+        let locked = add_transaction(&conn, "COFFEE EXPRESS", true, None);
+        let locked_with_cat = add_transaction(&conn, "COFFEE BAR", true, Some(other));
+
+        add_rule(&conn, "COFFEE", false, cat).unwrap();
+
+        assert_eq!(category_of(&conn, coffee), Some(cat));
+        assert_eq!(category_of(&conn, bistro), None, "no rule, stays NULL");
+        assert_eq!(
+            category_of(&conn, locked),
+            None,
+            "locked rows are never touched"
+        );
+        assert_eq!(
+            category_of(&conn, locked_with_cat),
+            Some(other),
+            "a locked row keeps its own category"
+        );
+    }
+
+    #[test]
+    fn deleting_a_rule_uncategorizes_its_rows() {
+        let conn = open_in_memory().unwrap();
+        let cat = child_category(&conn);
+        let coffee = add_transaction(&conn, "COFFEE VANCOUVER", false, None);
+        let rule = add_rule(&conn, "COFFEE", false, cat).unwrap();
+        assert_eq!(category_of(&conn, coffee), Some(cat), "added by the rule");
+
+        delete_rule(&conn, rule).unwrap();
+        assert_eq!(
+            category_of(&conn, coffee),
+            None,
+            "matching nothing makes it Uncategorized again"
+        );
+    }
+
+    #[test]
+    fn editing_a_rule_moves_rows_to_the_new_winner() {
+        let conn = open_in_memory().unwrap();
+        let coffee_cat = child_category(&conn);
+        let home = create_parent(&conn, "Home", CategoryKind::Spend).unwrap();
+        let bistro_cat = create_child(&conn, home, "Restaurants").unwrap();
+
+        let coffee = add_transaction(&conn, "COFFEE VANCOUVER", false, None);
+        let bistro = add_transaction(&conn, "BISTRO VANCOUVER", false, None);
+        let rule = add_rule(&conn, "COFFEE", false, coffee_cat).unwrap();
+        assert_eq!(category_of(&conn, coffee), Some(coffee_cat));
+
+        update_rule(&conn, rule, "BISTRO", false, bistro_cat).unwrap();
+        assert_eq!(category_of(&conn, coffee), None, "the old winner is undone");
+        assert_eq!(category_of(&conn, bistro), Some(bistro_cat));
+    }
+
+    #[test]
+    fn a_refused_rule_change_leaves_rows_untouched() {
+        let conn = open_in_memory().unwrap();
+        let cat = child_category(&conn);
+        let coffee = add_transaction(&conn, "COFFEE VANCOUVER", false, None);
+        let rule = add_rule(&conn, "COFFEE", false, cat).unwrap();
+
+        assert!(update_rule(&conn, rule, "[bad", true, cat).is_err());
+        assert_eq!(category_of(&conn, coffee), Some(cat));
     }
 }
