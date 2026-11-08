@@ -4,25 +4,35 @@
 //! The window is a [`Sidebar`] of pages and one page area, per
 //! `docs/ui-conventions.md` (*Window layout*).
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 
+use financi_core::CategoryKind;
+use financi_core::rules::Rule;
+use financi_db::categories::{
+    CategoryNode, create_child, create_parent, delete_category, list_categories, move_child,
+    rename as rename_category, transaction_counts,
+};
 use financi_db::import::{
     CommitOptions, ImportEntry, TransactionRow, commit_import, list_imports, list_transactions,
     plan_import, undo_last_import,
 };
+use financi_db::rules::{add_rule, count_rule_matches, list_rules};
 use financi_db::{
     Account, DbWorker, create_account, list_accounts, rusqlite::Connection, sidebar_counts,
 };
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
-use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::select::{Select, SelectEvent, SelectState};
 use gpui_kit::component::sidebar::{Sidebar, SidebarItem, SidebarMenuItem};
+use gpui_kit::component::switch::Switch;
 use gpui_kit::component::table::{Column, DataTable, TableDelegate, TableState};
 use gpui_kit::component::{ActiveTheme as _, Collapsible, Disableable as _, h_flex, v_flex};
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::flow::{self, LoadedFile, PlanSummary};
@@ -675,7 +685,41 @@ pub struct Shell {
     status: Option<(String, bool)>,
     refresh_task: Option<Task<()>>,
     task: Option<Task<()>>,
+    // -- Categories page
+    categories: Vec<CategoryNode>,
+    cat_counts: HashMap<i64, i64>,
+    selected_category: Option<i64>,
+    new_parent_name: Entity<InputState>,
+    new_parent_kind: Entity<SelectState<Names>>,
+    new_child_name: Entity<InputState>,
+    renaming: bool,
+    rename_input: Entity<InputState>,
+    move_target: Entity<SelectState<Names>>,
+    delete_target: Entity<SelectState<Names>>,
+    confirm_delete_category: Option<i64>,
+    cat_error: Option<String>,
+    rules: Vec<Rule>,
+    child_choices: Vec<(i64, String)>,
+    rule_pattern: Entity<InputState>,
+    rule_regex: bool,
+    rule_target: Entity<SelectState<Names>>,
+    rule_match_count: Option<i64>,
+    rule_task: Option<Task<()>>,
+    rule_error: Option<String>,
     _subs: Vec<Subscription>,
+}
+
+const KIND_LABELS: [(&str, CategoryKind); 3] = [
+    ("Spend", CategoryKind::Spend),
+    ("Income", CategoryKind::Income),
+    ("Transfer", CategoryKind::Transfer),
+];
+
+fn kind_label(kind: CategoryKind) -> &'static str {
+    KIND_LABELS
+        .iter()
+        .find(|(_, k)| *k == kind)
+        .map_or("Spend", |(l, _)| l)
 }
 
 const ALL_ACCOUNTS: &str = "All accounts";
@@ -729,6 +773,31 @@ impl Shell {
             },
         );
         let csv_root = financi_db::master_csv::root_for_db(&db_path);
+        let new_parent_name =
+            cx.new(|cx| InputState::new(window, cx).placeholder("New parent name"));
+        let new_parent_kind = cx.new(|cx| {
+            SelectState::new(
+                KIND_LABELS.iter().map(|(l, _)| (*l).into()).collect(),
+                Some(gpui_kit::component::IndexPath::new(0)),
+                window,
+                cx,
+            )
+        });
+        let new_child_name = cx.new(|cx| InputState::new(window, cx).placeholder("New child name"));
+        let rename_input = cx.new(|cx| InputState::new(window, cx).placeholder("New name"));
+        let move_target = cx.new(|cx| SelectState::new(Names::new(), None, window, cx));
+        let delete_target = cx.new(|cx| SelectState::new(Names::new(), None, window, cx));
+        let rule_pattern = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("Text or regex a description must contain")
+        });
+        let rule_target = cx.new(|cx| SelectState::new(Names::new(), None, window, cx));
+        // The live "matches N transactions" preview runs on every pattern
+        // keystroke (ui-conventions, Categories page).
+        let preview_sub = cx.subscribe(&rule_pattern, |this, _, ev: &InputEvent, cx| {
+            if matches!(ev, InputEvent::Change) {
+                this.preview_rule_match(cx);
+            }
+        });
         let mut shell = Self {
             db,
             db_path,
@@ -748,7 +817,27 @@ impl Shell {
             status: None,
             refresh_task: None,
             task: None,
-            _subs: vec![sub],
+            categories: Vec::new(),
+            cat_counts: HashMap::new(),
+            selected_category: None,
+            new_parent_name,
+            new_parent_kind,
+            new_child_name,
+            renaming: false,
+            rename_input,
+            move_target,
+            delete_target,
+            confirm_delete_category: None,
+            cat_error: None,
+            rules: Vec::new(),
+            child_choices: Vec::new(),
+            rule_pattern,
+            rule_regex: false,
+            rule_target,
+            rule_match_count: None,
+            rule_task: None,
+            rule_error: None,
+            _subs: vec![sub, preview_sub],
         };
         shell.refresh(window, cx);
         shell
@@ -764,12 +853,24 @@ impl Shell {
                 let rows = list_transactions(c, account)?;
                 let (total, uncategorized) = sidebar_counts(c)?;
                 let history = list_imports(c)?;
-                Ok::<_, financi_db::DbError>((accounts, rows, total, uncategorized, history))
+                let tree = list_categories(c)?;
+                let counts = transaction_counts(c)?;
+                let rules = list_rules(c)?;
+                Ok::<_, financi_db::DbError>((
+                    accounts,
+                    rows,
+                    total,
+                    uncategorized,
+                    history,
+                    tree,
+                    counts,
+                    rules,
+                ))
             })
             .await;
             let _ = this.update_in(cx, |this, window, cx| {
                 match result {
-                    Ok((accounts, rows, total, uncategorized, history)) => {
+                    Ok((accounts, rows, total, uncategorized, history, tree, counts, rules)) => {
                         let names: Names = std::iter::once(SharedString::from(ALL_ACCOUNTS))
                             .chain(accounts.iter().map(|a| a.display_name().into()))
                             .collect();
@@ -796,6 +897,10 @@ impl Shell {
                         this.total_visible = total;
                         this.uncategorized_visible = uncategorized;
                         this.import_history = history;
+                        this.categories = tree;
+                        this.cat_counts = counts;
+                        this.rules = rules;
+                        this.sync_category_choices(window, cx);
                         this.table.update(cx, |t, cx| {
                             t.delegate_mut().rows = rows;
                             t.refresh(cx);
@@ -923,6 +1028,331 @@ impl Shell {
                     Ok((None, _)) => ("This account has no imports to undo.".into(), false),
                     Err(e) => (e, true),
                 });
+                this.refresh(window, cx);
+            });
+        }));
+        cx.notify();
+    }
+
+    // -- categories --------------------------------------------------------
+
+    /// Recompute the derived choice lists after a refresh and drop stale
+    /// selection state.
+    fn sync_category_choices(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let known = |id: i64| {
+            self.categories
+                .iter()
+                .any(|p| p.id == id || p.children.iter().any(|c| c.id == id))
+        };
+        if self.selected_category.is_some_and(|id| !known(id)) {
+            self.selected_category = None;
+            self.renaming = false;
+        }
+        if self.confirm_delete_category.is_some_and(|id| !known(id)) {
+            self.confirm_delete_category = None;
+        }
+        self.child_choices = self
+            .categories
+            .iter()
+            .flat_map(|p| {
+                p.children
+                    .iter()
+                    .map(move |c| (c.id, format!("{} › {}", p.name, c.name)))
+            })
+            .collect();
+        let names: Names = self
+            .child_choices
+            .iter()
+            .map(|(_, n)| SharedString::from(n.clone()))
+            .collect();
+        self.rule_target
+            .update(cx, |s, cx| s.set_items(names.clone(), window, cx));
+        self.delete_target
+            .update(cx, |s, cx| s.set_items(names, window, cx));
+    }
+
+    /// The selected node as (node, parent), parents having `None`.
+    fn selected_node(&self) -> Option<(&CategoryNode, Option<&CategoryNode>)> {
+        let id = self.selected_category?;
+        for p in &self.categories {
+            if p.id == id {
+                return Some((p, None));
+            }
+            if let Some(c) = p.children.iter().find(|c| c.id == id) {
+                return Some((c, Some(p)));
+            }
+        }
+        None
+    }
+
+    /// Visible transaction count: a parent owns none itself, the sum of
+    /// its children stands for it.
+    fn node_count(&self, node: &CategoryNode) -> i64 {
+        if node.children.is_empty() {
+            self.cat_counts.get(&node.id).copied().unwrap_or(0)
+        } else {
+            node.children
+                .iter()
+                .map(|c| self.cat_counts.get(&c.id).copied().unwrap_or(0))
+                .sum()
+        }
+    }
+
+    fn select_category(&mut self, id: i64, window: &mut Window, cx: &mut Context<Self>) {
+        self.selected_category = Some(id);
+        self.renaming = false;
+        self.confirm_delete_category = None;
+        self.cat_error = None;
+        self.rebuild_move_target(window, cx);
+        cx.notify();
+    }
+
+    /// Same-kind parents for the Move picker, the child's own parent out.
+    fn move_parent_choices(&self) -> Vec<(i64, String)> {
+        let Some((node, parent)) = self.selected_node() else {
+            return Vec::new();
+        };
+        if parent.is_none() {
+            return Vec::new();
+        }
+        self.categories
+            .iter()
+            .filter(|p| p.kind == node.kind && parent.is_none_or(|par| par.id != p.id))
+            .map(|p| (p.id, p.name.clone()))
+            .collect()
+    }
+
+    fn rebuild_move_target(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let names: Names = self
+            .move_parent_choices()
+            .into_iter()
+            .map(|(_, n)| n.into())
+            .collect();
+        self.move_target
+            .update(cx, |s, cx| s.set_items(names, window, cx));
+    }
+
+    fn add_parent(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let name = self.new_parent_name.read(cx).value().trim().to_string();
+        let kind = self
+            .new_parent_kind
+            .read(cx)
+            .selected_index(cx)
+            .map(|ix| KIND_LABELS[ix.row].1)
+            .unwrap_or(CategoryKind::Spend);
+        if name.is_empty() {
+            self.cat_error = Some("Give the parent a name.".into());
+            cx.notify();
+            return;
+        }
+        let db = self.db.clone();
+        self.task = Some(cx.spawn_in(window, async move |this, cx| {
+            let result = on_db(&db, move |c| create_parent(c, &name, kind)).await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                match result {
+                    Ok(id) => {
+                        this.new_parent_name
+                            .update(cx, |i, cx| i.set_value("", window, cx));
+                        this.selected_category = Some(id);
+                        this.cat_error = None;
+                    }
+                    Err(e) => this.cat_error = Some(e),
+                }
+                this.refresh(window, cx);
+            });
+        }));
+        cx.notify();
+    }
+
+    /// Add a child under the selected parent.
+    fn add_child(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((parent, None)) = self.selected_node() else {
+            return;
+        };
+        let parent_id = parent.id;
+        let name = self.new_child_name.read(cx).value().trim().to_string();
+        if name.is_empty() {
+            self.cat_error = Some("Give the child a name.".into());
+            cx.notify();
+            return;
+        }
+        let db = self.db.clone();
+        self.task = Some(cx.spawn_in(window, async move |this, cx| {
+            let result = on_db(&db, move |c| create_child(c, parent_id, &name)).await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                match result {
+                    Ok(id) => {
+                        this.new_child_name
+                            .update(cx, |i, cx| i.set_value("", window, cx));
+                        this.selected_category = Some(id);
+                        this.cat_error = None;
+                    }
+                    Err(e) => this.cat_error = Some(e),
+                }
+                this.refresh(window, cx);
+            });
+        }));
+        cx.notify();
+    }
+
+    fn start_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((node, _)) = self.selected_node() else {
+            return;
+        };
+        let name = node.name.clone();
+        self.renaming = true;
+        self.rename_input
+            .update(cx, |i, cx| i.set_value(name, window, cx));
+        cx.notify();
+    }
+
+    fn save_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(id) = self.selected_category else {
+            return;
+        };
+        let name = self.rename_input.read(cx).value().trim().to_string();
+        if name.is_empty() {
+            self.cat_error = Some("Give the category a name.".into());
+            cx.notify();
+            return;
+        }
+        let db = self.db.clone();
+        self.task = Some(cx.spawn_in(window, async move |this, cx| {
+            let result = on_db(&db, move |c| rename_category(c, id, &name)).await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                match result {
+                    Ok(()) => {
+                        this.renaming = false;
+                        this.cat_error = None;
+                    }
+                    Err(e) => this.cat_error = Some(e),
+                }
+                this.refresh(window, cx);
+            });
+        }));
+        cx.notify();
+    }
+
+    fn move_child_to_selected_parent(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((node, Some(_))) = self.selected_node() else {
+            return;
+        };
+        let child_id = node.id;
+        let Some(ix) = self.move_target.read(cx).selected_index(cx) else {
+            self.cat_error = Some("Choose the parent to move it under.".into());
+            cx.notify();
+            return;
+        };
+        let Some((new_parent_id, _)) = self.move_parent_choices().get(ix.row).cloned() else {
+            return;
+        };
+        let db = self.db.clone();
+        self.task = Some(cx.spawn_in(window, async move |this, cx| {
+            let result = on_db(&db, move |c| move_child(c, child_id, new_parent_id)).await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                match result {
+                    Ok(()) => this.cat_error = None,
+                    Err(e) => this.cat_error = Some(e),
+                }
+                this.refresh(window, cx);
+            });
+        }));
+        cx.notify();
+    }
+
+    /// First click arms the delete, the second runs it (ui-conventions,
+    /// *Interaction*).
+    fn arm_delete_category(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(id) = self.selected_category else {
+            return;
+        };
+        if self.confirm_delete_category != Some(id) {
+            self.confirm_delete_category = Some(id);
+            cx.notify();
+            return;
+        }
+        let Some(ix) = self.delete_target.read(cx).selected_index(cx) else {
+            self.cat_error = Some("Choose where its transactions should go.".into());
+            cx.notify();
+            return;
+        };
+        let Some((reassign_to, _)) = self.child_choices.get(ix.row).cloned() else {
+            return;
+        };
+        self.confirm_delete_category = None;
+        let db = self.db.clone();
+        self.task = Some(cx.spawn_in(window, async move |this, cx| {
+            let result = on_db(&db, move |c| delete_category(c, id, reassign_to)).await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                match result {
+                    Ok(()) => {
+                        this.selected_category = None;
+                        this.cat_error = None;
+                    }
+                    Err(e) => this.cat_error = Some(e),
+                }
+                this.refresh(window, cx);
+            });
+        }));
+        cx.notify();
+    }
+
+    // -- rules -------------------------------------------------------------
+
+    /// Count rows the current pattern would categorize, live as the user
+    /// types (ui-conventions, Categories page).
+    fn preview_rule_match(&mut self, cx: &mut Context<Self>) {
+        let pattern = self.rule_pattern.read(cx).value().trim().to_string();
+        if pattern.is_empty() {
+            self.rule_task = None;
+            self.rule_match_count = None;
+            cx.notify();
+            return;
+        }
+        let is_regex = self.rule_regex;
+        let db = self.db.clone();
+        self.rule_task = Some(cx.spawn(async move |this, cx| {
+            let result = on_db(&db, move |c| {
+                count_rule_matches(c, &pattern, is_regex, None).map_err(|e| e.to_string())
+            })
+            .await;
+            let _ = this.update(cx, |this, cx| {
+                if let Ok(count) = result {
+                    this.rule_match_count = Some(count);
+                    cx.notify();
+                }
+            });
+        }));
+    }
+
+    fn add_rule(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let pattern = self.rule_pattern.read(cx).value().trim().to_string();
+        let is_regex = self.rule_regex;
+        let Some(ix) = self.rule_target.read(cx).selected_index(cx) else {
+            self.rule_error = Some("Choose the category the rule assigns.".into());
+            cx.notify();
+            return;
+        };
+        let Some((category_id, _)) = self.child_choices.get(ix.row).cloned() else {
+            return;
+        };
+        if pattern.is_empty() {
+            self.rule_error = Some("Give the rule a pattern.".into());
+            cx.notify();
+            return;
+        }
+        let db = self.db.clone();
+        self.task = Some(cx.spawn_in(window, async move |this, cx| {
+            let result = on_db(&db, move |c| add_rule(c, &pattern, is_regex, category_id)).await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                match result {
+                    Ok(_) => {
+                        this.rule_pattern
+                            .update(cx, |i, cx| i.set_value("", window, cx));
+                        this.rule_error = None;
+                    }
+                    Err(e) => this.rule_error = Some(e),
+                }
                 this.refresh(window, cx);
             });
         }));
@@ -1090,6 +1520,361 @@ impl Shell {
             .into_any_element()
     }
 
+    /// One clickable row of the category tree.
+    fn tree_row(
+        &self,
+        node: &CategoryNode,
+        depth: u8,
+        selected: bool,
+        palette: (Hsla, Hsla, Hsla),
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let (muted, accent, accent_foreground) = palette;
+        let id = node.id;
+        let count = self.node_count(node);
+        let radius = cx.theme().radius;
+        div()
+            .id(SharedString::from(format!("cat-row-{id}")))
+            .h_8()
+            .px_2()
+            .pl(px(8. + 16. * depth as f32))
+            .flex()
+            .items_center()
+            .gap_2()
+            .rounded(radius)
+            .cursor_pointer()
+            .when(selected, |d| d.bg(accent).text_color(accent_foreground))
+            .child(
+                div()
+                    .when(depth == 0, |d| d.font_weight(FontWeight::SEMIBOLD))
+                    .child(node.name.clone()),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(if selected { accent_foreground } else { muted })
+                    .child(flow::count(count)),
+            )
+            .when(node.is_system, |d| {
+                d.child(
+                    div()
+                        .text_xs()
+                        .text_color(if selected { accent_foreground } else { muted })
+                        .child("system"),
+                )
+            })
+            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                this.select_category(id, window, cx);
+            }))
+            .into_any_element()
+    }
+
+    fn render_categories(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let (muted, border, accent, accent_foreground, danger) = {
+            let theme = cx.theme();
+            (
+                theme.muted_foreground,
+                theme.border,
+                theme.accent,
+                theme.accent_foreground,
+                theme.danger,
+            )
+        };
+        let palette = (muted, accent, accent_foreground);
+
+        let tree = v_flex()
+            .id("category-tree")
+            .w(px(300.))
+            .flex_shrink_0()
+            .gap_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .child(div().text_xs().text_color(muted).px_2().child("TREE"));
+        let tree = self.categories.iter().fold(tree, |tree, parent| {
+            let tree = tree.child(self.tree_row(
+                parent,
+                0,
+                self.selected_category == Some(parent.id),
+                palette,
+                cx,
+            ));
+            parent.children.iter().fold(tree, |tree, child| {
+                tree.child(self.tree_row(
+                    child,
+                    1,
+                    self.selected_category == Some(child.id),
+                    palette,
+                    cx,
+                ))
+            })
+        });
+
+        // Detail panel for the selected category.
+        let detail: AnyElement = match self.selected_node() {
+            None => div()
+                .text_sm()
+                .text_color(muted)
+                .child("Select a category to rename, move or delete it.")
+                .into_any_element(),
+            Some((node, parent)) => {
+                let count = self.node_count(node);
+                let name = node.name.clone();
+                let kind = node.kind;
+                let is_system = node.is_system;
+                let is_child = parent.is_some();
+                let renaming = self.renaming;
+                let confirm_label = if self.confirm_delete_category == Some(node.id) {
+                    "Click again to delete"
+                } else {
+                    "Delete…"
+                };
+                v_flex()
+                    .gap_3()
+                    .p_4()
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(border)
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .child(
+                                div()
+                                    .text_lg()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(name),
+                            )
+                            .child(div().text_sm().text_color(muted).child(format!(
+                                "{} · {} transactions",
+                                kind_label(kind),
+                                flow::count(count)
+                            ))),
+                    )
+                    .child(if renaming {
+                        h_flex()
+                            .gap_2()
+                            .child(div().w(px(260.)).child(Input::new(&self.rename_input)))
+                            .child(Button::new("save-rename").label("Save").primary().on_click(
+                                cx.listener(|this, _, window, cx| this.save_rename(window, cx)),
+                            ))
+                            .child(Button::new("cancel-rename").label("Cancel").on_click(
+                                cx.listener(|this, _, _, cx| {
+                                    this.renaming = false;
+                                    cx.notify();
+                                }),
+                            ))
+                            .into_any_element()
+                    } else {
+                        h_flex()
+                            .flex_wrap()
+                            .gap_2()
+                            .items_center()
+                            .when(!is_child, |row| {
+                                row.child(div().w(px(220.)).child(Input::new(&self.new_child_name)))
+                                    .child(Button::new("add-child").label("Add child").on_click(
+                                        cx.listener(|this, _, window, cx| {
+                                            this.add_child(window, cx)
+                                        }),
+                                    ))
+                            })
+                            .child(
+                                Button::new("rename-category")
+                                    .label("Rename…")
+                                    .disabled(is_system)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.start_rename(window, cx)
+                                    })),
+                            )
+                            .when(is_child, |row| {
+                                row.child(div().w(px(200.)).child(
+                                    Select::new(&self.move_target).placeholder("Move to parent…"),
+                                ))
+                                .child(
+                                    Button::new("move-child")
+                                        .label("Move")
+                                        .disabled(is_system)
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.move_child_to_selected_parent(window, cx)
+                                        })),
+                                )
+                            })
+                            .when(!is_system, |row| {
+                                row.child(
+                                    div().w(px(260.)).child(
+                                        Select::new(&self.delete_target)
+                                            .placeholder("Move its transactions to…"),
+                                    ),
+                                )
+                                .child(
+                                    Button::new("delete-category")
+                                        .label(confirm_label)
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.arm_delete_category(window, cx)
+                                        })),
+                                )
+                            })
+                            .into_any_element()
+                    })
+                    .into_any_element()
+            }
+        };
+
+        // Rules: list + add row with the live match preview.
+        let rule_rows = self.rules.iter().map(|r| {
+            let target = self
+                .child_choices
+                .iter()
+                .find(|(id, _)| *id == r.category_id)
+                .map(|(_, n)| n.clone())
+                .unwrap_or_else(|| format!("#{}", r.category_id));
+            h_flex()
+                .gap_2()
+                .items_center()
+                .child(
+                    div()
+                        .w(px(320.))
+                        .min_w_0()
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .child(r.pattern.clone()),
+                )
+                .child(div().text_xs().text_color(muted).child(if r.is_regex {
+                    "regex"
+                } else {
+                    "substring"
+                }))
+                .child(div().text_color(muted).child("→"))
+                .child(div().child(target))
+        });
+
+        let preview = match self.rule_match_count {
+            Some(n) => div()
+                .text_sm()
+                .text_color(muted)
+                .child(format!("matches {} transactions", flow::count(n)))
+                .into_any_element(),
+            None => div().into_any_element(),
+        };
+
+        v_flex()
+            .flex_1()
+            .min_h_0()
+            .gap_3()
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(
+                        div()
+                            .text_lg()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("Categories"),
+                    )
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(muted)
+                            .child(format!("{} parents", self.categories.len())),
+                    ),
+            )
+            .children(
+                self.cat_error
+                    .clone()
+                    .map(|e| div().text_sm().text_color(danger).child(e)),
+            )
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(div().w(px(220.)).child(Input::new(&self.new_parent_name)))
+                    .child(div().w(px(140.)).child(Select::new(&self.new_parent_kind)))
+                    .child(
+                        Button::new("add-parent")
+                            .label("Add parent")
+                            .primary()
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.add_parent(window, cx)),
+                            ),
+                    ),
+            )
+            .child(
+                h_flex().flex_1().min_h_0().gap_6().child(tree).child(
+                    v_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .min_h_0()
+                        .gap_4()
+                        .child(detail)
+                        .child(
+                            v_flex()
+                                .flex_1()
+                                .min_h_0()
+                                .gap_2()
+                                .child(
+                                    h_flex()
+                                        .gap_2()
+                                        .items_center()
+                                        .child(
+                                            div().font_weight(FontWeight::SEMIBOLD).child("Rules"),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_xs()
+                                                .text_color(muted)
+                                                .child(self.rules.len().to_string()),
+                                        ),
+                                )
+                                .child(
+                                    h_flex()
+                                        .gap_2()
+                                        .items_center()
+                                        .child(
+                                            div().w(px(280.)).child(Input::new(&self.rule_pattern)),
+                                        )
+                                        .child(
+                                            Switch::new("rule-regex")
+                                                .label("regex")
+                                                .checked(self.rule_regex)
+                                                .on_click(cx.listener(
+                                                    |this, checked: &bool, _, cx| {
+                                                        this.rule_regex = *checked;
+                                                        this.preview_rule_match(cx);
+                                                        cx.notify();
+                                                    },
+                                                )),
+                                        )
+                                        .child(div().w(px(240.)).child(
+                                            Select::new(&self.rule_target).placeholder("Category…"),
+                                        ))
+                                        .child(
+                                            Button::new("add-rule")
+                                                .label("Add rule")
+                                                .primary()
+                                                .on_click(cx.listener(|this, _, window, cx| {
+                                                    this.add_rule(window, cx)
+                                                })),
+                                        )
+                                        .child(preview),
+                                )
+                                .children(
+                                    self.rule_error
+                                        .clone()
+                                        .map(|e| div().text_sm().text_color(danger).child(e)),
+                                )
+                                .child(
+                                    div()
+                                        .id("rule-list")
+                                        .flex_1()
+                                        .min_h_0()
+                                        .overflow_y_scroll()
+                                        .child(v_flex().gap_1().children(rule_rows)),
+                                ),
+                        ),
+                ),
+            )
+            .into_any_element()
+    }
+
     fn render_placeholder(
         &mut self,
         title: &'static str,
@@ -1127,7 +1912,7 @@ impl Render for Shell {
         let page_area: AnyElement = match self.page {
             Page::Dashboard => self.render_dashboard(cx),
             Page::ToCategorize => self.render_placeholder("To categorize", "Nothing waiting.", cx),
-            Page::Categories => self.render_placeholder("Categories", "Nothing here yet.", cx),
+            Page::Categories => self.render_categories(cx),
             Page::Transfers => self.render_placeholder("Transfers", "No transfer reviews yet.", cx),
             Page::Imports => self.render_imports(cx),
         };
