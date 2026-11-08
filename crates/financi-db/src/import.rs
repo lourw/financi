@@ -419,6 +419,51 @@ fn other_account_overlap(
     Ok(best.filter(|b| b.matching_rows > 0))
 }
 
+/// One row of the Imports page history: an import still in the database
+/// (an undone import disappears from `imports` with its rows).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImportEntry {
+    pub id: i64,
+    pub account_id: i64,
+    /// `Institution · Name`, as shown in the table.
+    pub account: String,
+    pub file_name: String,
+    /// Stored ISO timestamp.
+    pub imported_at: String,
+    /// Transactions this import currently owns.
+    pub rows_added: i64,
+    /// ISO dates of those rows, `None` when the import owns none left.
+    pub first_date: Option<String>,
+    pub last_date: Option<String>,
+}
+
+/// Recorded imports, newest first.
+pub fn list_imports(conn: &Connection) -> Result<Vec<ImportEntry>, DbError> {
+    let mut stmt = conn.prepare(
+        "SELECT im.id, im.account_id, i.name || ' · ' || a.name, im.file_name, im.imported_at,
+                COUNT(t.id), MIN(t.posted_date), MAX(t.posted_date)
+           FROM imports im
+           JOIN accounts a ON a.id = im.account_id
+           JOIN institutions i ON i.id = a.institution_id
+           LEFT JOIN transactions t ON t.import_id = im.id
+          GROUP BY im.id
+          ORDER BY im.id DESC",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok(ImportEntry {
+            id: r.get(0)?,
+            account_id: r.get(1)?,
+            account: r.get(2)?,
+            file_name: r.get(3)?,
+            imported_at: r.get(4)?,
+            rows_added: r.get(5)?,
+            first_date: r.get(6)?,
+            last_date: r.get(7)?,
+        })
+    })?;
+    Ok(rows.collect::<Result<_, _>>()?)
+}
+
 /// A transaction as the browse table shows it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TransactionRow {

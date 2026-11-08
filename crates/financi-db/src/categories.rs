@@ -68,6 +68,18 @@ pub fn list_categories(conn: &Connection) -> Result<Vec<CategoryNode>> {
     Ok(parents)
 }
 
+/// How many visible transactions each category owns. Categories without
+/// any are absent from the map; parents never hold rows directly.
+pub fn transaction_counts(conn: &Connection) -> Result<HashMap<i64, i64>> {
+    let mut stmt = conn.prepare(
+        "SELECT category_id, COUNT(*) FROM transactions
+          WHERE hidden = 0 AND category_id IS NOT NULL
+          GROUP BY category_id",
+    )?;
+    let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    Ok(rows.collect::<Result<_, _>>()?)
+}
+
 struct CategoryRow {
     kind: CategoryKind,
     parent_id: Option<i64>,
@@ -643,5 +655,19 @@ mod tests {
             card_payment_category(&conn).unwrap_err(),
             DbError::MissingSystemCategory(_)
         ));
+    }
+
+    #[test]
+    fn transaction_counts_per_category() {
+        let conn = open_in_memory().unwrap();
+        let food = create_parent(&conn, "Food", CategoryKind::Spend).unwrap();
+        let groceries = create_child(&conn, food, "Groceries").unwrap();
+        add_transaction(&conn, Some(groceries));
+        add_transaction(&conn, Some(groceries));
+        add_transaction(&conn, None);
+
+        let counts = transaction_counts(&conn).unwrap();
+        assert_eq!(counts.get(&groceries), Some(&2));
+        assert_eq!(counts.get(&food), None, "a parent holds no rows itself");
     }
 }

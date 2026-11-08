@@ -176,6 +176,22 @@ pub fn spend_by_parent_category(conn: &Connection) -> Result<Vec<(String, i64)>>
     Ok(rows.collect::<Result<_, _>>()?)
 }
 
+/// Sidebar numbers: `(visible transactions, uncategorized visible
+/// transactions)` — the footer count and the To categorize pill.
+pub fn sidebar_counts(conn: &Connection) -> Result<(i64, i64)> {
+    let total = conn.query_row(
+        "SELECT COUNT(*) FROM transactions WHERE hidden = 0",
+        [],
+        |r| r.get::<_, i64>(0),
+    )?;
+    let uncategorized = conn.query_row(
+        "SELECT COUNT(*) FROM transactions WHERE hidden = 0 AND category_id IS NULL",
+        [],
+        |r| r.get::<_, i64>(0),
+    )?;
+    Ok((total, uncategorized))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -198,6 +214,52 @@ mod tests {
         let mut conn = open_in_memory().unwrap();
         migrate(&mut conn).unwrap();
         migrate(&mut conn).unwrap();
+    }
+
+    #[test]
+    fn sidebar_counts_see_visible_rows_only() {
+        let conn = open_in_memory().unwrap();
+        let account = crate::accounts::create_account(
+            &conn,
+            "amex",
+            &uuid::Uuid::new_v4().to_string(),
+            financi_core::AccountKind::CreditCard,
+        )
+        .unwrap();
+        let parent =
+            crate::categories::create_parent(&conn, "Food", financi_core::CategoryKind::Spend)
+                .unwrap();
+        let child = crate::categories::create_child(&conn, parent, "Groceries").unwrap();
+        conn.execute(
+            "INSERT INTO imports (account_id, parser_id, file_name, imported_at, header_raw,
+                                  encoding, has_bom, line_ending, trailing_newline, row_count)
+             VALUES (?1, 'amex', 'activity.csv', '2026-11-01', X'00', 'utf-8', 0, 'lf', 0, 3)",
+            [account],
+        )
+        .unwrap();
+        let import = conn.last_insert_rowid();
+        let add = |category: Option<i64>, hidden: i64| {
+            conn.execute(
+                "INSERT INTO transactions (account_id, import_id, source_line, raw_bytes,
+                                           row_hash, posted_date, amount_cents,
+                                           description_raw, category_id, hidden)
+                 VALUES (?1, ?2, 0, X'00', ?3, '2026-10-31', -450, 'SHOP', ?4, ?5)",
+                (
+                    account,
+                    import,
+                    uuid::Uuid::new_v4().to_string(),
+                    category,
+                    hidden,
+                ),
+            )
+            .unwrap();
+        };
+        add(None, 0);
+        add(None, 0);
+        add(Some(child), 0);
+        add(None, 1);
+
+        assert_eq!(sidebar_counts(&conn).unwrap(), (3, 2));
     }
 
     #[test]

@@ -401,3 +401,35 @@ fn card_payment_beats_conflicting_user_rules_and_locks_the_row() {
     add_rule(&conn, "RECEIVED", false, more).unwrap();
     assert_eq!(stored(&conn, "PAYMENT RECEIVED - THANK YOU"), (cat, true));
 }
+
+#[test]
+fn history_lists_imports_newest_first_with_their_rows() {
+    use financi_db::import::list_imports;
+
+    let (mut conn, acct) = setup();
+    let first = csv(&["01 Nov 2026,01 Nov 2026,COFFEE ONE,-5.00"]);
+    let second = csv(&[
+        "05 Nov 2026,05 Nov 2026,COFFEE TWO,-4.00",
+        "06 Nov 2026,06 Nov 2026,BISTRO,-40.00",
+    ]);
+    import(&mut conn, acct, &first);
+    import(&mut conn, acct, &second);
+
+    let history = list_imports(&conn).unwrap();
+    assert_eq!(history.len(), 2);
+    assert_eq!(history[0].file_name, "activity.csv");
+    assert_eq!(history[0].rows_added, 2);
+    assert_eq!(history[0].account, "American Express · Cobalt");
+    assert_eq!(history[0].first_date.as_deref(), Some("2026-11-05"));
+    assert_eq!(history[0].last_date.as_deref(), Some("2026-11-06"));
+    assert_eq!(history[1].rows_added, 1);
+
+    let undone = undo_last_import(&mut conn, acct).unwrap();
+    assert!(undone.is_some());
+    let history = list_imports(&conn).unwrap();
+    assert_eq!(
+        history.len(),
+        1,
+        "the undone import is gone from the history"
+    );
+}

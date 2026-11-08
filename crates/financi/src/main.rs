@@ -61,7 +61,8 @@ fn main() -> anyhow::Result<()> {
     gpui_kit::application().run(move |cx| {
         gpui_kit::init(cx);
         let options = WindowOptions {
-            window_bounds: Some(WindowBounds::centered(size(px(1100.), px(720.)), cx)),
+            window_bounds: Some(WindowBounds::centered(size(px(1280.), px(800.)), cx)),
+            window_min_size: Some(size(px(1200.), px(720.))),
             ..Default::default()
         };
         gpui_kit::open_window(options, cx, |window, cx| {

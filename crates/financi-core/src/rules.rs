@@ -73,6 +73,22 @@ pub fn pick_category(rules: &[Rule], description: &str) -> Option<i64> {
     None
 }
 
+/// Does `pattern` match `description` under [`pick_category`] semantics:
+/// case-insensitive substring, or case-insensitive regex. An empty pattern
+/// or an invalid regex never matches.
+pub fn pattern_matches(pattern: &str, is_regex: bool, description: &str) -> bool {
+    rule_matches(
+        &Rule {
+            id: 0,
+            pattern: pattern.to_string(),
+            is_regex,
+            category_id: 0,
+        },
+        description,
+        &description.to_ascii_lowercase(),
+    )
+}
+
 /// Validate a regex rule pattern exactly as [`pick_category`] uses it.
 /// `Err` carries the `regex` crate's message for the user.
 pub fn validate_regex(pattern: &str) -> Result<(), String> {
@@ -191,5 +207,15 @@ mod tests {
     fn validate_regex_accepts_what_pick_category_compiles() {
         validate_regex(r"cafe\s+\w+").unwrap();
         validate_regex("(unclosed").unwrap_err();
+    }
+
+    #[test]
+    fn pattern_matches_follows_pick_category_semantics() {
+        assert!(pattern_matches("tim hortons", false, "TIM HORTONS #123"));
+        assert!(!pattern_matches("^bean", false, "TIM HORTONS #123"));
+        assert!(pattern_matches(r"CAFE\s+\w+", true, "best CAFE noir sign"));
+        assert!(!pattern_matches(r"^bean", true, "TIM HORTONS #123"));
+        assert!(!pattern_matches("(unclosed", true, "anything"));
+        assert!(!pattern_matches("", false, "anything"));
     }
 }

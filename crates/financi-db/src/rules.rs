@@ -140,6 +140,42 @@ pub fn reapply_rules(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// How many unlocked transactions the pattern matches, for the live
+/// preview in the rule form ("matches 14 transactions"). Matching follows
+/// [`financi_core::rules::pattern_matches`]: case-insensitive substring or
+/// case-insensitive regex; an empty or invalid-regex pattern matches
+/// nothing. When `exclude_rule_id` is set (editing an existing rule), rows
+/// the excluded rule already matches are left out, so the count shows what
+/// the edit would newly categorize.
+pub fn count_rule_matches(
+    conn: &Connection,
+    pattern: &str,
+    is_regex: bool,
+    exclude_rule_id: Option<i64>,
+) -> Result<i64> {
+    let excluded = match exclude_rule_id {
+        Some(id) => Some(fetch_rule(conn, id)?),
+        None => None,
+    };
+    let mut stmt =
+        conn.prepare("SELECT description_raw FROM transactions WHERE category_locked = 0")?;
+    let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+    let mut count = 0;
+    for row in rows {
+        let description = row?;
+        if !financi_core::rules::pattern_matches(pattern, is_regex, &description) {
+            continue;
+        }
+        if let Some(old) = &excluded
+            && financi_core::rules::pattern_matches(&old.pattern, old.is_regex, &description)
+        {
+            continue;
+        }
+        count += 1;
+    }
+    Ok(count)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -426,5 +462,40 @@ mod tests {
 
         assert!(update_rule(&conn, rule, "[bad", true, cat).is_err());
         assert_eq!(category_of(&conn, coffee), Some(cat));
+    }
+
+    #[test]
+    fn count_rule_matches_unlocked_rows_only() {
+        let conn = open_in_memory().unwrap();
+        let cat = child_category(&conn);
+        add_transaction(&conn, "COFFEE VANCOUVER", false, None);
+        add_transaction(&conn, "coffee bean roastery", false, None);
+        add_transaction(&conn, "COFFEE LOCKED", true, Some(cat));
+        add_transaction(&conn, "GROCERY STORE", false, None);
+
+        assert_eq!(count_rule_matches(&conn, "COFFEE", false, None).unwrap(), 2);
+        assert_eq!(
+            count_rule_matches(&conn, r"^coffee\b", true, None).unwrap(),
+            2
+        );
+        assert_eq!(count_rule_matches(&conn, "[bad", true, None).unwrap(), 0);
+        assert_eq!(count_rule_matches(&conn, "", false, None).unwrap(), 0);
+    }
+
+    #[test]
+    fn count_rule_matches_excludes_the_edited_rule() {
+        let conn = open_in_memory().unwrap();
+        let cat = child_category(&conn);
+        add_transaction(&conn, "COFFEE VANCOUVER", false, None);
+        add_transaction(&conn, "BEAN BURRITO", false, None);
+        let rule = add_rule(&conn, "COFFEE", false, cat).unwrap();
+
+        let without = count_rule_matches(&conn, "COFFEE|BEAN", true, None).unwrap();
+        let edited = count_rule_matches(&conn, "COFFEE|BEAN", true, Some(rule)).unwrap();
+        assert_eq!(without, 2);
+        assert_eq!(
+            edited, 1,
+            "the row the old pattern already matched is left out"
+        );
     }
 }

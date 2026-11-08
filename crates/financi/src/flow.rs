@@ -1,6 +1,7 @@
 //! Import flow logic used by the UI, kept free of GPUI so it can be tested:
 //! load a dropped file, pick candidate accounts, summarize a plan.
 
+use chrono::Datelike;
 use std::path::Path;
 
 use financi_core::{AccountKind, RawFile, ReadError, StatementParser, read_raw_file};
@@ -115,19 +116,86 @@ impl PlanSummary {
         }
     }
 
-    pub fn headline(&self) -> String {
-        format!(
-            "{} rows from {} to {}: {} new, {} already imported",
-            self.total, self.first_date, self.last_date, self.new_rows, self.already_present
+    /// The second preview line per ui-conventions:
+    /// `32 new of 84 rows · 52 already imported, skipped · Oct 1 – Dec 4, 2026`.
+    /// The first span (`32 new`) renders in the foreground, the rest muted.
+    pub fn preview_parts(&self) -> (String, String) {
+        (
+            format!("{} new", self.new_rows),
+            format!(
+                "of {} rows · {} already imported, skipped · {}",
+                self.total,
+                self.already_present,
+                date_range(&self.first_date, &self.last_date)
+            ),
         )
     }
 }
 
-/// Format cents for display: `-1574` -> `"-15.74"`.
+/// A plain grouped count for secondary text: `1284` -> `1,284`.
+pub fn count(n: i64) -> String {
+    let sign = if n < 0 { "-" } else { "" };
+    let digits = n.unsigned_abs().to_string();
+    let mut grouped = String::new();
+    for (i, ch) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            grouped.push(',');
+        }
+        grouped.push(ch);
+    }
+    format!("{sign}{grouped}")
+}
+
+/// Format cents for data regions per ui-conventions: `$1,234.56`, with
+/// thousands separators and the sign before the `$` (`-$86.42`).
 pub fn money(cents: i64) -> String {
     let sign = if cents < 0 { "-" } else { "" };
     let abs = cents.unsigned_abs();
-    format!("{sign}{}.{:02}", abs / 100, abs % 100)
+    let digits = (abs / 100).to_string();
+    let mut grouped = String::new();
+    for (i, ch) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            grouped.push(',');
+        }
+        grouped.push(ch);
+    }
+    format!("{sign}${grouped}.{:02}", abs % 100)
+}
+
+/// An ISO `yyyy-mm-dd` date range as shown in history rows:
+/// `Sep 1 – Nov 30, 2026` (en dash). One date renders alone; different
+/// years show both; unparseable input comes back unchanged.
+pub fn date_range(first: &str, last: &str) -> String {
+    let parse = |d: &str| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").ok();
+    let (Some(f), Some(l)) = (parse(first), parse(last)) else {
+        if last.is_empty() || first == last {
+            return first.to_string();
+        }
+        return format!("{first} – {last}");
+    };
+    if f == l {
+        return long_date(&f);
+    }
+    if f.year() == l.year() {
+        format!("{} – {}", short_date(&f), long_date(&l))
+    } else {
+        format!("{} – {}", long_date(&f), long_date(&l))
+    }
+}
+
+fn short_date(d: &chrono::NaiveDate) -> String {
+    format!("{} {}", month_name(d.month()), d.day())
+}
+
+fn long_date(d: &chrono::NaiveDate) -> String {
+    format!("{} {}, {}", month_name(d.month()), d.day(), d.year())
+}
+
+fn month_name(month: u32) -> &'static str {
+    const NAMES: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    NAMES[(month as usize - 1).min(11)]
 }
 
 #[cfg(test)]
@@ -249,8 +317,11 @@ mod tests {
         );
         assert_eq!(summary.overlap, None);
         assert_eq!(
-            summary.headline(),
-            "102 rows from 2026-09-01 to 2026-11-06: 34 new, 68 already imported"
+            summary.preview_parts(),
+            (
+                "34 new".into(),
+                "of 102 rows · 68 already imported, skipped · Sep 1 – Nov 6, 2026".into()
+            )
         );
 
         assert_eq!(
@@ -291,9 +362,32 @@ mod tests {
 
     #[test]
     fn formats_money() {
-        assert_eq!(money(-1574), "-15.74");
-        assert_eq!(money(150_000), "1500.00");
-        assert_eq!(money(-5), "-0.05");
-        assert_eq!(money(0), "0.00");
+        assert_eq!(money(-1574), "-$15.74");
+        assert_eq!(money(150_000), "$1,500.00");
+        assert_eq!(money(-5), "-$0.05");
+        assert_eq!(money(0), "$0.00");
+        assert_eq!(money(123_456_700), "$1,234,567.00");
+    }
+
+    #[test]
+    fn formats_date_ranges() {
+        assert_eq!(
+            date_range("2026-09-01", "2026-11-30"),
+            "Sep 1 – Nov 30, 2026"
+        );
+        assert_eq!(date_range("2026-11-06", "2026-11-06"), "Nov 6, 2026");
+        assert_eq!(
+            date_range("2025-12-28", "2026-01-03"),
+            "Dec 28, 2025 – Jan 3, 2026"
+        );
+        assert_eq!(date_range("2026-11-06", ""), "2026-11-06");
+    }
+
+    #[test]
+    fn formats_counts() {
+        assert_eq!(count(0), "0");
+        assert_eq!(count(999), "999");
+        assert_eq!(count(1284), "1,284");
+        assert_eq!(count(1_000_000), "1,000,000");
     }
 }

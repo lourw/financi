@@ -263,21 +263,25 @@ fn undo_needs_a_second_click_and_removes_the_latest_import(cx: &mut TestAppConte
     click_import(cx, handle, &shell);
     wait_until(cx, "import", |cx| shell.read(cx).row_count == 68);
 
+    wait_until(cx, "import history", |cx| {
+        shell.read(cx).import_history.len() == 1
+    });
+
     with_window(cx, handle, |window, cx| {
-        let id = shell.read(cx).accounts[0].id;
-        shell.update(cx, |s, cx| {
-            s.selected_account = Some(id);
-            s.undo(window, cx);
-        });
-        assert!(
-            shell.read(cx).confirm_undo,
+        let id = shell.read(cx).import_history[0].id;
+        shell.update(cx, |s, cx| s.undo_import(id, window, cx));
+        assert_eq!(
+            shell.read(cx).confirm_undo_import,
+            Some(id),
             "first click only asks to confirm"
         );
         assert_eq!(shell.read(cx).row_count, 68);
-        shell.update(cx, |s, cx| s.undo(window, cx));
+        shell.update(cx, |s, cx| s.undo_import(id, window, cx));
     });
 
-    wait_until(cx, "undo", |cx| shell.read(cx).row_count == 0);
+    wait_until(cx, "undo", |cx| {
+        shell.read(cx).row_count == 0 && shell.read(cx).import_history.is_empty()
+    });
     cx.update(|cx| {
         assert_eq!(
             shell.read(cx).status.clone(),
