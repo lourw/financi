@@ -1,5 +1,5 @@
-//! Manual edits (2.6): assign a category by hand, undo that, and turn a
-//! manual edit into a rule.
+//! Manual row-level edits (2.6, 2.9): assign a category by hand, undo that,
+//! turn a manual edit into a rule, and hide or unhide a row.
 //!
 //! [`set_category`] locks the row (`category_locked = 1`) so the rule
 //! engine never moves it again. [`clear_override`] unlocks it and hands it
@@ -8,7 +8,8 @@
 //! `Transfers > Card Payment`, still locked.
 //! [`apply_rule_from_merchant`] is the backend of *"Apply to all matching
 //! \"MERCHANT\""*: a substring rule from the cleaned merchant, which
-//! categorizes the whole matching group.
+//! categorizes the whole matching group. [`set_hidden`] shows or hides a
+//! row for the browse table and every count.
 
 use financi_core::rules::pick_category;
 use financi_core::{RawTransaction, parse::merchant};
@@ -136,6 +137,25 @@ pub fn apply_rule_from_merchant(
         return Err(DbError::EmptyMerchant(transaction_id));
     }
     add_rule(conn, &merchant, false, category_id)
+}
+
+/// Show or hide a transaction (2.9). Hidden rows are left out of every
+/// browse listing and count — [`crate::import::list_transactions`],
+/// [`crate::sidebar_counts`] and [`crate::queue::uncategorized_by_merchant`]
+/// all filter `hidden = 0` — so hiding one removes it from the table, the
+/// sidebar and the To-categorize queue at once; `hidden = false` brings it
+/// back. The category and its lock are untouched, and rules keep categorizing
+/// hidden rows so they surface with the right category when shown. Refuses
+/// unknown transactions; setting the flag it already has is fine.
+pub fn set_hidden(conn: &Connection, transaction_id: i64, hidden: bool) -> Result<()> {
+    let updated = conn.execute(
+        "UPDATE transactions SET hidden = ?1 WHERE id = ?2",
+        (hidden, transaction_id),
+    )?;
+    if updated == 0 {
+        return Err(DbError::UnknownTransaction(transaction_id));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -419,6 +439,74 @@ mod tests {
         assert!(
             crate::rules::list_rules(&conn).unwrap().is_empty(),
             "refusals create no rule"
+        );
+    }
+
+    fn hidden_flag(conn: &Connection, id: i64) -> bool {
+        conn.query_row("SELECT hidden FROM transactions WHERE id = ?1", [id], |r| {
+            r.get::<_, bool>(0)
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn set_hidden_clears_the_flag_back_and_leaves_category_lock() {
+        let conn = open_in_memory().unwrap();
+        let cat = child_category(&conn, "Coffee");
+        let id = add_transaction(&conn, "COFFEE VANCOUVER", false, Some(cat));
+
+        set_hidden(&conn, id, true).unwrap();
+        assert!(hidden_flag(&conn, id));
+        set_hidden(&conn, id, true).unwrap();
+        assert!(hidden_flag(&conn, id), "hiding again is fine");
+        set_hidden(&conn, id, false).unwrap();
+        assert!(!hidden_flag(&conn, id), "and un-hiding works");
+        assert_eq!(
+            row_state(&conn, id),
+            (Some(cat), false),
+            "hide/unhide never touch the category or its lock"
+        );
+    }
+
+    #[test]
+    fn set_hidden_refuses_unknown_transaction() {
+        let conn = open_in_memory().unwrap();
+        assert!(matches!(
+            set_hidden(&conn, 999, true).unwrap_err(),
+            DbError::UnknownTransaction(999)
+        ));
+    }
+
+    #[test]
+    fn hidden_rows_stay_out_of_list_sidebar_and_queue() {
+        let conn = open_in_memory().unwrap();
+        let shown = add_transaction(&conn, "COFFEE VANCOUVER", false, None);
+        let hidden = add_transaction(&conn, "PIZZA PLACE", false, None);
+        let listed = |conn: &Connection| {
+            crate::import::list_transactions(conn, None)
+                .unwrap()
+                .iter()
+                .map(|r| r.id)
+                .collect::<Vec<_>>()
+        };
+        let queued = |conn: &Connection| {
+            crate::queue::uncategorized_by_merchant(conn)
+                .unwrap()
+                .iter()
+                .map(|g| g.merchant.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(listed(&conn), vec![hidden, shown]);
+        assert_eq!(queued(&conn), ["COFFEE VANCOUVER", "PIZZA PLACE"]);
+        assert_eq!(crate::sidebar_counts(&conn).unwrap(), (2, 2));
+
+        set_hidden(&conn, hidden, true).unwrap();
+        assert_eq!(listed(&conn), [shown], "hidden row leaves the table");
+        assert_eq!(queued(&conn), ["COFFEE VANCOUVER"], "and out of the queue");
+        assert_eq!(
+            crate::sidebar_counts(&conn).unwrap(),
+            (1, 1),
+            "and out of the sidebar counts"
         );
     }
 }

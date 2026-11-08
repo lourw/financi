@@ -31,8 +31,9 @@ pub struct UncategorizedGroup {
     pub last_date: String,
 }
 
-/// The uncategorized transactions grouped by cleaned merchant, sorted by
-/// count descending, ties by merchant ascending. Rows whose cleaned
+/// The uncategorized, unhidden transactions grouped by cleaned merchant,
+/// sorted by count descending, ties by merchant ascending. Hidden rows
+/// (`set_hidden`, 2.9) are left out like everywhere else. Rows whose cleaned
 /// merchant is empty are left out: they cannot become a rule pattern
 /// ([`add_rule`] rejects empty patterns), so the queue could offer no
 /// action for them.
@@ -42,7 +43,7 @@ pub fn uncategorized_by_merchant(conn: &Connection) -> Result<Vec<UncategorizedG
         let mut stmt = conn.prepare(
             "SELECT description_raw, amount_cents, posted_date
                FROM transactions
-              WHERE category_id IS NULL",
+              WHERE category_id IS NULL AND hidden = 0",
         )?;
         let rows = stmt.query_map([], |r| {
             Ok((

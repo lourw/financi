@@ -25,7 +25,7 @@ pub mod import;
 pub mod master_csv;
 
 pub mod overrides;
-pub use overrides::{apply_rule_from_merchant, clear_override, set_category};
+pub use overrides::{apply_rule_from_merchant, clear_override, set_category, set_hidden};
 
 pub mod queue;
 pub use queue::{UncategorizedGroup, categorize_group, uncategorized_by_merchant};

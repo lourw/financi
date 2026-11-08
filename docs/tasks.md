@@ -172,7 +172,7 @@ frozen from here on; real databases may exist).
   - UI tests in `ui_tests.rs` style for: create parent+child, create a rule
     and see rows categorized, categorize a queue group, delete with reassign.
 
-- [ ] **2.9 Table context menu.** Right-click a transaction row (use
+- [x] **2.9 Table context menu.** Right-click a transaction row (use
   `TableDelegate::context_menu`): *Change category…* (then offer the rule as
   in 2.6), *Hide*, and *Unhide* (only when hidden rows are shown, see 3.4).
 

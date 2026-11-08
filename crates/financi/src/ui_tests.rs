@@ -5,7 +5,9 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use financi_core::parse::merchant;
 use financi_core::{AccountKind, CategoryKind};
+use financi_db::import::TransactionRow;
 use financi_db::{DbWorker, create_account, open_in_memory};
 // No glob import: `gpui_kit::*` brings GPUI's `test` macro into scope, which
 // shadows the built-in #[test] that #[gpui::test] expands to.
@@ -15,7 +17,7 @@ use gpui_kit::{
     WindowOptions, px, size,
 };
 
-use super::{ImportPanel, NEW_ACCOUNT, PlanState, Shell};
+use super::{ImportPanel, NEW_ACCOUNT, PlanState, RowMenuItem, Shell, row_menu_items};
 
 fn demo(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -592,4 +594,174 @@ fn s_select(shell: &Entity<Shell>, cx: &mut App, ix: usize, window: &mut Window)
     target.update(cx, |sel, cx| {
         sel.set_selected_index(Some(gpui_kit::component::IndexPath::new(ix)), window, cx)
     });
+}
+
+// -- row context menu (2.9) -------------------------------------------------
+
+/// A minimal row for the pure menu-model test.
+fn browse_row(hidden: bool) -> TransactionRow {
+    TransactionRow {
+        id: 1,
+        account: "American Express · Cobalt".into(),
+        posted_date: "2026-10-31".into(),
+        description: "COFFEE    VANCOUVER".into(),
+        merchant: Some("COFFEE".into()),
+        category: None,
+        category_id: None,
+        amount_cents: -450,
+        hidden,
+    }
+}
+
+#[test]
+fn menu_shows_hide_for_a_visible_row_and_unhide_only_for_a_hidden_one() {
+    assert_eq!(
+        row_menu_items(&browse_row(false)),
+        [RowMenuItem::ChangeCategory, RowMenuItem::Hide],
+        "a visible row offers Hide, never Unhide"
+    );
+    assert_eq!(
+        row_menu_items(&browse_row(true)),
+        [RowMenuItem::ChangeCategory, RowMenuItem::Unhide],
+        "a hidden row offers Unhide, never Hide"
+    );
+}
+
+/// The dashboard table's rows.
+fn table_rows(shell: &Entity<Shell>, cx: &App) -> Vec<TransactionRow> {
+    shell.read(cx).table.read(cx).delegate().rows.clone()
+}
+
+/// Import October onto a fresh Cobalt and return the busiest merchant with
+/// a target row and every row id sharing that merchant.
+fn import_and_top_merchant(
+    cx: &mut TestAppContext,
+    handle: AnyWindowHandle,
+    shell: &Entity<Shell>,
+) -> (String, i64, Vec<i64>) {
+    wait_until(cx, "accounts", |cx| shell.read(cx).accounts.len() == 1);
+    open_and_choose(
+        cx,
+        handle,
+        shell,
+        "amex-sep-oct.csv",
+        "American Express · Cobalt",
+    );
+    wait_until(cx, "plan", |cx| plan_ready(shell, cx));
+    click_import(cx, handle, shell);
+    wait_until(cx, "import", |cx| shell.read(cx).row_count == 68);
+    wait_until(cx, "queue populated", |cx| !shell.read(cx).queue.is_empty());
+    cx.update(|cx| {
+        let (m, _) = top_group(shell, cx);
+        let group: Vec<i64> = table_rows(shell, cx)
+            .iter()
+            .filter(|r| merchant(&r.description) == m)
+            .map(|r| r.id)
+            .collect();
+        let target = *group.first().unwrap();
+        (m, target, group)
+    })
+}
+
+#[gpui::test]
+fn changing_a_rows_category_locks_it_and_offers_the_rule(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |c| {
+        create_account(c, "amex", "Cobalt", AccountKind::CreditCard).unwrap();
+    });
+    let (m, target, group) = import_and_top_merchant(cx, handle, &shell);
+    assert!(group.len() >= 2, "the merchant has several rows");
+    add_parent(cx, handle, &shell, "Shopping");
+    add_child(cx, handle, &shell, "Online");
+    add_parent(cx, handle, &shell, "Home");
+    add_child(cx, handle, &shell, "Groceries");
+    let online = cx.update(|cx| find_child(&shell, cx, "Online").unwrap());
+    let groceries = cx.update(|cx| find_child(&shell, cx, "Groceries").unwrap());
+
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.change_row_category(target, online, window, cx)
+        });
+    });
+    wait_until(cx, "target categorized and offer up", |cx| {
+        shell.read(cx).rule_offer == Some((target, online))
+            && table_rows(&shell, cx)
+                .iter()
+                .any(|r| r.id == target && r.category.as_deref() == Some("Online"))
+    });
+
+    // A later rule for the same merchant moves the siblings but never the
+    // manually-set (locked) row.
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.rule_pattern.update(cx, |i, cx| {
+                i.set_value(m.clone(), window, cx);
+            });
+            let ix = s
+                .child_choices
+                .iter()
+                .position(|(id, _)| *id == groceries)
+                .unwrap();
+            s.rule_target.update(cx, |sel, cx| {
+                sel.set_selected_index(Some(gpui_kit::component::IndexPath::new(ix)), window, cx);
+            });
+            s.add_rule(window, cx);
+        });
+    });
+    wait_until(cx, "siblings moved, locked target held", |cx| {
+        let rows = table_rows(&shell, cx);
+        let cat = |id: i64| {
+            rows.iter()
+                .find(|r| r.id == id)
+                .and_then(|r| r.category.clone())
+        };
+        cat(target).as_deref() == Some("Online")
+            && group
+                .iter()
+                .filter(|id| **id != target)
+                .any(|id| cat(*id).as_deref() == Some("Groceries"))
+    });
+}
+
+#[gpui::test]
+fn applying_the_row_offer_categorizes_the_whole_merchant(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |c| {
+        create_account(c, "amex", "Cobalt", AccountKind::CreditCard).unwrap();
+    });
+    let (m, target, group) = import_and_top_merchant(cx, handle, &shell);
+    assert!(group.len() >= 2, "the merchant has several rows");
+    add_parent(cx, handle, &shell, "Shopping");
+    add_child(cx, handle, &shell, "Online");
+    let online = cx.update(|cx| find_child(&shell, cx, "Online").unwrap());
+    let all_uncategorized = cx.update(|cx| {
+        table_rows(&shell, cx)
+            .iter()
+            .all(|r| !group.contains(&r.id) || r.category.is_none())
+    });
+    assert!(all_uncategorized, "the group starts uncategorized");
+
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.change_row_category(target, online, window, cx)
+        });
+    });
+    wait_until(cx, "offer up", |cx| {
+        shell.read(cx).rule_offer == Some((target, online))
+    });
+
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| s.apply_row_rule(target, window, cx));
+    });
+    wait_until(cx, "rule created and offer cleared", |cx| {
+        shell.read(cx).rule_offer.is_none() && shell.read(cx).rules.iter().any(|r| r.pattern == m)
+    });
+    let rows = cx.update(|cx| table_rows(&shell, cx));
+    for id in &group {
+        assert_eq!(
+            rows.iter()
+                .find(|r| r.id == *id)
+                .and_then(|r| r.category.as_deref()),
+            Some("Online"),
+            "every row of {m} is now Online"
+        );
+    }
 }

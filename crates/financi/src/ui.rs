@@ -22,12 +22,14 @@ use financi_db::import::{
 use financi_db::queue::{UncategorizedGroup, categorize_group, uncategorized_by_merchant};
 use financi_db::rules::{add_rule, count_rule_matches, list_rules};
 use financi_db::{
-    Account, DbWorker, create_account, list_accounts, rusqlite::Connection, sidebar_counts,
+    Account, DbWorker, apply_rule_from_merchant, create_account, list_accounts,
+    rusqlite::Connection, set_category, set_hidden, sidebar_counts,
 };
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
 use gpui_kit::component::select::{Select, SelectEvent, SelectState};
 use gpui_kit::component::sidebar::{Sidebar, SidebarItem, SidebarMenuItem};
 use gpui_kit::component::switch::Switch;
@@ -130,8 +132,47 @@ impl SidebarItem for NavItem {
 // ---------------------------------------------------------------------------
 // Transaction table
 
+/// Callbacks from a transaction row's context menu back to the [`Shell`]
+/// (2.9): set a category, hide/unhide, and apply the post-edit rule offer.
+type SetCategoryFn = Rc<dyn Fn(i64, i64, &mut Window, &mut App)>;
+type SetHiddenFn = Rc<dyn Fn(i64, bool, &mut Window, &mut App)>;
+type ApplyRuleFn = Rc<dyn Fn(i64, &mut Window, &mut App)>;
+
+/// One entry of a transaction row's right-click menu (2.9).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum RowMenuItem {
+    ChangeCategory,
+    Hide,
+    Unhide,
+}
+
+/// The context-menu entries for a row, as a pure function of its state so the
+/// gating rule is testable without a window: *Change category…* always, then
+/// *Unhide* for a hidden row and *Hide* otherwise (a row can only move in one
+/// direction). Hidden rows only reach the menu once the "show hidden" toggle
+/// (3.4) puts them back in the table.
+pub fn row_menu_items(row: &TransactionRow) -> Vec<RowMenuItem> {
+    vec![
+        RowMenuItem::ChangeCategory,
+        if row.hidden {
+            RowMenuItem::Unhide
+        } else {
+            RowMenuItem::Hide
+        },
+    ]
+}
+
 pub struct TxTable {
     rows: Vec<TransactionRow>,
+    /// Child categories as `(id, "Parent › Child")` for the *Change category…*
+    /// submenu, mirroring the shell's `child_choices`.
+    child_choices: Vec<(i64, String)>,
+    /// The row that just got a manual category and now offers to apply it to
+    /// every matching row (2.6's rule offer, 2.9). Its transaction id.
+    rule_offer: Option<i64>,
+    on_set_category: SetCategoryFn,
+    on_set_hidden: SetHiddenFn,
+    on_apply_rule: ApplyRuleFn,
 }
 
 impl TableDelegate for TxTable {
@@ -148,9 +189,56 @@ impl TableDelegate for TxTable {
             0 => Column::new("date", "Date").width(px(110.)),
             1 => Column::new("account", "Account").width(px(300.)),
             2 => Column::new("description", "Description").width(px(360.)),
-            3 => Column::new("category", "Category").width(px(140.)),
+            // Room for the post-edit "Apply to all matching …" affordance.
+            3 => Column::new("category", "Category").width(px(260.)),
             _ => Column::new("amount", "Amount").width(px(120.)).text_right(),
         }
+    }
+
+    fn context_menu(
+        &mut self,
+        row_ix: usize,
+        menu: PopupMenu,
+        window: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) -> PopupMenu {
+        let row = &self.rows[row_ix];
+        let (txn, current) = (row.id, row.category_id);
+        let on_change = self.on_set_category.clone();
+        let submenu = PopupMenu::build(window, cx, {
+            let choices = self.child_choices.clone();
+            move |menu, _, _| {
+                choices.into_iter().fold(menu, |menu, (id, label)| {
+                    let on_change = on_change.clone();
+                    menu.item(
+                        PopupMenuItem::new(label)
+                            .checked(Some(id) == current)
+                            .on_click(move |_, window, cx| on_change(txn, id, window, cx)),
+                    )
+                })
+            }
+        });
+        row_menu_items(row)
+            .into_iter()
+            .fold(menu, |menu, item| match item {
+                RowMenuItem::ChangeCategory => {
+                    menu.item(PopupMenuItem::submenu("Change category…", submenu.clone()))
+                }
+                RowMenuItem::Hide => {
+                    let on_hide = self.on_set_hidden.clone();
+                    menu.item(
+                        PopupMenuItem::new("Hide")
+                            .on_click(move |_, window, cx| on_hide(txn, true, window, cx)),
+                    )
+                }
+                RowMenuItem::Unhide => {
+                    let on_show = self.on_set_hidden.clone();
+                    menu.item(
+                        PopupMenuItem::new("Unhide")
+                            .on_click(move |_, window, cx| on_show(txn, false, window, cx)),
+                    )
+                }
+            })
     }
 
     fn render_td(
@@ -160,7 +248,34 @@ impl TableDelegate for TxTable {
         _: &mut Window,
         _: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
-        div().child(self.text(row_ix, col_ix))
+        if col_ix == 3 {
+            let row = &self.rows[row_ix];
+            let merchant = financi_core::parse::merchant(&row.description);
+            if self.rule_offer == Some(row.id) && !merchant.is_empty() {
+                let txn = row.id;
+                let on_apply = self.on_apply_rule.clone();
+                return div()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .child(
+                        div()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .child(self.text(row_ix, col_ix)),
+                    )
+                    .child(
+                        Button::new(SharedString::from(format!("apply-rule-{txn}")))
+                            .link()
+                            .compact()
+                            .label(format!("Apply to all matching \"{merchant}\""))
+                            .on_click(move |_, window, cx| on_apply(txn, window, cx)),
+                    )
+                    .into_any_element();
+            }
+        }
+        div().child(self.text(row_ix, col_ix)).into_any_element()
     }
 }
 
@@ -679,6 +794,10 @@ pub struct Shell {
     row_count: usize,
     total_visible: i64,
     uncategorized_visible: i64,
+    /// The transaction a manual category edit just made, `(transaction_id,
+    /// category_id)`, whose row now offers to extend that choice to every
+    /// matching row (2.6's rule offer, surfaced from the 2.9 menu).
+    rule_offer: Option<(i64, i64)>,
     import: Option<Entity<ImportPanel>>,
     import_history: Vec<ImportEntry>,
     history_table: Entity<TableState<ImportHistoryTable>>,
@@ -736,7 +855,44 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let table = cx.new(|cx| TableState::new(TxTable { rows: Vec::new() }, window, cx));
+        let on_set_category = {
+            let shell = cx.entity();
+            Rc::new(
+                move |txn: i64, category: i64, window: &mut Window, cx: &mut App| {
+                    shell.update(cx, |this, cx| {
+                        this.change_row_category(txn, category, window, cx);
+                    });
+                },
+            ) as Rc<dyn Fn(i64, i64, &mut Window, &mut App)>
+        };
+        let on_set_hidden = {
+            let shell = cx.entity();
+            Rc::new(
+                move |txn: i64, hidden: bool, window: &mut Window, cx: &mut App| {
+                    shell.update(cx, |this, cx| this.set_row_hidden(txn, hidden, window, cx));
+                },
+            ) as Rc<dyn Fn(i64, bool, &mut Window, &mut App)>
+        };
+        let on_apply_rule = {
+            let shell = cx.entity();
+            Rc::new(move |txn: i64, window: &mut Window, cx: &mut App| {
+                shell.update(cx, |this, cx| this.apply_row_rule(txn, window, cx));
+            }) as Rc<dyn Fn(i64, &mut Window, &mut App)>
+        };
+        let table = cx.new(|cx| {
+            TableState::new(
+                TxTable {
+                    rows: Vec::new(),
+                    child_choices: Vec::new(),
+                    rule_offer: None,
+                    on_set_category,
+                    on_set_hidden,
+                    on_apply_rule,
+                },
+                window,
+                cx,
+            )
+        });
         let on_undo = {
             let shell = cx.entity();
             Rc::new(move |id: i64, window: &mut Window, cx: &mut App| {
@@ -774,6 +930,7 @@ impl Shell {
                         .map(|a| a.id)
                 });
                 this.confirm_undo_import = None;
+                this.rule_offer = None;
                 this.refresh(window, cx);
             },
         );
@@ -815,6 +972,7 @@ impl Shell {
             row_count: 0,
             total_visible: 0,
             uncategorized_visible: 0,
+            rule_offer: None,
             import: None,
             import_history: Vec::new(),
             history_table,
@@ -923,8 +1081,22 @@ impl Shell {
                         this.queue = queue;
                         this.sync_category_choices(window, cx);
                         this.sync_queue(window, cx);
+                        // The rule offer follows a row the user just edited; a
+                        // refresh that drops the row (hidden, filtered out,
+                        // deleted) drops the offer with it.
+                        if this
+                            .rule_offer
+                            .is_some_and(|(id, _)| !rows.iter().any(|r| r.id == id))
+                        {
+                            this.rule_offer = None;
+                        }
+                        let child_choices = this.child_choices.clone();
+                        let rule_offer = this.rule_offer.map(|(id, _)| id);
                         this.table.update(cx, |t, cx| {
-                            t.delegate_mut().rows = rows;
+                            let delegate = t.delegate_mut();
+                            delegate.rows = rows;
+                            delegate.child_choices = child_choices;
+                            delegate.rule_offer = rule_offer;
                             t.refresh(cx);
                         });
                         let confirm = this.confirm_undo_import;
@@ -946,6 +1118,7 @@ impl Shell {
     fn go_page(&mut self, page: Page, cx: &mut Context<Self>) {
         self.page = page;
         self.confirm_undo_import = None;
+        self.rule_offer = None;
         cx.notify();
     }
 
@@ -1441,6 +1614,87 @@ impl Shell {
                         this.queue_error = None;
                     }
                     Err(e) => this.queue_error = Some(e),
+                }
+                this.refresh(window, cx);
+            });
+        }));
+        cx.notify();
+    }
+
+    // -- row context menu (2.9) ---------------------------------------------
+
+    /// Change one transaction's category from the row menu (2.9). `set_category`
+    /// locks the row so rules never move it again (2.6); on success the row
+    /// starts offering to extend this choice to its whole merchant group.
+    fn change_row_category(
+        &mut self,
+        transaction_id: i64,
+        category_id: i64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let db = self.db.clone();
+        self.task = Some(cx.spawn_in(window, async move |this, cx| {
+            let result = on_db(&db, move |c| set_category(c, transaction_id, category_id)).await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                match result {
+                    Ok(()) => {
+                        this.rule_offer = Some((transaction_id, category_id));
+                        this.status = None;
+                    }
+                    Err(e) => this.status = Some((e, true)),
+                }
+                this.refresh(window, cx);
+            });
+        }));
+    }
+
+    /// Hide or unhide a transaction from the row menu (2.9). Hidden rows leave
+    /// the table, the sidebar counts and the To-categorize queue at once.
+    fn set_row_hidden(
+        &mut self,
+        transaction_id: i64,
+        hidden: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Hiding the row a rule offer is on would strand the offer.
+        if self.rule_offer.is_some_and(|(id, _)| id == transaction_id) {
+            self.rule_offer = None;
+        }
+        let db = self.db.clone();
+        self.task = Some(cx.spawn_in(window, async move |this, cx| {
+            let result = on_db(&db, move |c| set_hidden(c, transaction_id, hidden)).await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                if let Err(e) = result {
+                    this.status = Some((e, true));
+                }
+                this.refresh(window, cx);
+            });
+        }));
+    }
+
+    /// Accept the post-edit offer from the row (2.6, 2.9): turn the merchant of
+    /// the row just edited into a substring rule for the category chosen,
+    /// categorizing every matching row, then clear the offer.
+    fn apply_row_rule(&mut self, transaction_id: i64, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((_, category_id)) = self.rule_offer.filter(|(id, _)| *id == transaction_id) else {
+            return;
+        };
+        self.rule_offer = None;
+        let db = self.db.clone();
+        self.task = Some(cx.spawn_in(window, async move |this, cx| {
+            let result = on_db(&db, move |c| {
+                apply_rule_from_merchant(c, transaction_id, category_id)
+            })
+            .await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                match result {
+                    Ok(_) => {
+                        this.status =
+                            Some(("Applied the category to all matching rows".into(), false));
+                    }
+                    Err(e) => this.status = Some((e, true)),
                 }
                 this.refresh(window, cx);
             });

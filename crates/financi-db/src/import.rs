@@ -464,7 +464,12 @@ pub fn list_imports(conn: &Connection) -> Result<Vec<ImportEntry>, DbError> {
     Ok(rows.collect::<Result<_, _>>()?)
 }
 
-/// A transaction as the browse table shows it.
+/// A transaction as the browse table shows it. `category_id` and `hidden`
+/// drive the row context menu (2.9): the first marks the current category
+/// `checked` in the *Change category…* submenu, the second decides between
+/// *Hide* and *Unhide*. `list_transactions` filters hidden rows out, so
+/// `hidden` is `false` for every row it returns until the "show hidden"
+/// toggle (3.4) widens the query.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TransactionRow {
     pub id: i64,
@@ -473,7 +478,9 @@ pub struct TransactionRow {
     pub description: String,
     pub merchant: Option<String>,
     pub category: Option<String>,
+    pub category_id: Option<i64>,
     pub amount_cents: i64,
+    pub hidden: bool,
 }
 
 /// Transactions newest first, optionally for one account. Hidden rows are
@@ -484,7 +491,7 @@ pub fn list_transactions(
 ) -> Result<Vec<TransactionRow>, DbError> {
     let mut stmt = conn.prepare(
         "SELECT t.id, i.name || ' · ' || a.name, t.posted_date, t.description_raw, t.merchant,
-                c.name, t.amount_cents
+                c.name, t.amount_cents, t.category_id, t.hidden
            FROM transactions t
            JOIN accounts a ON a.id = t.account_id
            JOIN institutions i ON i.id = a.institution_id
@@ -501,6 +508,8 @@ pub fn list_transactions(
             merchant: r.get(4)?,
             category: r.get(5)?,
             amount_cents: r.get(6)?,
+            category_id: r.get(7)?,
+            hidden: r.get(8)?,
         })
     })?;
     Ok(rows.collect::<Result<_, _>>()?)
