@@ -765,3 +765,37 @@ fn applying_the_row_offer_categorizes_the_whole_merchant(cx: &mut TestAppContext
         );
     }
 }
+
+#[gpui::test]
+fn hiding_and_unhiding_a_row_updates_the_table_and_sidebar_counts(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |c| {
+        create_account(c, "amex", "Cobalt", AccountKind::CreditCard).unwrap();
+    });
+    let (_merchant, target, _group) = import_and_top_merchant(cx, handle, &shell);
+    let (before_total, before_uncategorized) = cx.update(|cx| {
+        (
+            shell.read(cx).total_visible,
+            shell.read(cx).uncategorized_visible,
+        )
+    });
+    let target_visible = cx.update(|cx| table_rows(&shell, cx).iter().any(|r| r.id == target));
+    assert!(target_visible, "the target row is visible before hiding it");
+
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| s.set_row_hidden(target, true, window, cx));
+    });
+    wait_until(cx, "hidden row leaves table and counts", |cx| {
+        !table_rows(&shell, cx).iter().any(|r| r.id == target)
+            && shell.read(cx).total_visible == before_total - 1
+            && shell.read(cx).uncategorized_visible == before_uncategorized - 1
+    });
+
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| s.set_row_hidden(target, false, window, cx));
+    });
+    wait_until(cx, "unhidden row returns to table and counts", |cx| {
+        table_rows(&shell, cx).iter().any(|r| r.id == target)
+            && shell.read(cx).total_visible == before_total
+            && shell.read(cx).uncategorized_visible == before_uncategorized
+    });
+}
