@@ -126,8 +126,8 @@ Read-only: verification and code review. Does not edit files or commit.
 1. Read the brief, `CLAUDE.md`, and the task text. Look at the change with
    `git show --stat <hash>`, then each file's diff on its own.
 2. **Verify independently.** Run the clean-checkout test from `CLAUDE.md`
-   for the reviewed commit (use `/tmp/financi-review` and
-   `/tmp/financi-review-target` so it never collides with the
+   for the reviewed commit (use `.cache/review` and
+   `.cache/review-target` so it never collides with the
    implementer's paths), plus clippy. Report real results, including
    failures, with the relevant output lines.
 3. **Review** against, in order:

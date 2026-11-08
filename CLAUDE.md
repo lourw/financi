@@ -54,13 +54,16 @@ financi-parsers --test real_samples -- --ignored --nocapture`
   `chore: …`. Keep every commit building with tests passing. Never push.
 - **Verify each commit in a clean checkout** with its own target dir
   (sharing the main `target/` reuses test binaries with the worktree's
-  `CARGO_MANIFEST_DIR` baked in and breaks fixture tests later):
+  `CARGO_MANIFEST_DIR` baked in and breaks fixture tests later). Use the
+  git-ignored `.cache/` in the repo, not `/tmp` (a small tmpfs here; a
+  fresh target is ~5 GB). Keep the target dir between runs so later
+  verifies build incrementally:
 
   ```sh
-  git worktree add --detach /tmp/financi-verify HEAD
-  (cd /tmp/financi-verify && CARGO_TARGET_DIR=/tmp/financi-verify-target \
+  git worktree add --detach .cache/verify HEAD
+  (cd .cache/verify && CARGO_TARGET_DIR=../verify-target \
      cargo test --workspace --features financi-db/dev-seed)
-  git worktree remove --force /tmp/financi-verify
+  git worktree remove --force .cache/verify
   ```
 
 - Migrations: `0001_init.sql` is frozen. Add new numbered files.
