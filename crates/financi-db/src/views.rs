@@ -41,11 +41,13 @@ pub struct ViewFilter {
 impl Default for ViewFilter {
     fn default() -> Self {
         Self {
-            // Full four-digit years: `posted_date` is compared as a
-            // `YYYY-MM-DD` string, and chrono renders out-of-range years
-            // with a sign that breaks that ordering.
-            from: NaiveDate::from_ymd_opt(1, 1, 1).unwrap(),
-            to: NaiveDate::from_ymd_opt(9999, 12, 31).unwrap(),
+            // The open-range sentinels shared with the date presets
+            // (`financi_core::dates`): full four-digit years, because
+            // `posted_date` is compared as a `YYYY-MM-DD` string, and
+            // chrono renders out-of-range years with a sign that breaks
+            // that ordering.
+            from: financi_core::dates::ALL_TIME_FROM,
+            to: financi_core::dates::ALL_TIME_TO,
             account_ids: Vec::new(),
             include_transfers: false,
         }

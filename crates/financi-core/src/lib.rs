@@ -6,6 +6,7 @@
 
 use sha2::{Digest, Sha256};
 
+pub mod dates;
 pub mod parse;
 mod raw;
 pub mod rules;

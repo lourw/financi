@@ -33,6 +33,8 @@ pub use queue::{UncategorizedGroup, categorize_group, uncategorized_by_merchant}
 pub mod rules;
 pub use rules::{add_rule, delete_rule, list_rules, update_rule};
 
+pub mod settings;
+
 pub mod views;
 pub use views::{
     CategorySpend, MonthlySummary, MonthlySummaryRow, ViewFilter, monthly_summary,

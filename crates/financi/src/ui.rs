@@ -9,7 +9,9 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 
+use chrono::NaiveDate;
 use financi_core::CategoryKind;
+use financi_core::dates::{DatePreset, preset_range};
 use financi_core::rules::Rule;
 use financi_db::categories::{
     CategoryNode, create_child, create_parent, delete_category, list_categories, move_child,
@@ -21,13 +23,16 @@ use financi_db::import::{
 };
 use financi_db::queue::{UncategorizedGroup, categorize_group, uncategorized_by_merchant};
 use financi_db::rules::{add_rule, count_rule_matches, list_rules};
+use financi_db::settings::{self, DateRange};
 use financi_db::{
-    Account, DbWorker, apply_rule_from_merchant, create_account, list_accounts,
+    Account, DbWorker, ViewFilter, apply_rule_from_merchant, create_account, list_accounts,
     rusqlite::Connection, set_category, set_hidden, sidebar_counts,
 };
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::calendar::Date as CalendarDate;
 use gpui_kit::component::checkbox::Checkbox;
+use gpui_kit::component::date_picker::{DatePicker, DatePickerEvent, DatePickerState};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
 use gpui_kit::component::select::{Select, SelectEvent, SelectState};
@@ -790,6 +795,14 @@ pub struct Shell {
     page: Page,
     filter: Entity<SelectState<Names>>,
     selected_account: Option<i64>,
+    // -- Dashboard date range (3.2): the control state, the `ViewFilter`
+    // it drives (used by 3.4–3.6), and the picker entities.
+    date_range: DateRange,
+    view_filter: ViewFilter,
+    date_preset_select: Entity<SelectState<Names>>,
+    date_from_picker: Entity<DatePickerState>,
+    date_to_picker: Entity<DatePickerState>,
+    date_range_task: Option<Task<()>>,
     table: Entity<TableState<TxTable>>,
     row_count: usize,
     total_visible: i64,
@@ -934,6 +947,59 @@ impl Shell {
                 this.refresh(window, cx);
             },
         );
+        // -- Dashboard date range (3.2). The picker starts on the default
+        // (Last 3 months); the saved setting is restored from the database
+        // below and shown once it arrives.
+        let date_preset_select = cx.new(|cx| {
+            SelectState::new(
+                DatePreset::ALL.iter().map(|p| p.label().into()).collect(),
+                Some(gpui_kit::component::IndexPath::new(
+                    DatePreset::ALL
+                        .iter()
+                        .position(|p| *p == DateRange::default().preset())
+                        .unwrap_or(0),
+                )),
+                window,
+                cx,
+            )
+        });
+        let date_from_picker =
+            cx.new(|cx| DatePickerState::new(window, cx).date_format("%Y-%m-%d"));
+        let date_to_picker = cx.new(|cx| DatePickerState::new(window, cx).date_format("%Y-%m-%d"));
+        let date_preset_sub = cx.subscribe_in(
+            &date_preset_select,
+            window,
+            |this, _, ev: &SelectEvent<Names>, window, cx| {
+                let SelectEvent::Confirm(choice) = ev;
+                if let Some(preset) = choice
+                    .as_ref()
+                    .and_then(|label| DatePreset::ALL.iter().find(|p| label.as_str() == p.label()))
+                    .copied()
+                {
+                    this.change_date_preset(preset, window, cx);
+                }
+            },
+        );
+        let date_from_sub = cx.subscribe_in(
+            &date_from_picker,
+            window,
+            |this, _, ev: &DatePickerEvent, window, cx| {
+                let DatePickerEvent::Change(value) = ev;
+                if let Some(day) = value.start().map(|dt| dt.date()) {
+                    this.date_picked(false, day, window, cx);
+                }
+            },
+        );
+        let date_to_sub = cx.subscribe_in(
+            &date_to_picker,
+            window,
+            |this, _, ev: &DatePickerEvent, window, cx| {
+                let DatePickerEvent::Change(value) = ev;
+                if let Some(day) = value.start().map(|dt| dt.date()) {
+                    this.date_picked(true, day, window, cx);
+                }
+            },
+        );
         let csv_root = financi_db::master_csv::root_for_db(&db_path);
         let new_parent_name =
             cx.new(|cx| InputState::new(window, cx).placeholder("New parent name"));
@@ -968,6 +1034,12 @@ impl Shell {
             page: Page::Dashboard,
             filter,
             selected_account: None,
+            date_range: DateRange::default(),
+            view_filter: ViewFilter::default(),
+            date_preset_select,
+            date_from_picker,
+            date_to_picker,
+            date_range_task: None,
             table,
             row_count: 0,
             total_visible: 0,
@@ -1003,8 +1075,15 @@ impl Shell {
             queue: Vec::new(),
             queue_pickers: HashMap::new(),
             queue_error: None,
-            _subs: vec![sub, preview_sub],
+            _subs: vec![
+                sub,
+                preview_sub,
+                date_preset_sub,
+                date_from_sub,
+                date_to_sub,
+            ],
         };
+        shell.load_date_range(window, cx);
         shell.refresh(window, cx);
         shell
     }
@@ -1111,6 +1190,104 @@ impl Shell {
                     Err(e) => this.status = Some((format!("Database error: {e}"), true)),
                 }
                 cx.notify();
+            });
+        }));
+    }
+
+    /// Today, for the preset ranges; `preset_range` itself never reads a
+    /// clock.
+    fn today() -> NaiveDate {
+        chrono::Local::now().date_naive()
+    }
+
+    /// Apply a date range to the state and the controls without
+    /// persisting; user changes persist on top via [`Self::persist_date_range`].
+    fn apply_date_range(&mut self, range: DateRange, window: &mut Window, cx: &mut Context<Self>) {
+        self.date_range = range;
+        let (from, to) = range.range(Self::today());
+        self.view_filter.from = from;
+        self.view_filter.to = to;
+        let index = DatePreset::ALL
+            .iter()
+            .position(|p| *p == range.preset())
+            .unwrap_or(0);
+        self.date_preset_select.update(cx, |select, cx| {
+            select.set_selected_index(Some(gpui_kit::component::IndexPath::new(index)), window, cx);
+        });
+        if let DateRange::Custom { from, to } = range {
+            // `set_date` does not emit `Change`, so this never re-persists.
+            self.date_from_picker.update(cx, |picker, cx| {
+                picker.set_date(CalendarDate::Single(Some(from)), window, cx);
+            });
+            self.date_to_picker.update(cx, |picker, cx| {
+                picker.set_date(CalendarDate::Single(Some(to)), window, cx);
+            });
+        }
+        cx.notify();
+    }
+
+    /// Write the current selection to the `settings` table through the
+    /// worker. A failed write only costs the restore at the next launch.
+    fn persist_date_range(&mut self, cx: &mut Context<Self>) {
+        let db = self.db.clone();
+        let range = self.date_range;
+        self.date_range_task = Some(cx.spawn(async move |_, _| {
+            let _ = on_db(&db, move |c| settings::set_date_range(c, &range)).await;
+        }));
+    }
+
+    /// The user picked a preset in the Select (task 3.2).
+    fn change_date_preset(
+        &mut self,
+        preset: DatePreset,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let range = if preset == DatePreset::Custom {
+            // A custom range starts on the current month, so the pickers
+            // open on a date the calendar can show (unlike "All time").
+            let (from, to) = preset_range(DatePreset::ThisMonth, Self::today());
+            DateRange::Custom { from, to }
+        } else {
+            DateRange::Preset(preset)
+        };
+        self.apply_date_range(range, window, cx);
+        self.persist_date_range(cx);
+    }
+
+    /// The user changed one of the two custom [`DatePicker`]s.
+    fn date_picked(
+        &mut self,
+        is_end: bool,
+        day: NaiveDate,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (from, to) = match self.date_range {
+            DateRange::Custom { from, to } => {
+                if is_end {
+                    (from, day)
+                } else {
+                    (day, to)
+                }
+            }
+            // The pickers only render while Custom; keep the state honest.
+            DateRange::Preset(_) => (day, day),
+        };
+        self.apply_date_range(DateRange::Custom { from, to }, window, cx);
+        self.persist_date_range(cx);
+    }
+
+    /// Restore the persisted `ui.date_range` (default Last 3 months) at
+    /// launch; the controls and `view_filter` follow the saved value.
+    fn load_date_range(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let db = self.db.clone();
+        self.date_range_task = Some(cx.spawn_in(window, async move |this, cx| {
+            let saved = on_db(&db, |c| settings::date_range(c)).await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                if let Ok(range) = saved {
+                    this.apply_date_range(range, window, cx);
+                }
             });
         }));
     }
@@ -1792,10 +1969,34 @@ impl Shell {
             .flex_1()
             .min_h_0()
             .gap_3()
+            // The header row is the filter row (ui-conventions, *Pages*);
+            // accounts and the transfers toggle join it in 3.3.
             .child(
                 h_flex()
-                    .gap_2()
+                    .gap_3()
                     .items_center()
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .child(
+                                div()
+                                    .w(px(150.))
+                                    .child(Select::new(&self.date_preset_select)),
+                            )
+                            .when(matches!(self.date_range, DateRange::Custom { .. }), |g| {
+                                g.child(
+                                    div()
+                                        .w(px(140.))
+                                        .child(DatePicker::new(&self.date_from_picker)),
+                                )
+                                .child(
+                                    div()
+                                        .w(px(140.))
+                                        .child(DatePicker::new(&self.date_to_picker)),
+                                )
+                            }),
+                    )
                     .child(div().w(px(320.)).child(Select::new(&self.filter)))
                     .child(div().text_sm().text_color(muted).child(format!(
                         "{} transactions",

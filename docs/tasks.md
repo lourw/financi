@@ -207,7 +207,7 @@ beside the monthly summary (right); then the transaction table.
     the file. Add focused tests for refunds netting, transfer exclusion and
     hidden rows.
 
-- [ ] **3.2 Date range control.**
+- [x] **3.2 Date range control.**
   - Presets: This month, Last month, Last 3 months, Last 6 months, Last 12
     months, Year to date, All time, Custom….
   - "Last N months" = whole calendar months: the current month plus the N−1

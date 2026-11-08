@@ -5,10 +5,13 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use chrono::NaiveDate;
+use financi_core::dates::{DatePreset, preset_range};
 use financi_core::parse::merchant;
 use financi_core::{AccountKind, CategoryKind};
 use financi_db::import::TransactionRow;
-use financi_db::{DbWorker, create_account, open_in_memory};
+use financi_db::settings::{self, DateRange, UI_DATE_RANGE};
+use financi_db::{DbWorker, ViewFilter, create_account, open_in_memory};
 // No glob import: `gpui_kit::*` brings GPUI's `test` macro into scope, which
 // shadows the built-in #[test] that #[gpui::test] expands to.
 use gpui_kit::prelude::*;
@@ -798,4 +801,125 @@ fn hiding_and_unhiding_a_row_updates_the_table_and_sidebar_counts(cx: &mut TestA
             && shell.read(cx).total_visible == before_total
             && shell.read(cx).uncategorized_visible == before_uncategorized
     });
+}
+
+// ---------------------------------------------------------------------------
+// Date range control (task 3.2)
+
+/// Read one raw `settings` row through the shell's own DB worker. Jobs run
+/// on the worker thread in order, so a write already queued by the shell
+/// has landed by the time this returns.
+/// Block this thread until `future` completes. The `DbWorker` answers from
+/// its own OS thread, so no test-executor pumping is needed.
+fn block_on<F: std::future::Future>(future: F) -> F::Output {
+    use std::sync::mpsc;
+    use std::task::{Context, Poll, Wake, Waker};
+    struct ThreadWaker(mpsc::Sender<()>);
+    impl Wake for ThreadWaker {
+        fn wake(self: std::sync::Arc<Self>) {
+            let _ = self.0.send(());
+        }
+    }
+    let (tx, rx) = mpsc::channel();
+    let waker = Waker::from(std::sync::Arc::new(ThreadWaker(tx)));
+    let mut cx = Context::from_waker(&waker);
+    let mut future = std::pin::pin!(future);
+    loop {
+        if let Poll::Ready(value) = future.as_mut().poll(&mut cx) {
+            return value;
+        }
+        rx.recv().expect("waker vanished");
+    }
+}
+
+fn db_setting(cx: &mut TestAppContext, shell: &Entity<Shell>, key: &str) -> Option<String> {
+    let db = shell.update(cx, |s, _| s.db.clone());
+    let key = key.to_string();
+    block_on(db.call(move |c| {
+        c.query_row("SELECT value FROM settings WHERE key = ?1", [key], |r| {
+            r.get::<_, String>(0)
+        })
+        .ok()
+    }))
+    .ok()
+    .flatten()
+}
+
+#[gpui::test]
+fn shell_starts_on_the_default_last_three_months(cx: &mut TestAppContext) {
+    let (_handle, shell) = open_shell(cx, |_| {});
+    // Before the restore lands `view_filter` is still the open default;
+    // narrower bounds prove the saved setting (here: none) was applied.
+    wait_until(cx, "default date range restored", |cx| {
+        shell.read(cx).view_filter.from > ViewFilter::default().from
+    });
+    let (from, to) = preset_range(DatePreset::Last3Months, Shell::today());
+    let state = cx.update(|cx| {
+        let s = shell.read(cx);
+        (s.date_range, s.view_filter.from, s.view_filter.to)
+    });
+    assert_eq!(
+        state,
+        (DateRange::Preset(DatePreset::Last3Months), from, to)
+    );
+    // The default is not persisted; the setting only appears on change.
+    assert_eq!(db_setting(cx, &shell, UI_DATE_RANGE), None);
+}
+
+#[gpui::test]
+fn choosing_a_preset_updates_the_filter_and_persists(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |_| {});
+    wait_until(cx, "date range restored", |cx| {
+        shell.read(cx).view_filter.from > ViewFilter::default().from
+    });
+
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.change_date_preset(DatePreset::LastMonth, window, cx)
+        });
+    });
+
+    let (from, to) = preset_range(DatePreset::LastMonth, Shell::today());
+    let state = cx.update(|cx| {
+        let s = shell.read(cx);
+        (s.date_range, s.view_filter.from, s.view_filter.to)
+    });
+    assert_eq!(state, (DateRange::Preset(DatePreset::LastMonth), from, to));
+    // Let the persist task run until it awaits the worker, so its write
+    // job is queued ahead of the read below (the worker is FIFO).
+    cx.run_until_parked();
+    assert_eq!(
+        db_setting(cx, &shell, UI_DATE_RANGE).as_deref(),
+        Some("last1"),
+        "ui.date_range was written"
+    );
+}
+
+#[gpui::test]
+fn a_saved_custom_range_is_restored_at_launch(cx: &mut TestAppContext) {
+    let from = NaiveDate::from_ymd_opt(2026, 3, 1).unwrap();
+    let to = NaiveDate::from_ymd_opt(2026, 3, 31).unwrap();
+    let (_handle, shell) = open_shell(cx, |c| {
+        settings::set(c, UI_DATE_RANGE, "custom:2026-03-01..2026-03-31").unwrap();
+    });
+    wait_until(cx, "custom range restored", |cx| {
+        shell.read(cx).date_range == DateRange::Custom { from, to }
+    });
+    let state = cx.update(|cx| {
+        let s = shell.read(cx);
+        (s.view_filter.from, s.view_filter.to)
+    });
+    assert_eq!(state, (from, to));
+}
+
+#[gpui::test]
+fn a_garbage_setting_falls_back_to_the_default(cx: &mut TestAppContext) {
+    let (_handle, shell) = open_shell(cx, |c| {
+        settings::set(c, UI_DATE_RANGE, "last13").unwrap();
+    });
+    wait_until(cx, "garbage replaced by default", |cx| {
+        shell.read(cx).view_filter.from > ViewFilter::default().from
+    });
+    let range = cx.update(|cx| shell.read(cx).date_range);
+    assert_eq!(range, DateRange::Preset(DatePreset::Last3Months));
 }
