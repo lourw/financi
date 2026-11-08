@@ -152,7 +152,7 @@ frozen from here on; real databases may exist).
     which creates a substring rule from the cleaned merchant.
   - Tests for lock/unlock behaviour.
 
-- [ ] **2.7 Uncategorized queue query.** `uncategorized_by_merchant(conn) ->
+- [x] **2.7 Uncategorized queue query.** `uncategorized_by_merchant(conn) ->
   Vec<{merchant, count, total_cents, first_date, last_date}>`, sorted by
   count descending. Choosing a category for a group creates a substring rule
   on that merchant (which categorizes the whole group via 2.5).
