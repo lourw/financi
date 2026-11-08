@@ -157,7 +157,7 @@ frozen from here on; real databases may exist).
   count descending. Choosing a category for a group creates a substring rule
   on that merchant (which categorizes the whole group via 2.5).
 
-- [ ] **2.8 Sidebar shell + category pages.** Layout and look:
+- [x] **2.8 Sidebar shell + category pages.** Layout and look:
   `docs/ui-conventions.md` (*Window layout*). Replace the M1 top bar with a
   gpui-kit `Sidebar` (Dashboard, To categorize, Categories,
   Transfers, Imports; counts in item suffixes) and one page area. Move the

@@ -19,6 +19,7 @@ use financi_db::import::{
     CommitOptions, ImportEntry, TransactionRow, commit_import, list_imports, list_transactions,
     plan_import, undo_last_import,
 };
+use financi_db::queue::{UncategorizedGroup, categorize_group, uncategorized_by_merchant};
 use financi_db::rules::{add_rule, count_rule_matches, list_rules};
 use financi_db::{
     Account, DbWorker, create_account, list_accounts, rusqlite::Connection, sidebar_counts,
@@ -706,6 +707,10 @@ pub struct Shell {
     rule_match_count: Option<i64>,
     rule_task: Option<Task<()>>,
     rule_error: Option<String>,
+    // -- To categorize queue
+    queue: Vec<UncategorizedGroup>,
+    queue_pickers: HashMap<String, Entity<SelectState<Names>>>,
+    queue_error: Option<String>,
     _subs: Vec<Subscription>,
 }
 
@@ -837,6 +842,9 @@ impl Shell {
             rule_match_count: None,
             rule_task: None,
             rule_error: None,
+            queue: Vec::new(),
+            queue_pickers: HashMap::new(),
+            queue_error: None,
             _subs: vec![sub, preview_sub],
         };
         shell.refresh(window, cx);
@@ -856,6 +864,7 @@ impl Shell {
                 let tree = list_categories(c)?;
                 let counts = transaction_counts(c)?;
                 let rules = list_rules(c)?;
+                let queue = uncategorized_by_merchant(c)?;
                 Ok::<_, financi_db::DbError>((
                     accounts,
                     rows,
@@ -865,12 +874,23 @@ impl Shell {
                     tree,
                     counts,
                     rules,
+                    queue,
                 ))
             })
             .await;
             let _ = this.update_in(cx, |this, window, cx| {
                 match result {
-                    Ok((accounts, rows, total, uncategorized, history, tree, counts, rules)) => {
+                    Ok((
+                        accounts,
+                        rows,
+                        total,
+                        uncategorized,
+                        history,
+                        tree,
+                        counts,
+                        rules,
+                        queue,
+                    )) => {
                         let names: Names = std::iter::once(SharedString::from(ALL_ACCOUNTS))
                             .chain(accounts.iter().map(|a| a.display_name().into()))
                             .collect();
@@ -900,7 +920,9 @@ impl Shell {
                         this.categories = tree;
                         this.cat_counts = counts;
                         this.rules = rules;
+                        this.queue = queue;
                         this.sync_category_choices(window, cx);
+                        this.sync_queue(window, cx);
                         this.table.update(cx, |t, cx| {
                             t.delegate_mut().rows = rows;
                             t.refresh(cx);
@@ -1352,6 +1374,73 @@ impl Shell {
                         this.rule_error = None;
                     }
                     Err(e) => this.rule_error = Some(e),
+                }
+                this.refresh(window, cx);
+            });
+        }));
+        cx.notify();
+    }
+
+    // -- To categorize queue ------------------------------------------------
+
+    /// One category picker per queue group; stale ones go away with their
+    /// group, existing ones follow the current category list.
+    fn sync_queue(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let merchants: Vec<String> = self.queue.iter().map(|g| g.merchant.clone()).collect();
+        self.queue_pickers
+            .retain(|merchant, _| merchants.iter().any(|m| m == merchant));
+        let names: Names = self
+            .child_choices
+            .iter()
+            .map(|(_, n)| SharedString::from(n.clone()))
+            .collect();
+        for merchant in merchants {
+            if let std::collections::hash_map::Entry::Vacant(e) = self.queue_pickers.entry(merchant)
+            {
+                let items = names.clone();
+                let picker = cx.new(|cx| SelectState::new(items, None, window, cx));
+                e.insert(picker);
+            }
+        }
+        for picker in self.queue_pickers.values() {
+            let items = names.clone();
+            picker.update(cx, |s, cx| s.set_items(items, window, cx));
+        }
+    }
+
+    /// Categorize a whole merchant group: creates the substring rule and
+    /// re-runs the rules (2.7's `categorize_group`).
+    fn categorize_merchant(
+        &mut self,
+        merchant: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(picker) = self.queue_pickers.get(&merchant).cloned() else {
+            return;
+        };
+        let Some(ix) = picker.read(cx).selected_index(cx) else {
+            self.queue_error = Some("Choose a category for this merchant first.".into());
+            cx.notify();
+            return;
+        };
+        let Some((category_id, _)) = self.child_choices.get(ix.row).cloned() else {
+            return;
+        };
+        let db = self.db.clone();
+        let merchant_for_db = merchant.clone();
+        self.task = Some(cx.spawn_in(window, async move |this, cx| {
+            let result = on_db(&db, move |c| {
+                categorize_group(c, &merchant_for_db, category_id)
+            })
+            .await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                match result {
+                    Ok(_rule_id) => {
+                        this.status = Some((format!("Categorized {merchant}"), false));
+                        this.queue_error = None;
+                    }
+                    Err(e) => this.queue_error = Some(e),
                 }
                 this.refresh(window, cx);
             });
@@ -1875,6 +1964,106 @@ impl Shell {
             .into_any_element()
     }
 
+    fn render_queue(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let (muted, danger) = {
+            let theme = cx.theme();
+            (theme.muted_foreground, theme.danger)
+        };
+        let body: AnyElement = if self.queue.is_empty() {
+            div()
+                .flex_1()
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_color(muted)
+                .child("Nothing waiting — every transaction has a category.")
+                .into_any_element()
+        } else {
+            let rows =
+                self.queue.iter().map(|g| {
+                    let merchant = g.merchant.clone();
+                    let picker = self.queue_pickers.get(&merchant).cloned();
+                    h_flex()
+                        .gap_3()
+                        .items_center()
+                        .py_1()
+                        .child(
+                            div()
+                                .w(px(280.))
+                                .min_w_0()
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(g.merchant.clone()),
+                        )
+                        .child(
+                            div()
+                                .w(px(140.))
+                                .child(format!("{} transactions", flow::count(g.count))),
+                        )
+                        .child(
+                            div()
+                                .w(px(120.))
+                                .text_right()
+                                .child(flow::money(g.total_cents)),
+                        )
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(muted)
+                                .child(flow::date_range(&g.first_date, &g.last_date)),
+                        )
+                        .child(div().flex_1())
+                        .child(div().w(px(260.)).child(
+                            picker.map_or(div().into_any_element(), |p| {
+                                Select::new(&p).placeholder("Category…").into_any_element()
+                            }),
+                        ))
+                        .child(
+                            Button::new(SharedString::from(format!("categorize-{}", g.merchant)))
+                                .label("Categorize")
+                                .primary()
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.categorize_merchant(merchant.clone(), window, cx);
+                                })),
+                        )
+                });
+            div()
+                .flex_1()
+                .min_h_0()
+                .id("queue-list")
+                .overflow_y_scroll()
+                .child(v_flex().gap_1().children(rows))
+                .into_any_element()
+        };
+        v_flex()
+            .flex_1()
+            .min_h_0()
+            .gap_3()
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(
+                        div()
+                            .text_lg()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("To categorize"),
+                    )
+                    .child(div().text_sm().text_color(muted).child(format!(
+                        "{} uncategorized",
+                        flow::count(self.uncategorized_visible)
+                    ))),
+            )
+            .children(
+                self.queue_error
+                    .clone()
+                    .map(|e| div().text_sm().text_color(danger).child(e)),
+            )
+            .child(body)
+            .into_any_element()
+    }
+
     fn render_placeholder(
         &mut self,
         title: &'static str,
@@ -1911,7 +2100,7 @@ impl Render for Shell {
 
         let page_area: AnyElement = match self.page {
             Page::Dashboard => self.render_dashboard(cx),
-            Page::ToCategorize => self.render_placeholder("To categorize", "Nothing waiting.", cx),
+            Page::ToCategorize => self.render_queue(cx),
             Page::Categories => self.render_categories(cx),
             Page::Transfers => self.render_placeholder("Transfers", "No transfer reviews yet.", cx),
             Page::Imports => self.render_imports(cx),

@@ -5,7 +5,7 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use financi_core::AccountKind;
+use financi_core::{AccountKind, CategoryKind};
 use financi_db::{DbWorker, create_account, open_in_memory};
 // No glob import: `gpui_kit::*` brings GPUI's `test` macro into scope, which
 // shadows the built-in #[test] that #[gpui::test] expands to.
@@ -311,4 +311,285 @@ fn unrecognized_file_shows_an_error_and_no_panel(cx: &mut TestAppContext) {
         assert!(is_error && msg.contains("not a recognized export"), "{msg}");
     });
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+// -- categories page -------------------------------------------------------
+
+/// Type a parent name, pick the Spend kind (index 0) and add it.
+fn add_parent(cx: &mut TestAppContext, handle: AnyWindowHandle, shell: &Entity<Shell>, name: &str) {
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.new_parent_name.update(cx, |i, cx| {
+                i.set_value(name, window, cx);
+            });
+            s.add_parent(window, cx);
+        });
+    });
+    let what = format!("parent {name}");
+    wait_until(cx, &what, |cx| {
+        shell.read(cx).categories.iter().any(|p| p.name == name)
+    });
+}
+
+/// Add a child under the currently selected parent.
+fn add_child(cx: &mut TestAppContext, handle: AnyWindowHandle, shell: &Entity<Shell>, name: &str) {
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.new_child_name.update(cx, |i, cx| {
+                i.set_value(name, window, cx);
+            });
+            s.add_child(window, cx);
+        });
+    });
+    let what = format!("child {name}");
+    wait_until(cx, &what, |cx| {
+        shell
+            .read(cx)
+            .categories
+            .iter()
+            .any(|p| p.children.iter().any(|c| c.name == name))
+    });
+}
+
+fn find_child(shell: &Entity<Shell>, cx: &App, name: &str) -> Option<i64> {
+    shell
+        .read(cx)
+        .categories
+        .iter()
+        .find_map(|p| p.children.iter().find(|c| c.name == name).map(|c| c.id))
+}
+
+#[gpui::test]
+fn creates_parent_and_child(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |_| {});
+    wait_until(cx, "initial load", |cx| {
+        shell.read(cx).refresh_task.is_some()
+    });
+
+    add_parent(cx, handle, &shell, "Food & Dining");
+    cx.update(|cx| {
+        let parent = shell
+            .read(cx)
+            .categories
+            .iter()
+            .find(|p| p.name == "Food & Dining")
+            .unwrap();
+        assert_eq!(parent.kind, CategoryKind::Spend, "kind defaults to Spend");
+        assert!(parent.children.is_empty());
+    });
+
+    add_child(cx, handle, &shell, "Restaurants");
+    cx.update(|cx| {
+        let parent = shell
+            .read(cx)
+            .categories
+            .iter()
+            .find(|p| p.name == "Food & Dining")
+            .unwrap();
+        assert_eq!(parent.children.len(), 1);
+        assert_eq!(parent.children[0].name, "Restaurants");
+        assert_eq!(parent.children[0].kind, CategoryKind::Spend);
+    });
+}
+
+#[gpui::test]
+fn creating_a_rule_categorizes_matching_rows(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |c| {
+        create_account(c, "amex", "Cobalt", AccountKind::CreditCard).unwrap();
+    });
+    wait_until(cx, "accounts", |cx| shell.read(cx).accounts.len() == 1);
+    open_and_choose(
+        cx,
+        handle,
+        &shell,
+        "amex-sep-oct.csv",
+        "American Express · Cobalt",
+    );
+    wait_until(cx, "plan", |cx| plan_ready(&shell, cx));
+    click_import(cx, handle, &shell);
+    wait_until(cx, "import", |cx| shell.read(cx).row_count == 68);
+
+    add_parent(cx, handle, &shell, "Shopping");
+    add_child(cx, handle, &shell, "Online");
+    let child = cx.update(|cx| find_child(&shell, cx, "Online").unwrap());
+    let (merchant, rows) = cx.update(|cx| top_group(&shell, cx));
+
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.rule_pattern.update(cx, |i, cx| {
+                i.set_value(merchant.clone(), window, cx);
+            });
+            let ix = s
+                .child_choices
+                .iter()
+                .position(|(id, _)| *id == child)
+                .unwrap();
+            s.rule_target.update(cx, |sel, cx| {
+                sel.set_selected_index(Some(gpui_kit::component::IndexPath::new(ix)), window, cx);
+            });
+            s.add_rule(window, cx);
+        });
+    });
+    wait_until(cx, "rule added", |cx| !shell.read(cx).rules.is_empty());
+    wait_until(cx, "rows categorized", |cx| {
+        shell.read(cx).cat_counts.get(&child).copied().unwrap_or(0) >= rows
+    });
+}
+
+/// The busiest queue group as `(merchant, count)`.
+fn top_group(shell: &Entity<Shell>, cx: &App) -> (String, i64) {
+    shell
+        .read(cx)
+        .queue
+        .first()
+        .map(|g| (g.merchant.clone(), g.count))
+        .expect("queue has a group")
+}
+
+#[gpui::test]
+fn categorizing_a_queue_group_locks_in_a_rule(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |c| {
+        create_account(c, "amex", "Cobalt", AccountKind::CreditCard).unwrap();
+    });
+    wait_until(cx, "accounts", |cx| shell.read(cx).accounts.len() == 1);
+    open_and_choose(
+        cx,
+        handle,
+        &shell,
+        "amex-sep-oct.csv",
+        "American Express · Cobalt",
+    );
+    wait_until(cx, "plan", |cx| plan_ready(&shell, cx));
+    click_import(cx, handle, &shell);
+    wait_until(cx, "import", |cx| shell.read(cx).row_count == 68);
+    add_parent(cx, handle, &shell, "Shopping");
+    add_child(cx, handle, &shell, "Online");
+    let child = cx.update(|cx| find_child(&shell, cx, "Online").unwrap());
+
+    wait_until(cx, "queue populated", |cx| !shell.read(cx).queue.is_empty());
+    let (merchant, before) = cx.update(|cx| top_group(&shell, cx));
+
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            let picker = s.queue_pickers.get(&merchant).expect("picker built");
+            let ix = s
+                .child_choices
+                .iter()
+                .position(|(id, _)| *id == child)
+                .unwrap();
+            picker.update(cx, |sel, cx| {
+                sel.set_selected_index(Some(gpui_kit::component::IndexPath::new(ix)), window, cx);
+            });
+            s.categorize_merchant(merchant.clone(), window, cx);
+        });
+    });
+    let gone = merchant.clone();
+    let shell_for_gone = shell.clone();
+    wait_until(cx, "queue group gone", move |cx| {
+        !shell_for_gone
+            .read(cx)
+            .queue
+            .iter()
+            .any(|g| g.merchant == gone)
+    });
+    let online = cx.update(|cx| *shell.read(cx).cat_counts.get(&child).unwrap());
+    assert!(online >= before, "{online} >= {before} categorized");
+    cx.update(|cx| {
+        assert!(
+            shell.read(cx).rules.iter().any(|r| r.pattern == merchant),
+            "a rule was created for the merchant"
+        );
+    });
+}
+
+#[gpui::test]
+fn delete_category_reassigns_transactions_and_rules(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |c| {
+        create_account(c, "amex", "Cobalt", AccountKind::CreditCard).unwrap();
+    });
+    wait_until(cx, "accounts", |cx| shell.read(cx).accounts.len() == 1);
+    open_and_choose(
+        cx,
+        handle,
+        &shell,
+        "amex-sep-oct.csv",
+        "American Express · Cobalt",
+    );
+    wait_until(cx, "plan", |cx| plan_ready(&shell, cx));
+    click_import(cx, handle, &shell);
+    wait_until(cx, "import", |cx| shell.read(cx).row_count == 68);
+    add_parent(cx, handle, &shell, "Shopping");
+    add_child(cx, handle, &shell, "Online");
+    add_parent(cx, handle, &shell, "Everything Else"); // second parent to reassign onto
+    add_child(cx, handle, &shell, "Keep");
+    let keep = cx.update(|cx| find_child(&shell, cx, "Keep").unwrap());
+    let online = cx.update(|cx| find_child(&shell, cx, "Online").unwrap());
+    let (merchant, _) = cx.update(|cx| top_group(&shell, cx));
+
+    // Categorize the top merchant's rows onto Online, so a delete has work to move.
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.rule_pattern.update(cx, |i, cx| {
+                i.set_value(merchant.clone(), window, cx);
+            });
+            let ix = s
+                .child_choices
+                .iter()
+                .position(|(id, _)| *id == online)
+                .unwrap();
+            s.rule_target.update(cx, |sel, cx| {
+                sel.set_selected_index(Some(gpui_kit::component::IndexPath::new(ix)), window, cx);
+            });
+            s.add_rule(window, cx);
+        });
+    });
+    wait_until(cx, "rows on Online", |cx| {
+        shell.read(cx).cat_counts.get(&online).copied().unwrap_or(0) > 0
+    });
+
+    // Select Online, arm the delete, then confirm reassigning to Keep.
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.select_category(online, window, cx);
+        });
+    });
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| s.arm_delete_category(window, cx));
+        assert_eq!(
+            shell.read(cx).confirm_delete_category,
+            Some(online),
+            "first click arms"
+        );
+        let keep_ix = s_ix(&shell, cx, keep);
+        s_select(&shell, cx, keep_ix, window);
+        shell.update(cx, |s, cx| s.arm_delete_category(window, cx));
+    });
+    wait_until(cx, "Online deleted", |cx| {
+        find_child(&shell, cx, "Online").is_none()
+    });
+    let keep_count = cx.update(|cx| *shell.read(cx).cat_counts.get(&keep).unwrap());
+    assert!(keep_count > 0, "transactions moved to Keep");
+    cx.update(|cx| {
+        assert!(
+            shell.read(cx).rules.iter().all(|r| r.category_id == keep),
+            "the rule followed the reassignment"
+        );
+    });
+}
+
+/// The index of `child` in the shell's child_choices.
+fn s_ix(shell: &Entity<Shell>, cx: &App, child: i64) -> usize {
+    shell
+        .read(cx)
+        .child_choices
+        .iter()
+        .position(|(id, _)| *id == child)
+        .unwrap()
+}
+
+fn s_select(shell: &Entity<Shell>, cx: &mut App, ix: usize, window: &mut Window) {
+    let target = shell.read(cx).delete_target.clone();
+    target.update(cx, |sel, cx| {
+        sel.set_selected_index(Some(gpui_kit::component::IndexPath::new(ix)), window, cx)
+    });
 }
