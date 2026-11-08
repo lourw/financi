@@ -3,7 +3,7 @@
 # from the distro's package manager; mise can't provide those.
 
 [tools]
-rust = { version = "1.99.1", components = "clippy,rustfmt", profile = "minimal" }
+rust = { version = "1.99.1", components = "clippy,rustfmt,rust-analyzer,rust-src", profile = "minimal" }
 
 [tasks.build]
 run = "cargo build --workspace"
