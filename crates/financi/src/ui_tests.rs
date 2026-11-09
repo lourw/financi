@@ -1574,10 +1574,13 @@ fn escape_clears_the_drill_and_the_selection(cx: &mut TestAppContext) {
         window.focus(&input, cx);
     });
     cx.simulate_keystrokes(handle, "escape");
-    wait_until(cx, "drill and selection cleared", |cx| {
-        shell.read(cx).chart_parent.is_none() && shell.read(cx).legend_selection.is_none()
+    // The state clears synchronously in the action handler; the rows
+    // follow when the refresh it started lands, so wait for both.
+    wait_until(cx, "drill, selection and rows cleared", |cx| {
+        shell.read(cx).chart_parent.is_none()
+            && shell.read(cx).legend_selection.is_none()
+            && shell.read(cx).row_count == 4
     });
-    cx.update(|cx| assert_eq!(shell.read(cx).row_count, 4));
 }
 
 /// `seed_chart_rows` plus a childless Gifts parent whose only transaction
