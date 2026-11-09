@@ -690,6 +690,67 @@ fn import_end_to_end_shows_expected_values_on_every_page(cx: &mut TestAppContext
     });
 }
 
+/// The import itself must put the data on the Dashboard: the shell
+/// refreshes when an import finishes, with no filter change from the user.
+/// A missing refresh leaves the Dashboard on its "no data" state while the
+/// sidebar already counts the imported rows (task 3.10). The range is
+/// pinned to "All time" through the persisted setting — the fixture dates
+/// are fixed 2026 dates, so the test passes whenever it runs.
+#[gpui::test]
+fn the_dashboard_shows_the_imported_totals_without_touching_the_range(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |c| {
+        settings::set(c, UI_DATE_RANGE, "all").unwrap();
+    });
+    wait_until(cx, "all-time range restored", |cx| {
+        shell.read(cx).date_range == DateRange::Preset(DatePreset::AllTime)
+    });
+
+    import_demo_file(cx, handle, &shell, "amex-sep-nov.csv", "Amex");
+
+    // Nothing else touches the shell: these numbers can only come from the
+    // refresh the finished import triggers.
+    wait_until(cx, "dashboard shows the import", |cx| {
+        shell.read(cx).row_count == 100 && shell.read(cx).total_visible == 102
+    });
+
+    // Spend per month from expected.json: the two money-in rows are the
+    // card payments, auto-categorized as transfers, so they leave the
+    // default view entirely instead of offsetting the spend.
+    let expected = expected_totals();
+    let want: Vec<i64> = ["2026-09", "2026-10", "2026-11"]
+        .iter()
+        .map(|m| {
+            expected["amex-sep-nov.csv"]["months"][m]["money_out_cents"]
+                .as_i64()
+                .unwrap()
+        })
+        .collect();
+    let total: i64 = want.iter().sum();
+    cx.update(|cx| {
+        let s = shell.read(cx);
+        assert_eq!(s.summary.months, ["2026-09", "2026-10", "2026-11"]);
+        let row = |name: &str| {
+            s.summary
+                .rows
+                .iter()
+                .find(|r| r.name == name)
+                .unwrap_or_else(|| panic!("no summary row {name:?}"))
+        };
+        assert_eq!(row("Spend").months, want);
+        assert_eq!(row("Spend").total, total);
+        assert_eq!(row("Income").total, 0);
+        assert_eq!(row("Net").total, -total);
+        assert_eq!(
+            s.chart_rows
+                .iter()
+                .map(|r| (r.name.as_str(), r.spend_cents))
+                .collect::<Vec<_>>(),
+            [("Uncategorized", total)],
+            "the chart shows the imported spend with no further interaction"
+        );
+    });
+}
+
 // -- categories page -------------------------------------------------------
 
 /// Type a parent name, pick the Expense kind (index 0) and add it.
