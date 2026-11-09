@@ -11,7 +11,8 @@ use financi_core::parse::merchant;
 use financi_core::{AccountKind, CategoryKind};
 use financi_db::import::TransactionRow;
 use financi_db::settings::{self, DateRange, UI_DATE_RANGE, UI_INCLUDE_TRANSFERS};
-use financi_db::{DbWorker, ViewFilter, create_account, open_in_memory};
+use financi_db::{DbWorker, TxSort, TxSortColumn, ViewFilter, create_account, open_in_memory};
+use gpui_kit::component::table::{ColumnSort, TableDelegate};
 // No glob import: `gpui_kit::*` brings GPUI's `test` macro into scope, which
 // shadows the built-in #[test] that #[gpui::test] expands to.
 use gpui_kit::component::calendar::Date as CalendarDate;
@@ -1169,5 +1170,181 @@ fn unchecking_an_account_filters_the_table(cx: &mut TestAppContext) {
     });
     cx.update(|cx| {
         assert_eq!(shell.read(cx).view_filter.account_ids, vec![cobalt]);
+    });
+}
+
+// Dashboard table search and toggles (task 3.4)
+
+/// One account with a categorized spend, an uncategorized spend, a money-in
+/// row and a hidden spend, so the search box and the two table-only toggles
+/// each change which rows the table shows.
+fn seed_table_filter_rows(conn: &financi_db::rusqlite::Connection) {
+    let acct = create_account(conn, "amex", "Cobalt", AccountKind::CreditCard).unwrap();
+    conn.execute(
+        "INSERT INTO imports (account_id, parser_id, file_name, imported_at, header_raw,
+                              encoding, has_bom, line_ending, trailing_newline, row_count)
+         VALUES (?1, 'amex', 'seed.csv', '2026-11-01', X'00', 'utf-8', 0, 'lf', 0, 0)",
+        [acct],
+    )
+    .unwrap();
+    let import = conn.last_insert_rowid();
+    let food = financi_db::categories::create_parent(conn, "Food", CategoryKind::Expense).unwrap();
+    let groceries = financi_db::categories::create_child(conn, food, "Groceries").unwrap();
+
+    let mut line = 0i64;
+    let mut txn =
+        |description: &str, merchant: Option<&str>, cents: i64, category: Option<i64>| -> i64 {
+            conn.execute(
+                "INSERT INTO transactions (account_id, import_id, source_line, raw_bytes,
+                                           row_hash, posted_date, amount_cents,
+                                           description_raw, merchant, category_id)
+                 VALUES (?1, ?2, ?3, X'00', ?4, '2026-11-05', ?5, ?6, ?7, ?8)",
+                (
+                    acct,
+                    import,
+                    line,
+                    format!("hash-{line}"),
+                    cents,
+                    description,
+                    merchant,
+                    category,
+                ),
+            )
+            .unwrap();
+            line += 1;
+            conn.last_insert_rowid()
+        };
+    txn("CORNER CAFE", None, -500, None);
+    txn("GROCER STORE", Some("Fresh Mart"), -1200, Some(groceries));
+    txn("PAYROLL DEPOSIT", None, 3000, None);
+    let hidden = txn("HIDDEN SPEND", None, -700, None);
+    financi_db::set_hidden(conn, hidden, true).unwrap();
+}
+
+#[gpui::test]
+fn search_filters_the_table_rows(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_table_filter_rows);
+    wait_until(cx, "three visible rows", |cx| shell.read(cx).row_count == 3);
+    // A case-insensitive substring of the description.
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| s.apply_search("cafe", window, cx));
+    });
+    wait_until(cx, "one cafe row", |cx| shell.read(cx).row_count == 1);
+    cx.update(|cx| {
+        assert_eq!(table_rows(&shell, cx)[0].description, "CORNER CAFE");
+    });
+    // A match on the merchant column.
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| s.apply_search("fresh", window, cx));
+    });
+    wait_until(cx, "merchant match", |cx| {
+        shell.read(cx).row_count == 1
+            && table_rows(&shell, cx)[0].merchant.as_deref() == Some("Fresh Mart")
+    });
+    // Clearing the box brings every row back.
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| s.apply_search("", window, cx));
+    });
+    wait_until(cx, "all rows back", |cx| shell.read(cx).row_count == 3);
+}
+
+#[gpui::test]
+fn uncategorized_only_toggle_filters_the_table(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_table_filter_rows);
+    wait_until(cx, "three rows", |cx| shell.read(cx).row_count == 3);
+    cx.update(|cx| assert!(!shell.read(cx).uncategorized_only));
+
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| s.set_uncategorized_only(true, window, cx));
+    });
+    wait_until(cx, "two uncategorized rows", |cx| {
+        shell.read(cx).row_count == 2
+    });
+    cx.update(|cx| {
+        assert!(shell.read(cx).uncategorized_only);
+        assert!(
+            table_rows(&shell, cx)
+                .iter()
+                .all(|r| r.category_id.is_none()),
+            "only uncategorized rows remain"
+        );
+    });
+
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| s.set_uncategorized_only(false, window, cx));
+    });
+    wait_until(cx, "three rows back", |cx| shell.read(cx).row_count == 3);
+}
+
+#[gpui::test]
+fn show_hidden_toggle_reveals_hidden_rows(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_table_filter_rows);
+    wait_until(cx, "hidden row not shown by default", |cx| {
+        shell.read(cx).row_count == 3
+    });
+    cx.update(|cx| {
+        assert!(!shell.read(cx).show_hidden);
+        assert!(table_rows(&shell, cx).iter().all(|r| !r.hidden));
+    });
+
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| s.set_show_hidden(true, window, cx));
+    });
+    wait_until(cx, "hidden row appears", |cx| shell.read(cx).row_count == 4);
+    cx.update(|cx| {
+        let rows = table_rows(&shell, cx);
+        let hidden = rows
+            .iter()
+            .find(|r| r.hidden)
+            .expect("showing hidden reveals the hidden row");
+        assert_eq!(hidden.description, "HIDDEN SPEND");
+    });
+}
+
+#[gpui::test]
+fn sorting_the_amount_header_reorders_rows_without_a_reentrant_panic(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_table_filter_rows);
+    wait_until(cx, "three visible rows", |cx| shell.read(cx).row_count == 3);
+
+    let descriptions = |cx: &App| -> Vec<String> {
+        table_rows(&shell, cx)
+            .iter()
+            .map(|r| r.description.clone())
+            .collect()
+    };
+    // Newest-first default; every row shares a date, so they fall back to
+    // source order.
+    assert_eq!(
+        cx.read(descriptions),
+        ["CORNER CAFE", "GROCER STORE", "PAYROLL DEPOSIT"]
+    );
+
+    // Drive the header sort exactly as the table's click listener does:
+    // `perform_sort` runs while the table entity is leased and hands the new
+    // sort to the shell, which must not update that same entity in response
+    // (that double-lease is the crash). The click test-support gpui-kit ships
+    // is disabled in this crate, so we enter the sort through the same
+    // delegate call the header's `on_click` makes, under the table's lease.
+    let table = cx.update(|cx| shell.read(cx).table.clone());
+    with_window(cx, handle, |window, cx| {
+        table.update(cx, |t, cx| {
+            t.delegate_mut()
+                .perform_sort(4, ColumnSort::Descending, window, cx);
+        });
+    });
+
+    // The shell adopted the sort and the async re-query reordered by amount
+    // descending: +3000, -500, -1200.
+    cx.update(|cx| {
+        assert_eq!(
+            shell.read(cx).tx_sort,
+            TxSort {
+                column: TxSortColumn::Amount,
+                descending: true,
+            }
+        );
+    });
+    wait_until(cx, "rows reordered by amount", |cx| {
+        descriptions(cx) == ["PAYROLL DEPOSIT", "CORNER CAFE", "GROCER STORE"]
     });
 }

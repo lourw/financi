@@ -222,7 +222,7 @@ beside the monthly summary (right); then the transaction table.
   accounts filter as a dropdown popover of gpui-kit checkboxes, one per
   account.
 
-- [ ] **3.4 Transaction table upgrade.**
+- [x] **3.4 Transaction table upgrade.**
   - Filtered by the `ViewFilter`, the selected category (parent or child)
     and an optional month (set from the summary).
   - Text search box: case-insensitive match on description or merchant.
