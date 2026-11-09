@@ -1,0 +1,44 @@
+#!/bin/sh
+# Tags each commit on main with the next semver version, based on its
+# Conventional Commit message: breaking = major, feat = minor, else patch.
+# Enable with: git config core.hooksPath .githooks
+
+[ "$(git symbolic-ref --short -q HEAD)" = "main" ] || exit 0
+
+subject=$(git log -1 --format=%s)
+
+# The previous version is the newest tag on the parent's history. Looking at
+# the parent, not HEAD, means an amended commit gets the same version again.
+prev=""
+if git rev-parse -q --verify HEAD^ >/dev/null; then
+    prev=$(git tag --merged HEAD^ --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n 1)
+fi
+
+if [ -z "$prev" ]; then
+    next="v0.1.0"
+else
+    IFS=. read -r major minor patch <<EOF
+${prev#v}
+EOF
+    if printf '%s\n' "$subject" | grep -Eq '^[a-z]+(\([^)]*\))?!:' ||
+        git log -1 --format=%B | grep -Eq '^BREAKING[ -]CHANGE:'; then
+        next="v$((major + 1)).0.0"
+    elif printf '%s\n' "$subject" | grep -Eq '^feat(\([^)]*\))?:'; then
+        next="v$major.$((minor + 1)).0"
+    else
+        next="v$major.$minor.$((patch + 1))"
+    fi
+fi
+
+# A tag that already exists off this history is left over from an amended or
+# reset commit, so it moves here. One on this history is unexpected: leave it.
+force=""
+if git rev-parse -q --verify "refs/tags/$next" >/dev/null; then
+    if git merge-base --is-ancestor "refs/tags/$next" HEAD; then
+        echo "post-commit: $next already exists on this history, not tagging" >&2
+        exit 0
+    fi
+    force="-f"
+fi
+
+git tag $force -a -m "$next" "$next" HEAD && echo "tagged $next"
