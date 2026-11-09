@@ -244,6 +244,8 @@ Decisions recorded in the sections above are not repeated. These are the remaini
 
 - [ ] **Ship default categories and merchant rules**, as specified under **Categorization**.
 - [ ] **Keep the app responsive with thousands of rows.** Profile the slowdown after large imports, then render only the rows on screen in every long list, starting with the To categorize queue. Create its per-row category dropdowns only when needed.
+- [ ] **Make category dropdowns usable with thousands of categories.** Scrolling a flat list won't work at that size, so every dropdown that picks a category (rules, the To categorize queue, the move and delete targets on the Categories page) becomes searchable: type to filter, match on both parent and child names, and show each result with its parent so same-named children can be told apart. Works from the keyboard and renders only the visible options.
+- [ ] **Give each section of the Categories page real boundaries and its own scrolling.** As rules accumulate they crowd the page and push the new category section past the window edge. Each section (new category controls, category tree, selected category details, rules list) gets a defined boundary, and long content scrolls inside its own section. At the minimum window size and above, no section overflows the page or pushes another out of view.
 - [ ] **Align the columns in the To categorize table.** Every column lines up from row to row. Text beyond a column's limit is cut with an ellipsis (…) and shown in full on hover.
 - [x] **Rename the "Spend" category type to "Expense".** The kind is `expense` in code, database and UI. `0001_init.sql` was edited in place because no data existed.
 - [ ] **Label the category type dropdown** with a visible "Category type" label.
