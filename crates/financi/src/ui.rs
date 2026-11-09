@@ -847,7 +847,7 @@ pub struct Shell {
 }
 
 const KIND_LABELS: [(&str, CategoryKind); 3] = [
-    ("Spend", CategoryKind::Spend),
+    ("Expense", CategoryKind::Expense),
     ("Income", CategoryKind::Income),
     ("Transfer", CategoryKind::Transfer),
 ];
@@ -856,7 +856,7 @@ fn kind_label(kind: CategoryKind) -> &'static str {
     KIND_LABELS
         .iter()
         .find(|(_, k)| *k == kind)
-        .map_or("Spend", |(l, _)| l)
+        .map_or("Expense", |(l, _)| l)
 }
 
 const ALL_ACCOUNTS: &str = "All accounts";
@@ -1517,7 +1517,7 @@ impl Shell {
             .read(cx)
             .selected_index(cx)
             .map(|ix| KIND_LABELS[ix.row].1)
-            .unwrap_or(CategoryKind::Spend);
+            .unwrap_or(CategoryKind::Expense);
         if name.is_empty() {
             self.cat_error = Some("Give the parent a name.".into());
             cx.notify();

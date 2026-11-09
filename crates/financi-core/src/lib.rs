@@ -135,7 +135,7 @@ impl AccountKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CategoryKind {
-    Spend,
+    Expense,
     Income,
     Transfer,
 }
@@ -143,7 +143,7 @@ pub enum CategoryKind {
 impl CategoryKind {
     pub fn as_str(self) -> &'static str {
         match self {
-            CategoryKind::Spend => "spend",
+            CategoryKind::Expense => "expense",
             CategoryKind::Income => "income",
             CategoryKind::Transfer => "transfer",
         }

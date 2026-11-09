@@ -24,7 +24,7 @@ pub struct CategoryNode {
 
 fn kind_from_str(s: &str) -> Option<CategoryKind> {
     match s {
-        "spend" => Some(CategoryKind::Spend),
+        "expense" => Some(CategoryKind::Expense),
         "income" => Some(CategoryKind::Income),
         "transfer" => Some(CategoryKind::Transfer),
         _ => None,
@@ -337,7 +337,7 @@ mod tests {
     #[test]
     fn list_returns_parents_with_children_sorted_by_name() {
         let conn = open_in_memory().unwrap();
-        let food = create_parent(&conn, "Food", CategoryKind::Spend).unwrap();
+        let food = create_parent(&conn, "Food", CategoryKind::Expense).unwrap();
         create_child(&conn, food, "Restaurants").unwrap();
         create_child(&conn, food, "Groceries").unwrap();
 
@@ -349,7 +349,7 @@ mod tests {
         assert_eq!(
             names,
             vec![
-                ("Food".to_string(), CategoryKind::Spend, false),
+                ("Food".to_string(), CategoryKind::Expense, false),
                 ("Transfers".to_string(), CategoryKind::Transfer, true),
             ]
         );
@@ -364,13 +364,13 @@ mod tests {
             ["Groceries", "Restaurants"],
             "children sorted by name"
         );
-        assert_eq!(food.children[0].kind, CategoryKind::Spend);
+        assert_eq!(food.children[0].kind, CategoryKind::Expense);
     }
 
     #[test]
     fn child_inherits_the_parents_kind() {
         let conn = open_in_memory().unwrap();
-        let spend = create_parent(&conn, "Food", CategoryKind::Spend).unwrap();
+        let spend = create_parent(&conn, "Food", CategoryKind::Expense).unwrap();
         let income = create_parent(&conn, "Income", CategoryKind::Income).unwrap();
         create_child(&conn, spend, "Groceries").unwrap();
         create_child(&conn, income, "Refunds").unwrap();
@@ -385,7 +385,7 @@ mod tests {
         assert_eq!(
             kinds,
             vec![
-                ("Groceries".to_string(), CategoryKind::Spend),
+                ("Groceries".to_string(), CategoryKind::Expense),
                 ("Refunds".to_string(), CategoryKind::Income),
             ]
         );
@@ -394,13 +394,13 @@ mod tests {
     #[test]
     fn duplicate_names_are_refused_within_the_same_level() {
         let conn = open_in_memory().unwrap();
-        let food = create_parent(&conn, "Food", CategoryKind::Spend).unwrap();
+        let food = create_parent(&conn, "Food", CategoryKind::Expense).unwrap();
         let dup = create_parent(&conn, "Food", CategoryKind::Income).unwrap_err();
         assert!(matches!(dup, DbError::DuplicateCategory { .. }), "{dup}");
         create_child(&conn, food, "Groceries").unwrap();
         let dup = create_child(&conn, food, "Groceries").unwrap_err();
         assert!(matches!(dup, DbError::DuplicateCategory { .. }), "{dup}");
-        let home = create_parent(&conn, "Home", CategoryKind::Spend).unwrap();
+        let home = create_parent(&conn, "Home", CategoryKind::Expense).unwrap();
         create_child(&conn, home, "Groceries").expect("other parent is fine");
     }
 
@@ -411,7 +411,7 @@ mod tests {
             create_child(&conn, 999, "X").unwrap_err(),
             DbError::UnknownCategory(999)
         ));
-        let food = create_parent(&conn, "Food", CategoryKind::Spend).unwrap();
+        let food = create_parent(&conn, "Food", CategoryKind::Expense).unwrap();
         let groceries = create_child(&conn, food, "Groceries").unwrap();
         let err = create_child(&conn, groceries, "Beans").unwrap_err();
         assert!(matches!(err, DbError::CategoryHasParent(id) if id == groceries));
@@ -420,7 +420,7 @@ mod tests {
     #[test]
     fn rename_updates_parents_and_children() {
         let conn = open_in_memory().unwrap();
-        let food = create_parent(&conn, "Food", CategoryKind::Spend).unwrap();
+        let food = create_parent(&conn, "Food", CategoryKind::Expense).unwrap();
         let groceries = create_child(&conn, food, "Groceries").unwrap();
         rename(&conn, groceries, "Supermarket").unwrap();
         rename(&conn, food, "Food & Drinks").unwrap();
@@ -432,9 +432,9 @@ mod tests {
     #[test]
     fn rename_refuses_duplicates_and_system_categories() {
         let conn = open_in_memory().unwrap();
-        let food = create_parent(&conn, "Food", CategoryKind::Spend).unwrap();
+        let food = create_parent(&conn, "Food", CategoryKind::Expense).unwrap();
         let groceries = create_child(&conn, food, "Groceries").unwrap();
-        let home = create_parent(&conn, "Home", CategoryKind::Spend).unwrap();
+        let home = create_parent(&conn, "Home", CategoryKind::Expense).unwrap();
         create_child(&conn, home, "Utilities").unwrap();
         create_child(&conn, food, "Beans").unwrap();
         // Same name under a *different* parent is fine; it's unique per parent.
@@ -453,9 +453,9 @@ mod tests {
     #[test]
     fn move_child_between_parents_of_the_same_kind() {
         let conn = open_in_memory().unwrap();
-        let food = create_parent(&conn, "Food", CategoryKind::Spend).unwrap();
+        let food = create_parent(&conn, "Food", CategoryKind::Expense).unwrap();
         let groceries = create_child(&conn, food, "Groceries").unwrap();
-        let eating_out = create_parent(&conn, "Eating Out", CategoryKind::Spend).unwrap();
+        let eating_out = create_parent(&conn, "Eating Out", CategoryKind::Expense).unwrap();
         move_child(&conn, groceries, eating_out).unwrap();
         assert_eq!(parent_id_of(&conn, groceries), Some(eating_out));
 
@@ -476,7 +476,7 @@ mod tests {
     #[test]
     fn move_child_refusals() {
         let conn = open_in_memory().unwrap();
-        let food = create_parent(&conn, "Food", CategoryKind::Spend).unwrap();
+        let food = create_parent(&conn, "Food", CategoryKind::Expense).unwrap();
         let groceries = create_child(&conn, food, "Groceries").unwrap();
         let income = create_parent(&conn, "Income", CategoryKind::Income).unwrap();
         let card_payment = category_id_of(&conn, "Card Payment");
@@ -506,7 +506,7 @@ mod tests {
     #[test]
     fn delete_category_reassigns_transactions_and_rules() {
         let conn = open_in_memory().unwrap();
-        let food = create_parent(&conn, "Food", CategoryKind::Spend).unwrap();
+        let food = create_parent(&conn, "Food", CategoryKind::Expense).unwrap();
         let coffee = create_child(&conn, food, "Coffee").unwrap();
         let restaurants = create_child(&conn, food, "Restaurants").unwrap();
         let tx1 = add_transaction(&conn, Some(coffee));
@@ -555,9 +555,9 @@ mod tests {
     #[test]
     fn deleting_a_parent_requires_no_children() {
         let conn = open_in_memory().unwrap();
-        let food = create_parent(&conn, "Food", CategoryKind::Spend).unwrap();
+        let food = create_parent(&conn, "Food", CategoryKind::Expense).unwrap();
         let groceries = create_child(&conn, food, "Groceries").unwrap();
-        let home = create_parent(&conn, "Home", CategoryKind::Spend).unwrap();
+        let home = create_parent(&conn, "Home", CategoryKind::Expense).unwrap();
         let target = create_child(&conn, home, "Utilities").unwrap();
 
         let err = delete_category(&conn, food, target).unwrap_err();
@@ -578,7 +578,7 @@ mod tests {
     #[test]
     fn delete_refusals_leave_everything_in_place() {
         let conn = open_in_memory().unwrap();
-        let food = create_parent(&conn, "Food", CategoryKind::Spend).unwrap();
+        let food = create_parent(&conn, "Food", CategoryKind::Expense).unwrap();
         let coffee = create_child(&conn, food, "Coffee").unwrap();
         let restaurants = create_child(&conn, food, "Restaurants").unwrap();
         let tx = add_transaction(&conn, Some(coffee));
@@ -612,7 +612,7 @@ mod tests {
     #[test]
     fn deleting_a_system_category_is_refused_even_with_a_valid_target() {
         let conn = open_in_memory().unwrap();
-        let food = create_parent(&conn, "Food", CategoryKind::Spend).unwrap();
+        let food = create_parent(&conn, "Food", CategoryKind::Expense).unwrap();
         let target = create_child(&conn, food, "Groceries").unwrap();
         for name in ["Transfers", "Card Payment", "Between Accounts"] {
             let id = category_id_of(&conn, name);
@@ -627,7 +627,7 @@ mod tests {
     #[test]
     fn transactions_may_only_be_assigned_to_children() {
         let conn = open_in_memory().unwrap();
-        let food = create_parent(&conn, "Food", CategoryKind::Spend).unwrap();
+        let food = create_parent(&conn, "Food", CategoryKind::Expense).unwrap();
         let groceries = create_child(&conn, food, "Groceries").unwrap();
         ensure_assignable(&conn, groceries).unwrap();
         let err = ensure_assignable(&conn, food).unwrap_err();
@@ -660,7 +660,7 @@ mod tests {
     #[test]
     fn transaction_counts_per_category() {
         let conn = open_in_memory().unwrap();
-        let food = create_parent(&conn, "Food", CategoryKind::Spend).unwrap();
+        let food = create_parent(&conn, "Food", CategoryKind::Expense).unwrap();
         let groceries = create_child(&conn, food, "Groceries").unwrap();
         add_transaction(&conn, Some(groceries));
         add_transaction(&conn, Some(groceries));

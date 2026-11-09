@@ -7,7 +7,7 @@
 //!
 //! Classification rules (both queries):
 //!
-//! - **Spend**: rows whose category kind is `spend`, *or* that are
+//! - **Spend**: rows whose category kind is `expense`, *or* that are
 //!   uncategorized, *or* whose kind is `transfer` when
 //!   [`ViewFilter::include_transfers`]. Shown positive:
 //!   `spend = -(sum of amount_cents)`, so refunds (positive amounts inside a
@@ -256,7 +256,7 @@ struct GroupedRow {
 
 fn grouped_rows(conn: &Connection, filter: &ViewFilter) -> Result<Vec<GroupedRow>> {
     let mut sql = String::from(
-        "SELECT COALESCE(c.kind, 'spend'), p.id, p.name, c.id, c.name,
+        "SELECT COALESCE(c.kind, 'expense'), p.id, p.name, c.id, c.name,
                 substr(t.posted_date, 1, 7), SUM(t.amount_cents)
            FROM transactions t
            LEFT JOIN categories c ON c.id = t.category_id
@@ -282,7 +282,7 @@ fn grouped_rows(conn: &Connection, filter: &ViewFilter) -> Result<Vec<GroupedRow
         );
     }
     if !filter.include_transfers {
-        sql.push_str(" AND COALESCE(c.kind, 'spend') <> 'transfer'");
+        sql.push_str(" AND COALESCE(c.kind, 'expense') <> 'transfer'");
     }
     sql.push_str(" GROUP BY 1, 2, 3, 4, 5, 6");
 
@@ -629,7 +629,7 @@ mod tests {
         }
     }
 
-    /// Spend categories, refunds, income, a transfer and a hidden row,
+    /// Expense categories, refunds, income, a transfer and a hidden row,
     /// laid out for every test below.
     struct Fixture {
         conn: Connection,
@@ -647,7 +647,7 @@ mod tests {
         let account_id = account(&conn, "amex");
         let other_account_id = account(&conn, "simplii");
         let import_id = seed_import(&conn, account_id);
-        let food = create_parent(&conn, "Food", CategoryKind::Spend).unwrap();
+        let food = create_parent(&conn, "Food", CategoryKind::Expense).unwrap();
         let groceries = create_child(&conn, food, "Groceries").unwrap();
         let dining = create_child(&conn, food, "Dining").unwrap();
         let payroll_parent = create_parent(&conn, "Income", CategoryKind::Income).unwrap();
@@ -886,7 +886,7 @@ mod tests {
     #[test]
     fn shares_sum_to_one_in_both_views() {
         let f = fixture();
-        let fun = create_parent(&f.conn, "Fun", CategoryKind::Spend).unwrap();
+        let fun = create_parent(&f.conn, "Fun", CategoryKind::Expense).unwrap();
         let games = create_child(&f.conn, fun, "Games").unwrap();
         add_txn(
             &f.conn,

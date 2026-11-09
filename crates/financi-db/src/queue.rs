@@ -123,7 +123,7 @@ mod tests {
                 "Parent{}",
                 NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             ),
-            CategoryKind::Spend,
+            CategoryKind::Expense,
         )
         .unwrap();
         create_child(conn, parent, name).unwrap()
@@ -292,7 +292,7 @@ mod tests {
     fn categorize_group_refusals() {
         let conn = open_in_memory().unwrap();
         let cat = child_category(&conn, "Coffee");
-        let parent = create_parent(&conn, "Home", CategoryKind::Spend).unwrap();
+        let parent = create_parent(&conn, "Home", CategoryKind::Expense).unwrap();
         add_tx(&conn, "COFFEE  X", -100, "2026-10-01");
 
         assert!(matches!(

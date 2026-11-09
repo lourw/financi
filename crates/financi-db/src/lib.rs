@@ -176,7 +176,7 @@ pub fn spend_by_parent_category(conn: &Connection) -> Result<Vec<(String, i64)>>
            LEFT JOIN categories c ON c.id = t.category_id
            LEFT JOIN categories p ON p.id = c.parent_id
           WHERE t.hidden = 0
-            AND COALESCE(c.kind, 'spend') = 'spend'
+            AND COALESCE(c.kind, 'expense') = 'expense'
           GROUP BY cat
           ORDER BY spend DESC",
     )?;
@@ -235,7 +235,7 @@ mod tests {
         )
         .unwrap();
         let parent =
-            crate::categories::create_parent(&conn, "Food", financi_core::CategoryKind::Spend)
+            crate::categories::create_parent(&conn, "Food", financi_core::CategoryKind::Expense)
                 .unwrap();
         let child = crate::categories::create_child(&conn, parent, "Groceries").unwrap();
         conn.execute(
@@ -407,15 +407,43 @@ mod tests {
     fn top_level_category_names_are_unique() {
         let conn = open_in_memory().unwrap();
         conn.execute(
-            "INSERT INTO categories (name, kind) VALUES ('Food', 'spend')",
+            "INSERT INTO categories (name, kind) VALUES ('Food', 'expense')",
             [],
         )
         .unwrap();
         let dup = conn.execute(
-            "INSERT INTO categories (name, kind) VALUES ('Food', 'spend')",
+            "INSERT INTO categories (name, kind) VALUES ('Food', 'expense')",
             [],
         );
         assert!(dup.is_err());
+    }
+
+    #[test]
+    fn expense_kind_round_trips_as_expense() {
+        use financi_core::CategoryKind;
+
+        let conn = open_in_memory().unwrap();
+        let id = crate::categories::create_parent(&conn, "Food", CategoryKind::Expense).unwrap();
+        let stored: String = conn
+            .query_row("SELECT kind FROM categories WHERE id = ?1", [id], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(stored, "expense");
+
+        let tree = crate::categories::list_categories(&conn).unwrap();
+        let food = tree.iter().find(|p| p.name == "Food").unwrap();
+        assert_eq!(food.kind, CategoryKind::Expense);
+    }
+
+    #[test]
+    fn category_kind_check_rejects_the_old_spend_value() {
+        let conn = open_in_memory().unwrap();
+        let old = conn.execute(
+            "INSERT INTO categories (name, kind) VALUES ('Food', 'spend')",
+            [],
+        );
+        assert!(old.is_err(), "the CHECK no longer allows 'spend'");
     }
 
     #[test]

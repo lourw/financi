@@ -25,7 +25,7 @@ CREATE TABLE categories (
   id         INTEGER PRIMARY KEY,
   name       TEXT NOT NULL,
   parent_id  INTEGER REFERENCES categories(id),
-  kind       TEXT NOT NULL CHECK (kind IN ('spend', 'income', 'transfer')),
+  kind       TEXT NOT NULL CHECK (kind IN ('expense', 'income', 'transfer')),
   UNIQUE (parent_id, name)
 );
 -- UNIQUE treats NULLs as distinct, so enforce unique top-level names separately.

@@ -184,7 +184,7 @@ mod tests {
     use financi_core::CategoryKind;
 
     fn child_category(conn: &Connection) -> i64 {
-        let parent = create_parent(conn, "Food", CategoryKind::Spend).unwrap();
+        let parent = create_parent(conn, "Food", CategoryKind::Expense).unwrap();
         create_child(conn, parent, "Groceries").unwrap()
     }
 
@@ -312,7 +312,7 @@ mod tests {
     #[test]
     fn add_rejects_parents_and_unknown_categories() {
         let conn = open_in_memory().unwrap();
-        let parent = create_parent(&conn, "Food", CategoryKind::Spend).unwrap();
+        let parent = create_parent(&conn, "Food", CategoryKind::Expense).unwrap();
         assert!(matches!(
             add_rule(&conn, "COFFEE", false, parent).unwrap_err(),
             DbError::ParentCategoryNotAssignable(id) if id == parent
@@ -328,7 +328,7 @@ mod tests {
     fn update_replaces_pattern_kind_and_category() {
         let conn = open_in_memory().unwrap();
         let cat = child_category(&conn);
-        let other = create_parent(&conn, "Home", CategoryKind::Spend).unwrap();
+        let other = create_parent(&conn, "Home", CategoryKind::Expense).unwrap();
         let other_cat = create_child(&conn, other, "Utilities").unwrap();
         let id = add_rule(&conn, "COFFEE", false, cat).unwrap();
 
@@ -396,7 +396,7 @@ mod tests {
     fn adding_a_rule_categorizes_unlocked_rows_only() {
         let conn = open_in_memory().unwrap();
         let cat = child_category(&conn);
-        let other_parent = create_parent(&conn, "Home", CategoryKind::Spend).unwrap();
+        let other_parent = create_parent(&conn, "Home", CategoryKind::Expense).unwrap();
         let other = create_child(&conn, other_parent, "Utilities").unwrap();
 
         let coffee = add_transaction(&conn, "COFFEE VANCOUVER", false, None);
@@ -440,7 +440,7 @@ mod tests {
     fn editing_a_rule_moves_rows_to_the_new_winner() {
         let conn = open_in_memory().unwrap();
         let coffee_cat = child_category(&conn);
-        let home = create_parent(&conn, "Home", CategoryKind::Spend).unwrap();
+        let home = create_parent(&conn, "Home", CategoryKind::Expense).unwrap();
         let bistro_cat = create_child(&conn, home, "Restaurants").unwrap();
 
         let coffee = add_transaction(&conn, "COFFEE VANCOUVER", false, None);

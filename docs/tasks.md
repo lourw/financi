@@ -189,7 +189,7 @@ beside the monthly summary (right); then the transaction table.
   one `ViewFilter { from: NaiveDate, to: NaiveDate, account_ids: Vec<i64>
   (empty = all), include_transfers: bool }`.
   - Spend/income rules: a row counts as **spend** if its category's kind is
-    `spend` *or it is uncategorized*; **income** if kind `income`;
+    `expense` *or it is uncategorized*; **income** if kind `income`;
     transfers only when `include_transfers`. Spend is shown positive:
     `spend = -(sum of amount_cents)` over spend rows, so refunds net
     against their category. Hidden rows are excluded.

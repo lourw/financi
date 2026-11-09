@@ -321,7 +321,7 @@ fn unrecognized_file_shows_an_error_and_no_panel(cx: &mut TestAppContext) {
 
 // -- categories page -------------------------------------------------------
 
-/// Type a parent name, pick the Spend kind (index 0) and add it.
+/// Type a parent name, pick the Expense kind (index 0) and add it.
 fn add_parent(cx: &mut TestAppContext, handle: AnyWindowHandle, shell: &Entity<Shell>, name: &str) {
     with_window(cx, handle, |window, cx| {
         shell.update(cx, |s, cx| {
@@ -380,7 +380,11 @@ fn creates_parent_and_child(cx: &mut TestAppContext) {
             .iter()
             .find(|p| p.name == "Food & Dining")
             .unwrap();
-        assert_eq!(parent.kind, CategoryKind::Spend, "kind defaults to Spend");
+        assert_eq!(
+            parent.kind,
+            CategoryKind::Expense,
+            "kind defaults to Expense"
+        );
         assert!(parent.children.is_empty());
     });
 
@@ -394,7 +398,7 @@ fn creates_parent_and_child(cx: &mut TestAppContext) {
             .unwrap();
         assert_eq!(parent.children.len(), 1);
         assert_eq!(parent.children[0].name, "Restaurants");
-        assert_eq!(parent.children[0].kind, CategoryKind::Spend);
+        assert_eq!(parent.children[0].kind, CategoryKind::Expense);
     });
 }
 

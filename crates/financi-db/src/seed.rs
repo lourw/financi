@@ -16,26 +16,30 @@ use crate::Result;
 const CATEGORIES: &[(&str, CategoryKind, &[&str])] = &[
     (
         "Food",
-        CategoryKind::Spend,
+        CategoryKind::Expense,
         &["Groceries", "Restaurants", "Coffee"],
     ),
     (
         "Transportation",
-        CategoryKind::Spend,
+        CategoryKind::Expense,
         &["Transit", "Rideshare", "Fuel"],
     ),
     (
         "Home",
-        CategoryKind::Spend,
+        CategoryKind::Expense,
         &["Utilities", "Internet & Phone"],
     ),
-    ("Shopping", CategoryKind::Spend, &["General", "Electronics"]),
+    (
+        "Shopping",
+        CategoryKind::Expense,
+        &["General", "Electronics"],
+    ),
     (
         "Entertainment",
-        CategoryKind::Spend,
+        CategoryKind::Expense,
         &["Streaming", "Events"],
     ),
-    ("Travel", CategoryKind::Spend, &["Flights", "Hotels"]),
+    ("Travel", CategoryKind::Expense, &["Flights", "Hotels"]),
     ("Income", CategoryKind::Income, &["Refunds & Credits"]),
     // `Transfers` / `Card Payment` are system categories inserted by
     // migration 0002; the rules and rows below reference them by name.

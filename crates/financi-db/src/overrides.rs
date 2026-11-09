@@ -173,7 +173,7 @@ mod tests {
                 "Parent{}",
                 NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             ),
-            CategoryKind::Spend,
+            CategoryKind::Expense,
         )
         .unwrap();
         create_child(conn, parent, name).unwrap()
@@ -267,7 +267,7 @@ mod tests {
     fn set_category_refusals() {
         let conn = open_in_memory().unwrap();
         let cat = child_category(&conn, "Groceries");
-        let parent = create_parent(&conn, "Home", CategoryKind::Spend).unwrap();
+        let parent = create_parent(&conn, "Home", CategoryKind::Expense).unwrap();
         let id = add_transaction(&conn, "COFFEE VANCOUVER", false, None);
 
         assert!(matches!(
@@ -420,7 +420,7 @@ mod tests {
     fn apply_rule_refusals() {
         let conn = open_in_memory().unwrap();
         let cat = child_category(&conn, "Coffee");
-        let parent = create_parent(&conn, "Home", CategoryKind::Spend).unwrap();
+        let parent = create_parent(&conn, "Home", CategoryKind::Expense).unwrap();
         let id = add_transaction(&conn, "COFFEE VANCOUVER", false, None);
         let blank = add_transaction(&conn, "   ", false, None);
 

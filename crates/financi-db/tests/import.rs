@@ -356,7 +356,7 @@ fn stored(conn: &Connection, description: &str) -> (Option<i64>, bool) {
 #[test]
 fn import_categorizes_new_rows_with_rules() {
     let (mut conn, acct) = setup();
-    let food = create_parent(&conn, "Food", CategoryKind::Spend).unwrap();
+    let food = create_parent(&conn, "Food", CategoryKind::Expense).unwrap();
     let coffee = create_child(&conn, food, "Coffee").unwrap();
     add_rule(&conn, "COFFEE", false, coffee).unwrap();
 
@@ -378,7 +378,7 @@ fn import_categorizes_new_rows_with_rules() {
 #[test]
 fn card_payment_beats_conflicting_user_rules_and_locks_the_row() {
     let (mut conn, acct) = setup();
-    let food = create_parent(&conn, "Food", CategoryKind::Spend).unwrap();
+    let food = create_parent(&conn, "Food", CategoryKind::Expense).unwrap();
     let payments = create_child(&conn, food, "Payments").unwrap();
     add_rule(&conn, "PAYMENT", false, payments).unwrap();
 

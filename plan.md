@@ -157,7 +157,7 @@ financi-export-2026-11-07.zip
 ## Categorization
 
 - **Categories** have two levels, parent and child. Transactions are assigned to children only. The chart shows parents and drills into children.
-- **Kinds.** Each category is Expense, Income or Transfer, and transfer status comes only from this. The kind is stored as `spend` for Expense; only the user-facing label changes (see **Roadmap**).
+- **Kinds.** Each category is Expense, Income or Transfer, and transfer status comes only from this.
 - **System categories.** Transfers (Card Payment, Between Accounts) is present in every database and can't be renamed, moved or deleted.
 - **Default categories and rules.** The app ships a list of common expense and income categories plus substring rules for well-known merchants, so a first import is largely categorized. They are inserted once at first run of the real app, recorded in the `settings` table so deleted defaults never return, and only into a database with no transactions and no user categories. They are ordinary editable rows, not system rows. Existing databases are left alone, `FINANCI_DEV_SEED` runs skip them, and migrations still create only the system categories, so the "no categories" tests stay valid.
 - **Rules** match `description_raw`, case-insensitively, by substring or regex. Substring rules beat regex rules; within each kind the longest pattern wins; ties go to the lowest rule id. There are no account or sign filters.
@@ -245,7 +245,7 @@ Decisions recorded in the sections above are not repeated. These are the remaini
 - [ ] **Ship default categories and merchant rules**, as specified under **Categorization**.
 - [ ] **Keep the app responsive with thousands of rows.** Profile the slowdown after large imports, then render only the rows on screen in every long list, starting with the To categorize queue. Create its per-row category dropdowns only when needed.
 - [ ] **Align the columns in the To categorize table.** Every column lines up from row to row. Text beyond a column's limit is cut with an ellipsis (…) and shown in full on hover.
-- [ ] **Rename the "Spend" category type to "Expense"** everywhere the user sees it. The stored value stays `spend`, so no data migration is needed.
+- [x] **Rename the "Spend" category type to "Expense".** The kind is `expense` in code, database and UI. `0001_init.sql` was edited in place because no data existed.
 - [ ] **Label the category type dropdown** with a visible "Category type" label.
 - [ ] **Make account selection on import clearer.** Show the detected institution prominently next to the account selection. Account names exclude the institution, so the picker shows "Amex · Cobalt" from institution and name.
 - [x] **Tag every commit with a semver version.** `.githooks/post-commit` creates an annotated tag on `main`: breaking change = major, `feat` = minor, anything else = patch. Enable per clone with `git config core.hooksPath .githooks`; publish with `git push --follow-tags`.
