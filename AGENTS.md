@@ -6,7 +6,7 @@ single context has to hold the whole project:
 
 | Role | Count | Writes code? | Commits? |
 |---|---|---|---|
-| **Orchestrator** (main agent) | 1 | No | No |
+| **Orchestrator** (main agent) | 1 | No | Only the merge to `main` |
 | **Implementer** (sub-agent) | 1 at a time | Yes | Yes |
 | **Reviewer** (sub-agent) | 1 at a time | No | No |
 
@@ -15,7 +15,54 @@ checkout verification). Requirements are in `plan.md`; the task checklist is
 `docs/tasks.md`, which wins over `plan.md` for M2–M5. The UI design
 (layout, spacing, colors, formats, confirmed decisions) is
 `docs/ui-conventions.md`; every UI change follows it. Everything below adds
-to those files, it doesn't replace them.
+to those files, it doesn't replace them, with one exception: the
+orchestrator pushes `main` as described in *Feature worktrees*, despite
+`CLAUDE.md`'s "Never push". Implementers and reviewers still never push.
+
+---
+
+## Feature worktrees
+
+Every feature (one task from `docs/tasks.md`, or one piece of work the user
+asks for) gets its own branch and worktree. Never commit feature work
+directly on `main` or in the main checkout. The orchestrator runs these
+steps from the main checkout.
+
+**Before starting**, bring `main` up to date, then create the worktree from
+it:
+
+```sh
+git switch main                # in the main checkout
+git pull --ff-only --tags origin main
+git worktree add ../worktrees/financi/<slug> -b feat/<slug> main
+```
+
+`<slug>` is short and kebab-case, e.g. `2-3-category-model`. If the pull
+can't fast-forward, stop and ask the user. Uncommitted changes in the main
+checkout aren't yours: leave them alone, and stop and ask if they block a
+step.
+
+**While working**, the implementer works and commits only in that worktree.
+Review fix commits go on the same branch. The worktree starts with no build
+output, so its first build is a full one.
+
+**When the reviewer passes it**, merge locally and push. `git merge` doesn't
+run the `post-commit` hook, so run the hook by hand to tag the merge. It
+picks the version from the merge commit's subject, so that subject must be a
+Conventional Commit describing the feature:
+
+```sh
+git pull --ff-only --tags origin main      # in the main checkout
+git merge --no-ff -m "feat(scope): <what the feature does>" feat/<slug>
+.githooks/post-commit
+git push --follow-tags origin main
+git worktree remove --force ../worktrees/financi/<slug>
+git branch -d feat/<slug>
+```
+
+Use `feat`, `fix`, etc. to match the change, since that sets the version
+bump. If the merge conflicts or the push is rejected, stop and ask the user.
+Don't force-push. Remove the worktree only after the push succeeds.
 
 ---
 
@@ -65,7 +112,8 @@ On start:
 Loop, one task at a time:
 
 1. **Delegate** the task to the implementer with the *Task brief*
-   template. Include the task text verbatim from `docs/tasks.md`, the files
+   template, after syncing `main` and creating the task's worktree (see
+   *Feature worktrees*). Include the task text verbatim from `docs/tasks.md`, the files
    it will likely touch, and any relevant pitfalls. Point to `plan.md`
    and `docs/ui-conventions.md` sections by heading instead of pasting
    them; every UI task's brief names the `docs/ui-conventions.md` sections
@@ -76,7 +124,8 @@ Loop, one task at a time:
    hash(es) and the task text. Don't pass along the implementer's own claims
    of correctness; the reviewer should judge the code.
 4. **Act on the verdict:**
-   - `PASS` → next task.
+   - `PASS` → merge to `main`, push and remove the worktree (see *Feature
+     worktrees*), then next task.
    - `CHANGES` → send the findings back to the implementer as a new brief
      (fix commits, never amend or rewrite history), then review again.
    - At most **3 implement→review rounds** per task. After that, stop and
@@ -85,15 +134,16 @@ Loop, one task at a time:
    next milestone without waiting for a go-ahead. Stop and report to the
    user when v1 is complete (M5 done).
 
-The orchestrator never runs more than one implementer at once (they share
-one working tree), and never runs the reviewer while the implementer is
-working.
+The orchestrator works on one feature at a time, so it never runs more than
+one implementer at once, and never runs the reviewer while the implementer
+is working.
 
 ### Resuming
 
 If the orchestrator stops mid-milestone (budget, block, user question),
-the state is recoverable from git: ticked boxes in `docs/tasks.md` plus
-`git log`. If there is extra state (open review findings, a user decision),
+the state is recoverable from git: ticked boxes in `docs/tasks.md`,
+`git log`, and `git worktree list` for an unmerged feature, which is
+continued in its existing worktree. If there is extra state (open review findings, a user decision),
 put it in the report to the user. Don't create a scratch file in the repo.
 
 ---
@@ -102,7 +152,10 @@ put it in the report to the user. Don't create a scratch file in the repo.
 
 Does exactly one task (or one fix list) and returns.
 
-1. Read the brief. Read `CLAUDE.md` and only the code and doc sections the
+1. Read the brief and `cd` to the worktree it names; all reads, edits,
+   builds and commits happen there. `cd` doesn't move file tools, so give
+   them `<WORKTREE>/<path>` for every repo path (`CLAUDE.md`, `plan.md`,
+   `docs/…`, code). Read `CLAUDE.md` and only the code and doc sections the
    task needs. Before UI work, read *GPUI pitfalls* in `docs/tasks.md`
    and the relevant sections of `docs/ui-conventions.md` (always
    *Decisions*, plus whatever the brief names).
@@ -124,7 +177,9 @@ ambiguous, an API doesn't fit, or a pinned dependency would need to change.
 
 Read-only: verification and code review. Does not edit files or commit.
 
-1. Read the brief, `CLAUDE.md`, and the task text. Look at the change with
+1. Read the brief, `cd` to the worktree it names, and read `CLAUDE.md` and
+   the task text from there, giving file tools `<WORKTREE>/<path>` for every
+   repo path. Look at the change with
    `git show --stat <hash>`, then each file's diff on its own.
 2. **Verify independently.** Run the clean-checkout test from `CLAUDE.md`
    for the reviewed commit (use `.cache/review` and
@@ -154,10 +209,11 @@ Read-only: verification and code review. Does not edit files or commit.
 
 ```
 TASK: <id and title, e.g. 2.3 Category model>
+WORKTREE: <absolute path> (branch feat/<slug>); all repo paths below are relative to it
 SPEC (verbatim from docs/tasks.md):
 <task text>
 LIKELY FILES: <paths>
-READ: <plan.md / tasks.md / ui-conventions.md section headings, pitfalls that apply>
+READ: <plan.md / docs/tasks.md / docs/ui-conventions.md section headings, pitfalls that apply>
 NOTES: <user decisions, prior review findings to fix, or "none">
 ```
 
@@ -175,6 +231,7 @@ LEFT / QUESTION: <what's unfinished, or the exact question for the user>
 
 ```
 REVIEW: <commit hash or range>
+WORKTREE: <absolute path> (branch feat/<slug>); all repo paths below are relative to it
 TASK: <id and title>
 SPEC (verbatim from docs/tasks.md):
 <task text>

@@ -4,6 +4,10 @@ Personal finance desktop app: imports bank CSV exports (Amex, Simplii) into
 SQLite and shows spending in a GPUI window. Single user, offline. macOS and
 Linux.
 
+**Paths:** every path in these docs is relative to the root of the worktree
+you're working in, not the main checkout. In a feature worktree, read docs
+and code from that worktree, never from the main checkout's copy.
+
 **Read first:** `plan.md` (requirements and decisions) and `docs/tasks.md`
 (the task checklist; it wins over plan.md on M2–M5 detail). Work one
 milestone at a time and continue to the next without checking in; stop when
