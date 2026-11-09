@@ -14,6 +14,7 @@ use financi_db::settings::{self, DateRange, UI_DATE_RANGE};
 use financi_db::{DbWorker, ViewFilter, create_account, open_in_memory};
 // No glob import: `gpui_kit::*` brings GPUI's `test` macro into scope, which
 // shadows the built-in #[test] that #[gpui::test] expands to.
+use gpui_kit::component::calendar::Date as CalendarDate;
 use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyWindowHandle, App, Bounds, Entity, Point, TestAppContext, Window, WindowBounds,
@@ -922,4 +923,93 @@ fn a_garbage_setting_falls_back_to_the_default(cx: &mut TestAppContext) {
     });
     let range = cx.update(|cx| shell.read(cx).date_range);
     assert_eq!(range, DateRange::Preset(DatePreset::Last3Months));
+}
+
+#[gpui::test]
+fn picking_a_custom_range_persists_and_normalizes(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |_| {});
+    wait_until(cx, "date range restored", |cx| {
+        shell.read(cx).view_filter.from > ViewFilter::default().from
+    });
+
+    // Switch to "Custom…", then pick both dates with the pickers.
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.change_date_preset(DatePreset::Custom, window, cx)
+        });
+    });
+    let start = NaiveDate::from_ymd_opt(2026, 3, 1).unwrap();
+    let end = NaiveDate::from_ymd_opt(2026, 3, 31).unwrap();
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.date_picked(false, start, window, cx);
+            s.date_picked(true, end, window, cx);
+        });
+    });
+    // Let the persist task queue its write before reading (the worker is FIFO).
+    cx.run_until_parked();
+    assert_eq!(
+        db_setting(cx, &shell, UI_DATE_RANGE).as_deref(),
+        Some("custom:2026-03-01..2026-03-31"),
+        "the picker writes the custom range"
+    );
+    let state = cx.update(|cx| {
+        let s = shell.read(cx);
+        (s.date_range, s.view_filter.from, s.view_filter.to)
+    });
+    assert_eq!(
+        state,
+        (
+            DateRange::Custom {
+                from: start,
+                to: end
+            },
+            start,
+            end
+        )
+    );
+
+    // Picking the end before the start persists the swapped pair, and the
+    // pickers show the corrected order rather than the reversed pick.
+    let early = NaiveDate::from_ymd_opt(2026, 1, 15).unwrap();
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| s.date_picked(true, early, window, cx));
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        db_setting(cx, &shell, UI_DATE_RANGE).as_deref(),
+        Some("custom:2026-01-15..2026-03-01"),
+        "a reversed pick is stored swapped"
+    );
+    let shown = cx.update(|cx| {
+        let s = shell.read(cx);
+        (
+            s.view_filter.from,
+            s.view_filter.to,
+            s.date_from_picker.read(cx).date(),
+            s.date_to_picker.read(cx).date(),
+        )
+    });
+    assert_eq!(
+        shown,
+        (
+            early,
+            start,
+            CalendarDate::Single(Some(early)),
+            CalendarDate::Single(Some(start)),
+        ),
+        "the pickers show the swapped range"
+    );
+
+    // Picking the start after the end normalizes the same way.
+    let late = NaiveDate::from_ymd_opt(2026, 9, 1).unwrap();
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| s.date_picked(false, late, window, cx));
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        db_setting(cx, &shell, UI_DATE_RANGE).as_deref(),
+        Some("custom:2026-03-01..2026-09-01"),
+        "the start handler normalizes too"
+    );
 }

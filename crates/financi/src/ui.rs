@@ -1274,6 +1274,12 @@ impl Shell {
             // The pickers only render while Custom; keep the state honest.
             DateRange::Preset(_) => (day, day),
         };
+        // Picking the end before the start normalizes to the swapped pair
+        // (a reversed range would match no rows and blank the dashboard on
+        // every later launch). `apply_date_range` pushes the corrected
+        // order back into both pickers, so the widgets never show `from >
+        // to` either.
+        let (from, to) = if from > to { (to, from) } else { (from, to) };
         self.apply_date_range(DateRange::Custom { from, to }, window, cx);
         self.persist_date_range(cx);
     }
