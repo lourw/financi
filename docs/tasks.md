@@ -288,8 +288,15 @@ beside the monthly summary (right); then the transaction table.
   `docs/ui-conventions.md`. Labels and layout only, no new features. Do this
   last: it also needs to cover the views from 3.5 and 3.6.
 
+- [ ] **3.16 Responsive charts.** Chart lines overlap the labels, pieces are
+  cut off, and the layout doesn't adapt to the space available. At the
+  minimum window size (1200 × 720) and above, every chart stays inside its
+  panel, nothing is clipped, and lines and labels don't overlap. Shorten or
+  thin out labels when space is tight. Check it at the minimum size and a
+  large window, with long category names and many categories.
+
 **Done when:** on the demo data the dashboard totals match
-`expected.json`, filters compose, tests cover 3.1–3.15.
+`expected.json`, filters compose, tests cover 3.1–3.16.
 
 ---
 
