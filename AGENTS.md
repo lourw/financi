@@ -81,8 +81,9 @@ Loop, one task at a time:
      (fix commits, never amend or rewrite history), then review again.
    - At most **3 implement→review rounds** per task. After that, stop and
      report to the user with the outstanding findings.
-5. When every box in the milestone is ticked and reviewed, **stop** and
-   report to the user. Wait for a go-ahead before the next milestone.
+5. When every box in the milestone is ticked and reviewed, move on to the
+   next milestone without waiting for a go-ahead. Stop and report to the
+   user when v1 is complete (M5 done).
 
 The orchestrator never runs more than one implementer at once (they share
 one working tree), and never runs the reviewer while the implementer is

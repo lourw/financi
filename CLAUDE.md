@@ -6,7 +6,8 @@ Linux.
 
 **Read first:** `plan.md` (requirements and decisions) and `docs/tasks.md`
 (the task checklist; it wins over plan.md on M2–M5 detail). Work one
-milestone at a time and stop after each. Ask before deviating from a task.
+milestone at a time and continue to the next without checking in; stop when
+v1 is complete. Ask before deviating from a task.
 
 **Agent workflow:** `AGENTS.md` defines the roles (one orchestrator, one
 implementer sub-agent, one reviewer sub-agent), the 130k-token context

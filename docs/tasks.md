@@ -6,8 +6,9 @@ Where the two disagree, **this file wins** for M2–M5 detail.
 
 ## How to work
 
-1. Do **one milestone at a time**. When every box in it is ticked, stop and
-   report to the user; wait for a go-ahead before the next milestone.
+1. Do **one milestone at a time**. When every box in it is ticked, continue
+   to the next milestone without waiting for a go-ahead. Stop and report to
+   the user when v1 is complete.
 2. Work the tasks in order. Tick a box (`- [x]`) in the same commit that
    completes it.
 3. **Ask before deviating.** If a task is unclear, an API doesn't fit, or you
@@ -175,7 +176,7 @@ frozen from here on; real databases may exist).
   in 2.6), *Hide*, and *Unhide* (only when hidden rows are shown, see 3.4).
 
 **Done when:** the demo files import and every row can be categorized from
-the UI; tests cover 2.1–2.9. Stop and report.
+the UI; tests cover 2.1–2.9.
 
 ---
 
@@ -256,7 +257,7 @@ beside the monthly summary (right); then the transaction table.
   and back, summary cell click filters the table, search, hidden toggle.
 
 **Done when:** on the demo data the dashboard totals match
-`expected.json`, filters compose, tests cover 3.1–3.8. Stop and report.
+`expected.json`, filters compose, tests cover 3.1–3.8.
 
 ---
 
@@ -332,7 +333,7 @@ beside the monthly summary (right); then the transaction table.
     imports as new; the master CSV drops the old row and holds the new one,
     and undo puts the old row back.
 
-**Done when:** tests cover 4.1–4.3. Stop and report.
+**Done when:** tests cover 4.1–4.3.
 
 ---
 

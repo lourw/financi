@@ -234,7 +234,7 @@ Decisions recorded in the sections above are not repeated. These are the remaini
 | Possible duplicates | Handled by near-match review at import, not as a flag, because identical repeat purchases are kept on purpose. |
 | Component kit | gpui-kit was verified in M0 for file drop, `BarChart`, virtual `DataTable` and `Select`. It has no multi-select. |
 | Commit versions | A tracked post-commit hook tags each `main` commit `vX.Y.Z` from its Conventional Commit type. |
-| Agent workflow | `CLAUDE.md` and `AGENTS.md`: one milestone at a time, stopping after each. |
+| Agent workflow | `CLAUDE.md` and `AGENTS.md`: one milestone at a time, continuing to the next without a check-in, through the end of v1. |
 
 ## Roadmap
 
