@@ -24,8 +24,8 @@ use gpui_kit::{
 };
 
 use super::{
-    ExportData, ImportPanel, LegendSelection, NEW_ACCOUNT, Page, PlanState, RestoreBackup,
-    RowMenuItem, Shell, SummaryRowKind, UndoLastImport, row_menu_items,
+    ExportData, ImportPanel, LegendSelection, NAV_ROW_INSET, NEW_ACCOUNT, Page, PlanState,
+    RestoreBackup, RowMenuItem, Shell, SummaryRowKind, UndoLastImport, row_menu_items,
 };
 
 fn demo(name: &str) -> PathBuf {
@@ -1640,6 +1640,23 @@ fn a_checked_box_finds_its_check_glyph() {
         .flatten()
         .expect("the app registers the icon a checked Checkbox draws for its mark");
     assert!(std::str::from_utf8(&svg).is_ok_and(|s| s.contains("<svg")));
+}
+
+/// 3.13: sidebar nav items must not sit right of the section labels. The
+/// gpui-kit nav row carries its own 8px left padding and the section label
+/// had its own `px_2`, so both floated right of the single column the header
+/// and footer form (`docs/ui-conventions.md`, *Sidebar*); the nav item and
+/// the section label now render with one shared inset, pinned flush here.
+/// Element padding lives inside the component's own row and is invisible to
+/// the headless test surface, so this pins the shared constant both render
+/// with rather than the rendered pixels.
+#[test]
+fn sidebar_nav_items_and_section_labels_share_one_flush_inset() {
+    assert_eq!(
+        NAV_ROW_INSET, 0.,
+        "nav items and section labels must share one inset, flush with the \
+         header and footer (`docs/ui-conventions.md`, *Sidebar*)"
+    );
 }
 
 #[gpui::test]

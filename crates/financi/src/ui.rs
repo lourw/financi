@@ -102,6 +102,15 @@ pub enum Page {
     Imports,
 }
 
+/// The left inset (from the sidebar's content edge) shared by the nav items
+/// and the section labels (3.13). The gpui-kit nav row brings its own 8px
+/// left padding, which sat the items right of the single column the app
+/// name, the section labels and the footer share
+/// (`docs/ui-conventions.md`, *Sidebar*); both now use this one inset.
+/// A collapsed row keeps the component's own padding (see
+/// [`NavItem::collapsed`]), which centers the icon either way.
+pub(crate) const NAV_ROW_INSET: f32 = 0.;
+
 /// A sidebar entry: a clickable item or a section label (the gpui-kit
 /// [`Sidebar`] takes one item type, and the layout mixes items with the
 /// *Organize* / *Data* section headers).
@@ -114,7 +123,18 @@ enum NavItem {
 impl Collapsible for NavItem {
     fn collapsed(self, collapsed: bool) -> Self {
         match self {
-            Self::Item(item) => Self::Item(Box::new(item.collapsed(collapsed))),
+            // The expanded row pins its left inset (3.13); a collapsed row
+            // goes back to the component's own padding so the icon centers
+            // in the rail exactly as the component lays it out.
+            Self::Item(item) => {
+                let item = item.collapsed(collapsed);
+                let item = if collapsed {
+                    item.pl_2()
+                } else {
+                    item.pl(px(NAV_ROW_INSET))
+                };
+                Self::Item(Box::new(item))
+            }
             section => section,
         }
     }
@@ -140,7 +160,7 @@ impl SidebarItem for NavItem {
                 .flex_shrink_0()
                 .h_8()
                 .items_center()
-                .px_2()
+                .px(px(NAV_ROW_INSET))
                 .text_xs()
                 .text_color(cx.theme().sidebar_foreground.opacity(0.7))
                 .child(label.to_uppercase())
@@ -2651,6 +2671,9 @@ impl Shell {
     ) -> SidebarMenuItem {
         SidebarMenuItem::new(label)
             .icon(icon)
+            // Drop the component's own left padding (3.13): the icon sits in
+            // the same column as the section labels, the header and footer.
+            .pl(px(NAV_ROW_INSET))
             .active(self.page == page)
             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                 this.go_page(page, cx);
