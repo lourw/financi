@@ -870,15 +870,13 @@ pub struct Shell {
     include_transfers: bool,
     include_transfers_task: Option<Task<()>>,
     // -- Dashboard table filters (3.4): a case-insensitive search over the
-    // description/merchant, the two table-only toggles, the selected
-    // category and month (chosen from the chart and legend in 3.5/3.6), and
-    // the sort. None / false / the default sort mean "no narrowing".
+    // description/merchant, the two table-only toggles and the sort. Empty /
+    // false / the default sort mean "no narrowing". (The category and month
+    // the query also supports are chosen from the chart and legend in 3.5/3.6.)
     search_input: Entity<InputState>,
     search: String,
     uncategorized_only: bool,
     show_hidden: bool,
-    filter_category: Option<i64>,
-    filter_month: Option<String>,
     tx_sort: TxSort,
     // -- Dashboard date range (3.2): the control state, the `ViewFilter`
     // it drives (used by 3.4–3.6), and the picker entities.
@@ -1137,8 +1135,6 @@ impl Shell {
             search: String::new(),
             uncategorized_only: false,
             show_hidden: false,
-            filter_category: None,
-            filter_month: None,
             tx_sort: TxSort::default(),
             date_range: DateRange::default(),
             view_filter: ViewFilter::default(),
@@ -1212,12 +1208,13 @@ impl Shell {
             account_ids
         };
         view_filter.include_transfers = self.include_transfers;
-        // The table-only filters (3.4): search, the two toggles, the selected
-        // category/month and the sort, folded into the query alongside the
-        // shared date-range/accounts/transfers filter.
+        // The table-only filters (3.4): search, the two toggles and the sort,
+        // folded into the query alongside the shared date-range/accounts/
+        // transfers filter. Category and month are the query's, unused until
+        // the chart/legend selection lands in 3.5/3.6.
         let table_filter = TxTableFilter {
-            category_id: self.filter_category,
-            month: self.filter_month.clone(),
+            category_id: None,
+            month: None,
             search: if self.search.is_empty() {
                 None
             } else {
