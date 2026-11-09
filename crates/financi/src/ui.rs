@@ -51,6 +51,17 @@ use crate::flow::{self, LoadedFile, PlanSummary};
 
 type Names = Vec<SharedString>;
 
+/// Every checkbox in the app is built through here (3.14) so they are all
+/// constructed alike: the check mark itself arrives with the icon assets
+/// `crate::icon_assets` registers on the application, and the debug
+/// selector (`checkbox:<id>`) lets headless tests find a box and click it.
+/// The selector records itself only in debug builds with `test-support`.
+fn checkbox(id: impl Into<SharedString>) -> Checkbox {
+    let id = id.into();
+    let selector = format!("checkbox:{id}");
+    Checkbox::new(id).debug_selector(move || selector.clone())
+}
+
 /// Run `f` on the database thread, flattening worker and query errors.
 async fn on_db<R, E, F>(db: &DbWorker, f: F) -> Result<R, String>
 where
@@ -763,7 +774,7 @@ impl Render for ImportPanel {
                          Check you picked the right account."
                     )))
                     .child(
-                        Checkbox::new("override-overlap")
+                        checkbox("override-overlap")
                             .label("Import anyway")
                             .checked(self.override_overlap)
                             .on_click(cx.listener(|this, checked: &bool, _, cx| {
@@ -3152,7 +3163,7 @@ impl Shell {
                     // checkboxes, one per account, all checked by default.
                     .child(self.accounts_popover(cx))
                     .child(
-                        Checkbox::new("include-transfers")
+                        checkbox("include-transfers")
                             .label("Include transfers")
                             .checked(self.include_transfers)
                             .on_click(cx.listener(|this, on: &bool, window, cx| {
@@ -3173,7 +3184,7 @@ impl Shell {
                     .items_center()
                     .child(div().w(px(240.)).child(Input::new(&self.search_input)))
                     .child(
-                        Checkbox::new("uncategorized-only")
+                        checkbox("uncategorized-only")
                             .label("Uncategorized only")
                             .checked(self.uncategorized_only)
                             .on_click(cx.listener(|this, on: &bool, window, cx| {
@@ -3181,7 +3192,7 @@ impl Shell {
                             })),
                     )
                     .child(
-                        Checkbox::new("show-hidden")
+                        checkbox("show-hidden")
                             .label("Show hidden")
                             .checked(self.show_hidden)
                             .on_click(cx.listener(|this, on: &bool, window, cx| {
@@ -3233,7 +3244,7 @@ impl Shell {
                     .children(ids.iter().zip(labels.iter()).map(|(id, name)| {
                         let id = *id;
                         let shell = shell.clone();
-                        Checkbox::new(SharedString::from(format!("account-{id}")))
+                        checkbox(format!("account-{id}"))
                             .label(name.clone())
                             .checked(!excluded.contains(&id))
                             .on_click(move |on: &bool, window, cx| {

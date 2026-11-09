@@ -56,9 +56,22 @@ fn open_db() -> anyhow::Result<(PathBuf, DbWorker)> {
     Ok((path, DbWorker::spawn(conn)))
 }
 
+/// The icon assets registered on the application (3.14).
+///
+/// gpui-kit draws a Checkbox's check mark — and every `IconName` icon, e.g.
+/// the sidebar's — as an SVG loaded through GPUI's application asset source.
+/// GPUI's default source loads nothing, so without this a checked box
+/// changes background but shows no check. `AllAssets` is the full bundled
+/// catalog; the smaller `Assets` bundle lacks icons the app uses, such as
+/// `list-checks`, `tags`, `arrow-left-right` and `download`.
+pub(crate) fn icon_assets() -> gpui_kit::assets::AllAssets {
+    gpui_kit::assets::AllAssets
+}
+
 fn main() -> anyhow::Result<()> {
     let (path, db) = open_db()?;
-    gpui_kit::application().run(move |cx| {
+    let app = gpui_kit::application().with_assets(icon_assets());
+    app.run(move |cx| {
         gpui_kit::init(cx);
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::centered(size(px(1280.), px(800.)), cx)),
