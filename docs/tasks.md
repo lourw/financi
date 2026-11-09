@@ -281,19 +281,19 @@ beside the monthly summary (right); then the transaction table.
 - [ ] **3.14 Checkbox check mark.** A checked box changes background but
   shows no check. Find the cause and fix it for every checkbox.
 
-- [ ] **3.15 Labelling and layout pass.** Every input, dropdown, date picker
-  and filter group has a visible label or section heading (a placeholder
-  alone doesn't count). Group related controls deliberately instead of
-  stacking rows of unlabelled boxes. Record the rule in
-  `docs/ui-conventions.md`. Labels and layout only, no new features. Do this
-  last: it also needs to cover the views from 3.5 and 3.6.
-
-- [ ] **3.16 Responsive charts.** Chart lines overlap the labels, pieces are
+- [ ] **3.15 Responsive charts.** Chart lines overlap the labels, pieces are
   cut off, and the layout doesn't adapt to the space available. At the
   minimum window size (1200 × 720) and above, every chart stays inside its
   panel, nothing is clipped, and lines and labels don't overlap. Shorten or
   thin out labels when space is tight. Check it at the minimum size and a
   large window, with long category names and many categories.
+
+- [ ] **3.16 Labelling and layout pass.** Every input, dropdown, date picker
+  and filter group has a visible label or section heading (a placeholder
+  alone doesn't count). Group related controls deliberately instead of
+  stacking rows of unlabelled boxes. Record the rule in
+  `docs/ui-conventions.md`. Labels and layout only, no new features. Do this
+  last: it also needs to cover the views from 3.5 and 3.6.
 
 **Done when:** on the demo data the dashboard totals match
 `expected.json`, filters compose, tests cover 3.1–3.16.
