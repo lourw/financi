@@ -1349,6 +1349,39 @@ impl Shell {
                         this.sync_account_filter();
                         this.row_count = rows.len();
                         this.chart_rows = chart_rows;
+                        // Revalidate the legend state against the rows we
+                        // can actually show: a date/accounts change can
+                        // empty the chart out from under a selection or a
+                        // drill-down, and the table filter must not keep
+                        // narrowing by a category that is no longer there.
+                        let mut stale = false;
+                        let drilled = this.chart_parent;
+                        if drilled.is_some() && this.chart_rows.is_empty() {
+                            this.chart_parent = None;
+                            stale = true;
+                        }
+                        let selection_gone = match this.legend_selection {
+                            Some(LegendSelection::Category(id)) => {
+                                // While drilled, the selected parent itself
+                                // is not among the child rows — it stays.
+                                drilled != Some(id)
+                                    && !this.chart_rows.iter().any(|r| r.id == Some(id))
+                            }
+                            Some(LegendSelection::Uncategorized) => {
+                                this.chart_parent.is_none()
+                                    && !this.chart_rows.iter().any(|r| r.id.is_none())
+                            }
+                            None => false,
+                        };
+                        if selection_gone {
+                            this.legend_selection = None;
+                            stale = true;
+                        }
+                        if stale {
+                            // Re-query with the corrected filter so the
+                            // table, chart and state agree again.
+                            this.refresh(window, cx);
+                        }
                         this.total_visible = total;
                         this.uncategorized_visible = uncategorized;
                         this.import_history = history;
@@ -1566,12 +1599,17 @@ impl Shell {
     }
 
     /// The "Uncategorized only" checkbox: narrow the table to rows with no
-    /// category.
+    /// category. Mutually exclusive with a category legend selection (3.5) —
+    /// both feed the one table filter, and `category = X AND no category`
+    /// could only ever be an empty table.
     fn set_uncategorized_only(&mut self, on: bool, window: &mut Window, cx: &mut Context<Self>) {
         if on == self.uncategorized_only {
             return;
         }
         self.uncategorized_only = on;
+        if on && matches!(self.legend_selection, Some(LegendSelection::Category(_))) {
+            self.legend_selection = None;
+        }
         self.refresh(window, cx);
     }
 
@@ -1600,6 +1638,8 @@ impl Shell {
     /// a child filters the table to itself, and clicking the selected child
     /// again clears the filter (the chart stays on the children). The
     /// `Uncategorized` pseudo-row toggles the uncategorized filter.
+    /// Selecting a real category clears the "Uncategorized only" checkbox —
+    /// the two can't both narrow the table.
     fn click_legend_row(&mut self, id: Option<i64>, window: &mut Window, cx: &mut Context<Self>) {
         self.legend_selection = match id {
             None => (self.legend_selection != Some(LegendSelection::Uncategorized))
@@ -1611,6 +1651,9 @@ impl Shell {
             Some(id) => (self.legend_selection != Some(LegendSelection::Category(id)))
                 .then_some(LegendSelection::Category(id)),
         };
+        if matches!(self.legend_selection, Some(LegendSelection::Category(_))) {
+            self.uncategorized_only = false;
+        }
         self.refresh(window, cx);
     }
 
@@ -2386,6 +2429,10 @@ impl Shell {
         // Uncategorized is always the last category row, whatever its amount.
         rows.sort_by_key(|r| r.id.is_none());
         let selection = self.legend_selection;
+        // The `Uncategorized` row is active when the 3.4 checkbox drives the
+        // same clause, so the legend never contradicts the toolbar.
+        let uncategorized_active =
+            matches!(selection, Some(LegendSelection::Uncategorized)) || self.uncategorized_only;
 
         let chart = if rows.is_empty() {
             div()
@@ -2451,7 +2498,7 @@ impl Shell {
             .children(rows.iter().enumerate().map(|(ix, r)| {
                 let id = r.id;
                 let selected = match (id, selection) {
-                    (None, Some(LegendSelection::Uncategorized)) => true,
+                    (None, _) => uncategorized_active,
                     (Some(id), Some(LegendSelection::Category(c))) => c == id,
                     _ => false,
                 };
