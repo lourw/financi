@@ -55,17 +55,73 @@ impl Default for ViewFilter {
     }
 }
 
-/// Browse-table rows for the dashboard accounts filter and transfers
-/// toggle (task 3.3): hidden rows left out, newest first, the same
-/// ordering as [`crate::import::list_transactions`]. Empty `account_ids`
-/// means every account (the [`ViewFilter`] convention); transfer-category
-/// rows appear only with `include_transfers`. The date range and the
-/// table-only toggles arrive with the table upgrade (3.4).
+/// Which column the dashboard transaction table is ordered by (task 3.4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TxSortColumn {
+    Date,
+    Amount,
+}
+
+/// The table's ordering: a [`TxSortColumn`] and its direction. The default
+/// is date, newest first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TxSort {
+    pub column: TxSortColumn,
+    pub descending: bool,
+}
+
+impl Default for TxSort {
+    fn default() -> Self {
+        Self {
+            column: TxSortColumn::Date,
+            descending: true,
+        }
+    }
+}
+
+/// The dashboard table's query parameters beyond the shared [`ViewFilter`]
+/// (task 3.4): a selected category (parent or child), an optional month, a
+/// case-insensitive text search, the two table toggles and the sort. With
+/// [`Default`] the query is the plain browse table: no category, no month,
+/// no search, hidden rows excluded, newest first.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TxTableFilter {
+    /// A category id, matched whether it is a parent (its children's rows)
+    /// or a child (that child's rows).
+    pub category_id: Option<i64>,
+    /// A `YYYY-MM` month, matched against the start of `posted_date`.
+    pub month: Option<String>,
+    /// Case-insensitive substring matched against `description_raw` or
+    /// `merchant`; empty or `None` matches everything.
+    pub search: Option<String>,
+    /// Restrict to uncategorized rows (`category_id IS NULL`).
+    pub uncategorized_only: bool,
+    /// Include hidden rows; when false they are left out.
+    pub show_hidden: bool,
+    pub sort: TxSort,
+}
+
+/// Browse-table rows for the dashboard (tasks 3.3–3.4): the shared
+/// [`ViewFilter`] (date range, accounts, transfers) plus the table-only
+/// [`TxTableFilter`] (category, month, search, uncategorized-only, show
+/// hidden and sort). Hidden rows are shown only with
+/// [`TxTableFilter::show_hidden`]; the search is a case-insensitive
+/// substring of `description_raw` or `merchant` as stored; a category
+/// selection matches that category and, if it is a parent, its children.
+/// The default filter is the plain browse table, newest first.
 pub fn list_transactions_filtered(
     conn: &Connection,
-    account_ids: &[i64],
-    include_transfers: bool,
+    filter: &ViewFilter,
+    table: &TxTableFilter,
 ) -> Result<Vec<TransactionRow>> {
+    macro_rules! arg {
+        ($args:expr, $value:expr) => {{
+            let placeholder = format!("?{}", $args.len() + 1);
+            $args.push($value);
+            placeholder
+        }};
+    }
+
     let mut sql = String::from(
         "SELECT t.id, i.name || ' · ' || a.name, t.posted_date, t.description_raw, t.merchant,
                 c.name, t.amount_cents, t.category_id, t.hidden
@@ -73,22 +129,79 @@ pub fn list_transactions_filtered(
            JOIN accounts a ON a.id = t.account_id
            JOIN institutions i ON i.id = a.institution_id
            LEFT JOIN categories c ON c.id = t.category_id
-          WHERE t.hidden = 0",
+           LEFT JOIN categories p ON p.id = c.parent_id
+           WHERE 1 = 1",
     );
     let mut args: Vec<Box<dyn ToSql>> = Vec::new();
-    if !account_ids.is_empty() {
-        let marks: Vec<String> = (0..account_ids.len())
-            .map(|i| format!("?{}", i + 1))
+
+    // Inclusive date range from the shared filter.
+    let from = arg!(args, Box::new(filter.from.format("%Y-%m-%d").to_string()));
+    let to = arg!(args, Box::new(filter.to.format("%Y-%m-%d").to_string()));
+    sql.push_str(&format!(
+        " AND t.posted_date >= {from} AND t.posted_date <= {to}"
+    ));
+
+    // Accounts (empty means every account, the ViewFilter convention).
+    if !filter.account_ids.is_empty() {
+        let marks: Vec<String> = filter
+            .account_ids
+            .iter()
+            .map(|id| arg!(args, Box::new(*id)))
             .collect();
         sql.push_str(" AND t.account_id IN (");
         sql.push_str(&marks.join(", "));
         sql.push(')');
-        args.extend(account_ids.iter().map(|id| Box::new(*id) as Box<dyn ToSql>));
     }
-    if !include_transfers {
+    if !filter.include_transfers {
         sql.push_str(" AND COALESCE(c.kind, 'expense') <> 'transfer'");
     }
-    sql.push_str(" ORDER BY t.posted_date DESC, t.import_id DESC, t.source_line");
+
+    // A category selection matches that category, or a parent's children.
+    if let Some(cat) = table.category_id {
+        let a = arg!(args, Box::new(cat));
+        let b = arg!(args, Box::new(cat));
+        sql.push_str(&format!(" AND (t.category_id = {a} OR c.parent_id = {b})"));
+    }
+    if let Some(month) = table.month.as_ref().filter(|m| !m.is_empty()) {
+        let m = arg!(args, Box::new(month.clone()));
+        sql.push_str(&format!(" AND substr(t.posted_date, 1, 7) = {m}"));
+    }
+    if table.uncategorized_only {
+        sql.push_str(" AND t.category_id IS NULL");
+    }
+    // Case-insensitive substring on the raw stored strings.
+    if let Some(term) = table.search.as_ref().filter(|s| !s.is_empty()) {
+        let term = term.to_lowercase();
+        let a = arg!(args, Box::new(term.clone()));
+        let b = arg!(args, Box::new(term));
+        sql.push_str(&format!(
+            " AND (instr(lower(t.description_raw), {a}) > 0 \
+               OR instr(lower(COALESCE(t.merchant, '')), {b}) > 0)"
+        ));
+    }
+    if !table.show_hidden {
+        sql.push_str(" AND t.hidden = 0");
+    }
+
+    let order = match table.sort {
+        TxSort {
+            column: TxSortColumn::Date,
+            descending: true,
+        } => "t.posted_date DESC, t.import_id DESC, t.source_line ASC",
+        TxSort {
+            column: TxSortColumn::Date,
+            descending: false,
+        } => "t.posted_date ASC, t.import_id ASC, t.source_line DESC",
+        TxSort {
+            column: TxSortColumn::Amount,
+            descending: true,
+        } => "t.amount_cents DESC, t.posted_date DESC, t.import_id DESC, t.source_line ASC",
+        TxSort {
+            column: TxSortColumn::Amount,
+            descending: false,
+        } => "t.amount_cents ASC, t.posted_date DESC, t.import_id DESC, t.source_line ASC",
+    };
+    sql.push_str(&format!(" ORDER BY {order}"));
 
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(params_from_iter(args), |r| {
@@ -943,7 +1056,12 @@ mod tests {
             Some(f.card_payment),
         );
         let ids = |account_ids: &[i64], transfers: bool| -> Vec<i64> {
-            list_transactions_filtered(&f.conn, account_ids, transfers)
+            let filter = ViewFilter {
+                account_ids: account_ids.to_vec(),
+                include_transfers: transfers,
+                ..Default::default()
+            };
+            list_transactions_filtered(&f.conn, &filter, &TxTableFilter::default())
                 .unwrap()
                 .iter()
                 .map(|r| r.id)
@@ -962,6 +1080,443 @@ mod tests {
         // Hidden rows never appear, however the filter is set.
         set_hidden(&f.conn, older, true).unwrap();
         assert_eq!(ids(&[], true), vec![transfer, other]);
+    }
+
+    /// A transaction with its own description and merchant for the table's
+    /// search, month and category tests.
+    #[allow(clippy::too_many_arguments)]
+    fn add_row(
+        conn: &Connection,
+        account_id: i64,
+        import_id: i64,
+        source_line: i64,
+        date: &str,
+        cents: i64,
+        category: Option<i64>,
+        description: &str,
+        merchant: Option<&str>,
+    ) -> i64 {
+        conn.execute(
+            "INSERT INTO transactions (account_id, import_id, source_line, raw_bytes,
+                                        row_hash, posted_date, amount_cents,
+                                        description_raw, merchant, category_id)
+             VALUES (?1, ?2, ?3, X'00', ?4, ?5, ?6, ?7, ?8, ?9)",
+            (
+                account_id,
+                import_id,
+                source_line,
+                uuid::Uuid::new_v4().to_string(),
+                date,
+                cents,
+                description,
+                merchant,
+                category,
+            ),
+        )
+        .unwrap();
+        conn.last_insert_rowid()
+    }
+
+    fn table_ids(conn: &Connection, table: &TxTableFilter) -> Vec<i64> {
+        list_transactions_filtered(conn, &ViewFilter::default(), table)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.id)
+            .collect()
+    }
+
+    #[test]
+    fn date_range_bounds_are_inclusive_in_the_table() {
+        let f = fixture();
+        let out_before = add_row(
+            &f.conn,
+            f.account_id,
+            f.import_id,
+            0,
+            "2026-01-31",
+            -100,
+            None,
+            "before",
+            None,
+        );
+        let in_first = add_row(
+            &f.conn,
+            f.account_id,
+            f.import_id,
+            1,
+            "2026-02-01",
+            -200,
+            None,
+            "first",
+            None,
+        );
+        let in_last = add_row(
+            &f.conn,
+            f.account_id,
+            f.import_id,
+            2,
+            "2026-02-28",
+            -300,
+            None,
+            "last",
+            None,
+        );
+        let out_after = add_row(
+            &f.conn,
+            f.account_id,
+            f.import_id,
+            3,
+            "2026-03-01",
+            -400,
+            None,
+            "after",
+            None,
+        );
+        let _ = (out_before, out_after);
+        let filter = ViewFilter {
+            from: NaiveDate::parse_from_str("2026-02-01", "%Y-%m-%d").unwrap(),
+            to: NaiveDate::parse_from_str("2026-02-28", "%Y-%m-%d").unwrap(),
+            ..Default::default()
+        };
+        let ids = list_transactions_filtered(&f.conn, &filter, &TxTableFilter::default())
+            .unwrap()
+            .into_iter()
+            .map(|r| r.id)
+            .collect::<Vec<_>>();
+        assert_eq!(ids, vec![in_last, in_first], "both bounds in, newest first");
+    }
+
+    #[test]
+    fn month_filter_matches_the_posted_month() {
+        let f = fixture();
+        let sep = add_row(
+            &f.conn,
+            f.account_id,
+            f.import_id,
+            0,
+            "2026-09-30",
+            -100,
+            None,
+            "sep",
+            None,
+        );
+        let oct_first = add_row(
+            &f.conn,
+            f.account_id,
+            f.import_id,
+            1,
+            "2026-10-01",
+            -200,
+            None,
+            "oct1",
+            None,
+        );
+        let oct_last = add_row(
+            &f.conn,
+            f.account_id,
+            f.import_id,
+            2,
+            "2026-10-31",
+            -300,
+            None,
+            "oct31",
+            None,
+        );
+        let nov = add_row(
+            &f.conn,
+            f.account_id,
+            f.import_id,
+            3,
+            "2026-11-01",
+            -400,
+            None,
+            "nov",
+            None,
+        );
+        let _ = (sep, nov);
+        let oct = table_ids(
+            &f.conn,
+            &TxTableFilter {
+                month: Some("2026-10".to_string()),
+                ..Default::default()
+            },
+        );
+        assert_eq!(oct, vec![oct_last, oct_first], "whole month, newest first");
+    }
+
+    #[test]
+    fn category_filter_matches_parent_and_child() {
+        let f = fixture();
+        let food = conn_food(&f.conn);
+        let groceries = add_row(
+            &f.conn,
+            f.account_id,
+            f.import_id,
+            0,
+            "2026-10-01",
+            -100,
+            Some(f.groceries),
+            "g",
+            None,
+        );
+        let dining = add_row(
+            &f.conn,
+            f.account_id,
+            f.import_id,
+            1,
+            "2026-10-02",
+            -200,
+            Some(f.dining),
+            "d",
+            None,
+        );
+        let plain = add_row(
+            &f.conn,
+            f.account_id,
+            f.import_id,
+            2,
+            "2026-10-03",
+            -300,
+            None,
+            "plain",
+            None,
+        );
+        let _ = plain;
+
+        let by_child = table_ids(
+            &f.conn,
+            &TxTableFilter {
+                category_id: Some(f.groceries),
+                ..Default::default()
+            },
+        );
+        assert_eq!(by_child, vec![groceries], "a child selects only its rows");
+
+        let by_parent = table_ids(
+            &f.conn,
+            &TxTableFilter {
+                category_id: Some(food),
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            by_parent,
+            vec![dining, groceries],
+            "a parent selects its children, not uncategorized"
+        );
+    }
+
+    #[test]
+    fn uncategorized_only_filter() {
+        let f = fixture();
+        let groceries = add_row(
+            &f.conn,
+            f.account_id,
+            f.import_id,
+            0,
+            "2026-10-01",
+            -100,
+            Some(f.groceries),
+            "g",
+            None,
+        );
+        let a = add_row(
+            &f.conn,
+            f.account_id,
+            f.import_id,
+            1,
+            "2026-10-02",
+            -200,
+            None,
+            "a",
+            None,
+        );
+        let b = add_row(
+            &f.conn,
+            f.account_id,
+            f.import_id,
+            2,
+            "2026-10-03",
+            -300,
+            None,
+            "b",
+            None,
+        );
+        let _ = groceries;
+        let only = table_ids(
+            &f.conn,
+            &TxTableFilter {
+                uncategorized_only: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(only, vec![b, a]);
+    }
+
+    #[test]
+    fn search_is_case_insensitive_on_description_and_merchant() {
+        let f = fixture();
+        let cafe = add_row(
+            &f.conn,
+            f.account_id,
+            f.import_id,
+            0,
+            "2026-10-01",
+            -100,
+            None,
+            "CORNER CAFE",
+            Some("Corner Cafe"),
+        );
+        let store = add_row(
+            &f.conn,
+            f.account_id,
+            f.import_id,
+            1,
+            "2026-10-02",
+            -200,
+            None,
+            "GROCER STORE",
+            Some("Fresh Mart"),
+        );
+        let _payroll = add_row(
+            &f.conn,
+            f.account_id,
+            f.import_id,
+            2,
+            "2026-10-03",
+            999,
+            None,
+            "PAYROLL DEPOSIT",
+            None,
+        );
+
+        let search = |term: &str| {
+            table_ids(
+                &f.conn,
+                &TxTableFilter {
+                    search: Some(term.to_string()),
+                    ..Default::default()
+                },
+            )
+        };
+        assert_eq!(
+            search("cafe"),
+            vec![cafe],
+            "matches description, case-insensitive"
+        );
+        assert_eq!(search("CORNER"), vec![cafe]);
+        assert_eq!(search("fresh"), vec![store], "matches the merchant column");
+        assert_eq!(
+            search("grocer store"),
+            vec![store],
+            "substring across words"
+        );
+        let all = table_ids(&f.conn, &TxTableFilter::default());
+        assert_eq!(all.len(), 3, "no search term matches everything");
+    }
+
+    #[test]
+    fn show_hidden_toggle() {
+        let f = fixture();
+        let shown = add_row(
+            &f.conn,
+            f.account_id,
+            f.import_id,
+            0,
+            "2026-10-01",
+            -100,
+            None,
+            "shown",
+            None,
+        );
+        let hidden = add_row(
+            &f.conn,
+            f.account_id,
+            f.import_id,
+            1,
+            "2026-10-02",
+            -200,
+            None,
+            "hidden",
+            None,
+        );
+        set_hidden(&f.conn, hidden, true).unwrap();
+
+        let off = table_ids(&f.conn, &TxTableFilter::default());
+        assert_eq!(off, vec![shown], "hidden rows are out by default");
+        let on = table_ids(
+            &f.conn,
+            &TxTableFilter {
+                show_hidden: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            on,
+            vec![hidden, shown],
+            "show hidden brings them back, newest first"
+        );
+    }
+
+    #[test]
+    fn sort_by_date_and_amount() {
+        let f = fixture();
+        let small = add_row(
+            &f.conn,
+            f.account_id,
+            f.import_id,
+            0,
+            "2026-10-01",
+            -100,
+            None,
+            "small",
+            None,
+        );
+        let refund = add_row(
+            &f.conn,
+            f.account_id,
+            f.import_id,
+            1,
+            "2026-10-02",
+            250,
+            None,
+            "refund",
+            None,
+        );
+        let big = add_row(
+            &f.conn,
+            f.account_id,
+            f.import_id,
+            2,
+            "2026-10-03",
+            -900,
+            None,
+            "big",
+            None,
+        );
+        let _ = refund;
+
+        let sort = |column: TxSortColumn, descending: bool| {
+            table_ids(
+                &f.conn,
+                &TxTableFilter {
+                    sort: TxSort { column, descending },
+                    ..Default::default()
+                },
+            )
+        };
+        assert_eq!(sort(TxSortColumn::Date, true), vec![big, refund, small]);
+        assert_eq!(sort(TxSortColumn::Date, false), vec![small, refund, big]);
+        assert_eq!(
+            sort(TxSortColumn::Amount, true),
+            vec![refund, small, big],
+            "amount descending: money in (positive) first, then the smaller spend"
+        );
+        assert_eq!(
+            sort(TxSortColumn::Amount, false),
+            vec![big, small, refund],
+            "amount ascending: the biggest money-out first"
+        );
     }
 
     #[test]

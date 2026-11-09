@@ -25,8 +25,9 @@ use financi_db::queue::{UncategorizedGroup, categorize_group, uncategorized_by_m
 use financi_db::rules::{add_rule, count_rule_matches, list_rules};
 use financi_db::settings::{self, DateRange};
 use financi_db::{
-    Account, DbWorker, ViewFilter, apply_rule_from_merchant, create_account, list_accounts,
-    list_transactions_filtered, rusqlite::Connection, set_category, set_hidden, sidebar_counts,
+    Account, DbWorker, TxSort, TxSortColumn, TxTableFilter, ViewFilter, apply_rule_from_merchant,
+    create_account, list_accounts, list_transactions_filtered, rusqlite::Connection, set_category,
+    set_hidden, sidebar_counts,
 };
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -39,7 +40,7 @@ use gpui_kit::component::popover::Popover;
 use gpui_kit::component::select::{Select, SelectEvent, SelectState};
 use gpui_kit::component::sidebar::{Sidebar, SidebarItem, SidebarMenuItem};
 use gpui_kit::component::switch::Switch;
-use gpui_kit::component::table::{Column, DataTable, TableDelegate, TableState};
+use gpui_kit::component::table::{Column, ColumnSort, DataTable, TableDelegate, TableState};
 use gpui_kit::component::{ActiveTheme as _, Collapsible, Disableable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -176,10 +177,19 @@ pub struct TxTable {
     /// The row that just got a manual category and now offers to apply it to
     /// every matching row (2.6's rule offer, 2.9). Its transaction id.
     rule_offer: Option<i64>,
+    /// The table's current ordering, kept in sync with the shell so the
+    /// header's sort icon reflects it after every refresh (3.4).
+    sort: TxSort,
     on_set_category: SetCategoryFn,
     on_set_hidden: SetHiddenFn,
     on_apply_rule: ApplyRuleFn,
+    /// Called with the new ordering when a header's sort icon is clicked;
+    /// the shell re-queries and refreshes.
+    on_sort: SortFn,
 }
+
+/// Callback from a sortable table header back to the [`Shell`] (task 3.4).
+type SortFn = Rc<dyn Fn(TxSort, &mut Window, &mut App)>;
 
 impl TableDelegate for TxTable {
     fn columns_count(&self, _: &App) -> usize {
@@ -191,14 +201,58 @@ impl TableDelegate for TxTable {
     }
 
     fn column(&self, col_ix: usize, _: &App) -> Column {
+        // Date and Amount are sortable (3.4). The active column carries its
+        // direction so the header icon matches the ordering; the other shows
+        // faint chevrons.
+        let sort = |column: TxSortColumn, base: Column| match self.sort {
+            TxSort {
+                column: active,
+                descending: true,
+            } if active == column => base.descending(),
+            TxSort {
+                column: active,
+                descending: false,
+            } if active == column => base.ascending(),
+            _ => base.sortable(),
+        };
         match col_ix {
-            0 => Column::new("date", "Date").width(px(110.)),
+            0 => sort(
+                TxSortColumn::Date,
+                Column::new("date", "Date").width(px(110.)),
+            ),
             1 => Column::new("account", "Account").width(px(300.)),
             2 => Column::new("description", "Description").width(px(360.)),
             // Room for the post-edit "Apply to all matching …" affordance.
             3 => Column::new("category", "Category").width(px(260.)),
-            _ => Column::new("amount", "Amount").width(px(120.)).text_right(),
+            _ => sort(
+                TxSortColumn::Amount,
+                Column::new("amount", "Amount").width(px(120.)).text_right(),
+            ),
         }
+    }
+
+    fn perform_sort(
+        &mut self,
+        col_ix: usize,
+        sort: ColumnSort,
+        window: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) {
+        // Only Date (0) and Amount (4) sort; the table has already cycled its
+        // own icon state, so map its value to a `TxSort` and hand it to the
+        // shell, which re-queries. `Default` (the icon's off step) falls back
+        // to that column's natural first direction. `cx` coerces to `&mut App`
+        // like the menu callbacks; the shell is a different entity, so
+        // updating it here is not re-entrant.
+        let column = match col_ix {
+            0 => TxSortColumn::Date,
+            4 => TxSortColumn::Amount,
+            _ => return,
+        };
+        let descending = !matches!(sort, ColumnSort::Ascending);
+        let next = TxSort { column, descending };
+        self.sort = next;
+        (self.on_sort)(next, window, cx);
     }
 
     fn context_menu(
@@ -252,7 +306,7 @@ impl TableDelegate for TxTable {
         row_ix: usize,
         col_ix: usize,
         _: &mut Window,
-        _: &mut Context<TableState<Self>>,
+        cx: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
         if col_ix == 3 {
             let row = &self.rows[row_ix];
@@ -281,7 +335,22 @@ impl TableDelegate for TxTable {
                     .into_any_element();
             }
         }
-        div().child(self.text(row_ix, col_ix)).into_any_element()
+        // Hidden rows read as secondary (grey); a money-in amount is green
+        // (ui-conventions *Colors* and decision D3). Grey wins for hidden.
+        let row = &self.rows[row_ix];
+        let theme = cx.theme();
+        let color = if row.hidden {
+            Some(theme.muted_foreground)
+        } else if col_ix == 4 && row.amount_cents > 0 {
+            Some(theme.success)
+        } else {
+            None
+        };
+        let cell = div().child(self.text(row_ix, col_ix));
+        match color {
+            Some(color) => cell.text_color(color).into_any_element(),
+            None => cell.into_any_element(),
+        }
     }
 }
 
@@ -800,6 +869,17 @@ pub struct Shell {
     excluded_accounts: Vec<i64>,
     include_transfers: bool,
     include_transfers_task: Option<Task<()>>,
+    // -- Dashboard table filters (3.4): a case-insensitive search over the
+    // description/merchant, the two table-only toggles, the selected
+    // category and month (chosen from the chart and legend in 3.5/3.6), and
+    // the sort. None / false / the default sort mean "no narrowing".
+    search_input: Entity<InputState>,
+    search: String,
+    uncategorized_only: bool,
+    show_hidden: bool,
+    filter_category: Option<i64>,
+    filter_month: Option<String>,
+    tx_sort: TxSort,
     // -- Dashboard date range (3.2): the control state, the `ViewFilter`
     // it drives (used by 3.4–3.6), and the picker entities.
     date_range: DateRange,
@@ -913,15 +993,23 @@ impl Shell {
                 shell.update(cx, |this, cx| this.apply_row_rule(txn, window, cx));
             }) as Rc<dyn Fn(i64, &mut Window, &mut App)>
         };
+        let on_sort = {
+            let shell = cx.entity();
+            Rc::new(move |sort: TxSort, window: &mut Window, cx: &mut App| {
+                shell.update(cx, |this, cx| this.set_tx_sort(sort, window, cx));
+            }) as Rc<dyn Fn(TxSort, &mut Window, &mut App)>
+        };
         let table = cx.new(|cx| {
             TableState::new(
                 TxTable {
                     rows: Vec::new(),
                     child_choices: Vec::new(),
                     rule_offer: None,
+                    sort: TxSort::default(),
                     on_set_category,
                     on_set_hidden,
                     on_apply_rule,
+                    on_sort,
                 },
                 window,
                 cx,
@@ -1023,6 +1111,19 @@ impl Shell {
                 this.preview_rule_match(cx);
             }
         });
+        // The dashboard search box filters the table on every keystroke.
+        let search_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Search description or merchant"));
+        let search_sub = cx.subscribe_in(
+            &search_input,
+            window,
+            |this, _, ev: &InputEvent, window, cx| {
+                if matches!(ev, InputEvent::Change) {
+                    let value = this.search_input.read(cx).value().trim().to_string();
+                    this.apply_search(&value, window, cx);
+                }
+            },
+        );
         let mut shell = Self {
             db,
             db_path,
@@ -1032,6 +1133,13 @@ impl Shell {
             excluded_accounts: Vec::new(),
             include_transfers: false,
             include_transfers_task: None,
+            search_input,
+            search: String::new(),
+            uncategorized_only: false,
+            show_hidden: false,
+            filter_category: None,
+            filter_month: None,
+            tx_sort: TxSort::default(),
             date_range: DateRange::default(),
             view_filter: ViewFilter::default(),
             date_preset_select,
@@ -1073,7 +1181,13 @@ impl Shell {
             queue: Vec::new(),
             queue_pickers: HashMap::new(),
             queue_error: None,
-            _subs: vec![preview_sub, date_preset_sub, date_from_sub, date_to_sub],
+            _subs: vec![
+                preview_sub,
+                search_sub,
+                date_preset_sub,
+                date_from_sub,
+                date_to_sub,
+            ],
         };
         shell.load_date_range(window, cx);
         shell.load_include_transfers(window, cx);
@@ -1086,17 +1200,40 @@ impl Shell {
     fn refresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let db = self.db.clone();
         let account_ids = self.selected_account_ids();
-        let include_transfers = self.include_transfers;
-        // Deselecting every account shows no rows: empty `account_ids`
-        // means *all* accounts, so the query itself must be skipped.
+        // Shared filter for the query: the date range and transfers from
+        // state, and the checked accounts. Empty `account_ids` means *all*
+        // accounts (the `ViewFilter` convention); "no accounts checked" is
+        // handled by skipping the query below.
         let none_selected = account_ids.is_empty() && !self.accounts.is_empty();
+        let mut view_filter = self.view_filter.clone();
+        view_filter.account_ids = if self.excluded_accounts.is_empty() {
+            Vec::new()
+        } else {
+            account_ids
+        };
+        view_filter.include_transfers = self.include_transfers;
+        // The table-only filters (3.4): search, the two toggles, the selected
+        // category/month and the sort, folded into the query alongside the
+        // shared date-range/accounts/transfers filter.
+        let table_filter = TxTableFilter {
+            category_id: self.filter_category,
+            month: self.filter_month.clone(),
+            search: if self.search.is_empty() {
+                None
+            } else {
+                Some(self.search.clone())
+            },
+            uncategorized_only: self.uncategorized_only,
+            show_hidden: self.show_hidden,
+            sort: self.tx_sort,
+        };
         self.refresh_task = Some(cx.spawn_in(window, async move |this, cx| {
             let result = on_db(&db, move |c| {
                 let accounts = list_accounts(c)?;
                 let rows = if none_selected {
                     Vec::new()
                 } else {
-                    list_transactions_filtered(c, &account_ids, include_transfers)?
+                    list_transactions_filtered(c, &view_filter, &table_filter)?
                 };
                 let (total, uncategorized) = sidebar_counts(c)?;
                 let history = list_imports(c)?;
@@ -1161,11 +1298,13 @@ impl Shell {
                         }
                         let child_choices = this.child_choices.clone();
                         let rule_offer = this.rule_offer.map(|(id, _)| id);
+                        let sort = this.tx_sort;
                         this.table.update(cx, |t, cx| {
                             let delegate = t.delegate_mut();
                             delegate.rows = rows;
                             delegate.child_choices = child_choices;
                             delegate.rule_offer = rule_offer;
+                            delegate.sort = sort;
                             t.refresh(cx);
                         });
                         let confirm = this.confirm_undo_import;
@@ -1213,6 +1352,9 @@ impl Shell {
                 picker.set_date(CalendarDate::Single(Some(to)), window, cx);
             });
         }
+        // The table now reads the date range, so it re-queries (the launch
+        // restore path refreshes right after, so this is cheap there too).
+        self.refresh(window, cx);
         cx.notify();
     }
 
@@ -1339,6 +1481,46 @@ impl Shell {
         self.include_transfers_task = Some(cx.spawn(async move |_, _| {
             let _ = on_db(&db, move |c| settings::set_include_transfers(c, on)).await;
         }));
+        self.refresh(window, cx);
+    }
+
+    /// The search box changed: re-run the table query with the new term.
+    /// Empty text clears the search.
+    fn apply_search(&mut self, term: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if term == self.search {
+            return;
+        }
+        self.search = term.to_string();
+        self.refresh(window, cx);
+    }
+
+    /// The "Uncategorized only" checkbox: narrow the table to rows with no
+    /// category.
+    fn set_uncategorized_only(&mut self, on: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if on == self.uncategorized_only {
+            return;
+        }
+        self.uncategorized_only = on;
+        self.refresh(window, cx);
+    }
+
+    /// The "Show hidden" checkbox: include hidden rows in the table (greyed).
+    fn set_show_hidden(&mut self, on: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if on == self.show_hidden {
+            return;
+        }
+        self.show_hidden = on;
+        self.refresh(window, cx);
+    }
+
+    /// A header sort icon was clicked: adopt the new ordering and re-query.
+    /// The table already reflects the icon; this keeps [`Self::tx_sort`] and
+    /// the delegate in step.
+    fn set_tx_sort(&mut self, sort: TxSort, window: &mut Window, cx: &mut Context<Self>) {
+        self.tx_sort = sort;
+        self.table.update(cx, |t, _| {
+            t.delegate_mut().sort = sort;
+        });
         self.refresh(window, cx);
     }
 
@@ -2093,6 +2275,31 @@ impl Shell {
                         "{} transactions",
                         flow::count(self.row_count as i64)
                     ))),
+            )
+            // Second filter row (3.4): search box and the two table-only
+            // toggles. Kept on their own line so the date-range pickers
+            // never crowd them.
+            .child(
+                h_flex()
+                    .gap_3()
+                    .items_center()
+                    .child(div().w(px(240.)).child(Input::new(&self.search_input)))
+                    .child(
+                        Checkbox::new("uncategorized-only")
+                            .label("Uncategorized only")
+                            .checked(self.uncategorized_only)
+                            .on_click(cx.listener(|this, on: &bool, window, cx| {
+                                this.set_uncategorized_only(*on, window, cx);
+                            })),
+                    )
+                    .child(
+                        Checkbox::new("show-hidden")
+                            .label("Show hidden")
+                            .checked(self.show_hidden)
+                            .on_click(cx.listener(|this, on: &bool, window, cx| {
+                                this.set_show_hidden(*on, window, cx);
+                            })),
+                    ),
             )
             .child(if empty {
                 div()
