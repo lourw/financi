@@ -146,11 +146,16 @@ implementer and a reviewer on the same feature at once.
 
 Before delegating, choose tasks that can safely run in parallel, so the two
 branches don't conflict at merge. Two features may run together only if
-neither depends on the other and their likely files don't overlap. Most UI
-work lands in `crates/financi/src/ui.rs` and `ui_tests.rs`, so two UI tasks
-normally can't run together. If the next task can't run alongside the one in
-flight, wait for that feature to merge, then create the next worktree from
-the updated `main`. Don't skip ahead to later tasks that depend on it.
+neither depends on the other and they don't change the same functions or
+regions. Sharing a file is fine: most UI work lands in
+`crates/financi/src/ui.rs` and `ui_tests.rs`, and git merges separate parts
+of a file cleanly. Name the regions in each brief, and have implementers add
+new tests next to related tests, not at the end of the file. If you can't
+tell which regions a task will change, don't run it alongside another.
+
+If the next task can't run alongside the one in flight, wait for that
+feature to merge, then create the next worktree from the updated `main`.
+Don't skip ahead to later tasks that depend on it.
 
 Merge finished features one at a time. If a merge conflicts, stop and ask
 the user, as *Feature worktrees* says.
@@ -230,6 +235,7 @@ WORKTREE: <absolute path> (branch feat/<slug>); all repo paths below are relativ
 SPEC (verbatim from docs/tasks.md):
 <task text>
 LIKELY FILES: <paths>
+REGIONS: <functions or regions this task may change; the other in-flight feature's regions, or "none in flight">
 READ: <plan.md / docs/tasks.md / docs/ui-conventions.md section headings, pitfalls that apply>
 NOTES: <user decisions, prior review findings to fix, or "none">
 ```
