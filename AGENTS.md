@@ -6,7 +6,7 @@ single context has to hold the whole project:
 
 | Role | Count | Writes code? | Commits? |
 |---|---|---|---|
-| **Orchestrator** (main agent) | 1 | No | Only the merge to `main` |
+| **Orchestrator** (main agent) | 1 | Only to resolve merge conflicts | Only the merge to `main` |
 | **Implementer** (sub-agent) | Shared pool of 2 | Yes | Yes |
 | **Reviewer** (sub-agent) | Shared pool of 2 | No | No |
 
@@ -66,7 +66,8 @@ git branch -d feat/<slug>
 ```
 
 Use `feat`, `fix`, etc. to match the change, since that sets the version
-bump. If the merge conflicts or the push is rejected, stop and ask the user.
+bump. If the merge conflicts, the orchestrator resolves it (see *Orchestrator*).
+If the push is rejected, stop and ask the user.
 Don't force-push. Remove the worktree only after the push succeeds.
 
 ---
@@ -104,7 +105,8 @@ Don't force-push. Remove the worktree only after the push succeeds.
 
 Owns the plan and the loop. Does **not** edit source files or run long
 builds itself — that would spend its context on detail the sub-agents
-already handle.
+already handle. The one exception is resolving merge conflicts between
+sub-agents' branches.
 
 On start:
 
@@ -157,8 +159,18 @@ If the next task can't run alongside the one in flight, wait for that
 feature to merge, then create the next worktree from the updated `main`.
 Don't skip ahead to later tasks that depend on it.
 
-Merge finished features one at a time. If a merge conflicts, stop and ask
-the user, as *Feature worktrees* says.
+Merge finished features one at a time. If a merge conflicts, the
+orchestrator resolves it itself instead of sending it back to a sub-agent:
+
+1. Union the changes, keeping the behaviour and tests from both sub-agents'
+   implementations. Edit only what the conflict requires.
+2. Finish the merge with `git commit --no-edit`, which keeps the Conventional
+   Commit subject and tags the merge through the `post-commit` hook.
+3. Verify the merge commit in a clean checkout, as `CLAUDE.md` describes,
+   before pushing.
+
+If the two changes contradict each other, so both can't be kept, stop and ask
+the user which should win.
 
 ### Resuming
 
