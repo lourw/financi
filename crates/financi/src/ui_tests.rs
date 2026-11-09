@@ -1751,6 +1751,30 @@ fn seed_summary_rows(conn: &financi_db::rusqlite::Connection) {
     txn("PAYROLL DEPOSIT", "2026-04-15", 210500, Some(salary));
 }
 
+/// [`seed_summary_rows`] plus a large uncategorized March purchase, so the
+/// uncategorized total beats every category's and the query — which orders
+/// rows by amount — puts `Uncategorized` first. The view must still render
+/// it as the last category row.
+fn seed_summary_rows_uncategorized_largest(conn: &financi_db::rusqlite::Connection) {
+    seed_summary_rows(conn);
+    let (acct, import) = conn
+        .query_row(
+            "SELECT account_id, import_id FROM transactions LIMIT 1",
+            [],
+            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
+        )
+        .unwrap();
+    conn.execute(
+        "INSERT INTO transactions (account_id, import_id, source_line, raw_bytes,
+                                   row_hash, posted_date, amount_cents,
+                                   description_raw, category_id)
+         VALUES (?1, ?2, 7, X'00', 'summary-hash-largest', '2026-03-20', -5000,
+                 'MYSTERY MEGA PURCHASE', NULL)",
+        (acct, import),
+    )
+    .unwrap();
+}
+
 /// Switch the dashboard to "All time" and wait until the summary grid
 /// covers exactly the two seeded months.
 fn set_all_time(cx: &mut TestAppContext, handle: AnyWindowHandle, shell: &Entity<Shell>) {
@@ -1948,5 +1972,107 @@ fn expanding_a_summary_parent_shows_its_child_rows(cx: &mut TestAppContext) {
                 "Net"
             ]
         );
+    });
+}
+
+/// The month is only half of a summary-cell selection: every handler that
+/// clears `legend_selection` must clear `summary_month` too, or the table
+/// stays silently month-filtered — no cell highlight, and the refresh
+/// revalidation only drops a month missing from the grid.
+#[gpui::test]
+fn clearing_the_legend_selection_clears_the_summary_month(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_summary_rows);
+    set_all_time(cx, handle, &shell);
+    wait_until(cx, "table loaded", |cx| shell.read(cx).row_count == 7);
+    let food = cx.update(|cx| summary_parent_id(&shell, cx, "Food"));
+    let groceries = cx.update(|cx| find_child(&shell, cx, "Groceries").unwrap());
+
+    // Re-clicking the selected legend row: the pair clears together.
+    click_summary_cell(cx, handle, &shell, Some(groceries), Some("2026-04"));
+    wait_until(cx, "only April's Groceries row", |cx| {
+        shell.read(cx).row_count == 1
+    });
+    click_chart_legend(cx, handle, &shell, Some(groceries));
+    wait_until(cx, "the month goes with the selection", |cx| {
+        shell.read(cx).row_count == 7
+            && shell.read(cx).legend_selection.is_none()
+            && shell.read(cx).summary_month.is_none()
+    });
+
+    // Re-clicking the `Uncategorized` legend row: the same.
+    click_summary_cell(cx, handle, &shell, None, Some("2026-03"));
+    wait_until(cx, "only March's uncategorized row", |cx| {
+        shell.read(cx).row_count == 1
+    });
+    click_chart_legend(cx, handle, &shell, None);
+    wait_until(cx, "the month goes with the uncategorized row", |cx| {
+        shell.read(cx).row_count == 7
+            && shell.read(cx).legend_selection.is_none()
+            && shell.read(cx).summary_month.is_none()
+    });
+
+    // "← All categories".
+    click_summary_cell(cx, handle, &shell, Some(food), Some("2026-03"));
+    wait_until(cx, "only March's Food rows", |cx| {
+        shell.read(cx).row_count == 2
+    });
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| s.show_all_categories(window, cx));
+    });
+    wait_until(cx, "the month goes with all-categories", |cx| {
+        shell.read(cx).row_count == 7
+            && shell.read(cx).legend_selection.is_none()
+            && shell.read(cx).summary_month.is_none()
+    });
+
+    // Turning on "Uncategorized only" over a category selection. Without
+    // the month clearing this would show the empty intersection of
+    // uncategorized April rows instead of the one uncategorized row.
+    click_summary_cell(cx, handle, &shell, Some(food), Some("2026-04"));
+    wait_until(cx, "only April's Food row", |cx| {
+        shell.read(cx).row_count == 1
+    });
+    set_uncategorized_only(cx, handle, &shell, true);
+    wait_until(cx, "uncategorized rows without the month", |cx| {
+        shell.read(cx).legend_selection.is_none()
+            && shell.read(cx).summary_month.is_none()
+            && shell.read(cx).uncategorized_only
+            && table_rows(&shell, cx)
+                .iter()
+                .map(|r| r.description.as_str())
+                .eq(["Mystery Vendor"])
+    });
+    cx.update(|cx| {
+        assert_eq!(shell.read(cx).row_count, 1);
+    });
+}
+
+/// The grid comes from the query in amount order; the view still renders
+/// `Uncategorized` as the last category row, before Income/Spend/Net,
+/// whatever its amount (ui-conventions, *Numbers, dates and labels*).
+#[gpui::test]
+fn uncategorized_is_the_last_summary_category_row_whatever_its_amount(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_summary_rows_uncategorized_largest);
+    set_all_time(cx, handle, &shell);
+    wait_until(cx, "table loaded", |cx| shell.read(cx).row_count == 8);
+    cx.update(|cx| {
+        // The query really does put the biggest row — Uncategorized —
+        // first, so the ordering below comes from the view's sort.
+        assert_eq!(shell.read(cx).summary.rows[0].id, None);
+        let rows = shell.read(cx).summary_rows();
+        let names: Vec<String> = rows.iter().map(|r| r.name.to_string()).collect();
+        assert_eq!(
+            names,
+            [
+                "Food",
+                "Transport",
+                "Uncategorized",
+                "Income",
+                "Spend",
+                "Net"
+            ]
+        );
+        assert_eq!(rows[2].kind, SummaryRowKind::Uncategorized);
+        assert_eq!(rows[2].cells, [5200, 0, 5200]);
     });
 }

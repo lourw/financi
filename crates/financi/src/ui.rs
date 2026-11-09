@@ -1673,6 +1673,7 @@ impl Shell {
         self.uncategorized_only = on;
         if on && matches!(self.legend_selection, Some(LegendSelection::Category(_))) {
             self.legend_selection = None;
+            self.summary_month = None;
         }
         self.refresh(window, cx);
     }
@@ -1718,6 +1719,12 @@ impl Shell {
         if matches!(self.legend_selection, Some(LegendSelection::Category(_))) {
             self.uncategorized_only = false;
         }
+        // The month only ever narrows a category selection (the cell
+        // highlight and the chip read both from the pair), so clearing the
+        // selection clears it too — Esc does the same for both.
+        if self.legend_selection.is_none() {
+            self.summary_month = None;
+        }
         self.refresh(window, cx);
     }
 
@@ -1726,6 +1733,7 @@ impl Shell {
     fn show_all_categories(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.chart_parent = None;
         self.legend_selection = None;
+        self.summary_month = None;
         self.refresh(window, cx);
     }
 
@@ -1869,6 +1877,11 @@ impl Shell {
                 cells,
             });
         }
+        // Uncategorized is always the last category row, whatever its
+        // amount (ui-conventions, *Numbers, dates and labels*), like the
+        // legend; the three total rows stay after it.
+        let categories_end = views.len().saturating_sub(3);
+        views[..categories_end].sort_by_key(|v| v.kind == SummaryRowKind::Uncategorized);
         views
     }
 
