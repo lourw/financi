@@ -1511,13 +1511,13 @@ impl Shell {
     }
 
     /// A header sort icon was clicked: adopt the new ordering and re-query.
-    /// The table already reflects the icon; this keeps [`Self::tx_sort`] and
-    /// the delegate in step.
+    /// This runs through `on_sort` from inside the table's own update, so it
+    /// must not touch the table entity again (that would double-lease and
+    /// panic). `TxTable::perform_sort` already set the delegate's `sort` to
+    /// this value, and the async refresh continuation re-syncs it outside the
+    /// lease, so only the shell's copy needs updating here.
     fn set_tx_sort(&mut self, sort: TxSort, window: &mut Window, cx: &mut Context<Self>) {
         self.tx_sort = sort;
-        self.table.update(cx, |t, _| {
-            t.delegate_mut().sort = sort;
-        });
         self.refresh(window, cx);
     }
 

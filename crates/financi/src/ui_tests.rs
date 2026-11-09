@@ -11,7 +11,8 @@ use financi_core::parse::merchant;
 use financi_core::{AccountKind, CategoryKind};
 use financi_db::import::TransactionRow;
 use financi_db::settings::{self, DateRange, UI_DATE_RANGE, UI_INCLUDE_TRANSFERS};
-use financi_db::{DbWorker, ViewFilter, create_account, open_in_memory};
+use financi_db::{DbWorker, TxSort, TxSortColumn, ViewFilter, create_account, open_in_memory};
+use gpui_kit::component::table::{ColumnSort, TableDelegate};
 // No glob import: `gpui_kit::*` brings GPUI's `test` macro into scope, which
 // shadows the built-in #[test] that #[gpui::test] expands to.
 use gpui_kit::component::calendar::Date as CalendarDate;
@@ -1297,5 +1298,53 @@ fn show_hidden_toggle_reveals_hidden_rows(cx: &mut TestAppContext) {
             .find(|r| r.hidden)
             .expect("showing hidden reveals the hidden row");
         assert_eq!(hidden.description, "HIDDEN SPEND");
+    });
+}
+
+#[gpui::test]
+fn sorting_the_amount_header_reorders_rows_without_a_reentrant_panic(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_table_filter_rows);
+    wait_until(cx, "three visible rows", |cx| shell.read(cx).row_count == 3);
+
+    let descriptions = |cx: &App| -> Vec<String> {
+        table_rows(&shell, cx)
+            .iter()
+            .map(|r| r.description.clone())
+            .collect()
+    };
+    // Newest-first default; every row shares a date, so they fall back to
+    // source order.
+    assert_eq!(
+        cx.read(descriptions),
+        ["CORNER CAFE", "GROCER STORE", "PAYROLL DEPOSIT"]
+    );
+
+    // Drive the header sort exactly as the table's click listener does:
+    // `perform_sort` runs while the table entity is leased and hands the new
+    // sort to the shell, which must not update that same entity in response
+    // (that double-lease is the crash). The click test-support gpui-kit ships
+    // is disabled in this crate, so we enter the sort through the same
+    // delegate call the header's `on_click` makes, under the table's lease.
+    let table = cx.update(|cx| shell.read(cx).table.clone());
+    with_window(cx, handle, |window, cx| {
+        table.update(cx, |t, cx| {
+            t.delegate_mut()
+                .perform_sort(4, ColumnSort::Descending, window, cx);
+        });
+    });
+
+    // The shell adopted the sort and the async re-query reordered by amount
+    // descending: +3000, -500, -1200.
+    cx.update(|cx| {
+        assert_eq!(
+            shell.read(cx).tx_sort,
+            TxSort {
+                column: TxSortColumn::Amount,
+                descending: true,
+            }
+        );
+    });
+    wait_until(cx, "rows reordered by amount", |cx| {
+        descriptions(cx) == ["PAYROLL DEPOSIT", "CORNER CAFE", "GROCER STORE"]
     });
 }

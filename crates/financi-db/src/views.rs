@@ -129,8 +129,7 @@ pub fn list_transactions_filtered(
            JOIN accounts a ON a.id = t.account_id
            JOIN institutions i ON i.id = a.institution_id
            LEFT JOIN categories c ON c.id = t.category_id
-           LEFT JOIN categories p ON p.id = c.parent_id
-           WHERE 1 = 1",
+          WHERE 1 = 1",
     );
     let mut args: Vec<Box<dyn ToSql>> = Vec::new();
 
@@ -169,7 +168,11 @@ pub fn list_transactions_filtered(
     if table.uncategorized_only {
         sql.push_str(" AND t.category_id IS NULL");
     }
-    // Case-insensitive substring on the raw stored strings.
+    // Case-insensitive substring on the raw stored strings. Case folding is
+    // ASCII-only: SQLite's `lower()` and Rust's `str::to_lowercase` are used
+    // on the term, so non-ASCII letters (e.g. an accented "café") are matched
+    // case-sensitively against the stored text. Good enough for v1; a
+    // locale-aware fold would need an ICU-backed SQLite build.
     if let Some(term) = table.search.as_ref().filter(|s| !s.is_empty()) {
         let term = term.to_lowercase();
         let a = arg!(args, Box::new(term.clone()));
