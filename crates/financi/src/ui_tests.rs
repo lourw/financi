@@ -18,11 +18,13 @@ use gpui_kit::component::table::{ColumnSort, TableDelegate};
 use gpui_kit::component::calendar::Date as CalendarDate;
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyWindowHandle, App, Bounds, Entity, Point, TestAppContext, Window, WindowBounds,
-    WindowOptions, px, size,
+    AnyWindowHandle, App, Bounds, Entity, Focusable as _, Point, TestAppContext, Window,
+    WindowBounds, WindowOptions, px, size,
 };
 
-use super::{ImportPanel, NEW_ACCOUNT, PlanState, RowMenuItem, Shell, row_menu_items};
+use super::{
+    ImportPanel, LegendSelection, NEW_ACCOUNT, PlanState, RowMenuItem, Shell, row_menu_items,
+};
 
 fn demo(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -1346,5 +1348,346 @@ fn sorting_the_amount_header_reorders_rows_without_a_reentrant_panic(cx: &mut Te
     });
     wait_until(cx, "rows reordered by amount", |cx| {
         descriptions(cx) == ["PAYROLL DEPOSIT", "CORNER CAFE", "GROCER STORE"]
+    });
+}
+
+// ------------------------------------------------------------------ 3.5 chart
+
+/// Food (Groceries -1000, Restaurants -500), Transport (Bus -300) and one
+/// uncategorized -200, all inside the default date range: the parent chart
+/// rows are Food 1500, Transport 300, Uncategorized 200.
+fn seed_chart_rows(conn: &financi_db::rusqlite::Connection) {
+    let acct = create_account(conn, "amex", "Cobalt", AccountKind::CreditCard).unwrap();
+    conn.execute(
+        "INSERT INTO imports (account_id, parser_id, file_name, imported_at, header_raw,
+                              encoding, has_bom, line_ending, trailing_newline, row_count)
+         VALUES (?1, 'amex', 'seed.csv', '2026-11-01', X'00', 'utf-8', 0, 'lf', 0, 0)",
+        [acct],
+    )
+    .unwrap();
+    let import = conn.last_insert_rowid();
+    let food = financi_db::categories::create_parent(conn, "Food", CategoryKind::Expense).unwrap();
+    let groceries = financi_db::categories::create_child(conn, food, "Groceries").unwrap();
+    let restaurants = financi_db::categories::create_child(conn, food, "Restaurants").unwrap();
+    let transport =
+        financi_db::categories::create_parent(conn, "Transport", CategoryKind::Expense).unwrap();
+    let bus = financi_db::categories::create_child(conn, transport, "Bus").unwrap();
+
+    let mut line = 0i64;
+    let mut txn = |description: &str, cents: i64, category: Option<i64>| {
+        conn.execute(
+            "INSERT INTO transactions (account_id, import_id, source_line, raw_bytes,
+                                       row_hash, posted_date, amount_cents,
+                                       description_raw, category_id)
+             VALUES (?1, ?2, ?3, X'00', ?4, '2026-11-05', ?5, ?6, ?7)",
+            (
+                acct,
+                import,
+                line,
+                format!("chart-hash-{line}"),
+                cents,
+                description,
+                category,
+            ),
+        )
+        .unwrap();
+        line += 1;
+    };
+    txn("GROCER STORE", -1000, Some(groceries));
+    txn("CORNER CAFE", -500, Some(restaurants));
+    txn("CITY BUS", -300, Some(bus));
+    txn("Mystery Vendor", -200, None);
+}
+
+fn click_chart_legend(
+    cx: &mut TestAppContext,
+    handle: AnyWindowHandle,
+    shell: &Entity<Shell>,
+    id: Option<i64>,
+) {
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| s.click_legend_row(id, window, cx));
+    });
+}
+
+fn top_category_id(shell: &Entity<Shell>, cx: &App, name: &str) -> i64 {
+    shell
+        .read(cx)
+        .chart_rows
+        .iter()
+        .find(|r| r.name == name)
+        .expect("chart row")
+        .id
+        .expect("a real category")
+}
+
+#[gpui::test]
+fn legend_shows_parents_with_amounts_and_shares(cx: &mut TestAppContext) {
+    let (_handle, shell) = open_shell(cx, seed_chart_rows);
+    wait_until(cx, "three chart rows", |cx| {
+        shell.read(cx).chart_rows.len() == 3
+    });
+    cx.update(|cx| {
+        let rows = &shell.read(cx).chart_rows;
+        let names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, ["Food", "Transport", "Uncategorized"]);
+        let cents: Vec<i64> = rows.iter().map(|r| r.spend_cents).collect();
+        assert_eq!(cents, [1500, 300, 200]);
+        for (row, share) in rows.iter().zip([0.75, 0.15, 0.10]) {
+            assert!(
+                (row.share - share).abs() < 1e-9,
+                "{} share {}",
+                row.name,
+                row.share
+            );
+        }
+    });
+}
+
+#[gpui::test]
+fn clicking_a_parent_drills_the_chart_and_filters_the_table(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_chart_rows);
+    wait_until(cx, "table loaded", |cx| shell.read(cx).row_count == 4);
+    let food = cx.update(|cx| top_category_id(&shell, cx, "Food"));
+
+    click_chart_legend(cx, handle, &shell, Some(food));
+    wait_until(cx, "chart drilled to Food's children", |cx| {
+        shell.read(cx).chart_parent == Some(food) && shell.read(cx).row_count == 2
+    });
+    cx.update(|cx| {
+        let names: Vec<&str> = shell
+            .read(cx)
+            .chart_rows
+            .iter()
+            .map(|r| r.name.as_str())
+            .collect();
+        assert_eq!(names, ["Groceries", "Restaurants"]);
+        assert_eq!(
+            shell.read(cx).legend_selection,
+            Some(LegendSelection::Category(food))
+        );
+        let rows = table_rows(&shell, cx);
+        let mut descs: Vec<&str> = rows.iter().map(|r| r.description.as_str()).collect();
+        descs.sort_unstable();
+        assert_eq!(descs, ["CORNER CAFE", "GROCER STORE"]);
+    });
+}
+
+#[gpui::test]
+fn all_categories_row_clears_drill_and_filter(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_chart_rows);
+    wait_until(cx, "table loaded", |cx| shell.read(cx).row_count == 4);
+    let food = cx.update(|cx| top_category_id(&shell, cx, "Food"));
+    click_chart_legend(cx, handle, &shell, Some(food));
+    wait_until(cx, "drilled", |cx| {
+        shell.read(cx).chart_parent == Some(food)
+    });
+
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| s.show_all_categories(window, cx));
+    });
+    wait_until(cx, "back to parents and all rows", |cx| {
+        shell.read(cx).chart_parent.is_none() && shell.read(cx).row_count == 4
+    });
+    cx.update(|cx| {
+        assert_eq!(shell.read(cx).legend_selection, None);
+        assert_eq!(shell.read(cx).chart_rows.len(), 3);
+    });
+}
+
+#[gpui::test]
+fn child_click_filters_further_and_a_second_click_clears(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_chart_rows);
+    wait_until(cx, "table loaded", |cx| shell.read(cx).row_count == 4);
+    let food = cx.update(|cx| top_category_id(&shell, cx, "Food"));
+    click_chart_legend(cx, handle, &shell, Some(food));
+    wait_until(cx, "drilled into Food", |cx| {
+        shell.read(cx).chart_parent == Some(food)
+    });
+    let groceries = cx.update(|cx| find_child(&shell, cx, "Groceries").unwrap());
+
+    click_chart_legend(cx, handle, &shell, Some(groceries));
+    wait_until(cx, "only the Groceries row", |cx| {
+        shell.read(cx).row_count == 1
+    });
+    cx.update(|cx| {
+        assert_eq!(table_rows(&shell, cx)[0].description, "GROCER STORE");
+        assert_eq!(
+            shell.read(cx).legend_selection,
+            Some(LegendSelection::Category(groceries))
+        );
+        // The chart stays on the children.
+        assert_eq!(shell.read(cx).chart_parent, Some(food));
+    });
+
+    click_chart_legend(cx, handle, &shell, Some(groceries));
+    wait_until(cx, "filter cleared, children still shown", |cx| {
+        shell.read(cx).legend_selection.is_none() && shell.read(cx).row_count == 4
+    });
+    cx.update(|cx| assert_eq!(shell.read(cx).chart_parent, Some(food)));
+}
+
+#[gpui::test]
+fn uncategorized_legend_row_filters_the_table(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_chart_rows);
+    wait_until(cx, "table loaded", |cx| shell.read(cx).row_count == 4);
+
+    click_chart_legend(cx, handle, &shell, None);
+    wait_until(cx, "only the uncategorized row", |cx| {
+        shell.read(cx).row_count == 1
+    });
+    cx.update(|cx| {
+        assert_eq!(table_rows(&shell, cx)[0].description, "Mystery Vendor");
+        assert_eq!(
+            shell.read(cx).legend_selection,
+            Some(LegendSelection::Uncategorized)
+        );
+        // The pseudo-row never drills the chart.
+        assert!(shell.read(cx).chart_parent.is_none());
+        assert_eq!(shell.read(cx).chart_rows.len(), 3);
+    });
+
+    click_chart_legend(cx, handle, &shell, None);
+    wait_until(cx, "all rows back", |cx| shell.read(cx).row_count == 4);
+    cx.update(|cx| assert!(shell.read(cx).legend_selection.is_none()));
+}
+
+#[gpui::test]
+fn escape_clears_the_drill_and_the_selection(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_chart_rows);
+    wait_until(cx, "table loaded", |cx| shell.read(cx).row_count == 4);
+    let food = cx.update(|cx| top_category_id(&shell, cx, "Food"));
+    click_chart_legend(cx, handle, &shell, Some(food));
+    wait_until(cx, "drilled with a selection", |cx| {
+        shell.read(cx).chart_parent == Some(food)
+            && shell.read(cx).legend_selection == Some(LegendSelection::Category(food))
+    });
+
+    // Actions dispatch along the focus path, so focus the search input
+    // first — like a user who clicked into the window. The real Esc
+    // keybinding (registered in `Shell::new`) must map the keystroke to
+    // `ClearCategorySelection`; dispatching the action directly would not
+    // test the binding.
+    with_window(cx, handle, |window, cx| {
+        let input = shell.read(cx).search_input.read(cx).focus_handle(cx);
+        window.focus(&input, cx);
+    });
+    cx.simulate_keystrokes(handle, "escape");
+    wait_until(cx, "drill and selection cleared", |cx| {
+        shell.read(cx).chart_parent.is_none() && shell.read(cx).legend_selection.is_none()
+    });
+    cx.update(|cx| assert_eq!(shell.read(cx).row_count, 4));
+}
+
+/// `seed_chart_rows` plus a childless Gifts parent whose only transaction
+/// (2026-10-05) falls in the default range but not in "this month", so a
+/// preset change can empty a selection out from under the legend.
+fn seed_chart_rows_split(conn: &financi_db::rusqlite::Connection) {
+    seed_chart_rows(conn);
+    let gifts =
+        financi_db::categories::create_parent(conn, "Gifts", CategoryKind::Expense).unwrap();
+    let acct = conn
+        .query_row("SELECT id FROM accounts WHERE name = 'Cobalt'", [], |r| {
+            r.get::<_, i64>(0)
+        })
+        .unwrap();
+    let import = conn
+        .query_row("SELECT id FROM imports LIMIT 1", [], |r| r.get::<_, i64>(0))
+        .unwrap();
+    conn.execute(
+        "INSERT INTO transactions (account_id, import_id, source_line, raw_bytes,
+                                   row_hash, posted_date, amount_cents,
+                                   description_raw, category_id)
+         VALUES (?1, ?2, 9, X'00', 'chart-hash-gifts', '2026-10-05', -400, 'GIFT SHOP', ?3)",
+        (acct, import, gifts),
+    )
+    .unwrap();
+}
+
+fn set_uncategorized_only(
+    cx: &mut TestAppContext,
+    handle: AnyWindowHandle,
+    shell: &Entity<Shell>,
+    on: bool,
+) {
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| s.set_uncategorized_only(on, window, cx));
+    });
+}
+
+#[gpui::test]
+fn a_filter_change_drops_the_stale_legend_selection(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_chart_rows_split);
+    wait_until(cx, "four chart rows", |cx| {
+        shell.read(cx).chart_rows.len() == 4
+    });
+    let gifts = cx.update(|cx| top_category_id(&shell, cx, "Gifts"));
+
+    // Gifts has no children: the drill snaps back to the top level while
+    // the selection (and the table filter) stay on Gifts.
+    click_chart_legend(cx, handle, &shell, Some(gifts));
+    wait_until(cx, "Gifts selected, table filtered", |cx| {
+        shell.read(cx).legend_selection == Some(LegendSelection::Category(gifts))
+            && shell.read(cx).chart_parent.is_none()
+            && shell.read(cx).row_count == 1
+    });
+
+    // "This month" drops the October Gifts spend: the stale selection must
+    // go with it, and the table must widen back to the remaining rows.
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.change_date_preset(DatePreset::ThisMonth, window, cx)
+        });
+    });
+    wait_until(cx, "selection and drill cleared, rows back", |cx| {
+        shell.read(cx).legend_selection.is_none()
+            && shell.read(cx).chart_parent.is_none()
+            // Four rows remain this month: two Food, one Transport, one
+            // uncategorized (the October Gifts row is out of range).
+            && shell.read(cx).row_count == 4
+    });
+    cx.update(|cx| {
+        let names: Vec<&str> = shell
+            .read(cx)
+            .chart_rows
+            .iter()
+            .map(|r| r.name.as_str())
+            .collect();
+        assert_eq!(names, ["Food", "Transport", "Uncategorized"]);
+    });
+}
+
+#[gpui::test]
+fn the_uncategorized_toggle_and_a_category_selection_are_exclusive(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_chart_rows);
+    wait_until(cx, "table loaded", |cx| shell.read(cx).row_count == 4);
+    let food = cx.update(|cx| top_category_id(&shell, cx, "Food"));
+
+    set_uncategorized_only(cx, handle, &shell, true);
+    wait_until(cx, "only the uncategorized row", |cx| {
+        shell.read(cx).row_count == 1
+    });
+
+    // A category legend row wins: the checkbox goes off, the table shows
+    // the category again.
+    click_chart_legend(cx, handle, &shell, Some(food));
+    wait_until(cx, "Food filters the table", |cx| {
+        !shell.read(cx).uncategorized_only
+            && shell.read(cx).legend_selection == Some(LegendSelection::Category(food))
+            && shell.read(cx).row_count == 2
+    });
+
+    // Toggling the checkbox back on clears the category selection (the
+    // chart stays drilled) instead of stacking both clauses.
+    set_uncategorized_only(cx, handle, &shell, true);
+    wait_until(cx, "uncategorized only again", |cx| {
+        shell.read(cx).uncategorized_only
+            && shell.read(cx).legend_selection.is_none()
+            && shell.read(cx).row_count == 1
+    });
+    cx.update(|cx| {
+        assert_eq!(shell.read(cx).chart_parent, Some(food));
+        let rows = table_rows(&shell, cx);
+        assert!(rows.iter().all(|r| r.category_id.is_none()));
     });
 }

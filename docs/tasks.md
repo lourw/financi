@@ -231,7 +231,7 @@ beside the monthly summary (right); then the transaction table.
     with Unhide in the context menu).
   - Amounts: signed, `$1,234.56`, money in shown in green.
 
-- [ ] **3.5 Category chart + legend.**
+- [x] **3.5 Category chart + legend.**
   - gpui-kit `BarChart` (spend per category, values positive) for the
     picture; beside it a **clickable legend list** (name, `$1,234.56`, %)
     because `BarChart` can't take clicks.

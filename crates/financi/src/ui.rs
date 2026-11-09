@@ -25,13 +25,14 @@ use financi_db::queue::{UncategorizedGroup, categorize_group, uncategorized_by_m
 use financi_db::rules::{add_rule, count_rule_matches, list_rules};
 use financi_db::settings::{self, DateRange};
 use financi_db::{
-    Account, DbWorker, TxSort, TxSortColumn, TxTableFilter, ViewFilter, apply_rule_from_merchant,
-    create_account, list_accounts, list_transactions_filtered, rusqlite::Connection, set_category,
-    set_hidden, sidebar_counts,
+    Account, CategorySpend, DbWorker, TxSort, TxSortColumn, TxTableFilter, ViewFilter,
+    apply_rule_from_merchant, create_account, list_accounts, list_transactions_filtered,
+    rusqlite::Connection, set_category, set_hidden, sidebar_counts, spend_by_category,
 };
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::calendar::Date as CalendarDate;
+use gpui_kit::component::chart::BarChart;
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::date_picker::{DatePicker, DatePickerEvent, DatePickerState};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
@@ -857,6 +858,50 @@ impl Render for ImportPanel {
 // ---------------------------------------------------------------------------
 // Main window
 
+actions!(dashboard, [ClearCategorySelection]);
+
+/// The one dashboard category selection (3.5): a legend row — a real
+/// category (parent or child) or the `Uncategorized` pseudo-row — that
+/// narrows the table. `Uncategorized` rides the table's existing
+/// uncategorized-only clause; a category id matches that category and,
+/// for a parent, its children.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum LegendSelection {
+    Category(i64),
+    Uncategorized,
+}
+
+/// A `spend_by_category` row prepared for drawing: the resolved palette
+/// color and the fields `BarChart` and the legend render.
+#[derive(Clone)]
+struct ChartRow {
+    id: Option<i64>,
+    name: SharedString,
+    cents: i64,
+    share: f64,
+    color: Hsla,
+}
+
+/// The category palette (ui-conventions, *Category colors*): the six base
+/// colors then their light variants, so red and green — which also mean
+/// danger and money in — come last.
+fn category_palette(theme: &gpui_kit::component::theme::Theme) -> [Hsla; 12] {
+    [
+        theme.blue,
+        theme.cyan,
+        theme.magenta,
+        theme.yellow,
+        theme.green,
+        theme.red,
+        theme.blue_light,
+        theme.cyan_light,
+        theme.magenta_light,
+        theme.yellow_light,
+        theme.green_light,
+        theme.red_light,
+    ]
+}
+
 pub struct Shell {
     db: DbWorker,
     db_path: PathBuf,
@@ -878,6 +923,13 @@ pub struct Shell {
     uncategorized_only: bool,
     show_hidden: bool,
     tx_sort: TxSort,
+    // -- Dashboard category chart + legend (3.5): the parent whose children
+    // the chart and legend drill into (`None` = the parent level), the one
+    // legend selection that drives the table's category filter, and the
+    // `spend_by_category` rows behind the chart and legend.
+    chart_parent: Option<i64>,
+    legend_selection: Option<LegendSelection>,
+    chart_rows: Vec<CategorySpend>,
     // -- Dashboard date range (3.2): the control state, the `ViewFilter`
     // it drives (used by 3.4–3.6), and the picker entities.
     date_range: DateRange,
@@ -1084,6 +1136,9 @@ impl Shell {
             },
         );
         let csv_root = financi_db::master_csv::root_for_db(&db_path);
+        // Esc clears the dashboard's category selection (3.5); the root
+        // view handles the action in `Render::render`.
+        cx.bind_keys([KeyBinding::new("escape", ClearCategorySelection, None)]);
         let new_parent_name =
             cx.new(|cx| InputState::new(window, cx).placeholder("New parent name"));
         let new_parent_kind = cx.new(|cx| {
@@ -1136,6 +1191,9 @@ impl Shell {
             uncategorized_only: false,
             show_hidden: false,
             tx_sort: TxSort::default(),
+            chart_parent: None,
+            legend_selection: None,
+            chart_rows: Vec::new(),
             date_range: DateRange::default(),
             view_filter: ViewFilter::default(),
             date_preset_select,
@@ -1210,20 +1268,26 @@ impl Shell {
         view_filter.include_transfers = self.include_transfers;
         // The table-only filters (3.4): search, the two toggles and the sort,
         // folded into the query alongside the shared date-range/accounts/
-        // transfers filter. Category and month are the query's, unused until
-        // the chart/legend selection lands in 3.5/3.6.
+        // transfers filter. The category slot carries the legend selection
+        // (3.5); the `Uncategorized` legend row rides `uncategorized_only`.
+        // Month is the query's, unused until the summary lands in 3.6.
         let table_filter = TxTableFilter {
-            category_id: None,
+            category_id: match self.legend_selection {
+                Some(LegendSelection::Category(id)) => Some(id),
+                Some(LegendSelection::Uncategorized) | None => None,
+            },
             month: None,
             search: if self.search.is_empty() {
                 None
             } else {
                 Some(self.search.clone())
             },
-            uncategorized_only: self.uncategorized_only,
+            uncategorized_only: self.uncategorized_only
+                || matches!(self.legend_selection, Some(LegendSelection::Uncategorized)),
             show_hidden: self.show_hidden,
             sort: self.tx_sort,
         };
+        let chart_parent = self.chart_parent;
         self.refresh_task = Some(cx.spawn_in(window, async move |this, cx| {
             let result = on_db(&db, move |c| {
                 let accounts = list_accounts(c)?;
@@ -1231,6 +1295,13 @@ impl Shell {
                     Vec::new()
                 } else {
                     list_transactions_filtered(c, &view_filter, &table_filter)?
+                };
+                // Chart and legend rows: parents, or the drilled-in parent's
+                // children (3.5).
+                let chart_rows = if none_selected {
+                    Vec::new()
+                } else {
+                    spend_by_category(c, &view_filter, chart_parent)?
                 };
                 let (total, uncategorized) = sidebar_counts(c)?;
                 let history = list_imports(c)?;
@@ -1241,6 +1312,7 @@ impl Shell {
                 Ok::<_, financi_db::DbError>((
                     accounts,
                     rows,
+                    chart_rows,
                     total,
                     uncategorized,
                     history,
@@ -1256,6 +1328,7 @@ impl Shell {
                     Ok((
                         accounts,
                         rows,
+                        chart_rows,
                         total,
                         uncategorized,
                         history,
@@ -1275,6 +1348,40 @@ impl Shell {
                         // checkboxes: empty means all accounts.
                         this.sync_account_filter();
                         this.row_count = rows.len();
+                        this.chart_rows = chart_rows;
+                        // Revalidate the legend state against the rows we
+                        // can actually show: a date/accounts change can
+                        // empty the chart out from under a selection or a
+                        // drill-down, and the table filter must not keep
+                        // narrowing by a category that is no longer there.
+                        let mut stale = false;
+                        let drilled = this.chart_parent;
+                        if drilled.is_some() && this.chart_rows.is_empty() {
+                            this.chart_parent = None;
+                            stale = true;
+                        }
+                        let selection_gone = match this.legend_selection {
+                            Some(LegendSelection::Category(id)) => {
+                                // While drilled, the selected parent itself
+                                // is not among the child rows — it stays.
+                                drilled != Some(id)
+                                    && !this.chart_rows.iter().any(|r| r.id == Some(id))
+                            }
+                            Some(LegendSelection::Uncategorized) => {
+                                this.chart_parent.is_none()
+                                    && !this.chart_rows.iter().any(|r| r.id.is_none())
+                            }
+                            None => false,
+                        };
+                        if selection_gone {
+                            this.legend_selection = None;
+                            stale = true;
+                        }
+                        if stale {
+                            // Re-query with the corrected filter so the
+                            // table, chart and state agree again.
+                            this.refresh(window, cx);
+                        }
                         this.total_visible = total;
                         this.uncategorized_visible = uncategorized;
                         this.import_history = history;
@@ -1492,12 +1599,17 @@ impl Shell {
     }
 
     /// The "Uncategorized only" checkbox: narrow the table to rows with no
-    /// category.
+    /// category. Mutually exclusive with a category legend selection (3.5) —
+    /// both feed the one table filter, and `category = X AND no category`
+    /// could only ever be an empty table.
     fn set_uncategorized_only(&mut self, on: bool, window: &mut Window, cx: &mut Context<Self>) {
         if on == self.uncategorized_only {
             return;
         }
         self.uncategorized_only = on;
+        if on && matches!(self.legend_selection, Some(LegendSelection::Category(_))) {
+            self.legend_selection = None;
+        }
         self.refresh(window, cx);
     }
 
@@ -1518,6 +1630,54 @@ impl Shell {
     /// lease, so only the shell's copy needs updating here.
     fn set_tx_sort(&mut self, sort: TxSort, window: &mut Window, cx: &mut Context<Self>) {
         self.tx_sort = sort;
+        self.refresh(window, cx);
+    }
+
+    /// Click a legend row (3.5). A parent at the top level drills the chart
+    /// and legend into its children and filters the table to that parent;
+    /// a child filters the table to itself, and clicking the selected child
+    /// again clears the filter (the chart stays on the children). The
+    /// `Uncategorized` pseudo-row toggles the uncategorized filter.
+    /// Selecting a real category clears the "Uncategorized only" checkbox —
+    /// the two can't both narrow the table.
+    fn click_legend_row(&mut self, id: Option<i64>, window: &mut Window, cx: &mut Context<Self>) {
+        self.legend_selection = match id {
+            None => (self.legend_selection != Some(LegendSelection::Uncategorized))
+                .then_some(LegendSelection::Uncategorized),
+            Some(id) if self.chart_parent.is_none() => {
+                self.chart_parent = Some(id);
+                Some(LegendSelection::Category(id))
+            }
+            Some(id) => (self.legend_selection != Some(LegendSelection::Category(id)))
+                .then_some(LegendSelection::Category(id)),
+        };
+        if matches!(self.legend_selection, Some(LegendSelection::Category(_))) {
+            self.uncategorized_only = false;
+        }
+        self.refresh(window, cx);
+    }
+
+    /// Click the "← All categories" row: back to the parent level with no
+    /// category filter on the table.
+    fn show_all_categories(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.chart_parent = None;
+        self.legend_selection = None;
+        self.refresh(window, cx);
+    }
+
+    /// Esc (the `dashboard::ClearCategorySelection` action): clear the
+    /// drill-down and the legend selection together — they are one concept.
+    fn clear_category_selection(
+        &mut self,
+        _: &ClearCategorySelection,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.chart_parent.is_none() && self.legend_selection.is_none() {
+            return;
+        }
+        self.chart_parent = None;
+        self.legend_selection = None;
         self.refresh(window, cx);
     }
 
@@ -2222,6 +2382,189 @@ impl Shell {
             )
     }
 
+    /// The dashboard middle row (3.5): the `BarChart` of spend per category
+    /// beside a clickable legend, in the left half; the monthly summary
+    /// (3.6) takes the right half later. `BarChart` takes no clicks, so all
+    /// interactivity lives in the legend rows (ui-conventions, *Interaction*).
+    fn chart_panel(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let (border, background, muted, list_active, radius, palette) = {
+            let theme = cx.theme();
+            (
+                theme.border,
+                theme.background,
+                theme.muted_foreground,
+                theme.list_active,
+                theme.radius,
+                category_palette(theme),
+            )
+        };
+        // Stable colors: position among the siblings sorted by category id,
+        // so a category keeps its color when the date range reorders the
+        // rows; children start at the front of the palette under their own
+        // parent (ui-conventions, *Category colors*).
+        let mut colors: HashMap<i64, Hsla> = HashMap::new();
+        let mut parents: Vec<&CategoryNode> = self.categories.iter().collect();
+        parents.sort_by_key(|n| n.id);
+        for (ix, parent) in parents.iter().enumerate() {
+            colors.insert(parent.id, palette[ix % 12]);
+            let mut kids: Vec<&CategoryNode> = parent.children.iter().collect();
+            kids.sort_by_key(|n| n.id);
+            for (cix, kid) in kids.iter().enumerate() {
+                colors.insert(kid.id, palette[cix % 12]);
+            }
+        }
+        let mut rows: Vec<ChartRow> = self
+            .chart_rows
+            .iter()
+            .map(|r| ChartRow {
+                id: r.id,
+                name: r.name.clone().into(),
+                cents: r.spend_cents,
+                share: r.share,
+                color: r
+                    .id
+                    .map_or(muted, |id| colors.get(&id).copied().unwrap_or(muted)),
+            })
+            .collect();
+        // Uncategorized is always the last category row, whatever its amount.
+        rows.sort_by_key(|r| r.id.is_none());
+        let selection = self.legend_selection;
+        // The `Uncategorized` row is active when the 3.4 checkbox drives the
+        // same clause, so the legend never contradicts the toolbar.
+        let uncategorized_active =
+            matches!(selection, Some(LegendSelection::Uncategorized)) || self.uncategorized_only;
+
+        let chart = if rows.is_empty() {
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_sm()
+                .text_color(muted)
+                .child("No spending in this range")
+                .into_any_element()
+        } else {
+            let parent_name = self
+                .chart_parent
+                .and_then(|p| self.categories.iter().find(|n| n.id == p))
+                .map(|n| format!(" of {}", n.name))
+                .unwrap_or_default();
+            div()
+                .flex_1()
+                .min_w_0()
+                .child(
+                    BarChart::new(rows.clone())
+                        .id("category-chart")
+                        .band(|r| r.name.to_string())
+                        .value(|r| r.cents as f64)
+                        .label(|r| r.name.clone())
+                        .fill(|r, _, _, _| r.color)
+                        .tooltip_title(|r| r.name.clone())
+                        .tooltip_value(move |r, _| {
+                            format!(
+                                "{} · {:.1}%{parent_name}",
+                                flow::money(r.cents),
+                                r.share * 100.
+                            )
+                            .into()
+                        }),
+                )
+                .into_any_element()
+        };
+
+        let legend = v_flex()
+            .id("legend-list")
+            .w(px(220.))
+            .flex_none()
+            .min_h_0()
+            .gap_1()
+            .overflow_y_scroll()
+            .when(self.chart_parent.is_some(), |list| {
+                list.child(
+                    div()
+                        .id("legend-all")
+                        .text_sm()
+                        .px_1()
+                        .py_1()
+                        .cursor_pointer()
+                        .child("← All categories")
+                        .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                            this.show_all_categories(window, cx);
+                        })),
+                )
+            })
+            .children(rows.iter().enumerate().map(|(ix, r)| {
+                let id = r.id;
+                let selected = match (id, selection) {
+                    (None, _) => uncategorized_active,
+                    (Some(id), Some(LegendSelection::Category(c))) => c == id,
+                    _ => false,
+                };
+                div()
+                    .id(SharedString::from(format!("legend-{ix}")))
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .px_1()
+                    .py_1()
+                    .rounded(radius)
+                    .cursor_pointer()
+                    .when(selected, |row| row.bg(list_active))
+                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                        this.click_legend_row(id, window, cx);
+                    }))
+                    .child(div().size(px(10.)).flex_none().rounded(px(2.)).bg(r.color))
+                    .child(
+                        div()
+                            .text_sm()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .when(id.is_none(), |name| name.text_color(muted))
+                            .child(r.name.clone()),
+                    )
+                    .child(
+                        div()
+                            .text_sm()
+                            .w(px(76.))
+                            .flex_none()
+                            .text_right()
+                            .child(flow::money(r.cents)),
+                    )
+                    .child(
+                        div()
+                            .text_sm()
+                            .w(px(52.))
+                            .flex_none()
+                            .text_right()
+                            .child(format!("{:.1}%", r.share * 100.)),
+                    )
+            }));
+
+        h_flex()
+            .h(px(340.))
+            .flex_none()
+            .gap_3()
+            .child(
+                h_flex()
+                    .w(relative(0.45))
+                    .min_w_0()
+                    .gap_3()
+                    .p_4()
+                    .rounded(radius)
+                    .border_1()
+                    .border_color(border)
+                    .bg(background)
+                    .child(chart)
+                    .child(legend),
+            )
+            // The monthly summary panel (3.6) fills the right half later.
+            .child(div().flex_1().min_w_0())
+            .into_any_element()
+    }
+
     fn render_dashboard(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let muted = cx.theme().muted_foreground;
         let empty = self.row_count == 0;
@@ -2308,10 +2651,19 @@ impl Shell {
                     .child("Drop an Amex or Simplii CSV export here, or press ⌘O")
                     .into_any_element()
             } else {
-                div()
+                v_flex()
                     .flex_1()
                     .min_h_0()
-                    .child(DataTable::new(&self.table).stripe(true))
+                    .gap_3()
+                    // Middle row (3.5): chart + legend left, monthly summary
+                    // right — the summary (3.6) takes the empty half.
+                    .child(self.chart_panel(cx))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_h_0()
+                            .child(DataTable::new(&self.table).stripe(true)),
+                    )
                     .into_any_element()
             })
             .into_any_element()
@@ -2888,6 +3240,13 @@ impl Render for Shell {
             .size_full()
             .bg(background)
             .text_color(foreground)
+            // Esc clears the dashboard category selection (3.5); the binding
+            // is registered in `Shell::new`.
+            .on_action(
+                cx.listener(|this, action: &ClearCategorySelection, window, cx| {
+                    this.clear_category_selection(action, window, cx);
+                }),
+            )
             .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
                 if let Some(path) = paths.paths().first() {
                     this.open_file(path.clone(), window, cx);
