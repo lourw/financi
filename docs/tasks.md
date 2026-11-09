@@ -216,7 +216,7 @@ beside the monthly summary (right); then the transaction table.
     in the `settings` table under `ui.date_range`; restore at launch.
   - Unit-test the preset → date range function, including year boundaries.
 
-- [ ] **3.3 Accounts filter + transfers toggle.** Multi-select of accounts
+- [x] **3.3 Accounts filter + transfers toggle.** Multi-select of accounts
   (default all) and an "Include transfers" checkbox (default off, persisted
   as `ui.include_transfers`). gpui-kit has no multi-select: build the
   accounts filter as a dropdown popover of gpui-kit checkboxes, one per

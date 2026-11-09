@@ -23,6 +23,7 @@ use chrono::{Datelike, NaiveDate};
 use rusqlite::{Connection, ToSql, params_from_iter};
 
 use crate::Result;
+use crate::import::TransactionRow;
 
 /// The dashboard filter shared by [`spend_by_category`] and
 /// [`monthly_summary`].
@@ -52,6 +53,58 @@ impl Default for ViewFilter {
             include_transfers: false,
         }
     }
+}
+
+/// Browse-table rows for the dashboard accounts filter and transfers
+/// toggle (task 3.3): hidden rows left out, newest first, the same
+/// ordering as [`crate::import::list_transactions`]. Empty `account_ids`
+/// means every account (the [`ViewFilter`] convention); transfer-category
+/// rows appear only with `include_transfers`. The date range and the
+/// table-only toggles arrive with the table upgrade (3.4).
+pub fn list_transactions_filtered(
+    conn: &Connection,
+    account_ids: &[i64],
+    include_transfers: bool,
+) -> Result<Vec<TransactionRow>> {
+    let mut sql = String::from(
+        "SELECT t.id, i.name || ' · ' || a.name, t.posted_date, t.description_raw, t.merchant,
+                c.name, t.amount_cents, t.category_id, t.hidden
+           FROM transactions t
+           JOIN accounts a ON a.id = t.account_id
+           JOIN institutions i ON i.id = a.institution_id
+           LEFT JOIN categories c ON c.id = t.category_id
+          WHERE t.hidden = 0",
+    );
+    let mut args: Vec<Box<dyn ToSql>> = Vec::new();
+    if !account_ids.is_empty() {
+        let marks: Vec<String> = (0..account_ids.len())
+            .map(|i| format!("?{}", i + 1))
+            .collect();
+        sql.push_str(" AND t.account_id IN (");
+        sql.push_str(&marks.join(", "));
+        sql.push(')');
+        args.extend(account_ids.iter().map(|id| Box::new(*id) as Box<dyn ToSql>));
+    }
+    if !include_transfers {
+        sql.push_str(" AND COALESCE(c.kind, 'expense') <> 'transfer'");
+    }
+    sql.push_str(" ORDER BY t.posted_date DESC, t.import_id DESC, t.source_line");
+
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params_from_iter(args), |r| {
+        Ok(TransactionRow {
+            id: r.get(0)?,
+            account: r.get(1)?,
+            posted_date: r.get(2)?,
+            description: r.get(3)?,
+            merchant: r.get(4)?,
+            category: r.get(5)?,
+            amount_cents: r.get(6)?,
+            category_id: r.get(7)?,
+            hidden: r.get(8)?,
+        })
+    })?;
+    Ok(rows.collect::<Result<_, _>>()?)
 }
 
 /// One row of [`spend_by_category`]: a parent category (or the
@@ -866,6 +919,49 @@ mod tests {
             )),
             1000
         );
+    }
+
+    #[test]
+    fn list_filtered_honours_accounts_and_transfers() {
+        let f = fixture();
+        let other_import = seed_import(&f.conn, f.other_account_id);
+        let older = add_txn(&f.conn, f.account_id, f.import_id, "2026-10-05", -700, None);
+        let other = add_txn(
+            &f.conn,
+            f.other_account_id,
+            other_import,
+            "2026-10-06",
+            -300,
+            None,
+        );
+        let transfer = add_txn(
+            &f.conn,
+            f.account_id,
+            f.import_id,
+            "2026-10-07",
+            -5000,
+            Some(f.card_payment),
+        );
+        let ids = |account_ids: &[i64], transfers: bool| -> Vec<i64> {
+            list_transactions_filtered(&f.conn, account_ids, transfers)
+                .unwrap()
+                .iter()
+                .map(|r| r.id)
+                .collect()
+        };
+        // Empty account ids mean every account; transfer rows are out.
+        assert_eq!(ids(&[], false), vec![other, older], "newest first");
+        assert_eq!(ids(&[], true), vec![transfer, other, older]);
+        // Account selection narrows to that account's rows.
+        assert_eq!(ids(&[f.account_id], false), vec![older]);
+        assert_eq!(ids(&[f.other_account_id], false), vec![other]);
+        assert_eq!(
+            ids(&[f.account_id, f.other_account_id], false),
+            vec![other, older]
+        );
+        // Hidden rows never appear, however the filter is set.
+        set_hidden(&f.conn, older, true).unwrap();
+        assert_eq!(ids(&[], true), vec![transfer, other]);
     }
 
     #[test]

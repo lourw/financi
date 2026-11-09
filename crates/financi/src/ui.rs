@@ -18,15 +18,15 @@ use financi_db::categories::{
     rename as rename_category, transaction_counts,
 };
 use financi_db::import::{
-    CommitOptions, ImportEntry, TransactionRow, commit_import, list_imports, list_transactions,
-    plan_import, undo_last_import,
+    CommitOptions, ImportEntry, TransactionRow, commit_import, list_imports, plan_import,
+    undo_last_import,
 };
 use financi_db::queue::{UncategorizedGroup, categorize_group, uncategorized_by_merchant};
 use financi_db::rules::{add_rule, count_rule_matches, list_rules};
 use financi_db::settings::{self, DateRange};
 use financi_db::{
     Account, DbWorker, ViewFilter, apply_rule_from_merchant, create_account, list_accounts,
-    rusqlite::Connection, set_category, set_hidden, sidebar_counts,
+    list_transactions_filtered, rusqlite::Connection, set_category, set_hidden, sidebar_counts,
 };
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -35,6 +35,7 @@ use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::date_picker::{DatePicker, DatePickerEvent, DatePickerState};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
+use gpui_kit::component::popover::Popover;
 use gpui_kit::component::select::{Select, SelectEvent, SelectState};
 use gpui_kit::component::sidebar::{Sidebar, SidebarItem, SidebarMenuItem};
 use gpui_kit::component::switch::Switch;
@@ -793,8 +794,12 @@ pub struct Shell {
     csv_root: PathBuf,
     accounts: Vec<Account>,
     page: Page,
-    filter: Entity<SelectState<Names>>,
-    selected_account: Option<i64>,
+    // -- Dashboard accounts filter and transfers toggle (3.3): the accounts
+    // the user unchecked in the dropdown (empty = all), and the
+    // "Include transfers" flag persisted as `ui.include_transfers`.
+    excluded_accounts: Vec<i64>,
+    include_transfers: bool,
+    include_transfers_task: Option<Task<()>>,
     // -- Dashboard date range (3.2): the control state, the `ViewFilter`
     // it drives (used by 3.4–3.6), and the picker entities.
     date_range: DateRange,
@@ -861,6 +866,22 @@ fn kind_label(kind: CategoryKind) -> &'static str {
 
 const ALL_ACCOUNTS: &str = "All accounts";
 
+/// One label per account for the filter dropdown: the account's own name,
+/// or the institution-qualified name when two accounts share it
+/// (ui-conventions, *Accounts*).
+fn account_labels(accounts: &[Account]) -> Vec<String> {
+    accounts
+        .iter()
+        .map(|a| {
+            if accounts.iter().filter(|o| o.name == a.name).count() > 1 {
+                a.display_name()
+            } else {
+                a.name.clone()
+            }
+        })
+        .collect()
+}
+
 impl Shell {
     pub fn new(
         db_path: PathBuf,
@@ -923,30 +944,6 @@ impl Shell {
                 cx,
             )
         });
-        let filter = cx.new(|cx| {
-            SelectState::new(
-                vec![SharedString::from(ALL_ACCOUNTS)],
-                Some(gpui_kit::component::IndexPath::new(0)),
-                window,
-                cx,
-            )
-        });
-        let sub = cx.subscribe_in(
-            &filter,
-            window,
-            |this, _, ev: &SelectEvent<Names>, window, cx| {
-                let SelectEvent::Confirm(choice) = ev;
-                this.selected_account = choice.as_ref().and_then(|c| {
-                    this.accounts
-                        .iter()
-                        .find(|a| a.display_name() == c.as_ref())
-                        .map(|a| a.id)
-                });
-                this.confirm_undo_import = None;
-                this.rule_offer = None;
-                this.refresh(window, cx);
-            },
-        );
         // -- Dashboard date range (3.2). The picker starts on the default
         // (Last 3 months); the saved setting is restored from the database
         // below and shown once it arrives.
@@ -1032,8 +1029,9 @@ impl Shell {
             csv_root,
             accounts: Vec::new(),
             page: Page::Dashboard,
-            filter,
-            selected_account: None,
+            excluded_accounts: Vec::new(),
+            include_transfers: false,
+            include_transfers_task: None,
             date_range: DateRange::default(),
             view_filter: ViewFilter::default(),
             date_preset_select,
@@ -1075,15 +1073,10 @@ impl Shell {
             queue: Vec::new(),
             queue_pickers: HashMap::new(),
             queue_error: None,
-            _subs: vec![
-                sub,
-                preview_sub,
-                date_preset_sub,
-                date_from_sub,
-                date_to_sub,
-            ],
+            _subs: vec![preview_sub, date_preset_sub, date_from_sub, date_to_sub],
         };
         shell.load_date_range(window, cx);
+        shell.load_include_transfers(window, cx);
         shell.refresh(window, cx);
         shell
     }
@@ -1091,11 +1084,20 @@ impl Shell {
     /// Re-query everything the pages show: accounts and transactions for
     /// the dashboard, sidebar counts, and the import history.
     fn refresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let (db, account) = (self.db.clone(), self.selected_account);
+        let db = self.db.clone();
+        let account_ids = self.selected_account_ids();
+        let include_transfers = self.include_transfers;
+        // Deselecting every account shows no rows: empty `account_ids`
+        // means *all* accounts, so the query itself must be skipped.
+        let none_selected = account_ids.is_empty() && !self.accounts.is_empty();
         self.refresh_task = Some(cx.spawn_in(window, async move |this, cx| {
             let result = on_db(&db, move |c| {
                 let accounts = list_accounts(c)?;
-                let rows = list_transactions(c, account)?;
+                let rows = if none_selected {
+                    Vec::new()
+                } else {
+                    list_transactions_filtered(c, &account_ids, include_transfers)?
+                };
                 let (total, uncategorized) = sidebar_counts(c)?;
                 let history = list_imports(c)?;
                 let tree = list_categories(c)?;
@@ -1128,21 +1130,6 @@ impl Shell {
                         rules,
                         queue,
                     )) => {
-                        let names: Names = std::iter::once(SharedString::from(ALL_ACCOUNTS))
-                            .chain(accounts.iter().map(|a| a.display_name().into()))
-                            .collect();
-                        let selected = this
-                            .selected_account
-                            .and_then(|id| accounts.iter().position(|a| a.id == id))
-                            .map_or(0, |ix| ix + 1);
-                        this.filter.update(cx, |s, cx| {
-                            s.set_items(names, window, cx);
-                            s.set_selected_index(
-                                Some(gpui_kit::component::IndexPath::new(selected)),
-                                window,
-                                cx,
-                            );
-                        });
                         if !history
                             .iter()
                             .any(|e| Some(e.id) == this.confirm_undo_import)
@@ -1150,6 +1137,9 @@ impl Shell {
                             this.confirm_undo_import = None;
                         }
                         this.accounts = accounts;
+                        // Keep the shared `ViewFilter` in step with the
+                        // checkboxes: empty means all accounts.
+                        this.sync_account_filter();
                         this.row_count = rows.len();
                         this.total_visible = total;
                         this.uncategorized_visible = uncategorized;
@@ -1296,6 +1286,91 @@ impl Shell {
                 }
             });
         }));
+    }
+
+    /// The accounts checked in the filter dropdown: every account whose id
+    /// is not in `excluded_accounts` (task 3.3).
+    fn selected_account_ids(&self) -> Vec<i64> {
+        self.accounts
+            .iter()
+            .filter(|a| !self.excluded_accounts.contains(&a.id))
+            .map(|a| a.id)
+            .collect()
+    }
+
+    /// Mirror the account checkboxes into [`ViewFilter::account_ids`]
+    /// (empty = all accounts). With *every* account unchecked the list
+    /// collapses to empty, which reads as "all" to the chart queries; the
+    /// table path handles that case itself in [`Self::refresh`].
+    fn sync_account_filter(&mut self) {
+        self.view_filter.account_ids = if self.excluded_accounts.is_empty() {
+            Vec::new()
+        } else {
+            self.selected_account_ids()
+        };
+    }
+
+    /// Check or uncheck one account in the filter dropdown; the table
+    /// follows immediately.
+    fn set_account_checked(
+        &mut self,
+        id: i64,
+        on: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.excluded_accounts.retain(|x| *x != id);
+        if !on {
+            self.excluded_accounts.push(id);
+        }
+        self.sync_account_filter();
+        self.refresh(window, cx);
+    }
+
+    /// The "Include transfers" checkbox: update the filter, refresh the
+    /// table, and persist the choice as `ui.include_transfers`.
+    fn set_include_transfers(&mut self, on: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if on == self.include_transfers {
+            return;
+        }
+        self.include_transfers = on;
+        self.view_filter.include_transfers = on;
+        let db = self.db.clone();
+        self.include_transfers_task = Some(cx.spawn(async move |_, _| {
+            let _ = on_db(&db, move |c| settings::set_include_transfers(c, on)).await;
+        }));
+        self.refresh(window, cx);
+    }
+
+    /// Restore the persisted `ui.include_transfers` (default off) at
+    /// launch; unlike the date range the table query reads the filter, so
+    /// a saved "on" refreshes the rows.
+    fn load_include_transfers(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let db = self.db.clone();
+        self.include_transfers_task = Some(cx.spawn_in(window, async move |this, cx| {
+            let saved = on_db(&db, |c| settings::include_transfers(c)).await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                if let Ok(true) = saved {
+                    this.include_transfers = true;
+                    this.view_filter.include_transfers = true;
+                    this.refresh(window, cx);
+                }
+            });
+        }));
+    }
+
+    /// Trigger label of the accounts dropdown: "All accounts" while
+    /// nothing is unchecked, otherwise how many of the accounts remain.
+    fn account_filter_label(&self) -> String {
+        let total = self.accounts.len();
+        let selected = total.saturating_sub(self.excluded_accounts.len());
+        if self.excluded_accounts.is_empty() {
+            ALL_ACCOUNTS.to_string()
+        } else if selected == 0 {
+            "No accounts".to_string()
+        } else {
+            format!("{selected} of {total} accounts")
+        }
     }
 
     fn go_page(&mut self, page: Page, cx: &mut Context<Self>) {
@@ -1975,8 +2050,8 @@ impl Shell {
             .flex_1()
             .min_h_0()
             .gap_3()
-            // The header row is the filter row (ui-conventions, *Pages*);
-            // accounts and the transfers toggle join it in 3.3.
+            // The header row is the filter row (ui-conventions, *Pages*):
+            // date range, accounts multi-select, transfers toggle.
             .child(
                 h_flex()
                     .gap_3()
@@ -2003,7 +2078,17 @@ impl Shell {
                                 )
                             }),
                     )
-                    .child(div().w(px(320.)).child(Select::new(&self.filter)))
+                    // Accounts multi-select (3.3): a dropdown popover of
+                    // checkboxes, one per account, all checked by default.
+                    .child(self.accounts_popover(cx))
+                    .child(
+                        Checkbox::new("include-transfers")
+                            .label("Include transfers")
+                            .checked(self.include_transfers)
+                            .on_click(cx.listener(|this, on: &bool, window, cx| {
+                                this.set_include_transfers(*on, window, cx);
+                            })),
+                    )
                     .child(div().text_sm().text_color(muted).child(format!(
                         "{} transactions",
                         flow::count(self.row_count as i64)
@@ -2026,6 +2111,34 @@ impl Shell {
                     .into_any_element()
             })
             .into_any_element()
+    }
+
+    /// Accounts filter dropdown (task 3.3): gpui-kit has no multi-select,
+    /// so it is a [`Popover`] of one [`Checkbox`] per account, all checked
+    /// by default. The popover stays open while boxes are clicked.
+    fn accounts_popover(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let shell = cx.entity();
+        let ids: Vec<i64> = self.accounts.iter().map(|a| a.id).collect();
+        let labels = account_labels(&self.accounts);
+        let excluded = self.excluded_accounts.clone();
+        Popover::new("accounts-filter")
+            .trigger(Button::new("accounts-filter-trigger").label(self.account_filter_label()))
+            .content(move |_, _, _| {
+                v_flex()
+                    .gap_1()
+                    .children(ids.iter().zip(labels.iter()).map(|(id, name)| {
+                        let id = *id;
+                        let shell = shell.clone();
+                        Checkbox::new(SharedString::from(format!("account-{id}")))
+                            .label(name.clone())
+                            .checked(!excluded.contains(&id))
+                            .on_click(move |on: &bool, window, cx| {
+                                shell.update(cx, |this, cx| {
+                                    this.set_account_checked(id, *on, window, cx);
+                                });
+                            })
+                    }))
+            })
     }
 
     fn render_imports(&mut self, cx: &mut Context<Self>) -> AnyElement {

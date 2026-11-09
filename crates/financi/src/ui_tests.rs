@@ -10,7 +10,7 @@ use financi_core::dates::{DatePreset, preset_range};
 use financi_core::parse::merchant;
 use financi_core::{AccountKind, CategoryKind};
 use financi_db::import::TransactionRow;
-use financi_db::settings::{self, DateRange, UI_DATE_RANGE};
+use financi_db::settings::{self, DateRange, UI_DATE_RANGE, UI_INCLUDE_TRANSFERS};
 use financi_db::{DbWorker, ViewFilter, create_account, open_in_memory};
 // No glob import: `gpui_kit::*` brings GPUI's `test` macro into scope, which
 // shadows the built-in #[test] that #[gpui::test] expands to.
@@ -219,7 +219,9 @@ fn overlap_with_another_account_blocks_until_overridden(cx: &mut TestAppContext)
     );
     wait_until(cx, "Cobalt plan", |cx| plan_ready(&shell, cx));
     click_import(cx, handle, &shell);
-    wait_until(cx, "Cobalt import", |cx| shell.read(cx).row_count == 68);
+    // 68 imported rows minus the card payment: transfers are hidden by
+    // default (task 3.3).
+    wait_until(cx, "Cobalt import", |cx| shell.read(cx).row_count == 67);
 
     open_and_choose(
         cx,
@@ -246,7 +248,7 @@ fn overlap_with_another_account_blocks_until_overridden(cx: &mut TestAppContext)
     });
     click_import(cx, handle, &shell);
     wait_until(cx, "Gold import with override", |cx| {
-        shell.read(cx).import.is_none() && shell.read(cx).row_count == 68 + 102
+        shell.read(cx).import.is_none() && shell.read(cx).row_count == 67 + 100
     });
 }
 
@@ -267,7 +269,7 @@ fn undo_needs_a_second_click_and_removes_the_latest_import(cx: &mut TestAppConte
     );
     wait_until(cx, "plan", |cx| plan_ready(&shell, cx));
     click_import(cx, handle, &shell);
-    wait_until(cx, "import", |cx| shell.read(cx).row_count == 68);
+    wait_until(cx, "import", |cx| shell.read(cx).row_count == 67);
 
     wait_until(cx, "import history", |cx| {
         shell.read(cx).import_history.len() == 1
@@ -281,7 +283,7 @@ fn undo_needs_a_second_click_and_removes_the_latest_import(cx: &mut TestAppConte
             Some(id),
             "first click only asks to confirm"
         );
-        assert_eq!(shell.read(cx).row_count, 68);
+        assert_eq!(shell.read(cx).row_count, 67);
         shell.update(cx, |s, cx| s.undo_import(id, window, cx));
     });
 
@@ -417,7 +419,7 @@ fn creating_a_rule_categorizes_matching_rows(cx: &mut TestAppContext) {
     );
     wait_until(cx, "plan", |cx| plan_ready(&shell, cx));
     click_import(cx, handle, &shell);
-    wait_until(cx, "import", |cx| shell.read(cx).row_count == 68);
+    wait_until(cx, "import", |cx| shell.read(cx).row_count == 67);
 
     add_parent(cx, handle, &shell, "Shopping");
     add_child(cx, handle, &shell, "Online");
@@ -471,7 +473,7 @@ fn categorizing_a_queue_group_locks_in_a_rule(cx: &mut TestAppContext) {
     );
     wait_until(cx, "plan", |cx| plan_ready(&shell, cx));
     click_import(cx, handle, &shell);
-    wait_until(cx, "import", |cx| shell.read(cx).row_count == 68);
+    wait_until(cx, "import", |cx| shell.read(cx).row_count == 67);
     add_parent(cx, handle, &shell, "Shopping");
     add_child(cx, handle, &shell, "Online");
     let child = cx.update(|cx| find_child(&shell, cx, "Online").unwrap());
@@ -527,7 +529,7 @@ fn delete_category_reassigns_transactions_and_rules(cx: &mut TestAppContext) {
     );
     wait_until(cx, "plan", |cx| plan_ready(&shell, cx));
     click_import(cx, handle, &shell);
-    wait_until(cx, "import", |cx| shell.read(cx).row_count == 68);
+    wait_until(cx, "import", |cx| shell.read(cx).row_count == 67);
     add_parent(cx, handle, &shell, "Shopping");
     add_child(cx, handle, &shell, "Online");
     add_parent(cx, handle, &shell, "Everything Else"); // second parent to reassign onto
@@ -657,7 +659,7 @@ fn import_and_top_merchant(
     );
     wait_until(cx, "plan", |cx| plan_ready(shell, cx));
     click_import(cx, handle, shell);
-    wait_until(cx, "import", |cx| shell.read(cx).row_count == 68);
+    wait_until(cx, "import", |cx| shell.read(cx).row_count == 67);
     wait_until(cx, "queue populated", |cx| !shell.read(cx).queue.is_empty());
     cx.update(|cx| {
         let (m, _) = top_group(shell, cx);
@@ -1016,4 +1018,156 @@ fn picking_a_custom_range_persists_and_normalizes(cx: &mut TestAppContext) {
         Some("custom:2026-03-01..2026-09-01"),
         "the start handler normalizes too"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Accounts filter + transfers toggle (task 3.3)
+
+/// Two Amex accounts: Cobalt gets a normal spend row and a
+/// transfer-category row, Gold one normal spend row. With transfers off
+/// the table starts at two rows, one per account.
+fn seed_two_accounts_and_a_transfer(conn: &financi_db::rusqlite::Connection) {
+    let cobalt = create_account(conn, "amex", "Cobalt", AccountKind::CreditCard).unwrap();
+    let gold = create_account(conn, "amex", "Gold", AccountKind::CreditCard).unwrap();
+    let import = |account: i64| -> i64 {
+        conn.execute(
+            "INSERT INTO imports (account_id, parser_id, file_name, imported_at, header_raw,
+                                  encoding, has_bom, line_ending, trailing_newline, row_count)
+             VALUES (?1, 'amex', 'seed.csv', '2026-11-01', X'00', 'utf-8', 0, 'lf', 0, 0)",
+            [account],
+        )
+        .unwrap();
+        conn.last_insert_rowid()
+    };
+    let txn =
+        |account: i64, import: i64, line: i64, date: &str, cents: i64, category: Option<i64>| {
+            conn.execute(
+                "INSERT INTO transactions (account_id, import_id, source_line, raw_bytes,
+                                           row_hash, posted_date, amount_cents,
+                                           description_raw, category_id)
+                 VALUES (?1, ?2, ?3, X'00', ?4, ?5, ?6, 'ROW', ?7)",
+                (
+                    account,
+                    import,
+                    line,
+                    format!("hash-{account}-{line}"),
+                    date,
+                    cents,
+                    category,
+                ),
+            )
+            .unwrap();
+        };
+    let transfer = financi_db::categories::card_payment_category(conn).unwrap();
+    let ci = import(cobalt);
+    let gi = import(gold);
+    txn(cobalt, ci, 0, "2026-11-03", -150, None);
+    txn(cobalt, ci, 1, "2026-11-04", -5000, Some(transfer));
+    txn(gold, gi, 0, "2026-11-05", -250, None);
+}
+
+#[gpui::test]
+fn toggling_include_transfers_filters_rows_and_persists(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_two_accounts_and_a_transfer);
+    wait_until(cx, "initial rows, transfers off", |cx| {
+        shell.read(cx).row_count == 2 && shell.read(cx).accounts.len() == 2
+    });
+    cx.update(|cx| {
+        let s = shell.read(cx);
+        assert!(!s.include_transfers, "default off");
+        assert!(!s.view_filter.include_transfers);
+    });
+    // The default is not persisted; the setting only appears on change.
+    assert_eq!(db_setting(cx, &shell, UI_INCLUDE_TRANSFERS), None);
+
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| s.set_include_transfers(true, window, cx));
+    });
+    wait_until(cx, "transfer row appears", |cx| {
+        shell.read(cx).row_count == 3 && shell.read(cx).view_filter.include_transfers
+    });
+    // Let the persist task queue its write before reading (the worker is FIFO).
+    cx.run_until_parked();
+    assert_eq!(
+        db_setting(cx, &shell, UI_INCLUDE_TRANSFERS).as_deref(),
+        Some("1"),
+        "ui.include_transfers was written"
+    );
+
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| s.set_include_transfers(false, window, cx));
+    });
+    wait_until(cx, "transfer row hidden again", |cx| {
+        shell.read(cx).row_count == 2
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        db_setting(cx, &shell, UI_INCLUDE_TRANSFERS).as_deref(),
+        Some("0")
+    );
+}
+
+#[gpui::test]
+fn a_saved_include_transfers_setting_is_restored_at_launch(cx: &mut TestAppContext) {
+    let (_handle, shell) = open_shell(cx, |c| {
+        seed_two_accounts_and_a_transfer(c);
+        settings::set(c, UI_INCLUDE_TRANSFERS, "1").unwrap();
+    });
+    // A fresh shell over the stored "1" re-opens with transfers included,
+    // and the table query follows the restored filter.
+    wait_until(cx, "saved transfers flag restored", |cx| {
+        shell.read(cx).include_transfers && shell.read(cx).row_count == 3
+    });
+    cx.update(|cx| assert!(shell.read(cx).view_filter.include_transfers));
+}
+
+#[gpui::test]
+fn unchecking_an_account_filters_the_table(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_two_accounts_and_a_transfer);
+    wait_until(cx, "accounts and rows loaded", |cx| {
+        shell.read(cx).accounts.len() == 2 && shell.read(cx).row_count == 2
+    });
+    let (cobalt, gold) = cx.update(|cx| {
+        let s = shell.read(cx);
+        assert!(s.excluded_accounts.is_empty(), "default: all checked");
+        assert!(s.view_filter.account_ids.is_empty(), "empty means all");
+        let id = |name: &str| s.accounts.iter().find(|a| a.name == name).unwrap().id;
+        (id("Cobalt"), id("Gold"))
+    });
+
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| s.set_account_checked(cobalt, false, window, cx));
+    });
+    wait_until(cx, "only Gold's row shows", |cx| {
+        shell.read(cx).row_count == 1
+            && table_rows(&shell, cx)
+                .iter()
+                .all(|r| r.account.ends_with("Gold"))
+    });
+    cx.update(|cx| {
+        let s = shell.read(cx);
+        assert_eq!(s.view_filter.account_ids, vec![gold]);
+    });
+
+    // Unchecking every account shows no rows (empty in `ViewFilter`
+    // means all, so the table must not fall back to everything).
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| s.set_account_checked(gold, false, window, cx));
+    });
+    wait_until(cx, "nothing selected: empty table", |cx| {
+        shell.read(cx).row_count == 0
+    });
+
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| s.set_account_checked(cobalt, true, window, cx));
+    });
+    wait_until(cx, "Cobalt's row back", |cx| {
+        shell.read(cx).row_count == 1
+            && table_rows(&shell, cx)
+                .iter()
+                .all(|r| r.account.ends_with("Cobalt"))
+    });
+    cx.update(|cx| {
+        assert_eq!(shell.read(cx).view_filter.account_ids, vec![cobalt]);
+    });
 }

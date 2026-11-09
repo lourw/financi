@@ -37,8 +37,8 @@ pub mod settings;
 
 pub mod views;
 pub use views::{
-    CategorySpend, MonthlySummary, MonthlySummaryRow, ViewFilter, monthly_summary,
-    spend_by_category,
+    CategorySpend, MonthlySummary, MonthlySummaryRow, ViewFilter, list_transactions_filtered,
+    monthly_summary, spend_by_category,
 };
 
 #[cfg(feature = "dev-seed")]

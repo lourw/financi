@@ -21,6 +21,10 @@ use crate::Result;
 /// The `settings` key holding the dashboard date range control state.
 pub const UI_DATE_RANGE: &str = "ui.date_range";
 
+/// The `settings` key holding the dashboard "Include transfers" checkbox
+/// (task 3.3). Stored as `"1"` (on) or `"0"` (off).
+pub const UI_INCLUDE_TRANSFERS: &str = "ui.include_transfers";
+
 /// Read a raw setting value.
 pub fn get(conn: &Connection, key: &str) -> Result<Option<String>> {
     let value = conn
@@ -141,6 +145,20 @@ pub fn set_date_range(conn: &Connection, range: &DateRange) -> Result<()> {
     set(conn, UI_DATE_RANGE, &range.encode())
 }
 
+/// The persisted "Include transfers" flag; off when unset or when the
+/// stored value is not exactly `"1"`.
+pub fn include_transfers(conn: &Connection) -> Result<bool> {
+    Ok(get(conn, UI_INCLUDE_TRANSFERS)
+        .ok()
+        .flatten()
+        .is_some_and(|value| value == "1"))
+}
+
+/// Store the "Include transfers" flag under [`UI_INCLUDE_TRANSFERS`].
+pub fn set_include_transfers(conn: &Connection, on: bool) -> Result<()> {
+    set(conn, UI_INCLUDE_TRANSFERS, if on { "1" } else { "0" })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -221,5 +239,30 @@ mod tests {
         set(&conn, "ui.x", "1").unwrap();
         set(&conn, "ui.x", "2").unwrap();
         assert_eq!(get(&conn, "ui.x").unwrap().as_deref(), Some("2"));
+    }
+
+    #[test]
+    fn include_transfers_round_trips_and_reads_garbage_as_off() {
+        let conn = open_in_memory().unwrap();
+        // Unset means off (the default, task 3.3).
+        assert!(!include_transfers(&conn).unwrap());
+
+        set_include_transfers(&conn, true).unwrap();
+        assert!(include_transfers(&conn).unwrap());
+        assert_eq!(
+            get(&conn, UI_INCLUDE_TRANSFERS).unwrap().as_deref(),
+            Some("1")
+        );
+
+        set_include_transfers(&conn, false).unwrap();
+        assert!(!include_transfers(&conn).unwrap());
+        assert_eq!(
+            get(&conn, UI_INCLUDE_TRANSFERS).unwrap().as_deref(),
+            Some("0")
+        );
+
+        // Anything but exactly "1" reads as off rather than erroring.
+        set(&conn, UI_INCLUDE_TRANSFERS, "yes").unwrap();
+        assert!(!include_transfers(&conn).unwrap());
     }
 }
