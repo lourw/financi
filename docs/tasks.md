@@ -253,7 +253,7 @@ beside the monthly summary (right); then the transaction table.
   which may not appear on Linux: the Imports page exposes Import, Undo,
   Export and Restore on both platforms.
 
-- [ ] **3.8 UI tests** for: preset change updates totals, legend drill-down
+- [x] **3.8 UI tests** for: preset change updates totals, legend drill-down
   and back, summary cell click filters the table, search, hidden toggle.
 
 - [ ] **3.9 Import end-to-end UI test.** Import a synthetic fixture through
