@@ -22,7 +22,8 @@ helpers); they cost context and don't apply.
 
 Toolchain is pinned in `mise.toml` (`mise install`; tasks: `mise run
 build|test|lint|fmt|run`). Run `git config core.hooksPath .githooks` once
-per clone so commits on `main` get their semver tag.
+per clone so commits on `main` get their semver tag. Whenever `main` is
+pushed, push its tags too: `git push --follow-tags`.
 
 ```sh
 cargo build --workspace
