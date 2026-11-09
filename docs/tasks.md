@@ -262,7 +262,7 @@ beside the monthly summary (right); then the transaction table.
   history and sidebar counts, against `fixtures/demo/expected.json` where
   possible. Must not depend on today's date.
 
-- [ ] **3.10 Blank Dashboard after import.** The Dashboard shows nothing even
+- [x] **3.10 Blank Dashboard after import.** The Dashboard shows nothing even
   though transactions were imported. Find the cause and fix it. If the cause
   is only that the data falls outside the default Last 3 months, ask the user
   how the default or the empty state should change.

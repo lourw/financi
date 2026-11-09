@@ -24,8 +24,8 @@ use gpui_kit::{
 };
 
 use super::{
-    ExportData, ImportPanel, LegendSelection, NEW_ACCOUNT, Page, PlanState, RestoreBackup,
-    RowMenuItem, Shell, SummaryRowKind, UndoLastImport, row_menu_items,
+    DashboardBody, ExportData, ImportPanel, LegendSelection, NEW_ACCOUNT, Page, PlanState,
+    RestoreBackup, RowMenuItem, Shell, SummaryRowKind, UndoLastImport, row_menu_items,
 };
 
 fn demo(name: &str) -> PathBuf {
@@ -747,6 +747,97 @@ fn the_dashboard_shows_the_imported_totals_without_touching_the_range(cx: &mut T
                 .collect::<Vec<_>>(),
             [("Uncategorized", total)],
             "the chart shows the imported spend with no further interaction"
+        );
+    });
+}
+
+/// The blank-dashboard bug (3.10): a date range that selects none of the
+/// imported rows must show the range/filter empty states — never the
+/// whole-window "Drop a CSV" prompt, which belongs to an empty database.
+#[gpui::test]
+fn a_range_that_excludes_everything_shows_no_matches_not_the_import_prompt(
+    cx: &mut TestAppContext,
+) {
+    let (handle, shell) = open_shell(cx, |c| {
+        settings::set(c, UI_DATE_RANGE, "custom:2020-01-01..2020-12-31").unwrap();
+    });
+    wait_until(cx, "custom range restored", |cx| {
+        matches!(shell.read(cx).date_range, DateRange::Custom { .. })
+    });
+
+    import_demo_file(cx, handle, &shell, "amex-sep-nov.csv", "Amex");
+
+    // The 2020 range keeps every 2026 row out of the table, while the
+    // unfiltered count still sees them.
+    wait_until(cx, "table empty over a full database", |cx| {
+        shell.read(cx).total_visible == 102 && shell.read(cx).row_count == 0
+    });
+
+    cx.update(|cx| {
+        let s = shell.read(cx);
+        assert_eq!(
+            s.dashboard_body(),
+            DashboardBody::NoMatches,
+            "data exists but the range selects none: the table's empty \
+             state shows, not the import prompt"
+        );
+        assert!(s.chart_rows.is_empty());
+        assert!(
+            !s.summary_has_data(),
+            "the padded all-zero grid must read as empty"
+        );
+    });
+}
+
+/// A fresh database has nothing to show, so the dashboard is the
+/// whole-window import prompt (ui-conventions, *States*).
+#[gpui::test]
+fn an_empty_database_shows_the_import_prompt(cx: &mut TestAppContext) {
+    let (_handle, shell) = open_shell(cx, |_c| {});
+    cx.run_until_parked();
+    cx.update(|cx| {
+        assert_eq!(shell.read(cx).dashboard_body(), DashboardBody::NoData);
+    });
+}
+
+/// "Clear filters" drops the table-narrowing filters — search, the toggles
+/// and the category/month selection — and the rows come back (3.10).
+#[gpui::test]
+fn clear_filters_restores_a_table_emptied_by_search(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |c| {
+        settings::set(c, UI_DATE_RANGE, "all").unwrap();
+    });
+    wait_until(cx, "all-time range restored", |cx| {
+        shell.read(cx).date_range == DateRange::Preset(DatePreset::AllTime)
+    });
+    import_demo_file(cx, handle, &shell, "amex-sep-nov.csv", "Amex");
+    wait_until(cx, "import shows", |cx| shell.read(cx).row_count == 100);
+
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.search_input
+                .update(cx, |i, cx| i.set_value("zzz-no-match", window, cx));
+            s.apply_search("zzz-no-match", window, cx);
+        });
+    });
+    wait_until(cx, "search empties the table", |cx| {
+        shell.read(cx).row_count == 0 && shell.read(cx).total_visible == 102
+    });
+    cx.update(|cx| assert_eq!(shell.read(cx).dashboard_body(), DashboardBody::NoMatches));
+
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| s.clear_filters(window, cx));
+    });
+    wait_until(cx, "clear filters restores the rows", |cx| {
+        shell.read(cx).row_count == 100
+    });
+    cx.update(|cx| {
+        let s = shell.read(cx);
+        assert_eq!(s.dashboard_body(), DashboardBody::Rows);
+        assert!(s.search.is_empty());
+        assert!(
+            s.search_input.read(cx).value().is_empty(),
+            "the search box clears with the filter"
         );
     });
 }

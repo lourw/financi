@@ -912,6 +912,22 @@ enum LegendSelection {
     Uncategorized,
 }
 
+/// Which of the dashboard's three empty states applies (task 3.10,
+/// ui-conventions *States*): the whole-window drop-a-CSV prompt is only for
+/// an empty database; with data present, the chart/summary and the table
+/// carry their own empty states instead.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DashboardBody {
+    /// No transactions at all: the whole-window import prompt.
+    NoData,
+    /// Transactions exist but the range/filters select none: the table
+    /// shows "No transactions match these filters" with a "Clear filters"
+    /// link, and the chart/summary say "No spending in this range".
+    NoMatches,
+    /// Rows to show.
+    Rows,
+}
+
 /// A `spend_by_category` row prepared for drawing: the resolved palette
 /// color and the fields `BarChart` and the legend render.
 #[derive(Clone)]
@@ -2933,7 +2949,11 @@ impl Shell {
                 self.category_colors(theme),
             )
         };
-        if self.summary.months.is_empty() {
+        // `month_grid` fills the range's months even when no transaction
+        // falls in it, so a range that excludes all data yields a grid of
+        // zeros rather than an empty `months`. Treat an all-zero grid as
+        // empty too (task 3.10): the panel says "No spending in this range".
+        if !self.summary_has_data() {
             return div()
                 .h(px(340.))
                 .flex_1()
@@ -3124,9 +3144,36 @@ impl Shell {
             .into_any_element()
     }
 
+    /// Which dashboard empty state applies (task 3.10, ui-conventions
+    /// *States*). `total_visible` counts every non-hidden row ignoring all
+    /// filters, so it is the "empty database" signal; `row_count` is the
+    /// filtered table, so `0` with data present means the filters excluded
+    /// everything.
+    fn dashboard_body(&self) -> DashboardBody {
+        if self.total_visible == 0 {
+            DashboardBody::NoData
+        } else if self.row_count == 0 {
+            DashboardBody::NoMatches
+        } else {
+            DashboardBody::Rows
+        }
+    }
+
+    /// Whether the monthly summary has anything to draw. `month_grid` pads
+    /// the range with zero months, so an empty range is an all-zero grid
+    /// rather than an empty `months` (task 3.10).
+    fn summary_has_data(&self) -> bool {
+        !self.summary.months.is_empty()
+            && self
+                .summary
+                .rows
+                .iter()
+                .any(|r| r.months.iter().any(|v| *v != 0))
+    }
+
     fn render_dashboard(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let muted = cx.theme().muted_foreground;
-        let empty = self.row_count == 0;
+        let body = self.dashboard_body();
         v_flex()
             .flex_1()
             .min_h_0()
@@ -3200,32 +3247,89 @@ impl Shell {
                             })),
                     ),
             )
-            .child(if empty {
-                div()
+            .child(match body {
+                DashboardBody::NoData => div()
                     .flex_1()
                     .flex()
                     .items_center()
                     .justify_center()
                     .text_color(muted)
                     .child("Drop an Amex or Simplii CSV export here, or press ⌘O")
-                    .into_any_element()
-            } else {
-                v_flex()
-                    .flex_1()
-                    .min_h_0()
-                    .gap_3()
-                    // Middle row: chart + legend left (3.5), the monthly
-                    // summary right (3.6), both inside `chart_panel`.
-                    .child(self.chart_panel(cx))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_h_0()
-                            .child(DataTable::new(&self.table).stripe(true)),
-                    )
-                    .into_any_element()
+                    .into_any_element(),
+                _ => {
+                    v_flex()
+                        .flex_1()
+                        .min_h_0()
+                        .gap_3()
+                        // Middle row: chart + legend left (3.5), the monthly
+                        // summary right (3.6), both inside `chart_panel`.
+                        .child(self.chart_panel(cx))
+                        .child(div().flex_1().min_h_0().child(
+                            if body == DashboardBody::NoMatches {
+                                self.no_matches_panel(cx)
+                            } else {
+                                DataTable::new(&self.table).stripe(true).into_any_element()
+                            },
+                        ))
+                        .into_any_element()
+                }
             })
             .into_any_element()
+    }
+
+    /// The table's empty state (task 3.10, ui-conventions *States*): shown
+    /// when transactions exist but the current filters select none. A
+    /// muted centered message plus a "Clear filters" link that drops every
+    /// table-narrowing filter. The header controls (date range, accounts,
+    /// transfers) keep their own widgets, so they stay as the user set them.
+    fn no_matches_panel(&self, cx: &mut Context<Self>) -> AnyElement {
+        let (border, background, muted, radius) = {
+            let theme = cx.theme();
+            (
+                theme.border,
+                theme.background,
+                theme.muted_foreground,
+                theme.radius,
+            )
+        };
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .gap_2()
+            .rounded(radius)
+            .border_1()
+            .border_color(border)
+            .bg(background)
+            .text_sm()
+            .text_color(muted)
+            .child("No transactions match these filters")
+            .child(
+                Button::new("clear-filters")
+                    .link()
+                    .label("Clear filters")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.clear_filters(window, cx);
+                    })),
+            )
+            .into_any_element()
+    }
+
+    /// "Clear filters": drop every filter that narrows the table — search,
+    /// "Uncategorized only", and the category/month selection with its
+    /// chart drill-down. `set_value` doesn't emit `InputEvent::Change`, so
+    /// `self.search` is cleared here too before the single re-query.
+    fn clear_filters(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.search_input
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        self.search.clear();
+        self.uncategorized_only = false;
+        self.chart_parent = None;
+        self.legend_selection = None;
+        self.summary_month = None;
+        self.refresh(window, cx);
     }
 
     /// Accounts filter dropdown (task 3.3): gpui-kit has no multi-select,
