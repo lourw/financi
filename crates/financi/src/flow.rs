@@ -198,6 +198,18 @@ fn month_name(month: u32) -> &'static str {
     NAMES[(month as usize - 1).min(11)]
 }
 
+/// A `YYYY-MM` month key from [`financi_db::monthly_summary`] rendered as a
+/// summary column header: `2026-09` → `Sep 2026` (ui-conventions,
+/// *Numbers, dates and labels*). Unparseable input comes back unchanged.
+pub fn month_label(month: &str) -> String {
+    let year = month.get(..4).and_then(|y| y.parse::<i32>().ok());
+    let num = month.get(5..7).and_then(|m| m.parse::<u32>().ok());
+    match (year, num) {
+        (Some(y), Some(m @ 1..=12)) => format!("{} {}", month_name(m), y),
+        _ => month.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -381,6 +393,15 @@ mod tests {
             "Dec 28, 2025 – Jan 3, 2026"
         );
         assert_eq!(date_range("2026-11-06", ""), "2026-11-06");
+    }
+
+    #[test]
+    fn formats_month_labels() {
+        assert_eq!(month_label("2026-09"), "Sep 2026");
+        assert_eq!(month_label("2026-01"), "Jan 2026");
+        assert_eq!(month_label("2026-12"), "Dec 2026");
+        assert_eq!(month_label("2026-13"), "2026-13");
+        assert_eq!(month_label("nope"), "nope");
     }
 
     #[test]

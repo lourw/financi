@@ -4,7 +4,7 @@
 //! The window is a [`Sidebar`] of pages and one page area, per
 //! `docs/ui-conventions.md` (*Window layout*).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -25,9 +25,10 @@ use financi_db::queue::{UncategorizedGroup, categorize_group, uncategorized_by_m
 use financi_db::rules::{add_rule, count_rule_matches, list_rules};
 use financi_db::settings::{self, DateRange};
 use financi_db::{
-    Account, CategorySpend, DbWorker, TxSort, TxSortColumn, TxTableFilter, ViewFilter,
-    apply_rule_from_merchant, create_account, list_accounts, list_transactions_filtered,
-    rusqlite::Connection, set_category, set_hidden, sidebar_counts, spend_by_category,
+    Account, CategorySpend, DbWorker, MonthlySummary, TxSort, TxSortColumn, TxTableFilter,
+    ViewFilter, apply_rule_from_merchant, create_account, list_accounts,
+    list_transactions_filtered, monthly_summary, rusqlite::Connection, set_category, set_hidden,
+    sidebar_counts, spend_by_category,
 };
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -882,6 +883,30 @@ struct ChartRow {
     color: Hsla,
 }
 
+/// What a row of the monthly summary grid (3.6) is, resolved against the
+/// category tree: a spend parent (with its expand/collapse state), one of
+/// its children, the `Uncategorized` pseudo-row, or one of the three
+/// fixed total rows.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum SummaryRowKind {
+    Parent { expandable: bool, expanded: bool },
+    Child,
+    Uncategorized,
+    Income,
+    Spend,
+    Net,
+}
+
+/// A summary row prepared for drawing: the grid values in month order with
+/// the `Total` last.
+#[derive(Clone, Debug)]
+struct SummaryRowView {
+    id: Option<i64>,
+    name: SharedString,
+    kind: SummaryRowKind,
+    cells: Vec<i64>,
+}
+
 /// The category palette (ui-conventions, *Category colors*): the six base
 /// colors then their light variants, so red and green — which also mean
 /// danger and money in — come last.
@@ -930,6 +955,13 @@ pub struct Shell {
     chart_parent: Option<i64>,
     legend_selection: Option<LegendSelection>,
     chart_rows: Vec<CategorySpend>,
+    // -- Dashboard monthly summary (3.6): the `monthly_summary` grid behind
+    // the panel, the parents whose child rows are expanded, and the month
+    // chosen from a summary cell (fed into the table's `month` filter; the
+    // `Total` column and "no month narrowing" are both `None`).
+    summary: MonthlySummary,
+    expanded_parents: HashSet<i64>,
+    summary_month: Option<String>,
     // -- Dashboard date range (3.2): the control state, the `ViewFilter`
     // it drives (used by 3.4–3.6), and the picker entities.
     date_range: DateRange,
@@ -1194,6 +1226,12 @@ impl Shell {
             chart_parent: None,
             legend_selection: None,
             chart_rows: Vec::new(),
+            summary: MonthlySummary {
+                months: Vec::new(),
+                rows: Vec::new(),
+            },
+            expanded_parents: HashSet::new(),
+            summary_month: None,
             date_range: DateRange::default(),
             view_filter: ViewFilter::default(),
             date_preset_select,
@@ -1269,14 +1307,15 @@ impl Shell {
         // The table-only filters (3.4): search, the two toggles and the sort,
         // folded into the query alongside the shared date-range/accounts/
         // transfers filter. The category slot carries the legend selection
-        // (3.5); the `Uncategorized` legend row rides `uncategorized_only`.
-        // Month is the query's, unused until the summary lands in 3.6.
+        // (3.5), shared with the summary cells (3.6); the `Uncategorized`
+        // legend row rides `uncategorized_only`. The month is the summary
+        // cell selection (3.6).
         let table_filter = TxTableFilter {
             category_id: match self.legend_selection {
                 Some(LegendSelection::Category(id)) => Some(id),
                 Some(LegendSelection::Uncategorized) | None => None,
             },
-            month: None,
+            month: self.summary_month.clone(),
             search: if self.search.is_empty() {
                 None
             } else {
@@ -1303,6 +1342,16 @@ impl Shell {
                 } else {
                     spend_by_category(c, &view_filter, chart_parent)?
                 };
+                // The monthly summary grid (3.6): the same filter as the
+                // chart, one query for the whole panel.
+                let summary = if none_selected {
+                    MonthlySummary {
+                        months: Vec::new(),
+                        rows: Vec::new(),
+                    }
+                } else {
+                    monthly_summary(c, &view_filter)?
+                };
                 let (total, uncategorized) = sidebar_counts(c)?;
                 let history = list_imports(c)?;
                 let tree = list_categories(c)?;
@@ -1313,6 +1362,7 @@ impl Shell {
                     accounts,
                     rows,
                     chart_rows,
+                    summary,
                     total,
                     uncategorized,
                     history,
@@ -1329,6 +1379,7 @@ impl Shell {
                         accounts,
                         rows,
                         chart_rows,
+                        summary,
                         total,
                         uncategorized,
                         history,
@@ -1349,6 +1400,7 @@ impl Shell {
                         this.sync_account_filter();
                         this.row_count = rows.len();
                         this.chart_rows = chart_rows;
+                        this.summary = summary;
                         // Revalidate the legend state against the rows we
                         // can actually show: a date/accounts change can
                         // empty the chart out from under a selection or a
@@ -1375,6 +1427,18 @@ impl Shell {
                         };
                         if selection_gone {
                             this.legend_selection = None;
+                            stale = true;
+                        }
+                        // The month selection (3.6) goes the same way when
+                        // the grid no longer contains that month.
+                        if this.summary_month.is_some()
+                            && !this
+                                .summary
+                                .months
+                                .iter()
+                                .any(|m| Some(m.as_str()) == this.summary_month.as_deref())
+                        {
+                            this.summary_month = None;
                             stale = true;
                         }
                         if stale {
@@ -1666,19 +1730,146 @@ impl Shell {
     }
 
     /// Esc (the `dashboard::ClearCategorySelection` action): clear the
-    /// drill-down and the legend selection together — they are one concept.
+    /// drill-down, the legend selection and the summary month together —
+    /// they are one concept.
     fn clear_category_selection(
         &mut self,
         _: &ClearCategorySelection,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.chart_parent.is_none() && self.legend_selection.is_none() {
+        if self.chart_parent.is_none()
+            && self.legend_selection.is_none()
+            && self.summary_month.is_none()
+        {
             return;
         }
         self.chart_parent = None;
         self.legend_selection = None;
+        self.summary_month = None;
         self.refresh(window, cx);
+    }
+
+    /// Click a monthly summary cell (3.6): narrow the table to that
+    /// category and month; clicking the same cell again clears both, the
+    /// legend toggle. The `Total` column is the category with no month.
+    /// The category part drives the shared `legend_selection`, and the
+    /// chart moves so the selection stays one of the legend's rows —
+    /// legend and summary can never disagree about what is selected.
+    fn click_summary_cell(
+        &mut self,
+        id: Option<i64>,
+        month: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let same_category = match id {
+            None => matches!(self.legend_selection, Some(LegendSelection::Uncategorized)),
+            Some(id) => {
+                matches!(self.legend_selection, Some(LegendSelection::Category(c)) if c == id)
+            }
+        };
+        if same_category && self.summary_month == month {
+            self.legend_selection = None;
+            self.summary_month = None;
+        } else {
+            self.legend_selection = Some(match id {
+                None => LegendSelection::Uncategorized,
+                Some(id) => LegendSelection::Category(id),
+            });
+            self.summary_month = month;
+            if id.is_some() {
+                // A real category and the uncategorized checkbox can't
+                // both narrow the table (the legend's rule).
+                self.uncategorized_only = false;
+            }
+            self.sync_chart_to_selection();
+        }
+        self.refresh(window, cx);
+    }
+
+    /// Move the chart so a selection made outside the legend (a summary
+    /// cell) is visible in the legend rows: a parent shows at the top
+    /// level, a child only while drilled into its parent. Keeps the
+    /// refresh revalidation of `legend_selection` from dropping a
+    /// summary-made selection.
+    fn sync_chart_to_selection(&mut self) {
+        let Some(selection) = self.legend_selection else {
+            return;
+        };
+        match selection {
+            LegendSelection::Uncategorized => self.chart_parent = None,
+            LegendSelection::Category(id) => {
+                if let Some(parent) = self.parent_of(id) {
+                    self.chart_parent = Some(parent);
+                } else if self.chart_parent != Some(id) {
+                    self.chart_parent = None;
+                }
+            }
+        }
+    }
+
+    /// The id of `id`'s parent in the category tree, `None` for a
+    /// top-level category.
+    fn parent_of(&self, id: i64) -> Option<i64> {
+        self.categories
+            .iter()
+            .find(|p| p.children.iter().any(|c| c.id == id))
+            .map(|p| p.id)
+    }
+
+    /// Click a summary parent's name or chevron: show or hide its child
+    /// rows (3.6). Pure view state, so no re-query — just a repaint.
+    fn toggle_summary_parent(&mut self, id: i64) {
+        if !self.expanded_parents.insert(id) {
+            self.expanded_parents.remove(&id);
+        }
+    }
+
+    /// The summary rows prepared for drawing: the grid's rows with their
+    /// kinds resolved (children of collapsed parents left out) and the
+    /// month values followed by the `Total`. The query's last three rows
+    /// are always `Income`, `Spend` and `Net`.
+    fn summary_rows(&self) -> Vec<SummaryRowView> {
+        let n = self.summary.rows.len();
+        let mut views = Vec::with_capacity(n);
+        for (ix, row) in self.summary.rows.iter().enumerate() {
+            let kind = if ix + 3 >= n {
+                match n - ix {
+                    3 => SummaryRowKind::Income,
+                    2 => SummaryRowKind::Spend,
+                    _ => SummaryRowKind::Net,
+                }
+            } else {
+                match row.id {
+                    None => SummaryRowKind::Uncategorized,
+                    Some(id) => match self.parent_of(id) {
+                        Some(parent) => {
+                            if !self.expanded_parents.contains(&parent) {
+                                continue;
+                            }
+                            SummaryRowKind::Child
+                        }
+                        None => SummaryRowKind::Parent {
+                            expandable: self
+                                .categories
+                                .iter()
+                                .any(|p| p.id == id && !p.children.is_empty()),
+                            expanded: self.expanded_parents.contains(&id),
+                        },
+                    },
+                }
+            };
+            let mut cells = row.months.clone();
+            cells.push(row.total);
+            views.push(SummaryRowView {
+                id: row.id,
+                name: row.name.clone().into(),
+                kind,
+                cells,
+            });
+        }
+        views
     }
 
     /// Restore the persisted `ui.include_transfers` (default off) at
@@ -2386,23 +2577,14 @@ impl Shell {
     /// beside a clickable legend, in the left half; the monthly summary
     /// (3.6) takes the right half later. `BarChart` takes no clicks, so all
     /// interactivity lives in the legend rows (ui-conventions, *Interaction*).
-    fn chart_panel(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let (border, background, muted, list_active, radius, palette) = {
-            let theme = cx.theme();
-            (
-                theme.border,
-                theme.background,
-                theme.muted_foreground,
-                theme.list_active,
-                theme.radius,
-                category_palette(theme),
-            )
-        };
-        // Stable colors: position among the siblings sorted by category id,
-        // so a category keeps its color when the date range reorders the
-        // rows; children start at the front of the palette under their own
-        // parent (ui-conventions, *Category colors*).
-        let mut colors: HashMap<i64, Hsla> = HashMap::new();
+    /// The palette color of every category (ui-conventions, *Category
+    /// colors*): position among the siblings sorted by category id, so a
+    /// category keeps its color when the date range reorders the rows;
+    /// children start at the front of the palette under their own parent.
+    /// Shared by the chart, its legend and the monthly summary swatches.
+    fn category_colors(&self, theme: &gpui_kit::component::theme::Theme) -> HashMap<i64, Hsla> {
+        let palette = category_palette(theme);
+        let mut colors = HashMap::new();
         let mut parents: Vec<&CategoryNode> = self.categories.iter().collect();
         parents.sort_by_key(|n| n.id);
         for (ix, parent) in parents.iter().enumerate() {
@@ -2413,6 +2595,21 @@ impl Shell {
                 colors.insert(kid.id, palette[cix % 12]);
             }
         }
+        colors
+    }
+
+    fn chart_panel(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let (border, background, muted, list_active, radius, colors) = {
+            let theme = cx.theme();
+            (
+                theme.border,
+                theme.background,
+                theme.muted_foreground,
+                theme.list_active,
+                theme.radius,
+                self.category_colors(theme),
+            )
+        };
         let mut rows: Vec<ChartRow> = self
             .chart_rows
             .iter()
@@ -2560,8 +2757,220 @@ impl Shell {
                     .child(chart)
                     .child(legend),
             )
-            // The monthly summary panel (3.6) fills the right half later.
+            .child(self.summary_panel(cx))
+            .into_any_element()
+    }
+
+    /// The monthly summary panel (3.6): the right half of the dashboard's
+    /// middle row. Rows are the spend parents — clicking a name or chevron
+    /// expands or collapses its children — then `Income`, `Spend` and
+    /// `Net`; columns are the months in the range plus the `Total`.
+    /// Clicking a category cell filters the table to that category and
+    /// month, and clicking the same cell again clears it (ui-conventions,
+    /// *Interaction*). Amounts are positive spend; `Net` is the one signed
+    /// row, `danger` when negative; `Income` reads as money in (`success`).
+    fn summary_panel(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let (border, background, muted, list_active, danger, success, radius, colors) = {
+            let theme = cx.theme();
+            (
+                theme.border,
+                theme.background,
+                theme.muted_foreground,
+                theme.list_active,
+                theme.danger,
+                theme.success,
+                theme.radius,
+                self.category_colors(theme),
+            )
+        };
+        if self.summary.months.is_empty() {
+            return div()
+                .h(px(340.))
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .p_4()
+                .rounded(radius)
+                .border_1()
+                .border_color(border)
+                .bg(background)
+                .text_sm()
+                .text_color(muted)
+                .child("No spending in this range")
+                .into_any_element();
+        }
+        let selection = self.legend_selection;
+        let selected_month = self.summary_month.clone();
+        let month_values = self.summary.months.clone();
+        let rows = self.summary_rows();
+
+        let header = h_flex()
+            .gap_2()
+            .px_1()
             .child(div().flex_1().min_w_0())
+            .children(month_values.iter().map(|month| {
+                div()
+                    .w(px(88.))
+                    .flex_none()
+                    .text_right()
+                    .text_sm()
+                    .text_color(muted)
+                    .child(flow::month_label(month))
+            }))
+            .child(
+                div()
+                    .w(px(96.))
+                    .flex_none()
+                    .text_right()
+                    .text_sm()
+                    .text_color(muted)
+                    .child("Total"),
+            );
+
+        let body = v_flex()
+            .id("summary-rows")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .children(rows.into_iter().enumerate().map(|(ix, row)| {
+                let id = row.id;
+                let is_category = !matches!(
+                    row.kind,
+                    SummaryRowKind::Income | SummaryRowKind::Spend | SummaryRowKind::Net
+                );
+                let swatch = match row.kind {
+                    SummaryRowKind::Parent { .. } | SummaryRowKind::Child => {
+                        Some(id.and_then(|id| colors.get(&id)).copied().unwrap_or(muted))
+                    }
+                    SummaryRowKind::Uncategorized => Some(muted),
+                    _ => None,
+                };
+                let is_income = matches!(row.kind, SummaryRowKind::Income);
+
+                // Name cell: chevron + swatch + name. On a parent it also
+                // toggles the child rows.
+                let (chevron, expandable) = match row.kind {
+                    SummaryRowKind::Parent {
+                        expandable,
+                        expanded,
+                    } => (
+                        if expandable {
+                            if expanded { "▾" } else { "▸" }
+                        } else {
+                            ""
+                        },
+                        expandable,
+                    ),
+                    _ => ("", false),
+                };
+                let name_cell = h_flex()
+                    .id(SharedString::from(format!("summary-name-{ix}")))
+                    .flex_1()
+                    .min_w_0()
+                    .gap_2()
+                    .items_center()
+                    .when(matches!(row.kind, SummaryRowKind::Child), |c| c.pl(px(14.)))
+                    .when(expandable, |c| {
+                        c.cursor_pointer().on_click(cx.listener(
+                            move |this, _: &ClickEvent, _, cx| {
+                                if let Some(id) = id {
+                                    this.toggle_summary_parent(id);
+                                    cx.notify();
+                                }
+                            },
+                        ))
+                    })
+                    .child(
+                        div()
+                            .w(px(12.))
+                            .flex_none()
+                            .text_xs()
+                            .text_color(muted)
+                            .child(chevron),
+                    )
+                    .when_some(swatch, |c, color| {
+                        c.child(div().size(px(10.)).flex_none().rounded(px(2.)).bg(color))
+                    })
+                    .child(
+                        div()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .text_sm()
+                            .when(matches!(row.kind, SummaryRowKind::Parent { .. }), |d| {
+                                d.font_weight(FontWeight::SEMIBOLD)
+                            })
+                            .when(matches!(row.kind, SummaryRowKind::Uncategorized), |d| {
+                                d.text_color(muted)
+                            })
+                            .child(row.name.clone()),
+                    );
+
+                h_flex()
+                    .id(SharedString::from(format!("summary-row-{ix}")))
+                    .gap_2()
+                    .items_center()
+                    .px_1()
+                    .py_1()
+                    .rounded(radius)
+                    // A hairline above `Income` separates the totals from
+                    // the category rows.
+                    .when(is_income, |r| r.border_t_1().border_color(border))
+                    .child(name_cell)
+                    .children(row.cells.iter().enumerate().map(|(col_ix, &cents)| {
+                        let cell_month = month_values.get(col_ix).cloned();
+                        let selected = is_category
+                            && cell_month == selected_month
+                            && match (id, selection) {
+                                (None, Some(LegendSelection::Uncategorized)) => true,
+                                (Some(id), Some(LegendSelection::Category(c))) => c == id,
+                                _ => false,
+                            };
+                        let color = match row.kind {
+                            SummaryRowKind::Income => Some(success),
+                            SummaryRowKind::Net if cents < 0 => Some(danger),
+                            _ => None,
+                        };
+                        div()
+                            .id(SharedString::from(format!("summary-cell-{ix}-{col_ix}")))
+                            .w(if col_ix == month_values.len() {
+                                px(96.)
+                            } else {
+                                px(88.)
+                            })
+                            .flex_none()
+                            .text_right()
+                            .text_sm()
+                            .rounded(px(2.))
+                            .when_some(color, |c, color| c.text_color(color))
+                            .when(selected, |c| c.bg(list_active))
+                            .when(is_category, |c| {
+                                let month = cell_month.clone();
+                                c.cursor_pointer().on_click(cx.listener(
+                                    move |this, _: &ClickEvent, window, cx| {
+                                        this.click_summary_cell(id, month.clone(), window, cx);
+                                    },
+                                ))
+                            })
+                            .child(flow::money(cents))
+                    }))
+                    .into_any_element()
+            }));
+
+        v_flex()
+            .h(px(340.))
+            .flex_1()
+            .min_w_0()
+            .p_4()
+            .gap_1()
+            .rounded(radius)
+            .border_1()
+            .border_color(border)
+            .bg(background)
+            .child(header)
+            .child(body)
             .into_any_element()
     }
 
@@ -2655,8 +3064,8 @@ impl Shell {
                     .flex_1()
                     .min_h_0()
                     .gap_3()
-                    // Middle row (3.5): chart + legend left, monthly summary
-                    // right — the summary (3.6) takes the empty half.
+                    // Middle row: chart + legend left (3.5), the monthly
+                    // summary right (3.6), both inside `chart_panel`.
                     .child(self.chart_panel(cx))
                     .child(
                         div()
