@@ -5,7 +5,7 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use chrono::NaiveDate;
+use chrono::{Datelike, NaiveDate};
 use financi_core::dates::{DatePreset, preset_range};
 use financi_core::parse::merchant;
 use financi_core::{AccountKind, CategoryKind};
@@ -1079,6 +1079,151 @@ fn choosing_a_preset_updates_the_filter_and_persists(cx: &mut TestAppContext) {
         db_setting(cx, &shell, UI_DATE_RANGE).as_deref(),
         Some("last1"),
         "ui.date_range was written"
+    );
+}
+
+/// One spend and one income row in the current month and one pair three
+/// calendar months back (just outside "Last 3 months"), so the default
+/// preset and "All time" show different totals. Dates are derived from
+/// `Shell::today()`, so the test passes whenever it runs.
+fn seed_preset_totals_rows(conn: &financi_db::rusqlite::Connection) {
+    let acct = create_account(conn, "amex", "Cobalt", AccountKind::CreditCard).unwrap();
+    conn.execute(
+        "INSERT INTO imports (account_id, parser_id, file_name, imported_at, header_raw,
+                              encoding, has_bom, line_ending, trailing_newline, row_count)
+         VALUES (?1, 'amex', 'seed.csv', '2026-11-01', X'00', 'utf-8', 0, 'lf', 0, 0)",
+        [acct],
+    )
+    .unwrap();
+    let import = conn.last_insert_rowid();
+    let food = financi_db::categories::create_parent(conn, "Food", CategoryKind::Expense).unwrap();
+    let groceries = financi_db::categories::create_child(conn, food, "Groceries").unwrap();
+    let salary =
+        financi_db::categories::create_parent(conn, "Salary", CategoryKind::Income).unwrap();
+
+    // Last day of the month three before the current one: always outside
+    // "Last 3 months" (which opens on the first of two months back) and
+    // exactly three month columns away, so the All-time grid is four
+    // months wide whatever day the test runs.
+    let today = Shell::today();
+    let old = today
+        .with_day(1)
+        .expect("first of the month")
+        .checked_sub_months(chrono::Months::new(2))
+        .expect("two months back")
+        .checked_sub_days(chrono::Days::new(1))
+        .expect("last day of the month before that");
+    let mut line = 0i64;
+    let mut txn = |description: &str, date: NaiveDate, cents: i64, category: i64| {
+        conn.execute(
+            "INSERT INTO transactions (account_id, import_id, source_line, raw_bytes,
+                                       row_hash, posted_date, amount_cents,
+                                       description_raw, category_id)
+             VALUES (?1, ?2, ?3, X'00', ?4, ?5, ?6, ?7, ?8)",
+            (
+                acct,
+                import,
+                line,
+                format!("preset-totals-hash-{line}"),
+                date.format("%Y-%m-%d").to_string(),
+                cents,
+                description,
+                category,
+            ),
+        )
+        .unwrap();
+        line += 1;
+    };
+    txn("GROCER STORE OLD", old, -5000, groceries);
+    txn("PAYROLL OLD", old, 100000, salary);
+    txn("GROCER STORE CUR", today, -1500, groceries);
+    txn("PAYROLL CUR", today, 210500, salary);
+}
+
+/// The month columns plus the `Total`, for the three total rows, and the
+/// Food bar of the chart — everything the dashboard shows as a number.
+fn dashboard_totals(
+    shell: &Entity<Shell>,
+    cx: &App,
+) -> (Vec<String>, Vec<i64>, Vec<i64>, Vec<i64>, i64) {
+    let s = shell.read(cx);
+    let cells = |name: &str| {
+        s.summary_rows()
+            .into_iter()
+            .find(|r| r.name == name)
+            .expect("a total row")
+            .cells
+    };
+    let food = s
+        .chart_rows
+        .iter()
+        .find(|r| r.name == "Food")
+        .expect("Food legend row")
+        .spend_cents;
+    (
+        s.summary.months.clone(),
+        cells("Income"),
+        cells("Spend"),
+        cells("Net"),
+        food,
+    )
+}
+
+#[gpui::test]
+fn changing_the_preset_updates_the_dashboard_totals(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_preset_totals_rows);
+    let today = Shell::today();
+    let month_label = |n: u32| {
+        today
+            .checked_sub_months(chrono::Months::new(n))
+            .expect("month back")
+            .format("%Y-%m")
+            .to_string()
+    };
+    let last3: Vec<String> = [2, 1, 0].iter().map(|n| month_label(*n)).collect();
+    // All time clamps the grid to the data span: the old row's month plus
+    // the three columns of the default range.
+    let all_months: Vec<String> = [3, 2, 1, 0].iter().map(|n| month_label(*n)).collect();
+
+    // Default "Last 3 months": only the current month's rows count; the
+    // grid shows the three months of the range.
+    wait_until(cx, "last-3-months totals", |cx| {
+        shell.read(cx).row_count == 2 && shell.read(cx).summary.months == last3
+    });
+    let totals = cx.update(|cx| dashboard_totals(&shell, cx));
+    assert_eq!(
+        totals,
+        (
+            last3.clone(),
+            vec![0, 0, 210500, 210500],
+            vec![0, 0, 1500, 1500],
+            vec![0, 0, 209000, 209000],
+            1500,
+        ),
+        "only the current month is inside the default range"
+    );
+
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.change_date_preset(DatePreset::AllTime, window, cx)
+        });
+    });
+
+    // "All time" pulls in the old pair: the grid clamps to the data span
+    // and every number grows.
+    wait_until(cx, "all-time totals", |cx| {
+        shell.read(cx).row_count == 4 && shell.read(cx).summary.months == all_months
+    });
+    assert_eq!(
+        cx.update(|cx| dashboard_totals(&shell, cx)),
+        (
+            all_months,
+            vec![100000, 0, 0, 210500, 310500],
+            vec![5000, 0, 0, 1500, 6500],
+            vec![95000, 0, 0, 209000, 304000],
+            6500,
+        ),
+        "the preset change moved the visible totals"
     );
 }
 
