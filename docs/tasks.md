@@ -256,7 +256,7 @@ beside the monthly summary (right); then the transaction table.
 - [x] **3.8 UI tests** for: preset change updates totals, legend drill-down
   and back, summary cell click filters the table, search, hidden toggle.
 
-- [ ] **3.9 Import end-to-end UI test.** Import a synthetic fixture through
+- [x] **3.9 Import end-to-end UI test.** Import a synthetic fixture through
   the real import flow, then visit every page and check the values shown:
   Dashboard rows and amounts, To categorize, Categories counts, Imports
   history and sidebar counts, against `fixtures/demo/expected.json` where

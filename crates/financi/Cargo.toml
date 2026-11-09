@@ -19,3 +19,6 @@ thiserror.workspace = true
 # gpui-kit's own test-support trips a Cargo weak-dependency lockfile bug
 # (it resolves gpui-fast, whose exact pins conflict); GPUI's is enough.
 gpui = { workspace = true, features = ["test-support"] }
+# Already in the lockfile (financi-db's dev-dep); used by the e2e test to
+# read fixtures/demo/expected.json.
+serde_json = "1.0"

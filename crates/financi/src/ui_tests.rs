@@ -501,6 +501,194 @@ fn unrecognized_file_shows_an_error_and_no_panel(cx: &mut TestAppContext) {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+// ---------------------------------------------------------------------------
+// Import end-to-end (task 3.9): run both demo exports through the real
+// import panel, then visit every page and check the values shown against
+// `fixtures/demo/expected.json`. Runs on the "All time" preset so the
+// result never depends on the machine's date.
+
+/// `fixtures/demo/expected.json` — the reference totals, computed outside
+/// financi by a Python script.
+fn expected_totals() -> serde_json::Value {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/demo/expected.json");
+    serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+}
+
+/// Drive one demo file through the whole flow: open it, create a new
+/// account named `account`, and click Import.
+fn import_demo_file(
+    cx: &mut TestAppContext,
+    handle: AnyWindowHandle,
+    shell: &Entity<Shell>,
+    file: &str,
+    account: &str,
+) {
+    open_and_choose(cx, handle, shell, file, NEW_ACCOUNT);
+    with_window(cx, handle, |window, cx| {
+        let p = panel(shell, cx);
+        p.update(cx, |p, cx| {
+            p.new_name.update(cx, |input, cx| {
+                input.set_value(account, window, cx);
+            });
+            p.create_account(window, cx);
+        });
+    });
+    wait_until(cx, "plan ready after naming the account", |cx| {
+        plan_ready(shell, cx)
+    });
+    click_import(cx, handle, shell);
+    wait_until(cx, "import finished", |cx| shell.read(cx).import.is_none());
+}
+
+#[gpui::test]
+fn import_end_to_end_shows_expected_values_on_every_page(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |_| {});
+    wait_until(cx, "initial load", |cx| {
+        shell.read(cx).refresh_task.is_some()
+    });
+
+    import_demo_file(cx, handle, &shell, "amex-sep-nov.csv", "Amex");
+    import_demo_file(cx, handle, &shell, "simplii-chequing.csv", "Chequing");
+    cx.update(|cx| {
+        assert_eq!(
+            shell.read(cx).status,
+            Some((
+                "Imported simplii-chequing.csv: 11 new, 0 already imported".into(),
+                false
+            ))
+        );
+    });
+
+    // The fixtures carry fixed 2026 dates, so pin the range to All time:
+    // the test must pass whenever it runs.
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.change_date_preset(DatePreset::AllTime, window, cx)
+        });
+    });
+    // amex-sep-nov: 102 rows (100 unique + 2 genuine repeats), of which the
+    // 2 card payments are auto-categorized as transfers and drop out of the
+    // default view; simplii-chequing: 11 rows, no detected transfers.
+    wait_until(cx, "all-time view over both imports", |cx| {
+        shell.read(cx).summary.months == ["2026-09", "2026-10", "2026-11"]
+            && shell.read(cx).row_count == 111
+    });
+
+    // Spend per month from expected.json with transfers excluded: the Amex
+    // money-in rows are card payments (they leave the view entirely), the
+    // Simplii money-in rows stay uncategorized and offset its spend.
+    let expected = expected_totals();
+    let cents =
+        |file: &str, month: &str, key: &str| expected[file]["months"][month][key].as_i64().unwrap();
+    let want_spend: Vec<i64> = ["2026-09", "2026-10", "2026-11"]
+        .iter()
+        .map(|m| {
+            cents("amex-sep-nov.csv", m, "money_out_cents")
+                + cents("simplii-chequing.csv", m, "money_out_cents")
+                - cents("simplii-chequing.csv", m, "money_in_cents")
+        })
+        .collect();
+    let spend_total: i64 = want_spend.iter().sum();
+
+    // -- Dashboard: summary grid, chart + legend, sidebar counts ----------
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
+    cx.update(|cx| {
+        let s = shell.read(cx);
+        let row = |name: &str| {
+            s.summary
+                .rows
+                .iter()
+                .find(|r| r.name == name)
+                .unwrap_or_else(|| panic!("no summary row {name:?}"))
+        };
+        assert_eq!(row("Spend").months, want_spend);
+        assert_eq!(row("Spend").total, spend_total);
+        assert_eq!(row("Income").total, 0, "nothing is categorized yet");
+        assert_eq!(row("Net").total, -spend_total);
+        // No user categories exist, so every spend row is Uncategorized.
+        assert_eq!(row("Uncategorized").months, want_spend);
+        assert_eq!(row("Uncategorized").total, spend_total);
+        assert_eq!(row("Uncategorized").total, row("Spend").total);
+        // Chart + legend (3.5): the single Uncategorized row.
+        let chart: Vec<(&str, i64)> = s
+            .chart_rows
+            .iter()
+            .map(|r| (r.name.as_str(), r.spend_cents))
+            .collect();
+        assert_eq!(chart, [("Uncategorized", spend_total)]);
+        // Sidebar count pills (task 2.x): every visible row, uncategorized
+        // ones apart. The 2 card payments are categorized, not hidden.
+        assert_eq!((s.total_visible, s.uncategorized_visible), (113, 111));
+    });
+
+    // -- To categorize: the queue covers every uncategorized row ----------
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::ToCategorize, cx)));
+    cx.update(|cx| {
+        let s = shell.read(cx);
+        assert!(!s.queue.is_empty(), "the queue has groups");
+        assert!(
+            s.queue.windows(2).all(|w| w[0].count >= w[1].count),
+            "sorted by count descending"
+        );
+        let rows: i64 = s.queue.iter().map(|g| g.count).sum();
+        assert_eq!(
+            rows, s.uncategorized_visible,
+            "the queue covers every uncategorized row"
+        );
+        let cents: i64 = s.queue.iter().map(|g| g.total_cents).sum();
+        assert_eq!(cents, -spend_total, "queue amounts match the dashboard");
+    });
+
+    // -- Categories: only the system tree, with the card payments -------
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Categories, cx)));
+    cx.update(|cx| {
+        let s = shell.read(cx);
+        let parents: Vec<&str> = s.categories.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(parents, ["Transfers"], "imports create no categories");
+        let children: Vec<&str> = s.categories[0]
+            .children
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect();
+        assert_eq!(children, ["Between Accounts", "Card Payment"]);
+        let card = find_child(&shell, cx, "Card Payment").expect("Card Payment child");
+        assert_eq!(
+            s.cat_counts.get(&card).copied(),
+            Some(2),
+            "the import auto-categorized both Amex payments"
+        );
+    });
+
+    // -- Imports: history rows for both files ------------------------------
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Imports, cx)));
+    cx.update(|cx| {
+        let s = shell.read(cx);
+        let history: Vec<(&str, &str, i64)> = s
+            .import_history
+            .iter()
+            .map(|e| (e.file_name.as_str(), e.account.as_str(), e.rows_added))
+            .collect();
+        assert_eq!(
+            history,
+            [
+                ("simplii-chequing.csv", "Simplii Financial · Chequing", 11),
+                ("amex-sep-nov.csv", "American Express · Amex", 102),
+            ],
+            "newest import first"
+        );
+        assert_eq!(
+            s.import_history[0].first_date.as_deref(),
+            Some("2026-09-01")
+        );
+        assert_eq!(s.import_history[0].last_date.as_deref(), Some("2026-11-01"));
+        assert_eq!(
+            s.import_history[1].first_date.as_deref(),
+            Some("2026-09-01")
+        );
+        assert_eq!(s.import_history[1].last_date.as_deref(), Some("2026-11-06"));
+    });
+}
+
 // -- categories page -------------------------------------------------------
 
 /// Type a parent name, pick the Expense kind (index 0) and add it.
