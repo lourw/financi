@@ -275,7 +275,7 @@ beside the monthly summary (right); then the transaction table.
   rules. Render only the visible rows, keeping selection, clicks and
   scrolling. Test with thousands of rows.
 
-- [ ] **3.13 Sidebar indent.** Remove the indent on sidebar items so they
+- [x] **3.13 Sidebar indent.** Remove the indent on sidebar items so they
   line up with the section labels.
 
 - [x] **3.14 Checkbox check mark.** A checked box changes background but
