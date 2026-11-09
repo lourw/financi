@@ -77,7 +77,7 @@ header row is the filters.
 | **To categorize** | The Uncategorized queue (2.7) as a table: merchant, transactions, total, dates, category picker. Choosing a category adds a rule. |
 | **Categories** | Category tree on the left (~300px panel); the selected category on the right: name, Rename…/Delete…, its rules table, and an add-rule row with a live "matches N transactions" count. Rules live here; there's no Rules page. Header action: New category…. |
 | **Transfers** | Open transfer reviews (4.2): each row with its candidates and "Not a transfer". |
-| **Imports** | Header action: Import CSV… (a normal button). The import preview (while a file is open) on top, then import history (time, file, account, rows added, dates). Undo… on the newest row only. |
+| **Imports** | Header actions: Import CSV… (primary), Undo… (two-click, newest import, disabled with no history), Export… and Restore… (live in M5; say so for now). The import preview (while a file is open) on top, then import history (time, file, account, rows added, dates). Undo… on the newest row only. |
 
 - **Dashboard middle row:** chart and summary side by side, ~45/55, same
   fixed height (~340px). The summary scrolls if it overflows. The chart
