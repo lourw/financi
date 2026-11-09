@@ -15,11 +15,12 @@ use financi_db::{DbWorker, TxSort, TxSortColumn, ViewFilter, create_account, ope
 use gpui_kit::component::table::{ColumnSort, TableDelegate};
 // No glob import: `gpui_kit::*` brings GPUI's `test` macro into scope, which
 // shadows the built-in #[test] that #[gpui::test] expands to.
+use gpui_kit::assets::IconName;
 use gpui_kit::component::calendar::Date as CalendarDate;
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyWindowHandle, App, Bounds, Entity, Focusable as _, OwnedMenuItem, Point, TestAppContext,
-    Window, WindowBounds, WindowOptions, px, size,
+    AnyWindowHandle, App, Bounds, Entity, Focusable as _, Modifiers, OwnedMenuItem, Point,
+    TestAppContext, VisualTestContext, Window, WindowBounds, WindowOptions, point, px, size,
 };
 
 use super::{
@@ -1618,6 +1619,47 @@ fn toggling_include_transfers_filters_rows_and_persists(cx: &mut TestAppContext)
         db_setting(cx, &shell, UI_INCLUDE_TRANSFERS).as_deref(),
         Some("0")
     );
+}
+
+/// 3.14: a checked box draws its check from the `icons/check.svg` asset,
+/// loaded through GPUI's application asset source. The app used to run with
+/// GPUI's default source, which loads nothing, so the box changed background
+/// but showed no check; it must register the bundled gpui-kit icons.
+#[test]
+fn a_checked_box_finds_its_check_glyph() {
+    use gpui_kit::AssetSource as _;
+    let check = IconName::Check.path();
+    assert_eq!(check, "icons/check.svg");
+    assert!(
+        ().load(&check).ok().flatten().is_none(),
+        "GPUI's default asset source — the bug's baseline — loads nothing"
+    );
+    let svg = crate::icon_assets()
+        .load(&check)
+        .ok()
+        .flatten()
+        .expect("the app registers the icon a checked Checkbox draws for its mark");
+    assert!(std::str::from_utf8(&svg).is_ok_and(|s| s.contains("<svg")));
+}
+
+#[gpui::test]
+fn clicking_the_include_transfers_checkbox_toggles_it(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_two_accounts_and_a_transfer);
+    wait_until(cx, "initial rows, transfers off", |cx| {
+        shell.read(cx).row_count == 2 && shell.read(cx).accounts.len() == 2
+    });
+    let mut window = VisualTestContext::from_window(handle, cx);
+    let bounds = window
+        .debug_bounds("checkbox:include-transfers")
+        .expect("the filter bar renders the include-transfers checkbox");
+    let at = point(
+        bounds.origin.x + bounds.size.width / 2.,
+        bounds.origin.y + bounds.size.height / 2.,
+    );
+    window.simulate_click(at, Modifiers::default());
+    cx.update(|cx| assert!(shell.read(cx).include_transfers, "click checks the box"));
+    window.simulate_click(at, Modifiers::default());
+    cx.update(|cx| assert!(!shell.read(cx).include_transfers, "clicking again unchecks"));
 }
 
 #[gpui::test]

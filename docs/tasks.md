@@ -278,7 +278,7 @@ beside the monthly summary (right); then the transaction table.
 - [ ] **3.13 Sidebar indent.** Remove the indent on sidebar items so they
   line up with the section labels.
 
-- [ ] **3.14 Checkbox check mark.** A checked box changes background but
+- [x] **3.14 Checkbox check mark.** A checked box changes background but
   shows no check. Find the cause and fix it for every checkbox.
 
 - [ ] **3.15 Responsive charts.** Chart lines overlap the labels, pieces are
