@@ -256,8 +256,40 @@ beside the monthly summary (right); then the transaction table.
 - [ ] **3.8 UI tests** for: preset change updates totals, legend drill-down
   and back, summary cell click filters the table, search, hidden toggle.
 
+- [ ] **3.9 Import end-to-end UI test.** Import a synthetic fixture through
+  the real import flow, then visit every page and check the values shown:
+  Dashboard rows and amounts, To categorize, Categories counts, Imports
+  history and sidebar counts, against `fixtures/demo/expected.json` where
+  possible. Must not depend on today's date.
+
+- [ ] **3.10 Blank Dashboard after import.** The Dashboard shows nothing even
+  though transactions were imported. Find the cause and fix it. If the cause
+  is only that the data falls outside the default Last 3 months, ask the user
+  how the default or the empty state should change.
+
+- [ ] **3.11 Stale page content.** Content from the previous page stays on
+  screen after switching pages. Find the cause and fix it.
+
+- [ ] **3.12 Virtualize long lists.** The category tree and the rule list
+  build every row, so the Categories page gets slow with many categories or
+  rules. Render only the visible rows, keeping selection, clicks and
+  scrolling. Test with thousands of rows.
+
+- [ ] **3.13 Sidebar indent.** Remove the indent on sidebar items so they
+  line up with the section labels.
+
+- [ ] **3.14 Checkbox check mark.** A checked box changes background but
+  shows no check. Find the cause and fix it for every checkbox.
+
+- [ ] **3.15 Labelling and layout pass.** Every input, dropdown, date picker
+  and filter group has a visible label or section heading (a placeholder
+  alone doesn't count). Group related controls deliberately instead of
+  stacking rows of unlabelled boxes. Record the rule in
+  `docs/ui-conventions.md`. Labels and layout only, no new features. Do this
+  last: it also needs to cover the views from 3.5 and 3.6.
+
 **Done when:** on the demo data the dashboard totals match
-`expected.json`, filters compose, tests cover 3.1–3.8.
+`expected.json`, filters compose, tests cover 3.1–3.15.
 
 ---
 
