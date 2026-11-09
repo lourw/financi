@@ -155,9 +155,12 @@ of a file cleanly. Name the regions in each brief, and have implementers add
 new tests next to related tests, not at the end of the file. If you can't
 tell which regions a task will change, don't run it alongside another.
 
-If the next task can't run alongside the one in flight, wait for that
-feature to merge, then create the next worktree from the updated `main`.
-Don't skip ahead to later tasks that depend on it.
+If the next task can't run alongside the one in flight, don't wait for that
+feature to merge. Look further down the current milestone's unticked tasks
+and start the first one that can run alongside it. Skip any task that
+depends on unfinished work or that its text says to do last. Only leave the
+pool slot empty if no remaining task in the milestone qualifies. Tasks that
+were skipped go next, each from a worktree created from the updated `main`.
 
 Merge finished features one at a time. If a merge conflicts, the
 orchestrator resolves it itself instead of sending it back to a sub-agent:
