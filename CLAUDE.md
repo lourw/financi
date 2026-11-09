@@ -13,9 +13,10 @@ and code from that worktree, never from the main checkout's copy.
 milestone at a time and continue to the next without checking in; stop when
 v1 is complete. Ask before deviating from a task.
 
-**Agent workflow:** `AGENTS.md` defines the roles (one orchestrator, one
-implementer sub-agent, one reviewer sub-agent), the 130k-token context
-budget, and the handoff templates. Follow it.
+**Agent workflow:** `AGENTS.md` defines the roles (one orchestrator and a
+shared pool of at most two implementer or reviewer sub-agents), the
+130k-token context budget per agent, when tasks may run in parallel, and
+the handoff templates. Follow it.
 
 **UI docs are for UI work only.** Read `docs/ui-conventions.md` and the
 *GPUI pitfalls* in `docs/tasks.md` only when the task changes the GPUI app

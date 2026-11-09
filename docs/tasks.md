@@ -9,8 +9,8 @@ Where the two disagree, **this file wins** for M2–M5 detail.
 1. Do **one milestone at a time**. When every box in it is ticked, continue
    to the next milestone without waiting for a go-ahead. Stop and report to
    the user when v1 is complete.
-2. Work the tasks in order. Tick a box (`- [x]`) in the same commit that
-   completes it.
+2. Work the tasks in order, running two at once only when `AGENTS.md` allows
+   it. Tick a box (`- [x]`) in the same commit that completes it.
 3. **Ask before deviating.** If a task is unclear, an API doesn't fit, or you
    would have to guess at behaviour, stop and ask. Don't improvise.
 4. Every task lands with tests and synthetic data (see `CLAUDE.md`). Never

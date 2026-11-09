@@ -7,8 +7,13 @@ single context has to hold the whole project:
 | Role | Count | Writes code? | Commits? |
 |---|---|---|---|
 | **Orchestrator** (main agent) | 1 | No | Only the merge to `main` |
-| **Implementer** (sub-agent) | 1 at a time | Yes | Yes |
-| **Reviewer** (sub-agent) | 1 at a time | No | No |
+| **Implementer** (sub-agent) | Shared pool of 2 | Yes | Yes |
+| **Reviewer** (sub-agent) | Shared pool of 2 | No | No |
+
+The model server has three slots: one for the orchestrator and two for the
+sub-agent pool. Never run more than two sub-agents at once, counting
+implementers and reviewers together: two implementers, two reviewers, or one
+of each. Every agent has the same 130k-token context cap.
 
 Project rules live in `CLAUDE.md` (commands, testing, commit style, clean
 checkout verification). Requirements are in `plan.md`; the task checklist is
@@ -109,7 +114,7 @@ On start:
 2. Check `git status` and `git log --oneline -10`. The first unticked
    `- [ ]` box in the current milestone is the next task.
 
-Loop, one task at a time:
+Loop for each task, with up to two tasks in flight:
 
 1. **Delegate** the task to the implementer with the *Task brief*
    template, after syncing `main` and creating the task's worktree (see
@@ -134,16 +139,28 @@ Loop, one task at a time:
    next milestone without waiting for a go-ahead. Stop and report to the
    user when v1 is complete (M5 done).
 
-The orchestrator works on one feature at a time, so it never runs more than
-one implementer at once, and never runs the reviewer while the implementer
-is working.
+The orchestrator runs at most two sub-agents at once, so at most two
+features are in flight. Each feature has its own branch and worktree, and a
+sub-agent works only in the worktree its brief names. Never run an
+implementer and a reviewer on the same feature at once.
+
+Before delegating, choose tasks that can safely run in parallel, so the two
+branches don't conflict at merge. Two features may run together only if
+neither depends on the other and their likely files don't overlap. Most UI
+work lands in `crates/financi/src/ui.rs` and `ui_tests.rs`, so two UI tasks
+normally can't run together. If the next task can't run alongside the one in
+flight, wait for that feature to merge, then create the next worktree from
+the updated `main`. Don't skip ahead to later tasks that depend on it.
+
+Merge finished features one at a time. If a merge conflicts, stop and ask
+the user, as *Feature worktrees* says.
 
 ### Resuming
 
 If the orchestrator stops mid-milestone (budget, block, user question),
 the state is recoverable from git: ticked boxes in `docs/tasks.md`,
-`git log`, and `git worktree list` for an unmerged feature, which is
-continued in its existing worktree. If there is extra state (open review findings, a user decision),
+`git log`, and `git worktree list` for unmerged features, which are
+continued in their existing worktrees. If there is extra state (open review findings, a user decision),
 put it in the report to the user. Don't create a scratch file in the repo.
 
 ---
