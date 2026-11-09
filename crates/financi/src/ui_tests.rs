@@ -24,8 +24,8 @@ use gpui_kit::{
 };
 
 use super::{
-    ExportData, ImportPanel, LegendSelection, NEW_ACCOUNT, Page, PlanState, RestoreBackup,
-    RowMenuItem, Shell, SummaryRowKind, UndoLastImport, row_menu_items,
+    DashboardBody, ExportData, ImportPanel, LegendSelection, NEW_ACCOUNT, Page, PlanState,
+    RestoreBackup, RowMenuItem, Shell, SummaryRowKind, UndoLastImport, row_menu_items,
 };
 
 fn demo(name: &str) -> PathBuf {
@@ -687,6 +687,158 @@ fn import_end_to_end_shows_expected_values_on_every_page(cx: &mut TestAppContext
             Some("2026-09-01")
         );
         assert_eq!(s.import_history[1].last_date.as_deref(), Some("2026-11-06"));
+    });
+}
+
+/// The import itself must put the data on the Dashboard: the shell
+/// refreshes when an import finishes, with no filter change from the user.
+/// A missing refresh leaves the Dashboard on its "no data" state while the
+/// sidebar already counts the imported rows (task 3.10). The range is
+/// pinned to "All time" through the persisted setting — the fixture dates
+/// are fixed 2026 dates, so the test passes whenever it runs.
+#[gpui::test]
+fn the_dashboard_shows_the_imported_totals_without_touching_the_range(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |c| {
+        settings::set(c, UI_DATE_RANGE, "all").unwrap();
+    });
+    wait_until(cx, "all-time range restored", |cx| {
+        shell.read(cx).date_range == DateRange::Preset(DatePreset::AllTime)
+    });
+
+    import_demo_file(cx, handle, &shell, "amex-sep-nov.csv", "Amex");
+
+    // Nothing else touches the shell: these numbers can only come from the
+    // refresh the finished import triggers.
+    wait_until(cx, "dashboard shows the import", |cx| {
+        shell.read(cx).row_count == 100 && shell.read(cx).total_visible == 102
+    });
+
+    // Spend per month from expected.json: the two money-in rows are the
+    // card payments, auto-categorized as transfers, so they leave the
+    // default view entirely instead of offsetting the spend.
+    let expected = expected_totals();
+    let want: Vec<i64> = ["2026-09", "2026-10", "2026-11"]
+        .iter()
+        .map(|m| {
+            expected["amex-sep-nov.csv"]["months"][m]["money_out_cents"]
+                .as_i64()
+                .unwrap()
+        })
+        .collect();
+    let total: i64 = want.iter().sum();
+    cx.update(|cx| {
+        let s = shell.read(cx);
+        assert_eq!(s.summary.months, ["2026-09", "2026-10", "2026-11"]);
+        let row = |name: &str| {
+            s.summary
+                .rows
+                .iter()
+                .find(|r| r.name == name)
+                .unwrap_or_else(|| panic!("no summary row {name:?}"))
+        };
+        assert_eq!(row("Spend").months, want);
+        assert_eq!(row("Spend").total, total);
+        assert_eq!(row("Income").total, 0);
+        assert_eq!(row("Net").total, -total);
+        assert_eq!(
+            s.chart_rows
+                .iter()
+                .map(|r| (r.name.as_str(), r.spend_cents))
+                .collect::<Vec<_>>(),
+            [("Uncategorized", total)],
+            "the chart shows the imported spend with no further interaction"
+        );
+    });
+}
+
+/// The blank-dashboard bug (3.10): a date range that selects none of the
+/// imported rows must show the range/filter empty states — never the
+/// whole-window "Drop a CSV" prompt, which belongs to an empty database.
+#[gpui::test]
+fn a_range_that_excludes_everything_shows_no_matches_not_the_import_prompt(
+    cx: &mut TestAppContext,
+) {
+    let (handle, shell) = open_shell(cx, |c| {
+        settings::set(c, UI_DATE_RANGE, "custom:2020-01-01..2020-12-31").unwrap();
+    });
+    wait_until(cx, "custom range restored", |cx| {
+        matches!(shell.read(cx).date_range, DateRange::Custom { .. })
+    });
+
+    import_demo_file(cx, handle, &shell, "amex-sep-nov.csv", "Amex");
+
+    // The 2020 range keeps every 2026 row out of the table, while the
+    // unfiltered count still sees them.
+    wait_until(cx, "table empty over a full database", |cx| {
+        shell.read(cx).total_visible == 102 && shell.read(cx).row_count == 0
+    });
+
+    cx.update(|cx| {
+        let s = shell.read(cx);
+        assert_eq!(
+            s.dashboard_body(),
+            DashboardBody::NoMatches,
+            "data exists but the range selects none: the table's empty \
+             state shows, not the import prompt"
+        );
+        assert!(s.chart_rows.is_empty());
+        assert!(
+            !s.summary_has_data(),
+            "the padded all-zero grid must read as empty"
+        );
+    });
+}
+
+/// A fresh database has nothing to show, so the dashboard is the
+/// whole-window import prompt (ui-conventions, *States*).
+#[gpui::test]
+fn an_empty_database_shows_the_import_prompt(cx: &mut TestAppContext) {
+    let (_handle, shell) = open_shell(cx, |_c| {});
+    cx.run_until_parked();
+    cx.update(|cx| {
+        assert_eq!(shell.read(cx).dashboard_body(), DashboardBody::NoData);
+    });
+}
+
+/// "Clear filters" drops the table-narrowing filters — search, the toggles
+/// and the category/month selection — and the rows come back (3.10).
+#[gpui::test]
+fn clear_filters_restores_a_table_emptied_by_search(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |c| {
+        settings::set(c, UI_DATE_RANGE, "all").unwrap();
+    });
+    wait_until(cx, "all-time range restored", |cx| {
+        shell.read(cx).date_range == DateRange::Preset(DatePreset::AllTime)
+    });
+    import_demo_file(cx, handle, &shell, "amex-sep-nov.csv", "Amex");
+    wait_until(cx, "import shows", |cx| shell.read(cx).row_count == 100);
+
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.search_input
+                .update(cx, |i, cx| i.set_value("zzz-no-match", window, cx));
+            s.apply_search("zzz-no-match", window, cx);
+        });
+    });
+    wait_until(cx, "search empties the table", |cx| {
+        shell.read(cx).row_count == 0 && shell.read(cx).total_visible == 102
+    });
+    cx.update(|cx| assert_eq!(shell.read(cx).dashboard_body(), DashboardBody::NoMatches));
+
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| s.clear_filters(window, cx));
+    });
+    wait_until(cx, "clear filters restores the rows", |cx| {
+        shell.read(cx).row_count == 100
+    });
+    cx.update(|cx| {
+        let s = shell.read(cx);
+        assert_eq!(s.dashboard_body(), DashboardBody::Rows);
+        assert!(s.search.is_empty());
+        assert!(
+            s.search_input.read(cx).value().is_empty(),
+            "the search box clears with the filter"
+        );
     });
 }
 
