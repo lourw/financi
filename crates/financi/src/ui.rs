@@ -860,6 +860,35 @@ impl Render for ImportPanel {
 
 actions!(dashboard, [ClearCategorySelection]);
 
+// File actions (3.7): the native menu bar's File menu, the ⌘ shortcuts and
+// the Imports page header buttons all dispatch these, so no action depends
+// on the native menu (which may not appear on Linux).
+actions!(
+    financi,
+    [
+        ImportCsv,
+        UndoLastImport,
+        ExportData,
+        RestoreBackup,
+        QuitApp
+    ]
+);
+
+/// The application's native menus (3.7). macOS shows this as the menu bar
+/// (its first menu is the app menu); Linux has no native menu bar, which is
+/// why every item here also lives on the Imports page header.
+fn app_menus() -> Vec<Menu> {
+    vec![Menu::new("File").items(vec![
+        MenuItem::action("Import CSV…", ImportCsv),
+        MenuItem::action("Undo last import", UndoLastImport),
+        MenuItem::separator(),
+        MenuItem::action("Export…", ExportData),
+        MenuItem::action("Restore…", RestoreBackup),
+        MenuItem::separator(),
+        MenuItem::action("Quit", QuitApp),
+    ])]
+}
+
 /// The one dashboard category selection (3.5): a legend row — a real
 /// category (parent or child) or the `Uncategorized` pseudo-row — that
 /// narrows the table. `Uncategorized` rides the table's existing
@@ -1139,6 +1168,51 @@ impl Shell {
         // Esc clears the dashboard's category selection (3.5); the root
         // view handles the action in `Render::render`.
         cx.bind_keys([KeyBinding::new("escape", ClearCategorySelection, None)]);
+        // ⌘ shortcuts for the file actions (3.7); `cmd` is ⌘ on macOS and
+        // Super on Linux. The same actions reach the user through the
+        // Imports page header on every platform.
+        cx.bind_keys([
+            KeyBinding::new("cmd-o", ImportCsv, None),
+            KeyBinding::new("cmd-e", ExportData, None),
+            KeyBinding::new("cmd-q", QuitApp, None),
+        ]);
+        // The native menu bar (macOS; a no-op store elsewhere). Key
+        // equivalents are read from the keymap, so bind first.
+        cx.set_menus(app_menus());
+        // The file actions are handled globally, not on the root element:
+        // the native menu dispatches them without a focused element, and
+        // `App::is_action_available` — what macOS uses to enable menu
+        // items — only counts global listeners in that case.
+        let shell = cx.entity();
+        let window_handle = window.window_handle();
+        Self::on_shell_action(
+            &shell,
+            window_handle,
+            cx,
+            |this, _: &ImportCsv, window, cx| {
+                this.pick_file(window, cx);
+            },
+        );
+        Self::on_shell_action(
+            &shell,
+            window_handle,
+            cx,
+            |this, _: &UndoLastImport, window, cx| {
+                this.undo_last_import(window, cx);
+            },
+        );
+        Self::on_shell_action(&shell, window_handle, cx, |this, _: &ExportData, _, cx| {
+            this.export_data(cx);
+        });
+        Self::on_shell_action(
+            &shell,
+            window_handle,
+            cx,
+            |this, _: &RestoreBackup, _, cx| {
+                this.restore_backup(cx);
+            },
+        );
+        Self::on_shell_action(&shell, window_handle, cx, |_, _: &QuitApp, _, cx| cx.quit());
         let new_parent_name =
             cx.new(|cx| InputState::new(window, cx).placeholder("New parent name"));
         let new_parent_kind = cx.new(|cx| {
@@ -1763,6 +1837,58 @@ impl Shell {
                 let _ = this.update_in(cx, |this, window, cx| this.open_file(path, window, cx));
             }
         }));
+    }
+
+    /// Run `handler` on the shell in `window`. The global file-action
+    /// listeners (3.7) funnel through this, so they work from any focus
+    /// state — including none, as the native menu leaves it.
+    fn on_shell_action<A: Action>(
+        shell: &Entity<Shell>,
+        window: AnyWindowHandle,
+        cx: &mut App,
+        handler: impl Fn(&mut Shell, &A, &mut Window, &mut Context<Shell>) + 'static,
+    ) {
+        let shell = shell.clone();
+        let handler = std::rc::Rc::new(handler);
+        cx.on_action(move |action: &A, cx: &mut App| {
+            let shell = shell.clone();
+            let handler = handler.clone();
+            // The listener runs inside the window's update loop, so the
+            // shell update has to be deferred out of it (same pattern as
+            // `Window::dispatch_action`).
+            let action = action.boxed_clone();
+            cx.defer(move |cx| {
+                let Some(action) = action.as_any().downcast_ref::<A>() else {
+                    return;
+                };
+                let _ = window.update(cx, |_, window, cx| {
+                    shell.update(cx, |this, cx| handler(this, action, window, cx));
+                });
+            });
+        });
+    }
+
+    /// Undo the most recent successful import (the File menu item and the
+    /// Imports header button): the same path as the newest history row's
+    /// Undo, two-click confirmation included; a no-op with no history.
+    fn undo_last_import(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(entry) = self.import_history.first() {
+            let id = entry.id;
+            self.undo_import(id, window, cx);
+        }
+    }
+
+    /// Export… (⌘E): wired in M5. Until then the menu item, the ⌘E
+    /// shortcut and the Imports header button all say so plainly.
+    fn export_data(&mut self, cx: &mut Context<Self>) {
+        self.status = Some(("Export is not available yet.".into(), false));
+        cx.notify();
+    }
+
+    /// Restore…: wired in M5, like [`Shell::export_data`].
+    fn restore_backup(&mut self, cx: &mut Context<Self>) {
+        self.status = Some(("Restore is not available yet.".into(), false));
+        cx.notify();
     }
 
     /// Undo an import from the history: the first click arms the button,
@@ -2699,6 +2825,15 @@ impl Shell {
 
     fn render_imports(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let muted = cx.theme().muted_foreground;
+        // The page exposes every file action (3.7): the native menu may be
+        // absent (Linux), so Import, Undo, Export and Restore live here.
+        let latest_undo_id = self.import_history.first().map(|e| e.id);
+        let undo_label =
+            if self.confirm_undo_import.is_some() && self.confirm_undo_import == latest_undo_id {
+                "Click again to undo"
+            } else {
+                "Undo…"
+            };
         v_flex()
             .flex_1()
             .min_h_0()
@@ -2727,6 +2862,24 @@ impl Shell {
                             .on_click(
                                 cx.listener(|this, _, window, cx| this.pick_file(window, cx)),
                             ),
+                    )
+                    .child(
+                        Button::new("undo-last-import")
+                            .label(undo_label)
+                            .disabled(latest_undo_id.is_none())
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.undo_last_import(window, cx);
+                            })),
+                    )
+                    .child(
+                        Button::new("export-data")
+                            .label("Export…")
+                            .on_click(cx.listener(|this, _, _, cx| this.export_data(cx))),
+                    )
+                    .child(
+                        Button::new("restore-backup")
+                            .label("Restore…")
+                            .on_click(cx.listener(|this, _, _, cx| this.restore_backup(cx))),
                     ),
             )
             .children(self.import.clone())

@@ -245,7 +245,7 @@ beside the monthly summary (right); then the transaction table.
   Clicking a cell filters the table to that category and month. Summary
   amounts are positive `$1,234.56`.
 
-- [ ] **3.7 Native menus + shortcuts.** macOS menu bar via GPUI menus:
+- [x] **3.7 Native menus + shortcuts.** macOS menu bar via GPUI menus:
   File → Import CSV… (⌘O), Undo last import, Export… (⌘E, wired in M5),
   Restore… (wired in M5), Quit (⌘Q). Import CSV… is the Imports page's
   header action (not in the sidebar); Undo lives on the Imports page and in the File menu

@@ -18,12 +18,13 @@ use gpui_kit::component::table::{ColumnSort, TableDelegate};
 use gpui_kit::component::calendar::Date as CalendarDate;
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyWindowHandle, App, Bounds, Entity, Focusable as _, Point, TestAppContext, Window,
-    WindowBounds, WindowOptions, px, size,
+    AnyWindowHandle, App, Bounds, Entity, Focusable as _, OwnedMenuItem, Point, TestAppContext,
+    Window, WindowBounds, WindowOptions, px, size,
 };
 
 use super::{
-    ImportPanel, LegendSelection, NEW_ACCOUNT, PlanState, RowMenuItem, Shell, row_menu_items,
+    ExportData, ImportPanel, LegendSelection, NEW_ACCOUNT, Page, PlanState, RestoreBackup,
+    RowMenuItem, Shell, UndoLastImport, row_menu_items,
 };
 
 fn demo(name: &str) -> PathBuf {
@@ -300,6 +301,182 @@ fn undo_needs_a_second_click_and_removes_the_latest_import(cx: &mut TestAppConte
                 "Undid import of amex-sep-oct.csv: removed 68 rows".into(),
                 false
             ))
+        );
+    });
+}
+
+/// The File menu the native menu bar is built from (3.7). The macOS menu
+/// itself can't be observed headlessly; this checks the menu definition the
+/// platform is handed.
+#[gpui::test]
+fn the_file_menu_offers_all_five_actions(cx: &mut TestAppContext) {
+    open_shell(cx, |_| {});
+    let menus = cx.update(|cx| cx.get_menus()).expect("menus set");
+    assert_eq!(menus.len(), 1, "one top-level menu");
+    let file = &menus[0];
+    assert_eq!(file.name.as_ref(), "File");
+    let items: Vec<String> = file
+        .items
+        .iter()
+        .map(|item| match item {
+            OwnedMenuItem::Separator => "—".into(),
+            OwnedMenuItem::Action {
+                name,
+                action,
+                disabled,
+                ..
+            } => {
+                assert!(!disabled, "{name} must not be disabled");
+                format!("{name} [{}]", action.name())
+            }
+            OwnedMenuItem::Submenu(_) | OwnedMenuItem::SystemMenu(_) => "?".into(),
+        })
+        .collect();
+    assert_eq!(
+        items,
+        [
+            "Import CSV… [financi::ImportCsv]",
+            "Undo last import [financi::UndoLastImport]",
+            "—",
+            "Export… [financi::ExportData]",
+            "Restore… [financi::RestoreBackup]",
+            "—",
+            "Quit [financi::QuitApp]",
+        ]
+    );
+}
+
+/// ⌘O (the menu's Import CSV… shortcut) opens the file picker, and a chosen
+/// file lands in the import preview on the Imports page.
+#[gpui::test]
+fn cmd_o_opens_the_file_picker_and_the_preview(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |_| {});
+    wait_until(cx, "initial load", |cx| {
+        shell.read(cx).refresh_task.is_some()
+    });
+    // Actions dispatch along the focus path, so focus the search input
+    // first — like a user who clicked into the window.
+    with_window(cx, handle, |window, cx| {
+        let input = shell.read(cx).search_input.read(cx).focus_handle(cx);
+        window.focus(&input, cx);
+    });
+    cx.simulate_keystrokes(handle, "cmd-o");
+    assert!(cx.did_prompt_for_paths(), "⌘O opened the file picker");
+
+    let file = demo("simplii-chequing.csv");
+    cx.simulate_path_prompt_response(move |_| Some(vec![file]));
+    wait_until(cx, "preview open on the Imports page", |cx| {
+        shell.read(cx).import.is_some() && shell.read(cx).page == Page::Imports
+    });
+}
+
+/// The `UndoLastImport` action (File menu item and Imports header button)
+/// runs the newest row's undo path: arm, then undo.
+#[gpui::test]
+fn the_undo_action_arms_then_undoes_the_newest_import(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |c| {
+        create_account(c, "amex", "Cobalt", AccountKind::CreditCard).unwrap();
+    });
+    wait_until(cx, "accounts loaded", |cx| {
+        shell.read(cx).accounts.len() == 1
+    });
+    open_and_choose(
+        cx,
+        handle,
+        &shell,
+        "amex-sep-oct.csv",
+        "American Express · Cobalt",
+    );
+    wait_until(cx, "plan", |cx| plan_ready(&shell, cx));
+    click_import(cx, handle, &shell);
+    wait_until(cx, "import history", |cx| {
+        shell.read(cx).import_history.len() == 1 && shell.read(cx).row_count == 67
+    });
+    let id = cx.update(|cx| shell.read(cx).import_history[0].id);
+
+    with_window(cx, handle, |window, cx| {
+        window.dispatch_action(Box::new(UndoLastImport), cx)
+    });
+    cx.run_until_parked();
+    cx.update(|cx| {
+        assert_eq!(
+            shell.read(cx).confirm_undo_import,
+            Some(id),
+            "first activation only asks to confirm"
+        );
+    });
+    with_window(cx, handle, |window, cx| {
+        window.dispatch_action(Box::new(UndoLastImport), cx)
+    });
+    wait_until(cx, "undo", |cx| {
+        shell.read(cx).row_count == 0 && shell.read(cx).import_history.is_empty()
+    });
+}
+
+/// With no imports there is nothing to undo: the action is a no-op.
+#[gpui::test]
+fn the_undo_action_is_a_no_op_without_history(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |_| {});
+    wait_until(cx, "initial load", |cx| {
+        shell.read(cx).refresh_task.is_some()
+    });
+    with_window(cx, handle, |window, cx| {
+        window.dispatch_action(Box::new(UndoLastImport), cx)
+    });
+    cx.run_until_parked();
+    cx.update(|cx| {
+        assert_eq!(shell.read(cx).confirm_undo_import, None);
+        assert_eq!(shell.read(cx).status, None);
+    });
+}
+
+/// Export… and Restore… are wired in M5: the actions (menu items, ⌘E, the
+/// page buttons) already exist and say plainly that they are not available.
+#[gpui::test]
+fn export_and_restore_say_not_available_yet(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |_| {});
+    wait_until(cx, "initial load", |cx| {
+        shell.read(cx).refresh_task.is_some()
+    });
+    with_window(cx, handle, |window, cx| {
+        window.dispatch_action(Box::new(ExportData), cx)
+    });
+    cx.run_until_parked();
+    cx.update(|cx| {
+        assert_eq!(
+            shell.read(cx).status.clone(),
+            Some(("Export is not available yet.".into(), false))
+        );
+    });
+    with_window(cx, handle, |window, cx| {
+        window.dispatch_action(Box::new(RestoreBackup), cx)
+    });
+    cx.run_until_parked();
+    cx.update(|cx| {
+        assert_eq!(
+            shell.read(cx).status.clone(),
+            Some(("Restore is not available yet.".into(), false))
+        );
+    });
+}
+
+/// The ⌘E binding reaches the same not-yet-available state as the button.
+#[gpui::test]
+fn cmd_e_dispatches_export(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |_| {});
+    wait_until(cx, "initial load", |cx| {
+        shell.read(cx).refresh_task.is_some()
+    });
+    with_window(cx, handle, |window, cx| {
+        let input = shell.read(cx).search_input.read(cx).focus_handle(cx);
+        window.focus(&input, cx);
+    });
+    cx.simulate_keystrokes(handle, "cmd-e");
+    cx.run_until_parked();
+    cx.update(|cx| {
+        assert_eq!(
+            shell.read(cx).status.clone(),
+            Some(("Export is not available yet.".into(), false))
         );
     });
 }
