@@ -2,9 +2,7 @@
 
 This is the working checklist for the remaining v1 milestones. It turns
 `plan.md` (the requirements, copied from the plan doc) into concrete tasks.
-Where the two disagree, **this file wins** for M2–M5 detail. Older parts of
-`plan.md` (the Architecture table's `rust_decimal`/`csv`/`serde`/`refinery`,
-"GPUI has no chart library", `uniform_list`) are out of date.
+Where the two disagree, **this file wins** for M2–M5 detail.
 
 ## How to work
 
@@ -219,8 +217,9 @@ beside the monthly summary (right); then the transaction table.
 
 - [ ] **3.3 Accounts filter + transfers toggle.** Multi-select of accounts
   (default all) and an "Include transfers" checkbox (default off, persisted
-  as `ui.include_transfers`). If gpui-kit has no multi-select, ask before
-  building one.
+  as `ui.include_transfers`). gpui-kit has no multi-select: build the
+  accounts filter as a dropdown popover of gpui-kit checkboxes, one per
+  account.
 
 - [ ] **3.4 Transaction table upgrade.**
   - Filtered by the `ViewFilter`, the selected category (parent or child)
@@ -249,7 +248,9 @@ beside the monthly summary (right); then the transaction table.
   File → Import CSV… (⌘O), Undo last import, Export… (⌘E, wired in M5),
   Restore… (wired in M5), Quit (⌘Q). Import CSV… is the Imports page's
   header action (not in the sidebar); Undo lives on the Imports page and in the File menu
-  (`docs/ui-conventions.md`, D4).
+  (`docs/ui-conventions.md`, D4). No action may depend on the native menu,
+  which may not appear on Linux: the Imports page exposes Import, Undo,
+  Export and Restore on both platforms.
 
 - [ ] **3.8 UI tests** for: preset change updates totals, legend drill-down
   and back, summary cell click filters the table, search, hidden toggle.
@@ -351,8 +352,8 @@ exist from 2.2; export copies them instead of rebuilding anything.
     to `~/Desktop/financi-export-YYYY-MM-DD.zip`.
 
 - [ ] **5.2 Restore.**
-  - File → Restore…, and a "Restore from export…" link in the empty-state
-    screen.
+  - File → Restore…, a Restore… button on the Imports page, and a "Restore
+    from export…" link in the empty-state screen.
   - Verify every file against the manifest SHA-256s; refuse if the schema
     version is newer than this build; migrate if older.
   - Back up the current database to `financi.sqlite.bak` (backup API) and
