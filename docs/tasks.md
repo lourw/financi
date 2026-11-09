@@ -240,7 +240,7 @@ beside the monthly summary (right); then the transaction table.
     back. Clicking a child filters further; clicking it again or pressing
     Esc clears.
 
-- [ ] **3.6 Monthly summary table.** Rows = parent categories (expandable to
+- [x] **3.6 Monthly summary table.** Rows = parent categories (expandable to
   children) then Income, Spend, Net; columns = months in range plus Total.
   Clicking a cell filters the table to that category and month. Summary
   amounts are positive `$1,234.56`.
