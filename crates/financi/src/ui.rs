@@ -951,14 +951,118 @@ enum DashboardBody {
 }
 
 /// A `spend_by_category` row prepared for drawing: the resolved palette
-/// color and the fields `BarChart` and the legend render.
+/// color and the fields `BarChart` and the legend render. `name` is the
+/// full category name (legend, tooltip); `short` is the fitted band-axis
+/// label (3.15), produced by [`short_chart_labels`].
 #[derive(Clone)]
 struct ChartRow {
     id: Option<i64>,
     name: SharedString,
+    short: SharedString,
     cents: i64,
     share: f64,
     color: Hsla,
+}
+
+// -- Responsive chart labels (3.15) -------------------------------------
+//
+// `BarChart` paints each band label centred under its band at gpui-kit's
+// 10px `TEXT_SIZE` and offers no truncation, so the app prepares the
+// text: names are ellipsized to a character budget, and when even short
+// labels cannot share a band they are thinned out with
+// `BarChart::band_tick_count`. The budgets come from the window's live
+// width (tracked through `observe_window_bounds`), so labels grow as the
+// window grows and never overlap or spill past the panel at the minimum
+// size (1200 × 720) or above.
+//
+// Layout widths shared by the dashboard and the budget maths: the fixed
+// sidebar, the legend column inside the chart panel, the panel's share
+// of the dashboard's middle row, the 16px padding of pages and panels
+// (`p_4`) and the 12px gap between regions (`gap_3`).
+const SIDEBAR_W: f32 = 210.;
+const LEGEND_W: f32 = 220.;
+const CHART_PANEL_SHARE: f32 = 0.45;
+const PAGE_PAD: f32 = 16.;
+const REGION_GAP: f32 = 12.;
+
+/// Generous width of one 10px system-font character, rounded up so the
+/// budget errs towards labels that are too short rather than overlapping.
+const CHART_CHAR_PX: f32 = 6.5;
+/// Minimum horizontal gap between two neighbouring drawn band labels.
+const CHART_LABEL_GAP: f32 = 8.;
+/// Cap on a band label, so a wide chart never paints a sentence.
+const CHART_LABEL_MAX_CHARS: usize = 16;
+/// Smallest budget that makes a label worth drawing; below it labels are
+/// thinned out instead of reduced to unreadable slivers.
+const CHART_LABEL_MIN_CHARS: usize = 4;
+
+/// The chart's label plan for `chart_width` pixels across `count` bands:
+/// band labels are truncated to `chars` characters (with an ellipsis)
+/// and only `labels` of them are drawn, spread evenly first-to-last by
+/// `BarChart::band_tick_count`. A centred label cannot collide with its
+/// neighbours once every drawn label owns `chart_width / labels` pixels,
+/// so that slice always buys `chars · CHART_CHAR_PX + CHART_LABEL_GAP`.
+fn band_label_budget(chart_width: f32, count: usize) -> (usize, usize) {
+    if count == 0 {
+        return (0, 0);
+    }
+    let chars_for = |labels: usize| {
+        let per = chart_width / labels as f32;
+        (((per - CHART_LABEL_GAP) / CHART_CHAR_PX).max(0.)) as usize
+    };
+    // Prefer labelling every band.
+    if chars_for(count) >= CHART_LABEL_MIN_CHARS {
+        return (chars_for(count).min(CHART_LABEL_MAX_CHARS), count);
+    }
+    // Too tight: thin the labels out until each drawn one buys the
+    // minimum budget, then truncate to what its wider slice allows.
+    let min_spacing = CHART_LABEL_MIN_CHARS as f32 * CHART_CHAR_PX + CHART_LABEL_GAP;
+    let labels = ((chart_width / min_spacing) as usize).clamp(1, count);
+    (chars_for(labels).clamp(1, CHART_LABEL_MAX_CHARS), labels)
+}
+
+/// Fit `names` into the band axis (3.15): a name longer than `chars`
+/// becomes `chars − 1` characters plus `…` (trailing whitespace is
+/// dropped first). Shortenings that collide fall back to the full name,
+/// because each row's band text is also its unique key in `BarChart`'s
+/// band scale (sibling category names are unique in the database).
+/// `chars == 0` means "no budget": the full names come back untouched.
+fn short_chart_labels(names: &[String], chars: usize) -> Vec<SharedString> {
+    if chars == 0 {
+        return names
+            .iter()
+            .map(|n| SharedString::from(n.clone()))
+            .collect();
+    }
+    let shorts: Vec<String> = names
+        .iter()
+        .map(|name| {
+            if name.chars().count() <= chars {
+                return name.clone();
+            }
+            let mut head: String = name.chars().take(chars - 1).collect();
+            while head.ends_with(char::is_whitespace) {
+                head.pop();
+            }
+            head.push('…');
+            head
+        })
+        .collect();
+    let mut counts: HashMap<&str, usize> = HashMap::new();
+    for short in &shorts {
+        *counts.entry(short.as_str()).or_default() += 1;
+    }
+    shorts
+        .iter()
+        .zip(names)
+        .map(|(short, name)| {
+            if counts[short.as_str()] > 1 {
+                SharedString::from(name.clone())
+            } else {
+                SharedString::from(short.clone())
+            }
+        })
+        .collect()
 }
 
 /// What a row of the monthly summary grid (3.6) is, resolved against the
@@ -1033,6 +1137,10 @@ pub struct Shell {
     chart_parent: Option<i64>,
     legend_selection: Option<LegendSelection>,
     chart_rows: Vec<CategorySpend>,
+    // -- Responsive chart (3.15): the window's current width in pixels,
+    // tracked with `observe_window_bounds`, so the chart can shorten and
+    // thin its band labels to the space left beside the legend.
+    window_width: f32,
     // -- Dashboard monthly summary (3.6): the `monthly_summary` grid behind
     // the panel, the parents whose child rows are expanded, and the month
     // chosen from a summary cell (fed into the table's `month` filter; the
@@ -1339,6 +1447,14 @@ impl Shell {
                 }
             },
         );
+        // The chart's label plan follows the window width (3.15).
+        let bounds_sub = cx.observe_window_bounds(window, |this, window, cx| {
+            let width = window.bounds().size.width.as_f32();
+            if this.window_width != width {
+                this.window_width = width;
+                cx.notify();
+            }
+        });
         let mut shell = Self {
             db,
             db_path,
@@ -1356,6 +1472,7 @@ impl Shell {
             chart_parent: None,
             legend_selection: None,
             chart_rows: Vec::new(),
+            window_width: window.bounds().size.width.as_f32(),
             summary: MonthlySummary {
                 months: Vec::new(),
                 rows: Vec::new(),
@@ -1413,6 +1530,7 @@ impl Shell {
                 date_preset_sub,
                 date_from_sub,
                 date_to_sub,
+                bounds_sub,
             ],
         };
         shell.load_date_range(window, cx);
@@ -2758,7 +2876,7 @@ impl Shell {
         let imports = self.nav_item("Imports", IconName::Download, Page::Imports, cx);
 
         Sidebar::new("nav")
-            .w(px(210.))
+            .w(px(SIDEBAR_W))
             .collapsible(false)
             .header(div().font_weight(FontWeight::SEMIBOLD).child("financi"))
             .child(NavItem::Item(Box::new(dashboard)))
@@ -2810,6 +2928,18 @@ impl Shell {
         colors
     }
 
+    /// The chart's label plan (3.15) for the current window: how many
+    /// characters a band label may use and how many labels are drawn.
+    /// The plot shares the window with everything left of it: the sidebar
+    /// and page padding come off the window width, `CHART_PANEL_SHARE` of
+    /// what remains is the chart panel, and inside the panel its padding,
+    /// the legend and the gap come off before the plot is left.
+    fn chart_label_plan(&self) -> (usize, usize) {
+        let page_w = (self.window_width - SIDEBAR_W - 2. * PAGE_PAD).max(0.);
+        let chart_w = (page_w * CHART_PANEL_SHARE - 2. * PAGE_PAD - LEGEND_W - REGION_GAP).max(0.);
+        band_label_budget(chart_w, self.chart_rows.len())
+    }
+
     fn chart_panel(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let (border, background, muted, list_active, radius, colors) = {
             let theme = cx.theme();
@@ -2822,12 +2952,26 @@ impl Shell {
                 self.category_colors(theme),
             )
         };
+        // Responsive labels (3.15): shorten the names to the current
+        // budget and thin them out if the bands are too narrow; the full
+        // names stay in the legend and the tooltip.
+        let (label_chars, label_count) = self.chart_label_plan();
+        let shorts = short_chart_labels(
+            &self
+                .chart_rows
+                .iter()
+                .map(|r| r.name.clone())
+                .collect::<Vec<String>>(),
+            label_chars,
+        );
         let mut rows: Vec<ChartRow> = self
             .chart_rows
             .iter()
-            .map(|r| ChartRow {
+            .zip(shorts)
+            .map(|(r, short)| ChartRow {
                 id: r.id,
                 name: r.name.clone().into(),
+                short,
                 cents: r.spend_cents,
                 share: r.share,
                 color: r
@@ -2866,9 +3010,13 @@ impl Shell {
                 .child(
                     BarChart::new(rows.clone())
                         .id("category-chart")
-                        .band(|r| r.name.to_string())
+                        // The band text doubles as the axis label (3.15):
+                        // the fitted short name, drawn on only
+                        // `label_count` evenly spread bands so labels
+                        // never overlap each other or the bars.
+                        .band(|r| r.short.clone())
+                        .band_tick_count(label_count)
                         .value(|r| r.cents as f64)
-                        .label(|r| r.name.clone())
                         .fill(|r, _, _, _| r.color)
                         .tooltip_title(|r| r.name.clone())
                         .tooltip_value(move |r, _| {
@@ -2885,7 +3033,7 @@ impl Shell {
 
         let legend = v_flex()
             .id("legend-list")
-            .w(px(220.))
+            .w(px(LEGEND_W))
             .flex_none()
             .min_h_0()
             .gap_1()
@@ -2958,7 +3106,7 @@ impl Shell {
             .gap_3()
             .child(
                 h_flex()
-                    .w(relative(0.45))
+                    .w(relative(CHART_PANEL_SHARE))
                     .min_w_0()
                     .gap_3()
                     .p_4()
