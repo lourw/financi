@@ -281,7 +281,7 @@ beside the monthly summary (right); then the transaction table.
 - [x] **3.14 Checkbox check mark.** A checked box changes background but
   shows no check. Find the cause and fix it for every checkbox.
 
-- [ ] **3.15 Responsive charts.** Chart lines overlap the labels, pieces are
+- [x] **3.15 Responsive charts.** Chart lines overlap the labels, pieces are
   cut off, and the layout doesn't adapt to the space available. At the
   minimum window size (1200 × 720) and above, every chart stays inside its
   panel, nothing is clipped, and lines and labels don't overlap. Shorten or

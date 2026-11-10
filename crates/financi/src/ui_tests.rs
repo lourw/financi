@@ -11,7 +11,9 @@ use financi_core::parse::merchant;
 use financi_core::{AccountKind, CategoryKind};
 use financi_db::import::TransactionRow;
 use financi_db::settings::{self, DateRange, UI_DATE_RANGE, UI_INCLUDE_TRANSFERS};
-use financi_db::{DbWorker, TxSort, TxSortColumn, ViewFilter, create_account, open_in_memory};
+use financi_db::{
+    CategorySpend, DbWorker, TxSort, TxSortColumn, ViewFilter, create_account, open_in_memory,
+};
 use gpui_kit::component::table::{ColumnSort, TableDelegate};
 // No glob import: `gpui_kit::*` brings GPUI's `test` macro into scope, which
 // shadows the built-in #[test] that #[gpui::test] expands to.
@@ -24,8 +26,10 @@ use gpui_kit::{
 };
 
 use super::{
-    DashboardBody, ExportData, ImportPanel, LegendSelection, NAV_ROW_INSET, NEW_ACCOUNT, Page,
-    PlanState, RestoreBackup, RowMenuItem, Shell, SummaryRowKind, UndoLastImport, row_menu_items,
+    CHART_CHAR_PX, CHART_LABEL_GAP, CHART_LABEL_MAX_CHARS, CHART_LABEL_MIN_CHARS, DashboardBody,
+    ExportData, ImportPanel, LegendSelection, NAV_ROW_INSET, NEW_ACCOUNT, Page, PlanState,
+    RestoreBackup, RowMenuItem, Shell, SummaryRowKind, UndoLastImport, band_label_budget,
+    row_menu_items, short_chart_labels,
 };
 
 fn demo(name: &str) -> PathBuf {
@@ -2540,6 +2544,147 @@ fn escape_clears_the_drill_and_the_selection(cx: &mut TestAppContext) {
             && shell.read(cx).legend_selection.is_none()
             && shell.read(cx).row_count == 4
     });
+}
+
+// -- Responsive charts (3.15) -------------------------------------------
+
+#[test]
+fn band_labels_truncate_to_the_character_budget() {
+    let names = vec![
+        "Food".to_string(),
+        "Public Transport Costs".to_string(),
+        "Café du Marché".to_string(),
+    ];
+    let shorts = short_chart_labels(&names, 8);
+    assert_eq!(shorts[0].as_str(), "Food", "a short name is left alone");
+    assert_eq!(shorts[1].as_str(), "Public…");
+    assert_eq!(shorts[2].as_str(), "Café du…", "truncates by characters");
+
+    // No budget means no truncation.
+    let all = short_chart_labels(&names, 0);
+    assert_eq!(all[1].as_str(), "Public Transport Costs");
+}
+
+#[test]
+fn colliding_short_labels_fall_back_to_their_full_names() {
+    // The band text is also `BarChart`'s band key, so two rows must never
+    // be shortened to the same string.
+    let names = vec![
+        "Travel International".to_string(),
+        "Travel Domestic".to_string(),
+    ];
+    let shorts = short_chart_labels(&names, 8);
+    assert_eq!(shorts[0].as_str(), "Travel International");
+    assert_eq!(shorts[1].as_str(), "Travel Domestic");
+
+    // Without a collision the shortening stands.
+    let names = vec!["Travel International".to_string(), "Food".to_string()];
+    assert_eq!(short_chart_labels(&names, 8)[0].as_str(), "Travel…");
+}
+
+#[test]
+fn band_label_budget_keeps_labels_inside_their_spacing() {
+    // A wide plot with few bands: label every band with room to spare.
+    let (chars, labels) = band_label_budget(779., 7);
+    assert_eq!(labels, 7);
+    assert!(chars >= 12, "{chars} chars at 779px across 7 bands");
+
+    // The minimum-window plot (~167px) with 7 bands: too tight for all
+    // seven, so labels are thinned out but still legible.
+    let (chars, labels) = band_label_budget(167., 7);
+    assert!((1..7).contains(&labels), "{labels} labels at 167px");
+    assert!(chars >= CHART_LABEL_MIN_CHARS, "{chars}");
+
+    // The invariant for every window size and category count: each drawn
+    // label owns `chart_width / labels` pixels, enough for its characters
+    // plus the gap, so centred labels cannot overlap or run past the
+    // plot's edges.
+    for width in [100., 167., 400., 779., 1600., 3000.] {
+        for count in 1..=30usize {
+            let (chars, labels) = band_label_budget(width, count);
+            assert!(
+                labels >= 1 && labels <= count,
+                "width {width}, count {count}"
+            );
+            assert!((1..=CHART_LABEL_MAX_CHARS).contains(&chars));
+            let per = width / labels as f32;
+            assert!(
+                chars as f32 * CHART_CHAR_PX + CHART_LABEL_GAP <= per + 0.001,
+                "width {width}, count {count}: {chars} chars need more than {per:.1}px"
+            );
+        }
+    }
+    assert_eq!(band_label_budget(779., 0), (0, 0));
+}
+
+#[gpui::test]
+fn chart_labels_adapt_to_the_window_size(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_chart_rows);
+    wait_until(cx, "three chart rows", |cx| {
+        shell.read(cx).chart_rows.len() == 3
+    });
+
+    // `open_shell` opens 1100 wide: with the legend beside it the plot is
+    // narrow, so the labels are truncated to a small character budget.
+    let (small_chars, small_labels) = cx.update(|cx| shell.read(cx).chart_label_plan());
+    assert_eq!(small_labels, 3);
+    assert!(
+        small_chars < CHART_LABEL_MAX_CHARS,
+        "a narrow window truncates, got {small_chars} chars"
+    );
+
+    // A large window: every band gets its label again, and the labels
+    // grow. The window-bounds observer must have updated the plan.
+    with_window(cx, handle, |window, cx| {
+        window.resize(size(px(2000.), px(900.)));
+        window.bounds_changed(cx);
+    });
+    cx.run_until_parked();
+    assert_eq!(cx.update(|cx| shell.read(cx).window_width), 2000.);
+    let (big_chars, big_labels) = cx.update(|cx| shell.read(cx).chart_label_plan());
+    assert_eq!(big_labels, 3, "a wide window labels every band");
+    assert!(big_chars > small_chars, "{big_chars} vs {small_chars}");
+
+    // And the chart draws at both the minimum and a large window.
+    with_window(cx, handle, |window, cx| {
+        window.resize(size(px(1200.), px(720.)));
+        window.bounds_changed(cx);
+    });
+    cx.run_until_parked();
+    draw_frame(cx, handle);
+    with_window(cx, handle, |window, cx| {
+        window.resize(size(px(2560.), px(1440.)));
+        window.bounds_changed(cx);
+    });
+    cx.run_until_parked();
+    draw_frame(cx, handle);
+}
+
+#[gpui::test]
+fn the_chart_renders_long_names_and_many_categories(cx: &mut TestAppContext) {
+    let (_handle, shell) = open_shell(cx, seed_chart_rows);
+    wait_until(cx, "three chart rows", |cx| {
+        shell.read(cx).chart_rows.len() == 3
+    });
+    // 25 categories with long names — the worst case for the band axis.
+    shell.update(cx, |s, cx| {
+        s.chart_rows = (0..25)
+            .map(|i| CategorySpend {
+                id: Some(i),
+                name: format!("Category number {i} with a very long descriptive name"),
+                spend_cents: (i + 1) * 12_345,
+                share: 0.04,
+            })
+            .collect();
+        cx.notify();
+    });
+    // The plan stays bounded, and the chart draws without panic at the
+    // test window's width and at the minimum size. 25 bands across the
+    // narrow plot must thin the labels out, not squeeze them flat.
+    let (chars, labels) = cx.update(|cx| shell.read(cx).chart_label_plan());
+    assert!((1..25).contains(&labels), "{labels} labels for 25 bands");
+    assert!((1..=CHART_LABEL_MAX_CHARS).contains(&chars));
+    draw_frame(cx, _handle);
 }
 
 /// `seed_chart_rows` plus a childless Gifts parent whose only transaction

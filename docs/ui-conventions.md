@@ -118,6 +118,11 @@ Use gpui's spacing helpers only, in these steps:
   fixed widths. Filter selects get a width that fits their longest
   label on one line. The first mockups broke exactly here: legend amounts
   spilled into the summary, and the date range label wrapped.
+- **Chart labels fit the space (3.15).** The category chart's band labels
+  shorten to a character budget and thin out when bands get narrow, so two
+  neighbouring labels never overlap or spill past the panel at the minimum
+  window size or above; the budget follows the live window width. Full
+  names always stay in the legend and the tooltip.
 
 ## Typography
 
