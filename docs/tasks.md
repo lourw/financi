@@ -334,8 +334,113 @@ beside the monthly summary (right); then the transaction table.
   button labels show in full. Check it at the minimum size and a large
   window, with long file and account names.
 
+- [ ] **3.21 Virtualized lists don't scroll.** Since 3.12 / 3.19 the
+  category tree, the rule list and the To categorize queue show only their
+  first screen of rows. Wheel and trackpad scrolling do nothing, so rows
+  past the fold can't be reached. Cause: gpui-base's `virtual_list()`
+  (`gpui-base-0.9.0/src/virtual_list.rs`, ~line 186) creates a new
+  `VirtualListScrollHandle` on every call, and the list's div
+  `track_scroll`s it. GPUI reads the scroll offset from a tracked handle in
+  preference to the element state (`gpui-pre-0.3.11/src/elements/div.rs`,
+  ~line 2323), and `Shell` re-renders on every frame, so the offset goes
+  back to 0 each time. Fix: keep one `VirtualListScrollHandle` per list as
+  a `Shell` field (`tree_scroll`, `rule_scroll`, `queue_scroll`) and pass
+  it with `.track_scroll(&handle)` on each `v_virtual_list(...)` in
+  `ui.rs`. Reset a handle's offset only when its content is actually
+  replaced (for example the rule list when the selected category changes in
+  3.23), not on every refresh. Tests, for each of the three lists, seeded
+  with thousands of rows: scroll it (`simulate_event` with a
+  `ScrollWheelEvent` over the list's bounds, or `handle.set_offset`),
+  re-render, then check the offset is kept, the built range has moved
+  (rows near the end are built and the first rows aren't), and the offset
+  survives an unrelated `cx.notify()` / refresh.
+
+- [ ] **3.22 To categorize queue fits the window.** At the minimum window
+  size the queue's fixed columns (280 + 140 + 120 + dates + 260 + button +
+  gaps ≈ 1,120 px) are wider than the ~958 px content area, so rows are cut
+  off on the right and the Dates cell has no width at all. Make it fit from
+  1200 × 720 up, with no horizontal scrolling:
+  - **Merchant:** `flex_1().min_w_0()` with ellipsis, so it takes the space
+    left over (≥ ~180 px at the minimum size). Each merchant cell gets an
+    `id` and a hover `.tooltip(...)` (gpui-base `Tooltip`) showing the
+    full merchant name.
+  - **Transactions:** the heading says "Transactions" and the cell shows
+    just the number (`flow::count`), right-aligned, ~96 px. Drop the
+    "N transactions" text.
+  - **Total:** ~110 px, right-aligned (unchanged apart from the width).
+  - **Dates:** fixed ~190 px, `min_w_0` with ellipsis, `text_sm` muted.
+  - **Category picker:** ~220 px. **Categorize** button: natural width.
+  - Remove the `flex_1` spacer. The heading row and the data rows share the
+    same widths (pull them into consts) so headings stay over their columns.
+  - Tests: at 1200 × 720 with a 120-character merchant name, the row's
+    right edge (the Categorize button's bounds) is inside the page's
+    bounds; each heading's left edge matches its column's left edge (extend
+    `the_queue_category_heading_sits_over_the_picker_column` to every
+    column); the Transactions cell text is a bare number. Update the
+    *To categorize* row of `docs/ui-conventions.md` if it changes.
+
+- [ ] **3.23 Categories page layout.** The page reads as scattered
+  controls: the new-parent form floats above everything, the detail panel
+  is a wrapping row of unrelated pickers, the rules list under it shows
+  every rule in the database no matter which category is selected, and
+  spacing (`gap_6`, `gap_4`) is off the 4/8/12/16 scale. Lay it out as
+  follows. Layout only: no new features, and the existing actions (add
+  parent and child, rename, move, delete with its two-click confirm, add
+  rule with its live match count) keep working.
+  - **Header row:** "Categories" (`text_lg`) and a muted summary
+    ("N parents · M categories") on the left; **New category…** at the
+    right end (the header action in `ui-conventions.md`). Clicking it
+    shows the new-parent form (Name, Kind, Cancel, Add parent) as one
+    bordered row under the header, in place, the way the rename editor
+    works. Hide the form again after Add parent or Cancel.
+  - **Body:** two bordered panels side by side (`gap_3`) that fill the
+    remaining height, with their tops and bottoms aligned.
+  - **Left: Category tree panel** (300 px, `p_2`). The *Category tree*
+    title sits inside the panel, then the virtualized list, which scrolls
+    (3.21). Each 32 px row is full width: a 10×10 category color swatch
+    (`ui-conventions.md` → *Category colors*), the name (`min_w_0` +
+    ellipsis; parents semibold, children indented 16 px), a muted "system"
+    tag when relevant, and the transaction count right-aligned in a fixed
+    column at the right edge so counts line up down the tree. Selection
+    uses `list_active` and hover uses `list_hover`, per the color table,
+    instead of `accent`.
+  - **Right: detail panel** (`flex_1`, `p_4`). When nothing is selected,
+    show only centered muted text ("Select a category to see its rules and
+    settings"). When a category is selected, show sections stacked with
+    `gap_3`, separated by a `border` divider, each starting with a
+    `region_title`, all sharing one left edge:
+    1. **Title line:** name (`text_lg`) and muted "Kind · N transactions",
+       with Rename… at the right end. The rename editor replaces this line
+       while it's open.
+    2. **Organize:** for a parent, *New child name* plus Add child. For a
+       child, *Move to parent* plus Move. Labels sit above the controls
+       (3.16).
+    3. **Rules** (takes `flex_1` and scrolls inside itself): the
+       add-rule row (Pattern `flex_1`, regex switch, Category picker
+       defaulting to the selected category, Add rule as the primary
+       button), with "matches N transactions" muted under it; then column
+       headings (Pattern, Type, Category) over the virtualized rule list,
+       using the same widths as the rows (Pattern `flex_1` + ellipsis +
+       tooltip, Type ~80 px, Category ~200 px + ellipsis). List only the
+       rules that target the selected category (for a parent, its own
+       rules plus its children's). Empty state: "No rules for this
+       category yet" in muted text.
+    4. **Delete** (pinned at the bottom of the panel, hidden for system
+       categories): *Move its transactions to* picker plus Delete…, with
+       the two-click confirm unchanged.
+  - Everything fits at 1200 × 720 (right panel ≈ 646 px wide) with no
+    horizontal overflow; long names truncate instead of pushing widths.
+  - Tests: the tree, detail panel and rule list all paint inside the page
+    bounds at 1200 × 720 with long names and thousands of rules; selecting
+    a category limits the rule list to its rules (parent includes
+    children); the add-rule picker defaults to the selected category; New
+    category… shows the form, and Add parent / Cancel hide it; the
+    section headings paint (`label:` / title debug selectors). Update the
+    *Categories* row of `docs/ui-conventions.md` to describe this layout
+    in the same commit.
+
 **Done when:** on the demo data the dashboard totals match
-`expected.json`, filters compose, tests cover 3.1–3.20.
+`expected.json`, filters compose, tests cover 3.1–3.23.
 
 ---
 
