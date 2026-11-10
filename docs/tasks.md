@@ -301,8 +301,41 @@ beside the monthly summary (right); then the transaction table.
   blank until some other filter changes. Recompute it from the accounts
   loaded in the same refresh, and test it.
 
+- [ ] **3.18 Blank Categories page after virtualization.** Since 3.12
+  (commit b2739d0) the Categories page opens blank: the tree shows no rows
+  and the rule list shows nothing, even though categories and rules exist
+  (the counts and other pages show them). Rows only appear after adding a
+  category or a rule. Find the cause and fix it. The 3.12 tests seed data
+  before the page first renders, so they miss this path. Add tests that
+  open the page first and load categories and rules afterwards, the way a
+  normal launch does (async `DbWorker` refresh), and that check rows show
+  up on that first open without any other action. Cover both the tree and
+  the rule list, and switching to the page from another page.
+
+- [ ] **3.19 Virtualize the To categorize queue.** `render_queue` builds
+  every merchant group as a row inside a plain scrolling div, and
+  `sync_queue` keeps a `SelectState` entity per merchant and calls
+  `set_items` on every one of them on each refresh. With a large queue the
+  page is very slow to render and laggy to scroll. Render only the visible
+  rows (as in 3.12), and stop building or updating a picker for every
+  group up front: create pickers only for rows that are shown, or share
+  one. Keep categorizing a group, the error message and the empty state
+  working. Test with thousands of groups: the page renders, builds only
+  the visible rows, and a group at the very bottom can still be
+  categorized.
+
+- [ ] **3.20 Imports history table overflows.** The history table's fixed
+  column widths add up to 1,110 px (150 + 240 + 240 + 110 + 220 + 150),
+  wider than the content area beside the sidebar at the minimum window size
+  (1200 × 720). The table overflows and the Undo… button is cut off in its
+  column, worse once it reads "Click again to undo". Make the table fit the
+  space available from the minimum window size up: let File and Account
+  shrink and truncate with an ellipsis, and size the Undo column so both
+  button labels show in full. Check it at the minimum size and a large
+  window, with long file and account names.
+
 **Done when:** on the demo data the dashboard totals match
-`expected.json`, filters compose, tests cover 3.1–3.17.
+`expected.json`, filters compose, tests cover 3.1–3.20.
 
 ---
 
