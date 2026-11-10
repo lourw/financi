@@ -191,26 +191,39 @@ fn pair_mutuals(
 }
 
 /// Record a review for every row with more than one still-unpaired
-/// candidate (rows and candidates ordered by id). Returns the reviews
-/// written; candidates are stored by posted date then id.
+/// candidate, across *all* adjacency maps at once: a row ambiguous under
+/// both rules simultaneously gets one review holding the union of its
+/// candidates, never two rows colliding on `transaction_id` (rows ordered
+/// by id). Returns the reviews written; candidates are stored by posted
+/// date then id.
 fn record_reviews(
     conn: &Connection,
     rows: &HashMap<i64, &Candidate>,
-    adj: &HashMap<i64, Vec<i64>>,
+    adjacencies: &[&HashMap<i64, Vec<i64>>],
     paired: &std::collections::BTreeSet<i64>,
 ) -> Result<usize> {
-    let mut ids: Vec<i64> = adj.keys().copied().collect();
+    let mut ids: Vec<i64> = adjacencies
+        .iter()
+        .flat_map(|adj| adj.keys().copied())
+        .collect();
     ids.sort_unstable();
+    ids.dedup();
     let mut count = 0;
     for id in ids {
         if paired.contains(&id) {
             continue;
         }
-        let cands: Vec<i64> = adj[&id]
-            .iter()
-            .filter(|c| !paired.contains(c))
-            .copied()
-            .collect();
+        // Union of the kinds' candidates, still-unpaired only.
+        let mut cands: Vec<i64> = Vec::new();
+        for adj in adjacencies {
+            if let Some(list) = adj.get(&id) {
+                for c in list {
+                    if !paired.contains(c) && !cands.contains(c) {
+                        cands.push(*c);
+                    }
+                }
+            }
+        }
         if cands.len() < 2 {
             continue;
         }
@@ -289,9 +302,9 @@ pub fn run_transfer_pairing(conn: &Connection) -> Result<PairingSummary> {
     summary.paired += pair_mutuals(conn, &own_adj, between_accounts, &mut paired)?;
 
     // Ambiguity: anything still unpaired with several candidates asks the
-    // user, per kind (card first); a row already reviewed keeps that entry.
-    summary.reviews += record_reviews(conn, &rows, &card_adj, &paired)?;
-    summary.reviews += record_reviews(conn, &rows, &own_adj, &paired)?;
+    // user — one review per row across both kinds (card first, then
+    // own-account), carrying the union of its candidates.
+    summary.reviews += record_reviews(conn, &rows, &[&card_adj, &own_adj], &paired)?;
     Ok(summary)
 }
 
@@ -841,6 +854,34 @@ mod tests {
         // The shared candidate carries the review, ordered by date then id.
         assert_eq!(reviews(&conn), [(c, format!("{d1},{d2}"))]);
         assert_eq!(state(&conn, c).0, None);
+    }
+
+    #[test]
+    fn one_row_ambiguous_under_both_rules_gets_one_unioned_review() {
+        let conn = open_in_memory().unwrap();
+        let (cheq, card, sav) = (
+            chequing(&conn, "Chequing"),
+            credit(&conn, "Cobalt"),
+            savings(&conn, "Savings"),
+        );
+        // One chequing debit: two card payments within 5 days AND two
+        // savings transfer credits within 2 days — ambiguous under both
+        // rules at once. It must get a single review, never two rows
+        // colliding on transaction_id.
+        let debit = row(&conn, cheq, "2026-10-26", -150_000, "MONEY OUT", None);
+        let c1 = card_payment_row(&conn, card, "2026-10-25", 150_000);
+        let own1 = row(&conn, sav, "2026-10-26", 150_000, "TRANSFER IN", None);
+        let own2 = row(&conn, sav, "2026-10-27", 150_000, "TRANSFER IN", None);
+        let c2 = card_payment_row(&conn, card, "2026-10-28", 150_000);
+
+        let out = run_transfer_pairing(&conn).unwrap();
+        assert_eq!(out.paired, 0, "a tie is never guessed");
+        assert_eq!(out.reviews, 1, "one review per row, not per rule");
+        // The union of both kinds' candidates, ordered by date then id.
+        assert_eq!(
+            reviews(&conn),
+            [(debit, format!("{c1},{own1},{own2},{c2}"))]
+        );
     }
 
     #[test]

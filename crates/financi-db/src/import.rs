@@ -19,6 +19,7 @@ use financi_core::{ParseError, RawFile, RawTransaction, RowHash, StatementParser
 use rusqlite::{Connection, params};
 
 use crate::categories::card_payment_category;
+use crate::overrides::clear_override;
 use crate::rules::list_rules;
 use crate::{Account, DbError, get_account, list_accounts};
 
@@ -314,6 +315,22 @@ pub fn undo_last_import(
         let dates = stmt.query_map([import_id], |r| r.get::<_, String>(0))?;
         years_of(dates.filter_map(|r| r.ok()))
     };
+    // Surviving partners of the undone rows' transfer pairs (4.2). The
+    // `transfer_pair_id` foreign key NULLs the link on delete, but the lock
+    // and the transfer category would stick — release them the way *Unpair*
+    // does, so rules re-apply and the row is pairable again.
+    let partners: Vec<i64> = {
+        let mut stmt = tx.prepare(
+            "SELECT id FROM transactions
+              WHERE import_id <> ?1
+                AND transfer_pair_id IN (SELECT id FROM transactions WHERE import_id = ?1)",
+        )?;
+        let ids = stmt.query_map([import_id], |r| r.get::<_, i64>(0))?;
+        ids.collect::<Result<Vec<_>, _>>()?
+    };
+    for partner in partners {
+        clear_override(&tx, partner)?;
+    }
     tx.execute("DELETE FROM imports WHERE id = ?1", [import_id])?;
     tx.commit()?;
     Ok(Some(UndoneImport {
