@@ -171,9 +171,10 @@ mod tests {
     }
 
     #[test]
-    fn parsers_without_a_payment_marker_never_match() {
-        use crate::simplii_chequing::SimpliiChequing;
-        assert!(!SimpliiChequing.is_card_payment(&mapped("PAYMENT RECEIVED - THANK YOU")));
+    fn payment_marker_is_anchored_to_the_start() {
+        // The Simplii parser matches PAYMENT anywhere; Amex only as a
+        // prefix, so look-alikes stay ordinary spending.
+        assert!(!Amex.is_card_payment(&mapped("THANK YOU - CARD PAYMENT 1234")));
     }
 
     #[test]

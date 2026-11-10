@@ -49,5 +49,5 @@ fn real_amex_export_parses() {
 #[test]
 #[ignore = "needs local real exports"]
 fn real_simplii_chequing_export_parses() {
-    check("FINANCI_SAMPLE_SIMPLII_CHEQUING", "simplii-chequing");
+    check("FINANCI_SAMPLE_SIMPLII_CHEQUING", "simplii");
 }

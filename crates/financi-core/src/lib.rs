@@ -182,13 +182,14 @@ pub enum ParseError {
 
 /// One implementation per institution export format.
 pub trait StatementParser {
-    /// Stable id, e.g. `"amex"`, `"simplii-chequing"`.
+    /// Stable id, e.g. `"amex"`, `"simplii"`.
     fn id(&self) -> &'static str;
     /// The institution an account must belong to for this format, matching
     /// `institutions.key`, e.g. `"amex"`, `"simplii"`.
     fn institution(&self) -> &'static str;
     /// The account types this export format comes from. Simplii chequing and
-    /// Simplii Visa share an institution but not a format.
+    /// Simplii Visa export the same format, so one parser lists both kinds
+    /// and the account chosen at import decides which.
     fn account_kinds(&self) -> &'static [AccountKind];
     /// True if this header row looks like ours (auto-detect).
     fn detect(&self, header: &[String]) -> bool;

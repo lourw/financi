@@ -446,7 +446,7 @@ beside the monthly summary (right); then the transaction table.
 
 ## M4 — Simplii Visa, transfer pairing, near-match review
 
-- [ ] **4.1 Simplii Visa (assumed format).** No real Visa sample exists yet.
+- [x] **4.1 Simplii Visa (assumed format).** No real Visa sample exists yet.
   Assume it uses the **same format as Simplii chequing**. Because two
   parsers can't claim the same header, replace `simplii-chequing` with one
   parser `simplii` whose `account_kinds()` is `[Chequing, CreditCard]`; the

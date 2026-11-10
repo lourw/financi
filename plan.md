@@ -100,7 +100,7 @@ Re-importing overlapping exports must never create duplicates or drop real repea
 - Exactly one of Funds Out or Funds In is filled per row, both unsigned.
 - Identity fields: all four columns as exported. There is no balance column.
 
-**Simplii Visa.** Built on the assumption that it uses the chequing format, with one `simplii` parser for both account kinds (task 4.1). No real sample is needed to finish v1. When one arrives, add a synthetic fixture modelled on it and adjust the parser if the format differs.
+**Simplii Visa.** Implemented on the assumption that it uses the chequing format (task 4.1): one `simplii` parser with `account_kinds()` `[Chequing, CreditCard]`, the account chosen at import deciding which; the retired id `simplii-chequing` still resolves in `by_id()`. Funds Out is money out and Funds In money in for both; a Funds In row whose description contains `PAYMENT` is a card payment. Synthetic fixture: `crates/financi-parsers/tests/fixtures/simplii/visa.csv`. **Revisit when a real Visa sample arrives:** add a fixture modelled on it and adjust the parser if the format differs.
 
 **Classifying Simplii rows**
 
