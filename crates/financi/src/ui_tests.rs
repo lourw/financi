@@ -1008,7 +1008,9 @@ fn categorizing_a_queue_group_locks_in_a_rule(cx: &mut TestAppContext) {
 
     with_window(cx, handle, |window, cx| {
         shell.update(cx, |s, cx| {
-            let picker = s.queue_pickers.get(&merchant).expect("picker built");
+            // 3.19: pickers are built for visible rows; `queue_picker` is
+            // the same get-or-create the row's render makes.
+            let picker = s.queue_picker(&merchant, window, cx);
             let ix = s
                 .child_choices
                 .iter()
@@ -1035,6 +1037,131 @@ fn categorizing_a_queue_group_locks_in_a_rule(cx: &mut TestAppContext) {
         assert!(
             shell.read(cx).rules.iter().any(|r| r.pattern == merchant),
             "a rule was created for the merchant"
+        );
+    });
+}
+
+/// 3.19: synthetic queue data — `groups` merchant groups of two uncategorized
+/// transactions each, plus one parent/child pair to categorize onto.
+fn seed_queue_thousands(conn: &financi_db::rusqlite::Connection, groups: usize) {
+    let acct = create_account(conn, "amex", "Cobalt", AccountKind::CreditCard).unwrap();
+    conn.execute(
+        "INSERT INTO imports (account_id, parser_id, file_name, imported_at, header_raw,
+                              encoding, has_bom, line_ending, trailing_newline, row_count)
+         VALUES (?1, 'amex', 'seed.csv', '2026-11-01', X'00', 'utf-8', 0, 'lf', 0, 0)",
+        [acct],
+    )
+    .unwrap();
+    let import = conn.last_insert_rowid();
+    let food = financi_db::categories::create_parent(conn, "Food", CategoryKind::Expense).unwrap();
+    financi_db::categories::create_child(conn, food, "Groceries").unwrap();
+    for i in 0..groups {
+        for n in 0..2 {
+            conn.execute(
+                "INSERT INTO transactions (account_id, import_id, source_line, raw_bytes,
+                                           row_hash, posted_date, amount_cents, description_raw)
+                 VALUES (?1, ?2, ?3, X'00', ?4, '2026-11-01', -1000, ?5)",
+                (
+                    acct,
+                    import,
+                    (i * 2 + n) as i64,
+                    format!("queue-hash-{i}-{n}"),
+                    format!("QUEUE MERCHANT {i:04}"),
+                ),
+            )
+            .unwrap();
+        }
+    }
+}
+
+/// 3.19: with thousands of merchant groups the To-categorize page must still
+/// render, building only the visible rows — and only pickers for those.
+#[gpui::test]
+fn the_queue_page_builds_only_the_visible_rows(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |conn| seed_queue_thousands(conn, 2_000));
+    wait_until(cx, "2000 queue groups", |cx| {
+        shell.read(cx).queue.len() == 2_000
+    });
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::ToCategorize, cx)));
+    draw_frame(cx, handle);
+    cx.update(|cx| {
+        let s = shell.read(cx);
+        assert!(
+            s.queue_rows_built.get() > 0 && s.queue_rows_built.get() < 100,
+            "the queue built {} rows of 2000 — it must render a window",
+            s.queue_rows_built.get()
+        );
+        // 3.19: pickers come with the rows that rendered, not one per group.
+        assert!(
+            s.queue_pickers.len() < 100,
+            "{} pickers for a {}-row window — pickers must be built per visible row",
+            s.queue_pickers.len(),
+            s.queue_rows_built.get()
+        );
+        assert!(
+            s.queue_pickers.contains_key("QUEUE MERCHANT 0000"),
+            "the first visible row has a picker"
+        );
+        assert!(
+            !s.queue_pickers.contains_key("QUEUE MERCHANT 1999"),
+            "the last group is off-screen, so it must not have a picker"
+        );
+    });
+}
+
+/// 3.19: categorizing still works with a long queue — drive the same
+/// `categorize_merchant` call the row's button makes for the group at the
+/// very bottom, and its rows leave the queue behind a rule.
+#[gpui::test]
+fn a_queue_group_at_the_very_bottom_can_still_be_categorized(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |conn| seed_queue_thousands(conn, 2_000));
+    wait_until(cx, "2000 queue groups", |cx| {
+        shell.read(cx).queue.len() == 2_000
+    });
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::ToCategorize, cx)));
+    draw_frame(cx, handle);
+    let last = cx.update(|cx| {
+        let s = shell.read(cx);
+        s.queue.last().expect("queue has a bottom").merchant.clone()
+    });
+    let child = cx.update(|cx| find_child(&shell, cx, "Groceries").unwrap());
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            let picker = s.queue_picker(&last, window, cx);
+            let ix = s
+                .child_choices
+                .iter()
+                .position(|(id, _)| *id == child)
+                .unwrap();
+            picker.update(cx, |sel, cx| {
+                sel.set_selected_index(Some(gpui_kit::component::IndexPath::new(ix)), window, cx);
+            });
+            s.categorize_merchant(last.clone(), window, cx);
+        });
+    });
+    let gone = last.clone();
+    let shell_for_gone = shell.clone();
+    wait_until(cx, "bottom queue group gone", move |cx| {
+        !shell_for_gone
+            .read(cx)
+            .queue
+            .iter()
+            .any(|g| g.merchant == gone)
+    });
+    cx.update(|cx| {
+        let s = shell.read(cx);
+        assert_eq!(
+            s.cat_counts.get(&child).copied().unwrap_or(0),
+            2,
+            "both rows of the bottom group are categorized"
+        );
+        assert!(
+            s.rules.iter().any(|r| r.pattern == last),
+            "a rule was created for the bottom merchant"
+        );
+        assert!(
+            s.queue_rows_built.get() < 100,
+            "still windowed after categorizing"
         );
     });
 }
