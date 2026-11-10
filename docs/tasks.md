@@ -301,7 +301,7 @@ beside the monthly summary (right); then the transaction table.
   blank until some other filter changes. Recompute it from the accounts
   loaded in the same refresh, and test it.
 
-- [ ] **3.18 Blank Categories page after virtualization.** Since 3.12
+- [x] **3.18 Blank Categories page after virtualization.** Since 3.12
   (commit b2739d0) the Categories page opens blank: the tree shows no rows
   and the rule list shows nothing, even though categories and rules exist
   (the counts and other pages show them). Rows only appear after adding a

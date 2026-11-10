@@ -3724,9 +3724,14 @@ impl Shell {
         // is added to the stride by the list.
         let n_tree_rows: usize = self.categories.iter().map(|p| 1 + p.children.len()).sum();
         let tree_sizes = Rc::new(vec![size(px(0.), px(32.)); n_tree_rows]);
+        // `h_flex` centers children on the cross axis (unlike `v_flex`), so
+        // each column needs `h_full` for the virtual list inside it to
+        // resolve a real height; without it the lists collapse to 0 px and
+        // the page opens blank (3.18).
         let tree = v_flex()
             .w(px(300.))
             .flex_shrink_0()
+            .h_full()
             .gap_1()
             .min_h_0()
             .child(div().text_xs().text_color(muted).px_2().child("TREE"))
@@ -3937,6 +3942,7 @@ impl Shell {
                     v_flex()
                         .flex_1()
                         .min_w_0()
+                        .h_full()
                         .min_h_0()
                         .gap_4()
                         .child(detail)
