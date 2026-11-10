@@ -1216,8 +1216,18 @@ pub struct Shell {
     rule_rows_built: std::cell::Cell<usize>,
     // -- To categorize queue
     queue: Vec<UncategorizedGroup>,
+    /// 3.19: pickers exist only for rows `render_queue` has built, so this
+    /// map stays the size of the visible slice, not the queue.
     queue_pickers: HashMap<String, Entity<SelectState<Names>>>,
+    /// The category list the pickers above currently hold; `sync_queue`
+    /// re-sets items only when it changes, not on every refresh.
+    queue_picker_items: Option<Names>,
     queue_error: Option<String>,
+    /// 3.19: how many queue rows the virtualized list built for the last
+    /// layout pass — the visible slice, not the whole queue. Observability
+    /// for the long-queue tests (like `tree_rows_built`).
+    #[cfg(test)]
+    queue_rows_built: std::cell::Cell<usize>,
     _subs: Vec<Subscription>,
 }
 
@@ -1538,7 +1548,10 @@ impl Shell {
             rule_rows_built: std::cell::Cell::new(0),
             queue: Vec::new(),
             queue_pickers: HashMap::new(),
+            queue_picker_items: None,
             queue_error: None,
+            #[cfg(test)]
+            queue_rows_built: std::cell::Cell::new(0),
             _subs: vec![
                 preview_sub,
                 search_sub,
@@ -2691,29 +2704,50 @@ impl Shell {
 
     // -- To categorize queue ------------------------------------------------
 
-    /// One category picker per queue group; stale ones go away with their
-    /// group, existing ones follow the current category list.
+    /// 3.19: pickers are built lazily by `render_queue` for the rows it
+    /// shows, never up front per group. This retires pickers whose group
+    /// left the queue and re-sets the items on the survivors only when the
+    /// category list changed, so a refresh doesn't touch every picker.
     fn sync_queue(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let merchants: Vec<String> = self.queue.iter().map(|g| g.merchant.clone()).collect();
+        let current: HashSet<&str> = self.queue.iter().map(|g| g.merchant.as_str()).collect();
         self.queue_pickers
-            .retain(|merchant, _| merchants.iter().any(|m| m == merchant));
+            .retain(|merchant, _| current.contains(merchant.as_str()));
         let names: Names = self
             .child_choices
             .iter()
             .map(|(_, n)| SharedString::from(n.clone()))
             .collect();
-        for merchant in merchants {
-            if let std::collections::hash_map::Entry::Vacant(e) = self.queue_pickers.entry(merchant)
-            {
+        if self.queue_picker_items.as_ref() != Some(&names) {
+            self.queue_picker_items = Some(names.clone());
+            for picker in self.queue_pickers.values() {
                 let items = names.clone();
-                let picker = cx.new(|cx| SelectState::new(items, None, window, cx));
-                e.insert(picker);
+                picker.update(cx, |s, cx| s.set_items(items, window, cx));
             }
         }
-        for picker in self.queue_pickers.values() {
-            let items = names.clone();
-            picker.update(cx, |s, cx| s.set_items(items, window, cx));
+    }
+
+    /// 3.19: the picker for one queue row, built on first use. Only visible
+    /// rows render, so the shell holds a picker for what's on screen — a
+    /// new one gets the current category list.
+    fn queue_picker(
+        &mut self,
+        merchant: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<SelectState<Names>> {
+        if let Some(picker) = self.queue_pickers.get(merchant) {
+            return picker.clone();
         }
+        let items: Names = self.queue_picker_items.clone().unwrap_or_else(|| {
+            self.child_choices
+                .iter()
+                .map(|(_, n)| SharedString::from(n.clone()))
+                .collect()
+        });
+        let picker = cx.new(|cx| SelectState::new(items, None, window, cx));
+        self.queue_pickers
+            .insert(merchant.to_string(), picker.clone());
+        picker
     }
 
     /// Categorize a whole merchant group: creates the substring rule and
@@ -4071,62 +4105,82 @@ impl Shell {
                 .child("Nothing waiting — every transaction has a category.")
                 .into_any_element()
         } else {
-            let rows =
-                self.queue.iter().map(|g| {
-                    let merchant = g.merchant.clone();
-                    let picker = self.queue_pickers.get(&merchant).cloned();
-                    h_flex()
-                        .gap_3()
-                        .items_center()
-                        .py_1()
-                        .child(
-                            div()
-                                .w(px(280.))
-                                .min_w_0()
-                                .overflow_hidden()
-                                .text_ellipsis()
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .child(g.merchant.clone()),
-                        )
-                        .child(
-                            div()
-                                .w(px(140.))
-                                .child(format!("{} transactions", flow::count(g.count))),
-                        )
-                        .child(
-                            div()
-                                .w(px(120.))
-                                .text_right()
-                                .child(flow::money(g.total_cents)),
-                        )
-                        .child(
-                            div()
-                                .text_sm()
-                                .text_color(muted)
-                                .child(flow::date_range(&g.first_date, &g.last_date)),
-                        )
-                        .child(div().flex_1())
-                        .child(div().w(px(260.)).child(
-                            picker.map_or(div().into_any_element(), |p| {
-                                Select::new(&p).placeholder("Category…").into_any_element()
-                            }),
-                        ))
-                        .child(
-                            Button::new(SharedString::from(format!("categorize-{}", g.merchant)))
-                                .label("Categorize")
-                                .primary()
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.categorize_merchant(merchant.clone(), window, cx);
-                                })),
-                        )
-                });
-            div()
-                .flex_1()
-                .min_h_0()
-                .id("queue-list")
-                .overflow_y_scroll()
-                .child(v_flex().gap_1().children(rows))
-                .into_any_element()
+            // 3.19: virtualized like the Categories-page lists (3.12). The
+            // closure runs during layout with the visible range, so a queue
+            // of thousands builds only the rows that can be on screen, and
+            // `queue_picker` creates a picker only with its row. Rows are a
+            // fixed 40 px (32 px controls with the old `py_1` of spacing);
+            // the list's `gap_1` is added to the stride by the list.
+            let sizes = Rc::new(vec![size(px(0.), px(40.)); self.queue.len()]);
+            v_virtual_list(
+                cx.entity(),
+                "queue-list",
+                sizes,
+                move |this, range, window, cx| {
+                    let groups = this.queue[range].to_vec();
+                    let mut rows = Vec::with_capacity(groups.len());
+                    for g in groups {
+                        let merchant = g.merchant.clone();
+                        let picker = this.queue_picker(&merchant, window, cx);
+                        rows.push(
+                            h_flex()
+                                .h(px(40.))
+                                .gap_3()
+                                .items_center()
+                                .child(
+                                    div()
+                                        .w(px(280.))
+                                        .min_w_0()
+                                        .overflow_hidden()
+                                        .text_ellipsis()
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .child(g.merchant.clone()),
+                                )
+                                .child(
+                                    div()
+                                        .w(px(140.))
+                                        .child(format!("{} transactions", flow::count(g.count))),
+                                )
+                                .child(
+                                    div()
+                                        .w(px(120.))
+                                        .text_right()
+                                        .child(flow::money(g.total_cents)),
+                                )
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .text_color(muted)
+                                        .child(flow::date_range(&g.first_date, &g.last_date)),
+                                )
+                                .child(div().flex_1())
+                                .child(
+                                    div()
+                                        .w(px(260.))
+                                        .child(Select::new(&picker).placeholder("Category…")),
+                                )
+                                .child(
+                                    Button::new(SharedString::from(format!(
+                                        "categorize-{}",
+                                        g.merchant
+                                    )))
+                                    .label("Categorize")
+                                    .primary()
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.categorize_merchant(merchant.clone(), window, cx);
+                                    })),
+                                ),
+                        );
+                    }
+                    #[cfg(test)]
+                    this.queue_rows_built.set(rows.len());
+                    rows
+                },
+            )
+            .gap_1()
+            .flex_1()
+            .min_h_0()
+            .into_any_element()
         };
         v_flex()
             .flex_1()

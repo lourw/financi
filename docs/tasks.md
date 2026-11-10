@@ -312,7 +312,7 @@ beside the monthly summary (right); then the transaction table.
   up on that first open without any other action. Cover both the tree and
   the rule list, and switching to the page from another page.
 
-- [ ] **3.19 Virtualize the To categorize queue.** `render_queue` builds
+- [x] **3.19 Virtualize the To categorize queue.** `render_queue` builds
   every merchant group as a row inside a plain scrolling div, and
   `sync_queue` keeps a `SelectState` entity per merchant and calls
   `set_items` on every one of them on each refresh. With a large queue the
