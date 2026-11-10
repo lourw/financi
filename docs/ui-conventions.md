@@ -181,6 +181,18 @@ case, and a table full of red reads as an alarm.
 
 ## Numbers, dates and labels
 
+- **Every control carries a visible label (3.16).** Inputs, dropdowns, date
+  pickers and filter groups get a visible label or a section heading; a
+  placeholder is never the only label. Field labels are `text_xs`,
+  `muted_foreground`, above or beside the control; region titles name a
+  group of controls or a data panel (`text_sm`, `font_semibold`): the
+  dashboard's *Filters* bar (sub-labels *Date range*, *From*, *To*,
+  *Accounts*, *Search*; the toggles label themselves), *Spending by
+  category*, *Monthly summary*, the Categories *Category tree* heading and
+  its labelled detail pickers, and the queue's column headings. Group
+  related controls under those headings rather than stacking rows of
+  unlabelled boxes. Labels sit above controls, so they never add width at
+  the 1200 × 720 minimum.
 - **Money:** `$1,234.56`. In the table, amounts are signed: `-$86.42` out,
   `$2,105.00` in (green). In the chart, legend and summary, amounts are
   positive spend. Net is the one signed summary row.
