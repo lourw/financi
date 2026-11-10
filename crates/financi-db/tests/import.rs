@@ -27,6 +27,12 @@ fn fixture(name: &str) -> RawFile {
     read_raw_file(&std::fs::read(path).unwrap()).unwrap()
 }
 
+/// A demo fixture (the realistic month files), read through the real parser.
+fn demo_fixture(name: &str) -> RawFile {
+    let path = format!("{}/../../fixtures/demo/{name}", env!("CARGO_MANIFEST_DIR"));
+    read_raw_file(&std::fs::read(path).unwrap()).unwrap()
+}
+
 fn setup() -> (Connection, i64) {
     let conn = open_in_memory().unwrap();
     let cobalt = create_account(&conn, "amex", "Cobalt", AccountKind::CreditCard).unwrap();
@@ -431,5 +437,74 @@ fn history_lists_imports_newest_first_with_their_rows() {
         history.len(),
         1,
         "the undone import is gone from the history"
+    );
+}
+
+#[test]
+fn importing_a_statement_pairs_the_card_payment_with_the_chequing_debit() {
+    let (mut conn, cobalt) = setup();
+    let chequing = create_account(&conn, "simplii", "Chequing", AccountKind::Chequing).unwrap();
+    // The debit that funded the fixture's 25 Sep payment, one day later.
+    conn.execute(
+        "INSERT INTO imports (account_id, parser_id, file_name, imported_at, header_raw,
+                              encoding, has_bom, line_ending, trailing_newline, row_count)
+         VALUES (?1, 'amex', 'prior.csv', '2026-11-01', X'00', 'utf-8', 0, 'lf', 0, 1)",
+        rusqlite::params![chequing],
+    )
+    .unwrap();
+    let prior_import = conn.last_insert_rowid();
+    conn.execute(
+        "INSERT INTO transactions (account_id, import_id, source_line, raw_bytes, row_hash,
+                                   posted_date, amount_cents, description_raw)
+         VALUES (?1, ?2, 0, X'00', 'prior-debit', '2026-09-26', -150000,
+                 'CREDIT CARD PAYMENT - AMEX')",
+        rusqlite::params![chequing, prior_import],
+    )
+    .unwrap();
+
+    let prior_debit = conn.last_insert_rowid();
+
+    import(&mut conn, cobalt, &demo_fixture("amex-sep-nov.csv"));
+
+    let rows = list_transactions(&conn, Some(cobalt)).unwrap();
+    let payments: Vec<_> = rows
+        .iter()
+        .filter(|r| r.description.contains("PAYMENT RECEIVED"))
+        .collect();
+    assert_eq!(payments.len(), 2, "the fixture has two payments");
+    let sep = payments
+        .iter()
+        .find(|r| r.posted_date == "2026-09-25")
+        .unwrap();
+    let oct = payments
+        .iter()
+        .find(|r| r.posted_date == "2026-10-25")
+        .unwrap();
+    let card_payment = card_payment_category(&conn).unwrap();
+    assert_eq!(
+        sep.transfer_pair_id,
+        Some(prior_debit),
+        "the September payment pairs with the chequing debit inside 5 days"
+    );
+    assert_eq!(
+        sep.category_id,
+        Some(card_payment),
+        "the payment takes its partner's category"
+    );
+    assert_eq!(
+        oct.transfer_pair_id, None,
+        "the October payment has no debit near it and stays unpaired"
+    );
+    assert_eq!(
+        oct.category_id,
+        Some(card_payment),
+        "the October payment is still Card Payment from import (2.5), just unpaired"
+    );
+    let debits = list_transactions(&conn, Some(chequing)).unwrap();
+    assert_eq!(debits[0].transfer_pair_id, Some(sep.id));
+    assert_eq!(
+        debits[0].category_id,
+        Some(card_payment),
+        "the chequing debit takes the Card Payment category from pairing"
     );
 }

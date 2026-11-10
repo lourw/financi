@@ -352,7 +352,7 @@ beside the monthly summary (right); then the transaction table.
   Add a synthetic Visa fixture. Note in `plan.md` that this needs revisiting
   when a real sample arrives.
 
-- [ ] **4.2 Transfer pairing** (runs automatically after every import).
+- [x] **4.2 Transfer pairing** (runs automatically after every import).
   - Card payments: a chequing row with amount −X and a credit-card row with
     amount +X categorized Card Payment, dates within **5 days**, both
     unpaired.

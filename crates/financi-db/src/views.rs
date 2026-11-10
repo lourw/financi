@@ -124,7 +124,7 @@ pub fn list_transactions_filtered(
 
     let mut sql = String::from(
         "SELECT t.id, i.name || ' · ' || a.name, t.posted_date, t.description_raw, t.merchant,
-                c.name, t.amount_cents, t.category_id, t.hidden
+                c.name, t.amount_cents, t.category_id, t.hidden, t.transfer_pair_id
            FROM transactions t
            JOIN accounts a ON a.id = t.account_id
            JOIN institutions i ON i.id = a.institution_id
@@ -218,6 +218,7 @@ pub fn list_transactions_filtered(
             amount_cents: r.get(6)?,
             category_id: r.get(7)?,
             hidden: r.get(8)?,
+            transfer_pair_id: r.get(9)?,
         })
     })?;
     Ok(rows.collect::<Result<_, _>>()?)

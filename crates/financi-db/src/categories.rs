@@ -258,16 +258,26 @@ pub fn ensure_assignable(conn: &Connection, category_id: i64) -> Result<()> {
 /// in every database, looked up by name and parent — ids are never
 /// hardcoded. A missing category means a broken database.
 pub fn card_payment_category(conn: &Connection) -> Result<i64> {
+    system_category(conn, "Card Payment", "Transfers > Card Payment")
+}
+
+/// The system `Transfers > Between Accounts` category (4.2), the same
+/// lookup as [`card_payment_category`].
+pub fn between_accounts_category(conn: &Connection) -> Result<i64> {
+    system_category(conn, "Between Accounts", "Transfers > Between Accounts")
+}
+
+fn system_category(conn: &Connection, name: &str, path: &'static str) -> Result<i64> {
     conn.query_row(
         "SELECT c.id
            FROM categories c
            JOIN categories p ON p.id = c.parent_id
-          WHERE c.name = 'Card Payment' AND p.name = 'Transfers' AND p.parent_id IS NULL",
-        [],
+          WHERE c.name = ?1 AND p.name = 'Transfers' AND p.parent_id IS NULL",
+        [name],
         |r| r.get(0),
     )
     .optional()?
-    .ok_or(DbError::MissingSystemCategory("Transfers > Card Payment"))
+    .ok_or(DbError::MissingSystemCategory(path))
 }
 
 #[cfg(test)]

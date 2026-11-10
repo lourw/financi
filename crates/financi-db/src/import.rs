@@ -239,6 +239,10 @@ pub fn commit_import(
             ])?;
         }
     }
+    // Transfer pairing (4.2) runs automatically after every import, in
+    // this same transaction: new rows and their older unpaired partners
+    // are matched before anything else can observe the import.
+    crate::transfers::run_transfer_pairing(&tx)?;
     tx.commit()?;
     Ok(ImportOutcome {
         import_id: Some(import_id),
@@ -481,6 +485,9 @@ pub struct TransactionRow {
     pub category_id: Option<i64>,
     pub amount_cents: i64,
     pub hidden: bool,
+    /// The row this one is paired with as a transfer (4.2), `Some` for
+    /// paired rows — the table draws a link icon and offers *Unpair*.
+    pub transfer_pair_id: Option<i64>,
 }
 
 /// Transactions newest first, optionally for one account. Hidden rows are
@@ -491,7 +498,7 @@ pub fn list_transactions(
 ) -> Result<Vec<TransactionRow>, DbError> {
     let mut stmt = conn.prepare(
         "SELECT t.id, i.name || ' · ' || a.name, t.posted_date, t.description_raw, t.merchant,
-                c.name, t.amount_cents, t.category_id, t.hidden
+                c.name, t.amount_cents, t.category_id, t.hidden, t.transfer_pair_id
            FROM transactions t
            JOIN accounts a ON a.id = t.account_id
            JOIN institutions i ON i.id = a.institution_id
@@ -510,6 +517,7 @@ pub fn list_transactions(
             amount_cents: r.get(6)?,
             category_id: r.get(7)?,
             hidden: r.get(8)?,
+            transfer_pair_id: r.get(9)?,
         })
     })?;
     Ok(rows.collect::<Result<_, _>>()?)

@@ -25,10 +25,11 @@ use financi_db::queue::{UncategorizedGroup, categorize_group, uncategorized_by_m
 use financi_db::rules::{add_rule, count_rule_matches, list_rules};
 use financi_db::settings::{self, DateRange};
 use financi_db::{
-    Account, CategorySpend, DbWorker, MonthlySummary, TxSort, TxSortColumn, TxTableFilter,
-    ViewFilter, apply_rule_from_merchant, create_account, list_accounts,
-    list_transactions_filtered, monthly_summary, rusqlite::Connection, set_category, set_hidden,
-    sidebar_counts, spend_by_category,
+    Account, CategorySpend, DbWorker, MonthlySummary, TransferReview, TxSort, TxSortColumn,
+    TxTableFilter, ViewFilter, apply_rule_from_merchant, create_account, list_accounts,
+    list_transactions_filtered, list_transfer_reviews, monthly_summary, resolve_transfer_review,
+    rusqlite::Connection, set_category, set_hidden, sidebar_counts, spend_by_category,
+    unpair_transaction,
 };
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -219,6 +220,7 @@ impl SidebarItem for NavItem {
 type SetCategoryFn = Rc<dyn Fn(i64, i64, &mut Window, &mut App)>;
 type SetHiddenFn = Rc<dyn Fn(i64, bool, &mut Window, &mut App)>;
 type ApplyRuleFn = Rc<dyn Fn(i64, &mut Window, &mut App)>;
+type UnpairFn = Rc<dyn Fn(i64, &mut Window, &mut App)>;
 
 /// One entry of a transaction row's right-click menu (2.9).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -226,22 +228,28 @@ pub enum RowMenuItem {
     ChangeCategory,
     Hide,
     Unhide,
+    Unpair,
 }
 
 /// The context-menu entries for a row, as a pure function of its state so the
 /// gating rule is testable without a window: *Change category…* always, then
 /// *Unhide* for a hidden row and *Hide* otherwise (a row can only move in one
-/// direction). Hidden rows only reach the menu once the "show hidden" toggle
-/// (3.4) puts them back in the table.
+/// direction), then *Unpair* only for a row the pairing engine linked to a
+/// partner (4.2). Hidden rows only reach the menu once the "show hidden"
+/// toggle (3.4) puts them back in the table.
 pub fn row_menu_items(row: &TransactionRow) -> Vec<RowMenuItem> {
-    vec![
+    let mut items = vec![
         RowMenuItem::ChangeCategory,
         if row.hidden {
             RowMenuItem::Unhide
         } else {
             RowMenuItem::Hide
         },
-    ]
+    ];
+    if row.transfer_pair_id.is_some() {
+        items.push(RowMenuItem::Unpair);
+    }
+    items
 }
 
 pub struct TxTable {
@@ -258,6 +266,8 @@ pub struct TxTable {
     on_set_category: SetCategoryFn,
     on_set_hidden: SetHiddenFn,
     on_apply_rule: ApplyRuleFn,
+    /// Called with a paired row's id from the *Unpair* menu item (4.2).
+    on_unpair: UnpairFn,
     /// Called with the new ordering when a header's sort icon is clicked;
     /// the shell re-queries and refreshes.
     on_sort: SortFn,
@@ -373,6 +383,13 @@ impl TableDelegate for TxTable {
                             .on_click(move |_, window, cx| on_show(txn, false, window, cx)),
                     )
                 }
+                RowMenuItem::Unpair => {
+                    let on_unpair = self.on_unpair.clone();
+                    menu.item(
+                        PopupMenuItem::new("Unpair")
+                            .on_click(move |_, window, cx| on_unpair(txn, window, cx)),
+                    )
+                }
             })
     }
 
@@ -421,10 +438,24 @@ impl TableDelegate for TxTable {
         } else {
             None
         };
-        let cell = div().child(self.text(row_ix, col_ix));
-        match color {
-            Some(color) => cell.text_color(color).into_any_element(),
-            None => cell.into_any_element(),
+        // A paired row carries the link glyph on its description cell; the
+        // colour (hidden / income) carries over to the icon (4.2).
+        if col_ix == 2 && row.transfer_pair_id.is_some() {
+            let cell = h_flex()
+                .gap_1()
+                .items_center()
+                .child(IconName::Link)
+                .child(self.text(row_ix, col_ix));
+            match color {
+                Some(color) => cell.text_color(color).into_any_element(),
+                None => cell.into_any_element(),
+            }
+        } else {
+            let cell = div().child(self.text(row_ix, col_ix));
+            match color {
+                Some(color) => cell.text_color(color).into_any_element(),
+                None => cell.into_any_element(),
+            }
         }
     }
 }
@@ -1273,6 +1304,10 @@ pub struct Shell {
     row_count: usize,
     total_visible: i64,
     uncategorized_visible: i64,
+    // -- Transfers page (4.2): the open transfer reviews the pairing engine
+    // left behind. The sidebar pill counts them; the page lists each with
+    // its candidates.
+    transfer_reviews: Vec<TransferReview>,
     /// The transaction a manual category edit just made, `(transaction_id,
     /// category_id)`, whose row now offers to extend that choice to every
     /// matching row (2.6's rule offer, surfaced from the 2.9 menu).
@@ -1397,6 +1432,12 @@ impl Shell {
                 shell.update(cx, |this, cx| this.set_tx_sort(sort, window, cx));
             }) as Rc<dyn Fn(TxSort, &mut Window, &mut App)>
         };
+        let on_unpair = {
+            let shell = cx.entity();
+            Rc::new(move |txn: i64, window: &mut Window, cx: &mut App| {
+                shell.update(cx, |this, cx| this.unpair_row(txn, window, cx));
+            }) as UnpairFn
+        };
         let table = cx.new(|cx| {
             TableState::new(
                 TxTable {
@@ -1407,6 +1448,7 @@ impl Shell {
                     on_set_category,
                     on_set_hidden,
                     on_apply_rule,
+                    on_unpair,
                     on_sort,
                 },
                 window,
@@ -1623,6 +1665,7 @@ impl Shell {
             row_count: 0,
             total_visible: 0,
             uncategorized_visible: 0,
+            transfer_reviews: Vec::new(),
             rule_offer: None,
             import: None,
             import_history: Vec::new(),
@@ -1757,6 +1800,9 @@ impl Shell {
                 let counts = transaction_counts(c)?;
                 let rules = list_rules(c)?;
                 let queue = uncategorized_by_merchant(c)?;
+                // Open transfer reviews (4.2) for the sidebar pill and the
+                // Transfers page.
+                let reviews = list_transfer_reviews(c)?;
                 Ok::<_, financi_db::DbError>((
                     accounts,
                     rows,
@@ -1769,6 +1815,7 @@ impl Shell {
                     counts,
                     rules,
                     queue,
+                    reviews,
                 ))
             })
             .await;
@@ -1786,6 +1833,7 @@ impl Shell {
                         counts,
                         rules,
                         queue,
+                        reviews,
                     )) => {
                         if !history
                             .iter()
@@ -1852,6 +1900,7 @@ impl Shell {
                         this.cat_counts = counts;
                         this.rules = rules;
                         this.queue = queue;
+                        this.transfer_reviews = reviews;
                         this.sync_category_choices(window, cx);
                         this.sync_queue(window, cx);
                         // The rule offer follows a row the user just edited; a
@@ -2952,6 +3001,72 @@ impl Shell {
         }));
     }
 
+    /// Resolve an open transfer review by pairing its row with `candidate`
+    /// (Transfers page, 4.2). The engine re-runs on the same commit, so a
+    /// fresh review list and table come back on the next refresh.
+    fn pair_transfer(
+        &mut self,
+        transaction_id: i64,
+        candidate: i64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let db = self.db.clone();
+        self.task = Some(cx.spawn_in(window, async move |this, cx| {
+            let result = on_db(&db, move |c| {
+                resolve_transfer_review(c, transaction_id, Some(candidate))
+            })
+            .await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                match result {
+                    Ok(_) => this.status = Some(("Paired transfer.".into(), false)),
+                    Err(e) => this.status = Some((format!("Could not pair: {e}"), true)),
+                }
+                this.refresh(window, cx);
+            });
+        }));
+    }
+
+    /// Mark an open review's row *not a transfer* (Transfers page, 4.2): the
+    /// row is excluded from pairing for good and the review is dropped.
+    fn mark_not_transfer(
+        &mut self,
+        transaction_id: i64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let db = self.db.clone();
+        self.task = Some(cx.spawn_in(window, async move |this, cx| {
+            let result = on_db(&db, move |c| {
+                resolve_transfer_review(c, transaction_id, None)
+            })
+            .await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                match result {
+                    Ok(_) => this.status = Some(("Marked as not a transfer.".into(), false)),
+                    Err(e) => this.status = Some((format!("Could not update: {e}"), true)),
+                }
+                this.refresh(window, cx);
+            });
+        }));
+    }
+
+    /// Unpair a linked transaction from the row menu (4.2): both sides are
+    /// cleared, rules re-apply, and the engine re-runs.
+    fn unpair_row(&mut self, transaction_id: i64, window: &mut Window, cx: &mut Context<Self>) {
+        let db = self.db.clone();
+        self.task = Some(cx.spawn_in(window, async move |this, cx| {
+            let result = on_db(&db, move |c| unpair_transaction(c, transaction_id)).await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                match result {
+                    Ok(_) => this.status = Some(("Unpaired transaction.".into(), false)),
+                    Err(e) => this.status = Some((format!("Could not unpair: {e}"), true)),
+                }
+                this.refresh(window, cx);
+            });
+        }));
+    }
+
     /// Accept the post-edit offer from the row (2.6, 2.9): turn the merchant of
     /// the row just edited into a substring rule for the category chosen,
     /// categorizing every matching row, then clear the offer.
@@ -3035,7 +3150,26 @@ impl Shell {
             to_categorize
         };
         let categories = self.nav_item("Categories", IconName::Tags, Page::Categories, cx);
+        // Transfers pill: the number of open reviews (4.2), hidden at 0.
         let transfers = self.nav_item("Transfers", IconName::ArrowLeftRight, Page::Transfers, cx);
+        let transfers = if !self.transfer_reviews.is_empty() {
+            let count = self.transfer_reviews.len() as i64;
+            transfers.suffix(move |_, _| {
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .min_w(px(20.))
+                    .px_1()
+                    .rounded(px(8.))
+                    .text_xs()
+                    .bg(pill_bg)
+                    .text_color(pill_fg)
+                    .child(flow::count(count))
+            })
+        } else {
+            transfers
+        };
         let imports = self.nav_item("Imports", IconName::Download, Page::Imports, cx);
 
         Sidebar::new("nav")
@@ -4502,24 +4636,137 @@ impl Shell {
             .into_any_element()
     }
 
-    fn render_placeholder(
-        &mut self,
-        title: &'static str,
-        body: &'static str,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let muted = cx.theme().muted_foreground;
+    /// The Transfers page (4.2): one bordered panel per open review — the
+    /// row under review, then every candidate with a *Pair* button, then a
+    /// *Not a transfer* opt-out. No banner, no sheet (ui-conventions,
+    /// *Pages*, D8); the sidebar pill carries the count.
+    fn render_transfers(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let (muted, border, radius) = {
+            let theme = cx.theme();
+            (theme.muted_foreground, theme.border, theme.radius)
+        };
+        let reviews = self.transfer_reviews.clone();
+        let body: AnyElement = if reviews.is_empty() {
+            div()
+                .flex_1()
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_color(muted)
+                .child("No transfer reviews yet.")
+                .into_any_element()
+        } else {
+            v_flex()
+                .id("transfer-reviews")
+                .flex_1()
+                .min_h_0()
+                .gap_3()
+                .overflow_y_scroll()
+                .children(reviews.into_iter().map(|r| {
+                    let txn = r.transaction_id;
+                    let candidates = r.candidates.clone();
+                    v_flex()
+                        .gap_2()
+                        .p_4()
+                        .rounded(radius)
+                        .border_1()
+                        .border_color(border)
+                        .debug_selector(move || format!("transfer-review:{txn}"))
+                        // The row under review.
+                        .child(
+                            h_flex()
+                                .gap_3()
+                                .items_center()
+                                .child(
+                                    div()
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .child(r.account.clone()),
+                                )
+                                .child(div().text_color(muted).child(r.posted_date.clone()))
+                                .child(
+                                    div()
+                                        .min_w_0()
+                                        .overflow_hidden()
+                                        .text_ellipsis()
+                                        .child(r.description.clone()),
+                                )
+                                .child(div().flex_1())
+                                .child(div().flex_none().child(flow::money(r.amount_cents))),
+                        )
+                        .child(div().text_xs().text_color(muted).child("Pair with one of:"))
+                        // Every candidate offers one *Pair* button.
+                        .children(candidates.into_iter().map(|c| {
+                            let cand = c.id;
+                            h_flex()
+                                .gap_3()
+                                .items_center()
+                                .debug_selector(move || format!("transfer-candidate:{txn}:{cand}"))
+                                .child(div().flex_none().w(px(110.)).child(c.posted_date))
+                                .child(
+                                    div()
+                                        .w(px(200.))
+                                        .min_w_0()
+                                        .overflow_hidden()
+                                        .text_ellipsis()
+                                        .child(c.account),
+                                )
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .overflow_hidden()
+                                        .text_ellipsis()
+                                        .child(c.description),
+                                )
+                                .child(
+                                    div()
+                                        .flex_none()
+                                        .w(px(120.))
+                                        .text_right()
+                                        .child(flow::money(c.amount_cents)),
+                                )
+                                .child(
+                                    Button::new(SharedString::from(format!("pair-{txn}-{cand}")))
+                                        .label("Pair")
+                                        .compact()
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.pair_transfer(txn, cand, window, cx);
+                                        })),
+                                )
+                        }))
+                        // Opt out: never offer this row again.
+                        .child(
+                            Button::new(SharedString::from(format!("not-transfer-{txn}")))
+                                .label("Not a transfer")
+                                .link()
+                                .compact()
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.mark_not_transfer(txn, window, cx);
+                                })),
+                        )
+                }))
+                .into_any_element()
+        };
         v_flex()
             .flex_1()
             .min_h_0()
             .gap_3()
             .child(
-                div()
-                    .text_lg()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child(title),
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(
+                        div()
+                            .text_lg()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("Transfers"),
+                    )
+                    .child(div().text_sm().text_color(muted).child(format!(
+                        "{} to review",
+                        flow::count(self.transfer_reviews.len() as i64)
+                    ))),
             )
-            .child(div().text_sm().text_color(muted).child(body))
+            .child(body)
             .into_any_element()
     }
 }
@@ -4540,7 +4787,7 @@ impl Render for Shell {
             Page::Dashboard => self.render_dashboard(cx),
             Page::ToCategorize => self.render_queue(cx),
             Page::Categories => self.render_categories(cx),
-            Page::Transfers => self.render_placeholder("Transfers", "No transfer reviews yet.", cx),
+            Page::Transfers => self.render_transfers(cx),
             Page::Imports => self.render_imports(cx),
         };
         // 3.11: key the page area by the page. A switch to another page
