@@ -56,7 +56,9 @@ pub fn parser(id: &str) -> Parser {
     financi_parsers::by_id(id).unwrap_or_else(|| panic!("no parser with id {id:?}"))
 }
 
-/// A human name for a parser's format, e.g. "Simplii Financial chequing".
+/// A human name for a parser's format, e.g. "American Express credit card".
+/// A format that feeds several account kinds lists them all, joined with
+/// " / ".
 pub fn format_label(parser: &dyn StatementParser) -> String {
     let institution = match parser.institution() {
         "amex" => "American Express",
@@ -248,10 +250,10 @@ mod tests {
         assert_eq!(amex.parser_id, "amex");
         assert_eq!(amex.file_name, "amex-sep-oct.csv");
         let simplii = load_file(&demo("simplii-chequing.csv")).unwrap();
-        assert_eq!(simplii.parser_id, "simplii-chequing");
+        assert_eq!(simplii.parser_id, "simplii");
         assert_eq!(
             format_label(parser(simplii.parser_id).as_ref()),
-            "Simplii Financial chequing"
+            "Simplii Financial chequing / credit card"
         );
     }
 
@@ -290,13 +292,14 @@ mod tests {
         };
         assert_eq!(names("amex"), ["Cobalt", "Gold"]);
         assert_eq!(
-            names("simplii-chequing"),
-            ["No Fee Chequing"],
-            "Simplii Visa is not eligible"
+            names("simplii"),
+            ["No Fee Chequing", "Visa"],
+            "one format feeds both account kinds (task 4.1)"
         );
         assert_eq!(
-            new_account_defaults(parser("simplii-chequing").as_ref()),
-            ("simplii", AccountKind::Chequing)
+            new_account_defaults(parser("simplii").as_ref()),
+            ("simplii", AccountKind::Chequing),
+            "chequing is listed first, so it stays the default"
         );
     }
 
