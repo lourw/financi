@@ -288,7 +288,7 @@ beside the monthly summary (right); then the transaction table.
   thin out labels when space is tight. Check it at the minimum size and a
   large window, with long category names and many categories.
 
-- [ ] **3.16 Labelling and layout pass.** Every input, dropdown, date picker
+- [x] **3.16 Labelling and layout pass.** Every input, dropdown, date picker
   and filter group has a visible label or section heading (a placeholder
   alone doesn't count). Group related controls deliberately instead of
   stacking rows of unlabelled boxes. Record the rule in

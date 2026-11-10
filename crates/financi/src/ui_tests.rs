@@ -211,6 +211,23 @@ fn empty_account_name_is_refused(cx: &mut TestAppContext) {
     });
 }
 
+/// 3.16: the import preview's inline new-account field carries a visible
+/// label, not just its placeholder.
+#[gpui::test]
+fn the_new_account_field_has_a_visible_label(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |_| {});
+    wait_until(cx, "initial load", |cx| {
+        shell.read(cx).refresh_task.is_some()
+    });
+    open_and_choose(cx, handle, &shell, "amex-sep-oct.csv", NEW_ACCOUNT);
+    let mut window = VisualTestContext::from_window(handle, cx);
+    draw_frame(cx, handle);
+    assert!(
+        window.debug_bounds("label:New account name").is_some(),
+        "the new-account input is labelled"
+    );
+}
+
 #[gpui::test]
 fn overlap_with_another_account_blocks_until_overridden(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, |c| {
@@ -973,6 +990,72 @@ fn clear_filters_restores_a_table_emptied_by_search(cx: &mut TestAppContext) {
     });
 }
 
+/// 3.16: the dashboard's filter region paints its title and a visible label
+/// above every control — date preset, accounts, search — and the two custom
+/// range pickers are labelled too.
+#[gpui::test]
+fn the_dashboard_filter_region_carries_visible_labels(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |conn| {
+        create_account(conn, "amex", "Cobalt", AccountKind::CreditCard).unwrap();
+    });
+    wait_until(cx, "the account list loads", |cx| {
+        shell.read(cx).accounts.len() == 1
+    });
+    let mut window = VisualTestContext::from_window(handle, cx);
+    draw_frame(cx, handle);
+    for sel in [
+        "label:Filters",
+        "label:Date range",
+        "label:Accounts",
+        "label:Search",
+    ] {
+        assert!(
+            window.debug_bounds(sel).is_some(),
+            "the filter region paints the visible label {sel:?}"
+        );
+    }
+    // Custom range: both date pickers get labels, not just placeholders.
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.change_date_preset(DatePreset::Custom, window, cx)
+        });
+    });
+    cx.run_until_parked();
+    draw_frame(cx, handle);
+    for sel in ["label:From", "label:To"] {
+        assert!(
+            window.debug_bounds(sel).is_some(),
+            "the custom range paints the visible label {sel:?}"
+        );
+    }
+}
+
+/// 3.16: the chart and the monthly summary panels name themselves, as the
+/// ui-conventions mockups show (with data, so both draw their bodies).
+#[gpui::test]
+fn the_dashboard_panels_name_themselves(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |c| {
+        settings::set(c, UI_DATE_RANGE, "all").unwrap();
+    });
+    wait_until(cx, "all-time range restored", |cx| {
+        shell.read(cx).date_range == DateRange::Preset(DatePreset::AllTime)
+    });
+    import_demo_file(cx, handle, &shell, "amex-sep-nov.csv", "Amex");
+    wait_until(cx, "dashboard shows the import", |cx| {
+        shell.read(cx).row_count == 100 && shell.read(cx).total_visible == 102
+    });
+    // Opening the file switched to the Imports page; go back.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
+    let mut window = VisualTestContext::from_window(handle, cx);
+    draw_frame(cx, handle);
+    for sel in ["label:Spending by category", "label:Monthly summary"] {
+        assert!(
+            window.debug_bounds(sel).is_some(),
+            "the dashboard panel shows the title {sel:?}"
+        );
+    }
+}
+
 // -- categories page -------------------------------------------------------
 
 /// Type a parent name, pick the Expense kind (index 0) and add it.
@@ -1291,6 +1374,79 @@ fn a_queue_group_at_the_very_bottom_can_still_be_categorized(cx: &mut TestAppCon
             "still windowed after categorizing"
         );
     });
+}
+
+/// 3.16: every queue column, the category picker included, has a visible
+/// heading above the rows — the picker's placeholder alone is not a label.
+#[gpui::test]
+fn the_queue_page_labels_its_columns(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |conn| {
+        create_account(conn, "amex", "Cobalt", AccountKind::CreditCard).unwrap();
+    });
+    import_and_top_merchant(cx, handle, &shell);
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::ToCategorize, cx)));
+    cx.run_until_parked();
+    let mut window = VisualTestContext::from_window(handle, cx);
+    draw_frame(cx, handle);
+    for sel in [
+        "label:Merchant",
+        "label:Transactions",
+        "label:Total",
+        "label:Dates",
+        "label:Category",
+    ] {
+        assert!(
+            window.debug_bounds(sel).is_some(),
+            "the queue paints the column heading {sel:?}"
+        );
+    }
+}
+
+/// The heading row reserves the same tail as the rows (picker + Categorize
+/// button), so the "Category" heading sits over the picker column instead of
+/// sliding right by the button's width. Measured at a width where a row fits
+/// without overflowing.
+#[gpui::test]
+fn the_queue_category_heading_sits_over_the_picker_column(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |conn| {
+        create_account(conn, "amex", "Cobalt", AccountKind::CreditCard).unwrap();
+    });
+    import_and_top_merchant(cx, handle, &shell);
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::ToCategorize, cx)));
+    cx.run_until_parked();
+    with_window(cx, handle, |window, cx| {
+        window.resize(size(px(1600.), px(900.)));
+        window.bounds_changed(cx);
+    });
+    cx.run_until_parked();
+    let mut window = VisualTestContext::from_window(handle, cx);
+    draw_frame(cx, handle);
+    let heading = window
+        .debug_bounds("label:Category")
+        .expect("the queue paints a Category heading");
+    let picker = window
+        .debug_bounds("queue:picker-col")
+        .expect("the queue paints a picker column");
+    assert!(
+        (heading.origin.x - picker.origin.x).abs() < px(1.),
+        "the Category heading starts where the picker column starts: \
+         heading x {}, picker x {}",
+        heading.origin.x,
+        picker.origin.x
+    );
+    assert!(
+        (heading.size.width - picker.size.width).abs() < px(1.),
+        "the Category heading is as wide as the picker column: \
+         heading w {}, picker w {}",
+        heading.size.width,
+        picker.size.width
+    );
+    assert!(
+        heading.origin.y < picker.origin.y,
+        "the heading is above the rows: heading y {}, picker y {}",
+        heading.origin.y,
+        picker.origin.y
+    );
 }
 
 #[gpui::test]
@@ -1646,6 +1802,60 @@ fn switching_to_categories_after_load_shows_rows(cx: &mut TestAppContext) {
             s.rule_rows_built.get()
         );
     });
+}
+
+/// 3.16: the Categories page labels every control — the tree heading, the
+/// new-parent fields, the detail pickers (parent and child variants) and
+/// the add-rule row.
+#[gpui::test]
+fn the_categories_page_labels_its_controls(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |_| {});
+    wait_until(cx, "initial load", |cx| {
+        shell.read(cx).refresh_task.is_some()
+    });
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Categories, cx)));
+    add_parent(cx, handle, &shell, "Food & Dining");
+    let parent_id = cx.update(|cx| {
+        shell
+            .read(cx)
+            .categories
+            .iter()
+            .find(|p| p.name == "Food & Dining")
+            .unwrap()
+            .id
+    });
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| s.select_category(parent_id, window, cx));
+    });
+    cx.run_until_parked();
+    let mut window = VisualTestContext::from_window(handle, cx);
+    draw_frame(cx, handle);
+    for sel in [
+        "label:Category tree",
+        "label:New parent name",
+        "label:Kind",
+        "label:New child name",
+        "label:Move its transactions to",
+        "label:Pattern",
+        "label:Category",
+    ] {
+        assert!(
+            window.debug_bounds(sel).is_some(),
+            "the Categories page paints the visible label {sel:?}"
+        );
+    }
+    // A selected child adds the move-to-parent picker's label.
+    add_child(cx, handle, &shell, "Restaurants");
+    let child_id = cx.update(|cx| find_child(&shell, cx, "Restaurants").unwrap());
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| s.select_category(child_id, window, cx));
+    });
+    cx.run_until_parked();
+    draw_frame(cx, handle);
+    assert!(
+        window.debug_bounds("label:Move to parent").is_some(),
+        "the child detail paints the move picker's label"
+    );
 }
 
 // -- row context menu (2.9) -------------------------------------------------

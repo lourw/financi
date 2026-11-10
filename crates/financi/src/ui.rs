@@ -64,6 +64,31 @@ fn checkbox(id: impl Into<SharedString>) -> Checkbox {
     Checkbox::new(id).debug_selector(move || selector.clone())
 }
 
+/// Field label for a control (3.16, ui-conventions *Numbers, dates and
+/// labels*): every input, dropdown and date picker carries a visible label
+/// — never a placeholder alone. `text_xs` `muted_foreground` (secondary
+/// text), placed above or beside the control. The debug selector
+/// (`label:<text>`) lets headless tests assert the label is painted.
+fn field_label(muted: Hsla, text: &'static str) -> Div {
+    div()
+        .text_xs()
+        .text_color(muted)
+        .debug_selector(move || format!("label:{text}"))
+        .child(text)
+}
+
+/// Region title (ui-conventions *Typography*: `text_sm`, `font_semibold`).
+/// Names a group of related controls or a data panel (3.16: the filter bar,
+/// the chart, the monthly summary, the category tree). Same debug selector
+/// as [`field_label`].
+fn region_title(text: &'static str) -> Div {
+    div()
+        .text_sm()
+        .font_weight(FontWeight::SEMIBOLD)
+        .debug_selector(move || format!("label:{text}"))
+        .child(text)
+}
+
 /// Run `f` on the database thread, flattening worker and query errors.
 async fn on_db<R, E, F>(db: &DbWorker, f: F) -> Result<R, String>
 where
@@ -841,10 +866,18 @@ impl Render for ImportPanel {
             _ => div().into_any_element(),
         };
 
+        // New-account field (3.16): a visible label above the input, not
+        // just its placeholder.
         let new_account = self.creating_new.then(|| {
             h_flex()
                 .gap_2()
-                .child(div().w(px(280.)).child(Input::new(&self.new_name)))
+                .items_end()
+                .child(
+                    v_flex()
+                        .gap_1()
+                        .child(field_label(muted, "New account name"))
+                        .child(div().w(px(280.)).child(Input::new(&self.new_name))),
+                )
                 .child(
                     Button::new("create-account")
                         .label("Create account")
@@ -3235,17 +3268,25 @@ impl Shell {
             .flex_none()
             .gap_3()
             .child(
-                h_flex()
+                // 3.16: the panel names itself, as the mockups show.
+                v_flex()
                     .w(relative(CHART_PANEL_SHARE))
                     .min_w_0()
-                    .gap_3()
+                    .gap_2()
                     .p_4()
                     .rounded(radius)
                     .border_1()
                     .border_color(border)
                     .bg(background)
-                    .child(chart)
-                    .child(legend),
+                    .child(region_title("Spending by category"))
+                    .child(
+                        h_flex()
+                            .flex_1()
+                            .min_h_0()
+                            .gap_3()
+                            .child(chart)
+                            .child(legend),
+                    ),
             )
             .child(self.summary_panel(cx))
             .into_any_element()
@@ -3278,21 +3319,27 @@ impl Shell {
         // zeros rather than an empty `months`. Treat an all-zero grid as
         // empty too (task 3.10): the panel says "No spending in this range".
         if !self.summary_has_data() {
-            return div()
+            return v_flex()
                 .h(px(340.))
                 .flex_1()
                 .min_w_0()
-                .flex()
-                .items_center()
-                .justify_center()
+                .gap_2()
                 .p_4()
                 .rounded(radius)
                 .border_1()
                 .border_color(border)
                 .bg(background)
-                .text_sm()
-                .text_color(muted)
-                .child("No spending in this range")
+                .child(region_title("Monthly summary"))
+                .child(
+                    div()
+                        .flex_1()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_sm()
+                        .text_color(muted)
+                        .child("No spending in this range"),
+                )
                 .into_any_element();
         }
         let selection = self.legend_selection;
@@ -3458,13 +3505,21 @@ impl Shell {
             .flex_1()
             .min_w_0()
             .p_4()
-            .gap_1()
+            .gap_2()
             .rounded(radius)
             .border_1()
             .border_color(border)
             .bg(background)
-            .child(header)
-            .child(body)
+            .child(region_title("Monthly summary"))
+            // Month header and rows keep their tighter `gap_1`.
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_h_0()
+                    .gap_1()
+                    .child(header)
+                    .child(body),
+            )
             .into_any_element()
     }
 
@@ -3502,79 +3557,102 @@ impl Shell {
             .flex_1()
             .min_h_0()
             .gap_3()
-            // The header row is the filter row (ui-conventions, *Pages*):
-            // date range, accounts multi-select, transfers toggle.
+            // One labelled filter region (3.16): the date range, accounts
+            // and transfers controls, then search and the table toggles —
+            // every control carries a visible label, none relies on a
+            // placeholder. The header row is still the filter row
+            // (ui-conventions, *Pages*).
             .child(
-                h_flex()
-                    .gap_3()
-                    .items_center()
+                v_flex()
+                    .gap_2()
+                    .child(region_title("Filters"))
                     .child(
                         h_flex()
-                            .gap_2()
-                            .items_center()
+                            .gap_3()
+                            .items_end()
                             .child(
-                                div()
-                                    .w(px(150.))
-                                    .child(Select::new(&self.date_preset_select)),
+                                v_flex()
+                                    .gap_1()
+                                    .child(field_label(muted, "Date range"))
+                                    .child(
+                                        div()
+                                            .w(px(150.))
+                                            .child(Select::new(&self.date_preset_select)),
+                                    ),
                             )
                             .when(matches!(self.date_range, DateRange::Custom { .. }), |g| {
                                 g.child(
-                                    div()
-                                        .w(px(140.))
-                                        .child(DatePicker::new(&self.date_from_picker)),
+                                    v_flex().gap_1().child(field_label(muted, "From")).child(
+                                        div()
+                                            .w(px(140.))
+                                            .child(DatePicker::new(&self.date_from_picker)),
+                                    ),
                                 )
                                 .child(
-                                    div()
-                                        .w(px(140.))
-                                        .child(DatePicker::new(&self.date_to_picker)),
+                                    v_flex().gap_1().child(field_label(muted, "To")).child(
+                                        div()
+                                            .w(px(140.))
+                                            .child(DatePicker::new(&self.date_to_picker)),
+                                    ),
                                 )
-                            }),
+                            })
+                            // Accounts multi-select (3.3): a dropdown popover of
+                            // checkboxes, one per account, all checked by default.
+                            .child(
+                                v_flex()
+                                    .gap_1()
+                                    .child(field_label(muted, "Accounts"))
+                                    .child(
+                                        // The selector (test builds only, 3.11)
+                                        // lets headless tests find the trigger
+                                        // and click it.
+                                        div()
+                                            .debug_selector(|| "accounts:filter".into())
+                                            .child(self.accounts_popover(cx)),
+                                    ),
+                            )
+                            .child(
+                                checkbox("include-transfers")
+                                    .label("Include transfers")
+                                    .checked(self.include_transfers)
+                                    .on_click(cx.listener(|this, on: &bool, window, cx| {
+                                        this.set_include_transfers(*on, window, cx);
+                                    })),
+                            )
+                            .child(div().text_sm().text_color(muted).child(format!(
+                                "{} transactions",
+                                flow::count(self.row_count as i64)
+                            ))),
                     )
-                    // Accounts multi-select (3.3): a dropdown popover of
-                    // checkboxes, one per account, all checked by default.
+                    // Second filter row (3.4): search box and the two table-only
+                    // toggles. Kept on their own line so the date-range pickers
+                    // never crowd them.
                     .child(
-                        // The selector (test builds only, 3.11) lets headless
-                        // tests find the trigger and click it.
-                        div()
-                            .debug_selector(|| "accounts:filter".into())
-                            .child(self.accounts_popover(cx)),
-                    )
-                    .child(
-                        checkbox("include-transfers")
-                            .label("Include transfers")
-                            .checked(self.include_transfers)
-                            .on_click(cx.listener(|this, on: &bool, window, cx| {
-                                this.set_include_transfers(*on, window, cx);
-                            })),
-                    )
-                    .child(div().text_sm().text_color(muted).child(format!(
-                        "{} transactions",
-                        flow::count(self.row_count as i64)
-                    ))),
-            )
-            // Second filter row (3.4): search box and the two table-only
-            // toggles. Kept on their own line so the date-range pickers
-            // never crowd them.
-            .child(
-                h_flex()
-                    .gap_3()
-                    .items_center()
-                    .child(div().w(px(240.)).child(Input::new(&self.search_input)))
-                    .child(
-                        checkbox("uncategorized-only")
-                            .label("Uncategorized only")
-                            .checked(self.uncategorized_only)
-                            .on_click(cx.listener(|this, on: &bool, window, cx| {
-                                this.set_uncategorized_only(*on, window, cx);
-                            })),
-                    )
-                    .child(
-                        checkbox("show-hidden")
-                            .label("Show hidden")
-                            .checked(self.show_hidden)
-                            .on_click(cx.listener(|this, on: &bool, window, cx| {
-                                this.set_show_hidden(*on, window, cx);
-                            })),
+                        h_flex()
+                            .gap_3()
+                            .items_end()
+                            .child(
+                                v_flex()
+                                    .gap_1()
+                                    .child(field_label(muted, "Search"))
+                                    .child(div().w(px(240.)).child(Input::new(&self.search_input))),
+                            )
+                            .child(
+                                checkbox("uncategorized-only")
+                                    .label("Uncategorized only")
+                                    .checked(self.uncategorized_only)
+                                    .on_click(cx.listener(|this, on: &bool, window, cx| {
+                                        this.set_uncategorized_only(*on, window, cx);
+                                    })),
+                            )
+                            .child(
+                                checkbox("show-hidden")
+                                    .label("Show hidden")
+                                    .checked(self.show_hidden)
+                                    .on_click(cx.listener(|this, on: &bool, window, cx| {
+                                        this.set_show_hidden(*on, window, cx);
+                                    })),
+                            ),
                     ),
             )
             .child(match body {
@@ -3870,7 +3948,14 @@ impl Shell {
             .h_full()
             .gap_1()
             .min_h_0()
-            .child(div().text_xs().text_color(muted).px_2().child("TREE"))
+            .child(
+                div()
+                    .px_2()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .child(region_title("Category tree")),
+            )
             .child(
                 v_virtual_list(
                     cx.entity(),
@@ -3951,9 +4036,16 @@ impl Shell {
                             ))),
                     )
                     .child(if renaming {
+                        // Rename editor (3.16): the input carries a label.
                         h_flex()
                             .gap_2()
-                            .child(div().w(px(260.)).child(Input::new(&self.rename_input)))
+                            .items_end()
+                            .child(
+                                v_flex()
+                                    .gap_1()
+                                    .child(field_label(muted, "New name"))
+                                    .child(div().w(px(260.)).child(Input::new(&self.rename_input))),
+                            )
                             .child(Button::new("save-rename").label("Save").primary().on_click(
                                 cx.listener(|this, _, window, cx| this.save_rename(window, cx)),
                             ))
@@ -3965,17 +4057,38 @@ impl Shell {
                             ))
                             .into_any_element()
                     } else {
+                        // Detail actions (3.16): each picker or field sits
+                        // in its own labelled group beside its button,
+                        // instead of a row of unlabelled boxes.
                         h_flex()
                             .flex_wrap()
-                            .gap_2()
-                            .items_center()
+                            .gap_3()
+                            .items_end()
                             .when(!is_child, |row| {
-                                row.child(div().w(px(220.)).child(Input::new(&self.new_child_name)))
-                                    .child(Button::new("add-child").label("Add child").on_click(
-                                        cx.listener(|this, _, window, cx| {
-                                            this.add_child(window, cx)
-                                        }),
-                                    ))
+                                row.child(
+                                    v_flex()
+                                        .gap_1()
+                                        .child(field_label(muted, "New child name"))
+                                        .child(
+                                            h_flex()
+                                                .gap_2()
+                                                .items_end()
+                                                .child(
+                                                    div()
+                                                        .w(px(220.))
+                                                        .child(Input::new(&self.new_child_name)),
+                                                )
+                                                .child(
+                                                    Button::new("add-child")
+                                                        .label("Add child")
+                                                        .on_click(cx.listener(
+                                                            |this, _, window, cx| {
+                                                                this.add_child(window, cx)
+                                                            },
+                                                        )),
+                                                ),
+                                        ),
+                                )
                             })
                             .child(
                                 Button::new("rename-category")
@@ -3986,31 +4099,62 @@ impl Shell {
                                     })),
                             )
                             .when(is_child, |row| {
-                                row.child(div().w(px(200.)).child(
-                                    Select::new(&self.move_target).placeholder("Move to parent…"),
-                                ))
-                                .child(
-                                    Button::new("move-child")
-                                        .label("Move")
-                                        .disabled(is_system)
-                                        .on_click(cx.listener(|this, _, window, cx| {
-                                            this.move_child_to_selected_parent(window, cx)
-                                        })),
+                                row.child(
+                                    v_flex()
+                                        .gap_1()
+                                        .child(field_label(muted, "Move to parent"))
+                                        .child(
+                                            h_flex()
+                                                .gap_2()
+                                                .items_end()
+                                                .child(
+                                                    div().w(px(200.)).child(
+                                                        Select::new(&self.move_target)
+                                                            .placeholder("Move to parent…"),
+                                                    ),
+                                                )
+                                                .child(
+                                                    Button::new("move-child")
+                                                        .label("Move")
+                                                        .disabled(is_system)
+                                                        .on_click(cx.listener(
+                                                            |this, _, window, cx| {
+                                                                this.move_child_to_selected_parent(
+                                                                    window, cx,
+                                                                )
+                                                            },
+                                                        )),
+                                                ),
+                                        ),
                                 )
                             })
                             .when(!is_system, |row| {
                                 row.child(
-                                    div().w(px(260.)).child(
-                                        Select::new(&self.delete_target)
-                                            .placeholder("Move its transactions to…"),
-                                    ),
-                                )
-                                .child(
-                                    Button::new("delete-category")
-                                        .label(confirm_label)
-                                        .on_click(cx.listener(|this, _, window, cx| {
-                                            this.arm_delete_category(window, cx)
-                                        })),
+                                    v_flex()
+                                        .gap_1()
+                                        .child(field_label(muted, "Move its transactions to"))
+                                        .child(
+                                            h_flex()
+                                                .gap_2()
+                                                .items_end()
+                                                .child(
+                                                    div().w(px(260.)).child(
+                                                        Select::new(&self.delete_target)
+                                                            .placeholder(
+                                                                "Move its transactions to…",
+                                                            ),
+                                                    ),
+                                                )
+                                                .child(
+                                                    Button::new("delete-category")
+                                                        .label(confirm_label)
+                                                        .on_click(cx.listener(
+                                                            |this, _, window, cx| {
+                                                                this.arm_delete_category(window, cx)
+                                                            },
+                                                        )),
+                                                ),
+                                        ),
                                 )
                             })
                             .into_any_element()
@@ -4058,12 +4202,23 @@ impl Shell {
                     .clone()
                     .map(|e| div().text_sm().text_color(danger).child(e)),
             )
+            // New-parent group (3.16): labelled fields, one deliberate row.
             .child(
                 h_flex()
                     .gap_2()
-                    .items_center()
-                    .child(div().w(px(220.)).child(Input::new(&self.new_parent_name)))
-                    .child(div().w(px(140.)).child(Select::new(&self.new_parent_kind)))
+                    .items_end()
+                    .child(
+                        v_flex()
+                            .gap_1()
+                            .child(field_label(muted, "New parent name"))
+                            .child(div().w(px(220.)).child(Input::new(&self.new_parent_name))),
+                    )
+                    .child(
+                        v_flex()
+                            .gap_1()
+                            .child(field_label(muted, "Kind"))
+                            .child(div().w(px(140.)).child(Select::new(&self.new_parent_kind))),
+                    )
                     .child(
                         Button::new("add-parent")
                             .label("Add parent")
@@ -4101,12 +4256,21 @@ impl Shell {
                                                 .child(self.rules.len().to_string()),
                                         ),
                                 )
+                                // Add-rule group (3.16): the pattern field
+                                // and the category picker carry labels.
                                 .child(
                                     h_flex()
                                         .gap_2()
-                                        .items_center()
+                                        .items_end()
                                         .child(
-                                            div().w(px(280.)).child(Input::new(&self.rule_pattern)),
+                                            v_flex()
+                                                .gap_1()
+                                                .child(field_label(muted, "Pattern"))
+                                                .child(
+                                                    div()
+                                                        .w(px(280.))
+                                                        .child(Input::new(&self.rule_pattern)),
+                                                ),
                                         )
                                         .child(
                                             Switch::new("rule-regex")
@@ -4120,9 +4284,17 @@ impl Shell {
                                                     },
                                                 )),
                                         )
-                                        .child(div().w(px(240.)).child(
-                                            Select::new(&self.rule_target).placeholder("Category…"),
-                                        ))
+                                        .child(
+                                            v_flex()
+                                                .gap_1()
+                                                .child(field_label(muted, "Category"))
+                                                .child(
+                                                    div().w(px(240.)).child(
+                                                        Select::new(&self.rule_target)
+                                                            .placeholder("Category…"),
+                                                    ),
+                                                ),
+                                        )
                                         .child(
                                             Button::new("add-rule")
                                                 .label("Add rule")
@@ -4188,75 +4360,119 @@ impl Shell {
             // fixed 40 px (32 px controls with the old `py_1` of spacing);
             // the list's `gap_1` is added to the stride by the list.
             let sizes = Rc::new(vec![size(px(0.), px(40.)); self.queue.len()]);
-            v_virtual_list(
-                cx.entity(),
-                "queue-list",
-                sizes,
-                move |this, range, window, cx| {
-                    let groups = this.queue[range].to_vec();
-                    let mut rows = Vec::with_capacity(groups.len());
-                    for g in groups {
-                        let merchant = g.merchant.clone();
-                        let picker = this.queue_picker(&merchant, window, cx);
-                        rows.push(
-                            h_flex()
-                                .h(px(40.))
-                                .gap_3()
-                                .items_center()
-                                .child(
-                                    div()
-                                        .w(px(280.))
-                                        .min_w_0()
-                                        .overflow_hidden()
-                                        .text_ellipsis()
-                                        .font_weight(FontWeight::SEMIBOLD)
-                                        .child(g.merchant.clone()),
-                                )
-                                .child(
-                                    div()
-                                        .w(px(140.))
-                                        .child(format!("{} transactions", flow::count(g.count))),
-                                )
-                                .child(
-                                    div()
-                                        .w(px(120.))
-                                        .text_right()
-                                        .child(flow::money(g.total_cents)),
-                                )
-                                .child(
-                                    div()
-                                        .text_sm()
-                                        .text_color(muted)
-                                        .child(flow::date_range(&g.first_date, &g.last_date)),
-                                )
-                                .child(div().flex_1())
-                                .child(
-                                    div()
-                                        .w(px(260.))
-                                        .child(Select::new(&picker).placeholder("Category…")),
-                                )
-                                .child(
-                                    Button::new(SharedString::from(format!(
-                                        "categorize-{}",
-                                        g.merchant
-                                    )))
-                                    .label("Categorize")
-                                    .primary()
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.categorize_merchant(merchant.clone(), window, cx);
-                                    })),
-                                ),
-                        );
-                    }
-                    #[cfg(test)]
-                    this.queue_rows_built.set(rows.len());
-                    rows
-                },
-            )
-            .gap_1()
-            .flex_1()
-            .min_h_0()
-            .into_any_element()
+            // 3.16: a heading row labels every column, the category picker
+            // included — its placeholder alone is not a label. The children
+            // mirror the queue rows below in order and width, down to an
+            // invisible copy of the Categorize button, so each heading sits
+            // over its column (the picker's heading would otherwise slide
+            // right by the button's width).
+            v_flex()
+                .flex_1()
+                .min_h_0()
+                .gap_1()
+                .child(
+                    h_flex()
+                        .gap_3()
+                        .child(
+                            field_label(muted, "Merchant")
+                                .w(px(280.))
+                                .min_w_0()
+                                .overflow_hidden()
+                                .text_ellipsis(),
+                        )
+                        .child(field_label(muted, "Transactions").w(px(140.)))
+                        .child(field_label(muted, "Total").w(px(120.)).text_right())
+                        .child(field_label(muted, "Dates").flex_1().min_w_0())
+                        .child(field_label(muted, "Category").w(px(260.)))
+                        .child(
+                            Button::new("queue-heading-categorize-spacer")
+                                .label("Categorize")
+                                .primary()
+                                .opacity(0.0),
+                        ),
+                )
+                .child(
+                    v_virtual_list(
+                        cx.entity(),
+                        "queue-list",
+                        sizes,
+                        move |this, range, window, cx| {
+                            let groups = this.queue[range].to_vec();
+                            let mut rows = Vec::with_capacity(groups.len());
+                            for g in groups {
+                                let merchant = g.merchant.clone();
+                                let picker = this.queue_picker(&merchant, window, cx);
+                                rows.push(
+                                    h_flex()
+                                        // Fill the list's width, or the row
+                                        // stays at its natural width and the
+                                        // `flex_1` spacer never grows: the
+                                        // picker and button would then float
+                                        // left of the column headings.
+                                        .w_full()
+                                        .h(px(40.))
+                                        .gap_3()
+                                        .items_center()
+                                        .child(
+                                            div()
+                                                .w(px(280.))
+                                                .min_w_0()
+                                                .overflow_hidden()
+                                                .text_ellipsis()
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .child(g.merchant.clone()),
+                                        )
+                                        .child(div().w(px(140.)).child(format!(
+                                            "{} transactions",
+                                            flow::count(g.count)
+                                        )))
+                                        .child(
+                                            div()
+                                                .w(px(120.))
+                                                .text_right()
+                                                .child(flow::money(g.total_cents)),
+                                        )
+                                        .child(
+                                            div().text_sm().text_color(muted).child(
+                                                flow::date_range(&g.first_date, &g.last_date),
+                                            ),
+                                        )
+                                        .child(div().flex_1())
+                                        .child(
+                                            div()
+                                                .w(px(260.))
+                                                .debug_selector(|| "queue:picker-col".into())
+                                                .child(
+                                                    Select::new(&picker).placeholder("Category…"),
+                                                ),
+                                        )
+                                        .child(
+                                            Button::new(SharedString::from(format!(
+                                                "categorize-{}",
+                                                g.merchant
+                                            )))
+                                            .label("Categorize")
+                                            .primary()
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                this.categorize_merchant(
+                                                    merchant.clone(),
+                                                    window,
+                                                    cx,
+                                                );
+                                            })),
+                                        ),
+                                );
+                            }
+                            #[cfg(test)]
+                            this.queue_rows_built.set(rows.len());
+                            rows
+                        },
+                    )
+                    .gap_1()
+                    .flex_1()
+                    .min_h_0(),
+                )
+                .into_any_element()
         };
         v_flex()
             .flex_1()
