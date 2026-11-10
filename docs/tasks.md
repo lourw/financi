@@ -324,7 +324,7 @@ beside the monthly summary (right); then the transaction table.
   the visible rows, and a group at the very bottom can still be
   categorized.
 
-- [ ] **3.20 Imports history table overflows.** The history table's fixed
+- [x] **3.20 Imports history table overflows.** The history table's fixed
   column widths add up to 1,110 px (150 + 240 + 240 + 110 + 220 + 150),
   wider than the content area beside the sidebar at the minimum window size
   (1200 × 720). The table overflows and the Undo… button is cut off in its

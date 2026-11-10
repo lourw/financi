@@ -424,6 +424,10 @@ pub struct ImportHistoryTable {
     rows: Vec<ImportEntry>,
     /// The import whose Undo button is waiting for its second click.
     confirm_id: Option<i64>,
+    /// Widths of the two flexible columns (`File`, `Account`), kept in
+    /// step with the window by the shell (3.20); they truncate with an
+    /// ellipsis rather than push the table past the page.
+    flex_widths: (f32, f32),
     on_undo: UndoFn,
 }
 
@@ -454,14 +458,15 @@ impl TableDelegate for ImportHistoryTable {
 
     fn column(&self, col_ix: usize, _: &App) -> Column {
         match col_ix {
-            0 => Column::new("time", "Imported").width(px(150.)),
-            1 => Column::new("file", "File").width(px(240.)),
-            2 => Column::new("account", "Account").width(px(240.)),
+            0 => Column::new("time", "Imported").width(px(HISTORY_TIME_W)),
+            1 => Column::new("file", "File").width(px(self.flex_widths.0)),
+            2 => Column::new("account", "Account").width(px(self.flex_widths.1)),
             3 => Column::new("rows", "Rows added")
-                .width(px(110.))
+                .width(px(HISTORY_ROWS_W))
                 .text_right(),
-            4 => Column::new("dates", "Dates").width(px(220.)),
-            _ => Column::new("undo", "").width(px(150.)),
+            4 => Column::new("dates", "Dates").width(px(HISTORY_DATES_W)),
+            // Wide enough for both labels (3.20), so neither clips.
+            _ => Column::new("undo", "").width(px(history_undo_col_w())),
         }
     }
 
@@ -499,6 +504,18 @@ impl TableDelegate for ImportHistoryTable {
                     )
                     .into_any_element();
             }
+        }
+        if col_ix == 1 || col_ix == 2 {
+            // The flexible columns truncate (3.20): a long file name or
+            // account name ends in an ellipsis instead of pushing the
+            // table wider than the page.
+            return div()
+                .flex_1()
+                .min_w_0()
+                .overflow_hidden()
+                .text_ellipsis()
+                .child(text)
+                .into_any_element();
         }
         div().child(text).into_any_element()
     }
@@ -1036,6 +1053,54 @@ fn band_label_budget(chart_width: f32, count: usize) -> (usize, usize) {
     (chars_for(labels).clamp(1, CHART_LABEL_MAX_CHARS), labels)
 }
 
+// Imports history table widths (3.20). The old fixed columns summed to
+// 1,110 px, wider than the page beside the sidebar at the minimum window
+// size, which forced the table to scroll sideways. Now `Imported`,
+// `Rows added` and `Dates` keep their widths, `Undo` is sized so both
+// button labels ("Undo…" and "Click again to undo") show in full, and
+// `File` and `Account` share whatever width is left — they truncate
+// with an ellipsis as the window narrows and grow with it, so the table
+// fits the page from the minimum window size up.
+const HISTORY_TIME_W: f32 = 150.;
+const HISTORY_ROWS_W: f32 = 110.;
+const HISTORY_DATES_W: f32 = 220.;
+/// Floor for one flexible column: below this a File or Account cell is
+/// unreadable anyway. The app's minimum window never reaches it.
+const HISTORY_FLEX_MIN_W: f32 = 80.;
+/// A generous width of one 14 px (`text_sm`) system-font character, the
+/// same rounding-up spirit as `CHART_CHAR_PX` (which covers the chart's
+/// 10 px font, scaled by 14/10): the budget errs towards columns that
+/// are too wide rather than labels that clip.
+const TEXT_SM_CHAR_PX: f32 = CHART_CHAR_PX * 14. / 10.;
+/// The Undo button's widest label; the column must fit this without
+/// clipping whatever the window size.
+const UNDO_LABEL_MAX: &str = "Click again to undo";
+/// Horizontal padding inside a medium `Button`: `px_2p5` per side.
+const BUTTON_PAD_X: f32 = 20.;
+/// Horizontal padding inside a table cell (8 px per side); gpui-kit
+/// draws the cell inside the column width, so it comes off the space
+/// the label has.
+const CELL_PAD_X: f32 = 16.;
+/// The table's 1 px border on each side; the page width includes it.
+const TABLE_BORDER_X: f32 = 2.;
+
+/// The Undo column's width: the longest label at `TEXT_SM_CHAR_PX`,
+/// plus the button's and the cell's horizontal padding.
+fn history_undo_col_w() -> f32 {
+    (UNDO_LABEL_MAX.chars().count() as f32 * TEXT_SM_CHAR_PX + BUTTON_PAD_X + CELL_PAD_X).ceil()
+}
+
+/// The history table's `File` and `Account` widths for `page_w` pixels
+/// of page (window width minus sidebar and page padding): everything
+/// the fixed columns leave over, split evenly, never below
+/// `HISTORY_FLEX_MIN_W` each.
+fn history_flex_widths(page_w: f32) -> (f32, f32) {
+    let fixed =
+        HISTORY_TIME_W + HISTORY_ROWS_W + HISTORY_DATES_W + history_undo_col_w() + TABLE_BORDER_X;
+    let flex = (page_w - fixed).max(2. * HISTORY_FLEX_MIN_W);
+    (flex / 2., flex / 2.)
+}
+
 /// Fit `names` into the band axis (3.15): a name longer than `chars`
 /// becomes `chars − 1` characters plus `…` (trailing whitespace is
 /// dropped first). Shortenings that collide fall back to the full name,
@@ -1316,6 +1381,10 @@ impl Shell {
                 ImportHistoryTable {
                     rows: Vec::new(),
                     confirm_id: None,
+                    // 3.20: start at the widths the current window allows.
+                    flex_widths: history_flex_widths(
+                        (window.bounds().size.width.as_f32() - SIDEBAR_W - 2. * PAGE_PAD).max(0.),
+                    ),
                     on_undo,
                 },
                 window,
@@ -1462,11 +1531,18 @@ impl Shell {
                 }
             },
         );
-        // The chart's label plan follows the window width (3.15).
+        // The chart's label plan follows the window width (3.15), and so
+        // do the Imports history table's flexible columns (3.20).
         let bounds_sub = cx.observe_window_bounds(window, |this, window, cx| {
             let width = window.bounds().size.width.as_f32();
             if this.window_width != width {
                 this.window_width = width;
+                let flex = history_flex_widths((width - SIDEBAR_W - 2. * PAGE_PAD).max(0.));
+                this.history_table.update(cx, |t, cx| {
+                    t.delegate_mut().flex_widths = flex;
+                    // Re-read the delegate's columns with the new widths.
+                    t.refresh(cx);
+                });
                 cx.notify();
             }
         });
