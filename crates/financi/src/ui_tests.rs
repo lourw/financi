@@ -26,10 +26,12 @@ use gpui_kit::{
 };
 
 use super::{
-    CHART_CHAR_PX, CHART_LABEL_GAP, CHART_LABEL_MAX_CHARS, CHART_LABEL_MIN_CHARS, DashboardBody,
-    ExportData, ImportPanel, LegendSelection, NAV_ROW_INSET, NEW_ACCOUNT, Page, PlanState,
-    RestoreBackup, RowMenuItem, Shell, SummaryRowKind, UndoLastImport, band_label_budget,
-    row_menu_items, short_chart_labels,
+    BUTTON_PAD_X, CELL_PAD_X, CHART_CHAR_PX, CHART_LABEL_GAP, CHART_LABEL_MAX_CHARS,
+    CHART_LABEL_MIN_CHARS, DashboardBody, ExportData, HISTORY_DATES_W, HISTORY_FLEX_MIN_W,
+    HISTORY_ROWS_W, HISTORY_TIME_W, ImportPanel, LegendSelection, NAV_ROW_INSET, NEW_ACCOUNT,
+    PAGE_PAD, Page, PlanState, RestoreBackup, RowMenuItem, SIDEBAR_W, Shell, SummaryRowKind,
+    TABLE_BORDER_X, TEXT_SM_CHAR_PX, UNDO_LABEL_MAX, UndoLastImport, band_label_budget,
+    history_flex_widths, history_undo_col_w, row_menu_items, short_chart_labels,
 };
 
 fn demo(name: &str) -> PathBuf {
@@ -308,6 +310,131 @@ fn undo_needs_a_second_click_and_removes_the_latest_import(cx: &mut TestAppConte
             ))
         );
     });
+}
+
+// --------------------------------------------------- 3.20 history table width
+
+/// Seed one import whose file name and account name are both far longer
+/// than any column, the worst case for the history table.
+fn seed_long_history(conn: &financi_db::rusqlite::Connection) {
+    let acct = create_account(
+        conn,
+        "simplii",
+        "Simplii Chequing at Home and Abroad Forever",
+        AccountKind::Chequing,
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO imports (account_id, parser_id, file_name, imported_at, header_raw,
+                              encoding, has_bom, line_ending, trailing_newline, row_count)
+         VALUES (?1, 'simplii-chequing',
+                 'simplii-chequing-statement-2026-10-to-2026-11-final-v2.csv',
+                 '2026-11-06T10:00:00', X'00', 'utf-8', 0, 'lf', 0, 0)",
+        [acct],
+    )
+    .unwrap();
+}
+
+/// The width plan itself: the Undo column fits both button labels, and
+/// from the minimum window's page width up every column fits the page —
+/// File and Account shrink and grow with the window instead of the old
+/// fixed 240 px each.
+#[test]
+fn history_table_columns_fit_every_page_width() {
+    // The Undo column budgets the longest label ("Click again to undo")
+    // at the generous per-character width, plus the button and cell
+    // padding, so neither it nor "Undo…" can clip.
+    assert!(
+        history_undo_col_w()
+            >= UNDO_LABEL_MAX.chars().count() as f32 * TEXT_SM_CHAR_PX + BUTTON_PAD_X + CELL_PAD_X
+    );
+    for win in [1200., 1440., 1920., 2560., 4000.] {
+        let page_w = win - SIDEBAR_W - 2. * PAGE_PAD;
+        let (file, account) = history_flex_widths(page_w);
+        let total = HISTORY_TIME_W
+            + file
+            + account
+            + HISTORY_ROWS_W
+            + HISTORY_DATES_W
+            + history_undo_col_w()
+            + TABLE_BORDER_X;
+        assert!(
+            total <= page_w + 0.01,
+            "window {win}: columns sum to {total}, page is {page_w}"
+        );
+        assert!(
+            file >= HISTORY_FLEX_MIN_W && account >= HISTORY_FLEX_MIN_W,
+            "window {win}"
+        );
+    }
+    // File and Account grow with the window, and at the minimum size
+    // they are below the old fixed 240 px that overflowed the page.
+    let small = history_flex_widths(1200. - SIDEBAR_W - 2. * PAGE_PAD).0;
+    let big = history_flex_widths(2560. - SIDEBAR_W - 2. * PAGE_PAD).0;
+    assert!(small < 240., "{small} at the minimum window");
+    assert!(big > small, "{big} vs {small}");
+    // Below the minimum window the flexible columns stop at their floor.
+    assert_eq!(
+        history_flex_widths(100.),
+        (HISTORY_FLEX_MIN_W, HISTORY_FLEX_MIN_W)
+    );
+}
+
+/// 3.20: with long file and account names the history table draws at the
+/// minimum window size and at a large one, its columns — the widths the
+/// table actually renders at — never summing past the page beside the
+/// sidebar, so it never scrolls sideways.
+#[gpui::test]
+fn the_imports_history_table_fits_the_available_width(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_long_history);
+    wait_until(cx, "import history", |cx| {
+        shell.read(cx).import_history.len() == 1
+    });
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Imports, cx)));
+
+    let resize = |cx: &mut TestAppContext, w: f32, h: f32| {
+        with_window(cx, handle, |window, cx| {
+            window.resize(size(px(w), px(h)));
+            window.bounds_changed(cx);
+        });
+        cx.run_until_parked();
+        draw_frame(cx, handle);
+    };
+    let widths = |cx: &App| -> Vec<f32> {
+        let table = shell.read(cx).history_table.read(cx);
+        (0..6)
+            .map(|i| table.col_width(i).unwrap().as_f32())
+            .collect()
+    };
+
+    // Minimum window: the drawn columns fit the page beside the sidebar.
+    resize(cx, 1200., 720.);
+    let small = cx.update(|cx| widths(cx));
+    let page_w = 1200. - SIDEBAR_W - 2. * PAGE_PAD;
+    assert!(
+        small.iter().sum::<f32>() <= page_w + 0.01,
+        "columns sum to {}, page is {page_w}",
+        small.iter().sum::<f32>()
+    );
+    // Undo is sized for both labels; File and Account shrank below the
+    // old fixed 240 px and truncate their long names with an ellipsis.
+    assert!(
+        small[5] >= history_undo_col_w(),
+        "Undo column {} cannot fit both labels",
+        small[5]
+    );
+    assert!(small[1] < 240. && small[2] < 240., "{small:?}");
+    assert!((small[1] - small[2]).abs() < 0.01, "{small:?}");
+
+    // A large window: still fitting, and the flexible columns grew.
+    resize(cx, 2560., 1440.);
+    let big = cx.update(|cx| widths(cx));
+    assert!(
+        big.iter().sum::<f32>() <= 2560. - SIDEBAR_W - 2. * PAGE_PAD + 0.01,
+        "columns sum to {}",
+        big.iter().sum::<f32>()
+    );
+    assert!(big[1] > small[1], "File column grows with the window");
 }
 
 /// The File menu the native menu bar is built from (3.7). The macOS menu
