@@ -295,7 +295,7 @@ beside the monthly summary (right); then the transaction table.
   `docs/ui-conventions.md`. Labels and layout only, no new features. Do this
   last: it also needs to cover the views from 3.5 and 3.6.
 
-- [ ] **3.17 Stale account filter on import.** `Shell::refresh` computes
+- [x] **3.17 Stale account filter on import.** `Shell::refresh` computes
   `none_selected` from the accounts list of the previous refresh, so
   importing while every account checkbox is unchecked leaves every view
   blank until some other filter changes. Recompute it from the accounts
