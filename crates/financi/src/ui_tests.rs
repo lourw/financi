@@ -1222,6 +1222,119 @@ fn clicking_a_category_still_works_with_a_long_tree(cx: &mut TestAppContext) {
     });
 }
 
+// -- page switching (3.11) ---------------------------------------------------
+
+/// 3.11: after a page switch only the current page paints. Walks every page,
+/// then opens the accounts popover with a real click and switches away: the
+/// popover must not stay painted, nor come back open.
+#[gpui::test]
+fn page_switches_paint_only_the_current_page(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |conn| {
+        create_account(conn, "amex", "Cobalt", AccountKind::CreditCard).unwrap();
+    });
+    wait_until(cx, "the account list loads", |cx| {
+        shell.read(cx).accounts.len() == 1
+    });
+    let mut window = VisualTestContext::from_window(handle, cx);
+
+    // Everything a painted frame may reveal: the page-area selector and
+    // two page-specific widgets. Exactly one page root may appear per frame.
+    const PAINTED: [&str; 4] = [
+        "page:page-dashboard",
+        "page:page-queue",
+        "page:page-categories",
+        "checkbox:account-1",
+    ];
+    let painted = |window: &mut VisualTestContext| -> Vec<&'static str> {
+        PAINTED
+            .iter()
+            .copied()
+            .filter(|s| window.debug_bounds(s).is_some())
+            .collect()
+    };
+    let expect = |page: Page| -> Vec<&'static str> {
+        match page {
+            Page::Dashboard => vec!["page:page-dashboard"],
+            Page::ToCategorize => vec!["page:page-queue"],
+            Page::Categories => vec!["page:page-categories"],
+            Page::Transfers | Page::Imports => vec![],
+        }
+    };
+
+    for page in [
+        Page::Dashboard,
+        Page::ToCategorize,
+        Page::Categories,
+        Page::Transfers,
+        Page::Imports,
+        Page::Dashboard,
+    ] {
+        cx.update(|cx| shell.update(cx, |s, cx| s.go_page(page, cx)));
+        draw_frame(cx, handle);
+        assert_eq!(
+            painted(&mut window),
+            expect(page),
+            "painted after switching to {page:?}"
+        );
+    }
+
+    // The accounts popover (Dashboard content) opened with a real click:
+    // switching away must close it, and returning must not show it open.
+    let trigger = window
+        .debug_bounds("accounts:filter")
+        .expect("accounts filter trigger");
+    window.simulate_click(trigger.center(), Modifiers::default());
+    cx.run_until_parked();
+    draw_frame(cx, handle);
+    assert!(
+        painted(&mut window).contains(&"checkbox:account-1"),
+        "the popover opened on the Dashboard"
+    );
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Categories, cx)));
+    draw_frame(cx, handle);
+    assert_eq!(
+        painted(&mut window),
+        expect(Page::Categories),
+        "the popover is gone after switching pages"
+    );
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
+    draw_frame(cx, handle);
+    assert_eq!(
+        painted(&mut window),
+        expect(Page::Dashboard),
+        "the popover does not come back open"
+    );
+}
+
+/// 3.11: `go_page` closes the transient UI it owns — the two-click
+/// confirmations, the rule offer and the inline rename editor.
+#[gpui::test]
+fn go_page_closes_transient_ui(cx: &mut TestAppContext) {
+    let (_handle, shell) = open_shell(cx, |conn| {
+        create_account(conn, "amex", "Cobalt", AccountKind::CreditCard).unwrap();
+    });
+    wait_until(cx, "the account list loads", |cx| {
+        shell.read(cx).accounts.len() == 1
+    });
+    cx.update(|cx| {
+        shell.update(cx, |s, cx| {
+            s.confirm_undo_import = Some(1);
+            s.rule_offer = Some((1, 2));
+            s.renaming = true;
+            s.confirm_delete_category = Some(1);
+            s.go_page(Page::Categories, cx);
+        });
+        let s = shell.read(cx);
+        assert!(s.confirm_undo_import.is_none(), "undo confirmation cleared");
+        assert!(s.rule_offer.is_none(), "rule offer cleared");
+        assert!(!s.renaming, "rename editor closed");
+        assert!(
+            s.confirm_delete_category.is_none(),
+            "delete confirmation cleared"
+        );
+    });
+}
+
 // -- row context menu (2.9) -------------------------------------------------
 
 /// A minimal row for the pure menu-model test.

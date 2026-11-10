@@ -104,6 +104,21 @@ pub enum Page {
     Imports,
 }
 
+impl Page {
+    /// Element id of the page content area (3.11): unique per page, so a
+    /// switch lands on a fresh element and GPUI cannot reuse the previous
+    /// page's painted subtree or its element state under the new page.
+    fn content_id(self) -> &'static str {
+        match self {
+            Page::Dashboard => "page-dashboard",
+            Page::ToCategorize => "page-queue",
+            Page::Categories => "page-categories",
+            Page::Transfers => "page-transfers",
+            Page::Imports => "page-imports",
+        }
+    }
+}
+
 /// The left inset (from the sidebar's content edge) shared by the nav items
 /// and the section labels (3.13). The gpui-kit nav row brings its own 8px
 /// left padding, which sat the items right of the single column the app
@@ -2180,8 +2195,13 @@ impl Shell {
 
     fn go_page(&mut self, page: Page, cx: &mut Context<Self>) {
         self.page = page;
+        // 3.11: no transient UI travels across a page switch — the two-click
+        // confirmations, the rule offer and the inline rename editor all
+        // belong to the page they were opened on.
         self.confirm_undo_import = None;
         self.rule_offer = None;
+        self.renaming = false;
+        self.confirm_delete_category = None;
         cx.notify();
     }
 
@@ -3402,7 +3422,13 @@ impl Shell {
                     )
                     // Accounts multi-select (3.3): a dropdown popover of
                     // checkboxes, one per account, all checked by default.
-                    .child(self.accounts_popover(cx))
+                    .child(
+                        // The selector (test builds only, 3.11) lets headless
+                        // tests find the trigger and click it.
+                        div()
+                            .debug_selector(|| "accounts:filter".into())
+                            .child(self.accounts_popover(cx)),
+                    )
                     .child(
                         checkbox("include-transfers")
                             .label("Include transfers")
@@ -4165,6 +4191,18 @@ impl Render for Shell {
             Page::Transfers => self.render_placeholder("Transfers", "No transfer reviews yet.", cx),
             Page::Imports => self.render_imports(cx),
         };
+        // 3.11: key the page area by the page. A switch to another page
+        // lands on a fresh element id, so GPUI cannot reuse the previous
+        // page's painted subtree or its element state under the new page.
+        // The debug selector (`page:<id>`, test builds only) lets headless
+        // tests assert exactly one page paints after a switch.
+        let page_area = v_flex()
+            .id(self.page.content_id())
+            .debug_selector(|| format!("page:{}", self.page.content_id()))
+            .flex_1()
+            .min_h_0()
+            .child(page_area)
+            .into_any_element();
 
         h_flex()
             .size_full()

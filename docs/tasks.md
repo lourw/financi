@@ -267,7 +267,7 @@ beside the monthly summary (right); then the transaction table.
   is only that the data falls outside the default Last 3 months, ask the user
   how the default or the empty state should change.
 
-- [ ] **3.11 Stale page content.** Content from the previous page stays on
+- [x] **3.11 Stale page content.** Content from the previous page stays on
   screen after switching pages. Find the cause and fix it.
 
 - [x] **3.12 Virtualize long lists.** The category tree and the rule list
