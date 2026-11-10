@@ -1127,6 +1127,97 @@ fn s_select(shell: &Entity<Shell>, cx: &mut App, ix: usize, window: &mut Window)
     });
 }
 
+/// 3.12: synthetic data for the long-list tests — 2,000 parents with one
+/// child each (4,000 tree rows) and 2,000 rules, inserted directly.
+fn seed_thousands(conn: &financi_db::rusqlite::Connection) {
+    for i in 0..2_000 {
+        conn.execute(
+            "INSERT INTO categories (name, kind) VALUES (?1, 'expense')",
+            financi_db::rusqlite::params![format!("Cat {i:04}")],
+        )
+        .unwrap();
+        let parent = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO categories (name, parent_id, kind) VALUES (?1, ?2, 'expense')",
+            financi_db::rusqlite::params![format!("Kid {i:04}"), parent],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO category_rules (pattern, category_id) VALUES (?1, ?2)",
+            financi_db::rusqlite::params![format!("PAT{i:04}"), conn.last_insert_rowid()],
+        )
+        .unwrap();
+    }
+}
+
+/// Draw one real frame so the virtualized lists lay out and build rows.
+fn draw_frame(cx: &mut TestAppContext, handle: AnyWindowHandle) {
+    with_window(cx, handle, |window, cx| {
+        window.draw(cx).clear(cx);
+    });
+}
+
+/// 3.12: with thousands of categories and rules the Categories page must
+/// still render, and the virtualized lists must build only the visible
+/// rows, not all 4,000 / 2,000.
+#[gpui::test]
+fn the_categories_page_builds_only_the_visible_rows(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_thousands);
+    // +1: the system `Transfers` parent from migration 0002.
+    wait_until(cx, "2001 category parents", |cx| {
+        shell.read(cx).categories.len() == 2_001
+    });
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Categories, cx)));
+    draw_frame(cx, handle);
+    cx.update(|cx| {
+        let s = shell.read(cx);
+        assert_eq!(s.rules.len(), 2_000, "the rule list is full too");
+        assert!(
+            s.tree_rows_built.get() > 0 && s.tree_rows_built.get() < 100,
+            "the tree built {} rows of 4000 — it must render a window",
+            s.tree_rows_built.get()
+        );
+        assert!(
+            s.rule_rows_built.get() > 0 && s.rule_rows_built.get() < 100,
+            "the rule list built {} rows of 2000 — it must render a window",
+            s.rule_rows_built.get()
+        );
+    });
+}
+
+/// 3.12: selection and the row click handler keep working with a long
+/// tree: clicking (the same `select_category` call `tree_row` makes) a
+/// category at the very bottom selects it, and the page re-renders.
+#[gpui::test]
+fn clicking_a_category_still_works_with_a_long_tree(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_thousands);
+    wait_until(cx, "2001 category parents", |cx| {
+        shell.read(cx).categories.len() == 2_001
+    });
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Categories, cx)));
+    draw_frame(cx, handle);
+    let deep = cx.update(|cx| {
+        let s = shell.read(cx);
+        s.categories[1_999].children[0].id
+    });
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| s.select_category(deep, window, cx));
+    });
+    draw_frame(cx, handle);
+    cx.update(|cx| {
+        let s = shell.read(cx);
+        assert_eq!(
+            s.selected_category,
+            Some(deep),
+            "the last child of the last parent selected"
+        );
+        assert!(
+            s.tree_rows_built.get() < 100,
+            "still windowed after selecting"
+        );
+    });
+}
+
 // -- row context menu (2.9) -------------------------------------------------
 
 /// A minimal row for the pure menu-model test.

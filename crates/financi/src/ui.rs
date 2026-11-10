@@ -43,7 +43,9 @@ use gpui_kit::component::select::{Select, SelectEvent, SelectState};
 use gpui_kit::component::sidebar::{Sidebar, SidebarItem, SidebarMenuItem};
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::table::{Column, ColumnSort, DataTable, TableDelegate, TableState};
-use gpui_kit::component::{ActiveTheme as _, Collapsible, Disableable as _, h_flex, v_flex};
+use gpui_kit::component::{
+    ActiveTheme as _, Collapsible, Disableable as _, h_flex, v_flex, v_virtual_list,
+};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
@@ -1082,6 +1084,13 @@ pub struct Shell {
     rule_match_count: Option<i64>,
     rule_task: Option<Task<()>>,
     rule_error: Option<String>,
+    // -- Virtualized Categories-page lists (3.12): how many rows each list
+    // built for the last layout pass — the visible slice, not the whole
+    // data set. Observability for the long-list tests.
+    #[cfg(test)]
+    tree_rows_built: std::cell::Cell<usize>,
+    #[cfg(test)]
+    rule_rows_built: std::cell::Cell<usize>,
     // -- To categorize queue
     queue: Vec<UncategorizedGroup>,
     queue_pickers: HashMap<String, Entity<SelectState<Names>>>,
@@ -1391,6 +1400,10 @@ impl Shell {
             rule_match_count: None,
             rule_task: None,
             rule_error: None,
+            #[cfg(test)]
+            tree_rows_built: std::cell::Cell::new(0),
+            #[cfg(test)]
+            rule_rows_built: std::cell::Cell::new(0),
             queue: Vec::new(),
             queue_pickers: HashMap::new(),
             queue_error: None,
@@ -3511,6 +3524,38 @@ impl Shell {
             .into_any_element()
     }
 
+    /// One row of the selected category's rule list (3.12: built lazily
+    /// by the virtualized rule list, fixed height to match its
+    /// `item_sizes`).
+    fn rule_row(&self, rule: &Rule, muted: Hsla) -> AnyElement {
+        let target = self
+            .child_choices
+            .iter()
+            .find(|(id, _)| *id == rule.category_id)
+            .map(|(_, n)| n.clone())
+            .unwrap_or_else(|| format!("#{}", rule.category_id));
+        h_flex()
+            .h_6()
+            .gap_2()
+            .items_center()
+            .child(
+                div()
+                    .w(px(320.))
+                    .min_w_0()
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .child(rule.pattern.clone()),
+            )
+            .child(div().text_xs().text_color(muted).child(if rule.is_regex {
+                "regex"
+            } else {
+                "substring"
+            }))
+            .child(div().text_color(muted).child("→"))
+            .child(div().child(target))
+            .into_any_element()
+    }
+
     fn render_categories(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let (muted, border, accent, accent_foreground, danger) = {
             let theme = cx.theme();
@@ -3524,32 +3569,56 @@ impl Shell {
         };
         let palette = (muted, accent, accent_foreground);
 
+        // 3.12: the tree is virtualized (gpui-kit `v_virtual_list`). The
+        // closure runs during layout with the visible range, so a tree of
+        // thousands builds only the rows that can be on screen. Rows are
+        // fixed height (`tree_row`'s `h_8` = 32 px); the panel's `gap_1`
+        // is added to the stride by the list.
+        let n_tree_rows: usize = self.categories.iter().map(|p| 1 + p.children.len()).sum();
+        let tree_sizes = Rc::new(vec![size(px(0.), px(32.)); n_tree_rows]);
         let tree = v_flex()
-            .id("category-tree")
             .w(px(300.))
             .flex_shrink_0()
             .gap_1()
             .min_h_0()
-            .overflow_y_scroll()
-            .child(div().text_xs().text_color(muted).px_2().child("TREE"));
-        let tree = self.categories.iter().fold(tree, |tree, parent| {
-            let tree = tree.child(self.tree_row(
-                parent,
-                0,
-                self.selected_category == Some(parent.id),
-                palette,
-                cx,
-            ));
-            parent.children.iter().fold(tree, |tree, child| {
-                tree.child(self.tree_row(
-                    child,
-                    1,
-                    self.selected_category == Some(child.id),
-                    palette,
-                    cx,
-                ))
-            })
-        });
+            .child(div().text_xs().text_color(muted).px_2().child("TREE"))
+            .child(
+                v_virtual_list(
+                    cx.entity(),
+                    "category-tree",
+                    tree_sizes,
+                    move |this, range, _window, cx| {
+                        let mut rows = Vec::new();
+                        let mut ix = 0usize;
+                        for parent in &this.categories {
+                            if ix >= range.end {
+                                break;
+                            }
+                            if ix >= range.start {
+                                let selected = this.selected_category == Some(parent.id);
+                                rows.push(this.tree_row(parent, 0, selected, palette, cx));
+                            }
+                            ix += 1;
+                            for child in &parent.children {
+                                if ix >= range.end {
+                                    break;
+                                }
+                                if ix >= range.start {
+                                    let selected = this.selected_category == Some(child.id);
+                                    rows.push(this.tree_row(child, 1, selected, palette, cx));
+                                }
+                                ix += 1;
+                            }
+                        }
+                        #[cfg(test)]
+                        this.tree_rows_built.set(rows.len());
+                        rows
+                    },
+                )
+                .gap_1()
+                .flex_1()
+                .min_h_0(),
+            );
 
         // Detail panel for the selected category.
         let detail: AnyElement = match self.selected_node() {
@@ -3661,33 +3730,9 @@ impl Shell {
             }
         };
 
-        // Rules: list + add row with the live match preview.
-        let rule_rows = self.rules.iter().map(|r| {
-            let target = self
-                .child_choices
-                .iter()
-                .find(|(id, _)| *id == r.category_id)
-                .map(|(_, n)| n.clone())
-                .unwrap_or_else(|| format!("#{}", r.category_id));
-            h_flex()
-                .gap_2()
-                .items_center()
-                .child(
-                    div()
-                        .w(px(320.))
-                        .min_w_0()
-                        .overflow_hidden()
-                        .text_ellipsis()
-                        .child(r.pattern.clone()),
-                )
-                .child(div().text_xs().text_color(muted).child(if r.is_regex {
-                    "regex"
-                } else {
-                    "substring"
-                }))
-                .child(div().text_color(muted).child("→"))
-                .child(div().child(target))
-        });
+        // Rules: list + add row with the live match preview. The list is
+        // virtualized like the tree (3.12); rows are fixed height (24 px).
+        let rule_sizes = Rc::new(vec![size(px(0.), px(24.)); self.rules.len()]);
 
         let preview = match self.rule_match_count {
             Some(n) => div()
@@ -3804,12 +3849,26 @@ impl Shell {
                                         .map(|e| div().text_sm().text_color(danger).child(e)),
                                 )
                                 .child(
-                                    div()
-                                        .id("rule-list")
-                                        .flex_1()
-                                        .min_h_0()
-                                        .overflow_y_scroll()
-                                        .child(v_flex().gap_1().children(rule_rows)),
+                                    v_virtual_list(
+                                        cx.entity(),
+                                        "rule-list",
+                                        rule_sizes,
+                                        move |this, range, _window, _cx| {
+                                            let rows: Vec<AnyElement> = this
+                                                .rules
+                                                .iter()
+                                                .skip(range.start)
+                                                .take(range.len())
+                                                .map(|r| this.rule_row(r, muted))
+                                                .collect();
+                                            #[cfg(test)]
+                                            this.rule_rows_built.set(rows.len());
+                                            rows
+                                        },
+                                    )
+                                    .gap_1()
+                                    .flex_1()
+                                    .min_h_0(),
                                 ),
                         ),
                 ),
