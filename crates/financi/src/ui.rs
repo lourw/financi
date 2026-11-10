@@ -4062,7 +4062,7 @@ impl Shell {
                         // instead of a row of unlabelled boxes.
                         h_flex()
                             .flex_wrap()
-                            .gap_6()
+                            .gap_3()
                             .items_end()
                             .when(!is_child, |row| {
                                 row.child(
@@ -4343,119 +4343,137 @@ impl Shell {
             let theme = cx.theme();
             (theme.muted_foreground, theme.danger)
         };
-        let body: AnyElement =
-            if self.queue.is_empty() {
-                div()
-                    .flex_1()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .text_color(muted)
-                    .child("Nothing waiting — every transaction has a category.")
-                    .into_any_element()
-            } else {
-                // 3.19: virtualized like the Categories-page lists (3.12). The
-                // closure runs during layout with the visible range, so a queue
-                // of thousands builds only the rows that can be on screen, and
-                // `queue_picker` creates a picker only with its row. Rows are a
-                // fixed 40 px (32 px controls with the old `py_1` of spacing);
-                // the list's `gap_1` is added to the stride by the list.
-                let sizes = Rc::new(vec![size(px(0.), px(40.)); self.queue.len()]);
-                // 3.16: a heading row labels every column, the category picker
-                // included — its placeholder alone is not a label. The widths
-                // mirror the queue rows below.
-                v_flex()
-                    .flex_1()
-                    .min_h_0()
-                    .gap_1()
-                    .child(
-                        h_flex()
-                            .gap_3()
-                            .px_1()
-                            .child(
-                                field_label(muted, "Merchant")
-                                    .w(px(280.))
-                                    .min_w_0()
-                                    .overflow_hidden()
-                                    .text_ellipsis(),
-                            )
-                            .child(field_label(muted, "Transactions").w(px(140.)))
-                            .child(field_label(muted, "Total").w(px(120.)).text_right())
-                            .child(field_label(muted, "Dates").flex_1().min_w_0())
-                            .child(field_label(muted, "Category").w(px(260.))),
-                    )
-                    .child(
-                        v_virtual_list(
-                            cx.entity(),
-                            "queue-list",
-                            sizes,
-                            move |this, range, window, cx| {
-                                let groups = this.queue[range].to_vec();
-                                let mut rows = Vec::with_capacity(groups.len());
-                                for g in groups {
-                                    let merchant = g.merchant.clone();
-                                    let picker = this.queue_picker(&merchant, window, cx);
-                                    rows.push(
-                                        h_flex()
-                                            .h(px(40.))
-                                            .gap_3()
-                                            .items_center()
-                                            .child(
-                                                div()
-                                                    .w(px(280.))
-                                                    .min_w_0()
-                                                    .overflow_hidden()
-                                                    .text_ellipsis()
-                                                    .font_weight(FontWeight::SEMIBOLD)
-                                                    .child(g.merchant.clone()),
-                                            )
-                                            .child(div().w(px(140.)).child(format!(
-                                                "{} transactions",
-                                                flow::count(g.count)
-                                            )))
-                                            .child(
-                                                div()
-                                                    .w(px(120.))
-                                                    .text_right()
-                                                    .child(flow::money(g.total_cents)),
-                                            )
-                                            .child(div().text_sm().text_color(muted).child(
-                                                flow::date_range(&g.first_date, &g.last_date),
-                                            ))
-                                            .child(div().flex_1())
-                                            .child(div().w(px(260.)).child(
-                                                Select::new(&picker).placeholder("Category…"),
-                                            ))
-                                            .child(
-                                                Button::new(SharedString::from(format!(
-                                                    "categorize-{}",
-                                                    g.merchant
-                                                )))
-                                                .label("Categorize")
-                                                .primary()
-                                                .on_click(cx.listener(
-                                                    move |this, _, window, cx| {
-                                                        this.categorize_merchant(
-                                                            merchant.clone(),
-                                                            window,
-                                                            cx,
-                                                        );
-                                                    },
-                                                )),
-                                            ),
-                                    );
-                                }
-                                #[cfg(test)]
-                                this.queue_rows_built.set(rows.len());
-                                rows
-                            },
+        let body: AnyElement = if self.queue.is_empty() {
+            div()
+                .flex_1()
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_color(muted)
+                .child("Nothing waiting — every transaction has a category.")
+                .into_any_element()
+        } else {
+            // 3.19: virtualized like the Categories-page lists (3.12). The
+            // closure runs during layout with the visible range, so a queue
+            // of thousands builds only the rows that can be on screen, and
+            // `queue_picker` creates a picker only with its row. Rows are a
+            // fixed 40 px (32 px controls with the old `py_1` of spacing);
+            // the list's `gap_1` is added to the stride by the list.
+            let sizes = Rc::new(vec![size(px(0.), px(40.)); self.queue.len()]);
+            // 3.16: a heading row labels every column, the category picker
+            // included — its placeholder alone is not a label. The children
+            // mirror the queue rows below in order and width, down to an
+            // invisible copy of the Categorize button, so each heading sits
+            // over its column (the picker's heading would otherwise slide
+            // right by the button's width).
+            v_flex()
+                .flex_1()
+                .min_h_0()
+                .gap_1()
+                .child(
+                    h_flex()
+                        .gap_3()
+                        .child(
+                            field_label(muted, "Merchant")
+                                .w(px(280.))
+                                .min_w_0()
+                                .overflow_hidden()
+                                .text_ellipsis(),
                         )
-                        .gap_1()
-                        .flex_1()
-                        .min_h_0(),
+                        .child(field_label(muted, "Transactions").w(px(140.)))
+                        .child(field_label(muted, "Total").w(px(120.)).text_right())
+                        .child(field_label(muted, "Dates").flex_1().min_w_0())
+                        .child(field_label(muted, "Category").w(px(260.)))
+                        .child(
+                            Button::new("queue-heading-categorize-spacer")
+                                .label("Categorize")
+                                .primary()
+                                .opacity(0.0),
+                        ),
+                )
+                .child(
+                    v_virtual_list(
+                        cx.entity(),
+                        "queue-list",
+                        sizes,
+                        move |this, range, window, cx| {
+                            let groups = this.queue[range].to_vec();
+                            let mut rows = Vec::with_capacity(groups.len());
+                            for g in groups {
+                                let merchant = g.merchant.clone();
+                                let picker = this.queue_picker(&merchant, window, cx);
+                                rows.push(
+                                    h_flex()
+                                        // Fill the list's width, or the row
+                                        // stays at its natural width and the
+                                        // `flex_1` spacer never grows: the
+                                        // picker and button would then float
+                                        // left of the column headings.
+                                        .w_full()
+                                        .h(px(40.))
+                                        .gap_3()
+                                        .items_center()
+                                        .child(
+                                            div()
+                                                .w(px(280.))
+                                                .min_w_0()
+                                                .overflow_hidden()
+                                                .text_ellipsis()
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .child(g.merchant.clone()),
+                                        )
+                                        .child(div().w(px(140.)).child(format!(
+                                            "{} transactions",
+                                            flow::count(g.count)
+                                        )))
+                                        .child(
+                                            div()
+                                                .w(px(120.))
+                                                .text_right()
+                                                .child(flow::money(g.total_cents)),
+                                        )
+                                        .child(
+                                            div().text_sm().text_color(muted).child(
+                                                flow::date_range(&g.first_date, &g.last_date),
+                                            ),
+                                        )
+                                        .child(div().flex_1())
+                                        .child(
+                                            div()
+                                                .w(px(260.))
+                                                .debug_selector(|| "queue:picker-col".into())
+                                                .child(
+                                                    Select::new(&picker).placeholder("Category…"),
+                                                ),
+                                        )
+                                        .child(
+                                            Button::new(SharedString::from(format!(
+                                                "categorize-{}",
+                                                g.merchant
+                                            )))
+                                            .label("Categorize")
+                                            .primary()
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                this.categorize_merchant(
+                                                    merchant.clone(),
+                                                    window,
+                                                    cx,
+                                                );
+                                            })),
+                                        ),
+                                );
+                            }
+                            #[cfg(test)]
+                            this.queue_rows_built.set(rows.len());
+                            rows
+                        },
                     )
-                    .into_any_element()
-            };
+                    .gap_1()
+                    .flex_1()
+                    .min_h_0(),
+                )
+                .into_any_element()
+        };
         v_flex()
             .flex_1()
             .min_h_0()

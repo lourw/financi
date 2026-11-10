@@ -1402,6 +1402,53 @@ fn the_queue_page_labels_its_columns(cx: &mut TestAppContext) {
     }
 }
 
+/// The heading row reserves the same tail as the rows (picker + Categorize
+/// button), so the "Category" heading sits over the picker column instead of
+/// sliding right by the button's width. Measured at a width where a row fits
+/// without overflowing.
+#[gpui::test]
+fn the_queue_category_heading_sits_over_the_picker_column(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |conn| {
+        create_account(conn, "amex", "Cobalt", AccountKind::CreditCard).unwrap();
+    });
+    import_and_top_merchant(cx, handle, &shell);
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::ToCategorize, cx)));
+    cx.run_until_parked();
+    with_window(cx, handle, |window, cx| {
+        window.resize(size(px(1600.), px(900.)));
+        window.bounds_changed(cx);
+    });
+    cx.run_until_parked();
+    let mut window = VisualTestContext::from_window(handle, cx);
+    draw_frame(cx, handle);
+    let heading = window
+        .debug_bounds("label:Category")
+        .expect("the queue paints a Category heading");
+    let picker = window
+        .debug_bounds("queue:picker-col")
+        .expect("the queue paints a picker column");
+    assert!(
+        (heading.origin.x - picker.origin.x).abs() < px(1.),
+        "the Category heading starts where the picker column starts: \
+         heading x {}, picker x {}",
+        heading.origin.x,
+        picker.origin.x
+    );
+    assert!(
+        (heading.size.width - picker.size.width).abs() < px(1.),
+        "the Category heading is as wide as the picker column: \
+         heading w {}, picker w {}",
+        heading.size.width,
+        picker.size.width
+    );
+    assert!(
+        heading.origin.y < picker.origin.y,
+        "the heading is above the rows: heading y {}, picker y {}",
+        heading.origin.y,
+        picker.origin.y
+    );
+}
+
 #[gpui::test]
 fn delete_category_reassigns_transactions_and_rules(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, |c| {
