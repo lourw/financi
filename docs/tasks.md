@@ -270,7 +270,7 @@ beside the monthly summary (right); then the transaction table.
 - [ ] **3.11 Stale page content.** Content from the previous page stays on
   screen after switching pages. Find the cause and fix it.
 
-- [ ] **3.12 Virtualize long lists.** The category tree and the rule list
+- [x] **3.12 Virtualize long lists.** The category tree and the rule list
   build every row, so the Categories page gets slow with many categories or
   rules. Render only the visible rows, keeping selection, clicks and
   scrolling. Test with thousands of rows.
