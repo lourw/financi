@@ -1335,6 +1335,65 @@ fn go_page_closes_transient_ui(cx: &mut TestAppContext) {
     });
 }
 
+/// 3.18 regression: opening Categories while the first refresh is still in
+/// flight used to leave the page blank — the list columns collapsed to 0px
+/// inside the page's `h_flex` row (which centers its children), so the
+/// virtual lists resolved an empty window and no row appeared when the data
+/// finally arrived. Opening the page first, with the data arriving after,
+/// must still fill both lists without any further action.
+#[gpui::test]
+fn categories_page_shows_rows_when_data_arrives_after_it_opens(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_thousands);
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Categories, cx)));
+    // One draw while the refresh is still in flight: the page is open empty.
+    draw_frame(cx, handle);
+    wait_until(cx, "categories and rules in the shell", |cx| {
+        let s = shell.read(cx);
+        s.categories.len() == 2_001 && s.rules.len() == 2_000
+    });
+    // The first draw that has the data must show rows — no extra action.
+    draw_frame(cx, handle);
+    cx.update(|cx| {
+        let s = shell.read(cx);
+        assert!(
+            s.tree_rows_built.get() >= 8,
+            "tree rows on first open, before any other action: {}",
+            s.tree_rows_built.get()
+        );
+        assert!(
+            s.rule_rows_built.get() >= 8,
+            "rule rows on first open, before any other action: {}",
+            s.rule_rows_built.get()
+        );
+    });
+}
+
+/// 3.18 regression: switching to Categories from another page after the
+/// data has already loaded must fill both lists on the first draw there.
+#[gpui::test]
+fn switching_to_categories_after_load_shows_rows(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_thousands);
+    wait_until(cx, "2001 category parents", |cx| {
+        shell.read(cx).categories.len() == 2_001
+    });
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Categories, cx)));
+    wait_until(cx, "2000 rules", |cx| shell.read(cx).rules.len() == 2_000);
+    draw_frame(cx, handle);
+    cx.update(|cx| {
+        let s = shell.read(cx);
+        assert!(
+            s.tree_rows_built.get() >= 8,
+            "tree rows after switching to the page: {}",
+            s.tree_rows_built.get()
+        );
+        assert!(
+            s.rule_rows_built.get() >= 8,
+            "rule rows after switching to the page: {}",
+            s.rule_rows_built.get()
+        );
+    });
+}
+
 // -- row context menu (2.9) -------------------------------------------------
 
 /// A minimal row for the pure menu-model test.
