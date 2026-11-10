@@ -1896,6 +1896,154 @@ fn unchecking_an_account_filters_the_table(cx: &mut TestAppContext) {
     });
 }
 
+/// Task 3.17: `none_selected` must resolve against the accounts loaded *by
+/// this* refresh, not the previous refresh's list. An import that adds an
+/// account while every existing checkbox is unchecked leaves that new
+/// account checked, so every view must show its rows as soon as the import
+/// finishes — not stay blank until some other filter changes.
+#[gpui::test]
+fn an_import_that_adds_an_account_shows_it_with_every_box_unchecked(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |c| {
+        create_account(c, "amex", "Gold", AccountKind::CreditCard).unwrap();
+        settings::set(c, UI_DATE_RANGE, "all").unwrap();
+    });
+    wait_until(cx, "Gold loaded and the all-time range restored", |cx| {
+        shell.read(cx).accounts.len() == 1
+            && shell.read(cx).date_range == DateRange::Preset(DatePreset::AllTime)
+    });
+
+    // Uncheck the only account: nothing is selected, so the views are
+    // legitimately blank.
+    let gold = cx.update(|cx| shell.read(cx).accounts[0].id);
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| s.set_account_checked(gold, false, window, cx));
+    });
+    wait_until(cx, "no account checked", |cx| {
+        shell.read(cx).excluded_accounts == [gold] && shell.read(cx).row_count == 0
+    });
+
+    // Import into a brand-new account: its checkbox is on, so the finished
+    // import must fill the views with its rows on its own.
+    import_demo_file(cx, handle, &shell, "amex-sep-nov.csv", "Amex");
+    wait_until(
+        cx,
+        "the imported rows show without a further filter change",
+        |cx| shell.read(cx).row_count == 100,
+    );
+
+    cx.update(|cx| {
+        let s = shell.read(cx);
+        let amex = s
+            .accounts
+            .iter()
+            .find(|a| a.name == "Amex")
+            .expect("the import created Amex");
+        assert!(
+            !s.excluded_accounts.contains(&amex.id),
+            "a new account starts checked"
+        );
+        assert!(
+            table_rows(&shell, cx)
+                .iter()
+                .all(|r| r.account.ends_with("Amex")),
+            "only the new account is selected, so only its rows show"
+        );
+        assert_eq!(s.summary.months, ["2026-09", "2026-10", "2026-11"]);
+        assert!(
+            !s.chart_rows.is_empty(),
+            "the chart shows the imported spend"
+        );
+    });
+}
+
+/// Task 3.17 (regression): the refresh triggered when an import finishes
+/// starts with the *previous* refresh's `self.accounts` — the database
+/// already has the new account, the shell does not. Judging "no accounts
+/// checked" from that stale list skipped the queries, so every view stayed
+/// blank until some other filter changed; `none_selected` must resolve
+/// against the accounts the refresh itself loads.
+#[gpui::test]
+fn a_refresh_resolves_the_account_filter_against_the_accounts_it_loads(cx: &mut TestAppContext) {
+    // Gold's rows were imported long ago; Amex's import is the one that has
+    // just landed, after the shell's previous refresh.
+    let (handle, shell) = open_shell(cx, |c| {
+        settings::set(c, UI_DATE_RANGE, "all").unwrap();
+        let gold = create_account(c, "amex", "Gold", AccountKind::CreditCard).unwrap();
+        let amex = create_account(c, "amex", "Amex", AccountKind::CreditCard).unwrap();
+        for (account, line, date) in [
+            (gold, 0, "2026-11-05"),
+            (amex, 0, "2026-10-01"),
+            (amex, 1, "2026-10-02"),
+        ] {
+            c.execute(
+                "INSERT INTO imports (account_id, parser_id, file_name, imported_at, header_raw,
+                                      encoding, has_bom, line_ending, trailing_newline, row_count)
+                 VALUES (?1, 'amex', 'seed.csv', '2026-11-01', X'00', 'utf-8', 0, 'lf', 0, 0)",
+                [account],
+            )
+            .unwrap();
+            let import = c.last_insert_rowid();
+            c.execute(
+                "INSERT INTO transactions (account_id, import_id, source_line, raw_bytes,
+                                           row_hash, posted_date, amount_cents,
+                                           description_raw, category_id)
+                 VALUES (?1, ?2, ?3, X'00', ?4, ?5, -100, 'ROW', NULL)",
+                (
+                    account,
+                    import,
+                    line,
+                    format!("hash-{account}-{line}"),
+                    date,
+                ),
+            )
+            .unwrap();
+        }
+    });
+    wait_until(cx, "both accounts and three rows loaded", |cx| {
+        shell.read(cx).accounts.len() == 2 && shell.read(cx).row_count == 3
+    });
+    let gold = cx.update(|cx| {
+        shell
+            .read(cx)
+            .accounts
+            .iter()
+            .find(|a| a.name == "Gold")
+            .unwrap()
+            .id
+    });
+
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            // The state the import's refresh starts from: the user has
+            // unchecked every account the previous refresh showed — which
+            // knew only Gold, not the account the import added.
+            s.accounts.retain(|a| a.id == gold);
+            s.excluded_accounts = vec![gold];
+            s.sync_account_filter();
+            s.refresh(window, cx);
+        });
+    });
+
+    // The accounts loaded by this refresh include Amex, whose checkbox is on,
+    // so its two rows show: the filter must not be judged from the stale list.
+    wait_until(cx, "the checked new account's rows show", |cx| {
+        shell.read(cx).row_count == 2
+    });
+    cx.update(|cx| {
+        let s = shell.read(cx);
+        assert!(
+            table_rows(&shell, cx)
+                .iter()
+                .all(|r| r.account.ends_with("Amex")),
+            "only the new account is checked, so only its rows show"
+        );
+        let amex = s.accounts.iter().find(|a| a.name == "Amex").unwrap().id;
+        assert_eq!(s.view_filter.account_ids, vec![amex]);
+        assert!(!s.chart_rows.is_empty(), "the chart is not blank");
+        assert!(!s.summary.months.is_empty(), "the summary is not blank");
+    });
+}
+
 // Dashboard table search and toggles (task 3.4)
 
 /// One account with a categorized spend, an uncategorized spend, a money-in

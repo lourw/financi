@@ -1412,18 +1412,13 @@ impl Shell {
     /// the dashboard, sidebar counts, and the import history.
     fn refresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let db = self.db.clone();
-        let account_ids = self.selected_account_ids();
-        // Shared filter for the query: the date range and transfers from
-        // state, and the checked accounts. Empty `account_ids` means *all*
-        // accounts (the `ViewFilter` convention); "no accounts checked" is
-        // handled by skipping the query below.
-        let none_selected = account_ids.is_empty() && !self.accounts.is_empty();
+        // The account filter resolves against the accounts loaded *inside*
+        // this refresh (task 3.17): an import can add accounts while every
+        // existing checkbox is unchecked, and reading `self.accounts` here
+        // would read "nothing selected" from the previous refresh and blank
+        // every view until some other filter changes.
+        let excluded = self.excluded_accounts.clone();
         let mut view_filter = self.view_filter.clone();
-        view_filter.account_ids = if self.excluded_accounts.is_empty() {
-            Vec::new()
-        } else {
-            account_ids
-        };
         view_filter.include_transfers = self.include_transfers;
         // The table-only filters (3.4): search, the two toggles and the sort,
         // folded into the query alongside the shared date-range/accounts/
@@ -1451,6 +1446,21 @@ impl Shell {
         self.refresh_task = Some(cx.spawn_in(window, async move |this, cx| {
             let result = on_db(&db, move |c| {
                 let accounts = list_accounts(c)?;
+                // Resolve the account filter against those accounts: the
+                // ids the user has not excluded. Empty `account_ids` means
+                // *all* accounts (the `ViewFilter` convention); "no
+                // accounts checked" is handled by skipping the queries.
+                let account_ids: Vec<i64> = accounts
+                    .iter()
+                    .filter(|a| !excluded.contains(&a.id))
+                    .map(|a| a.id)
+                    .collect();
+                let none_selected = account_ids.is_empty() && !accounts.is_empty();
+                view_filter.account_ids = if excluded.is_empty() {
+                    Vec::new()
+                } else {
+                    account_ids
+                };
                 let rows = if none_selected {
                     Vec::new()
                 } else {
