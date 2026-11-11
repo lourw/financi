@@ -468,7 +468,7 @@ out.
     column); the Transactions cell text is a bare number. Update the
     *To categorize* row of `docs/ui-conventions.md` if it changes.
 
-- [ ] **3.23 Categories page layout.** The page reads as scattered
+- [x] **3.23 Categories page layout.** The page reads as scattered
   controls: the new-parent form floats above everything, the detail panel
   is a wrapping row of unrelated pickers, the rules list under it shows
   every rule in the database no matter which category is selected, and

@@ -31,11 +31,11 @@ use super::{
     BAR_LABEL_MAX_CHARS, BUTTON_PAD_X, CELL_PAD_X, CHART_CHAR_PX, CHART_LABEL_GAP,
     CHART_LABEL_MAX_CHARS, CHART_LABEL_MIN_CHARS, DashboardBody, ExportData, HISTORY_DATES_W,
     HISTORY_FLEX_MIN_W, HISTORY_ROWS_W, HISTORY_TIME_W, ImportPanel, LEGEND_W, LegendSelection,
-    NAV_ROW_INSET, NEW_ACCOUNT, PAGE_PAD, Page, PlanState, RestoreBackup, RowMenuItem, SIDEBAR_W,
-    Shell, SummaryRowKind, TABLE_BORDER_X, TEXT_SM_CHAR_PX, TX_FIXED_W, UNDO_ICON_W,
-    UNDO_LABEL_MAX, UndoLastImport, band_label_budget, bar_label_plan, bar_label_slots,
-    bar_share_label, chart_tooltip_value, history_flex_widths, history_undo_col_w, row_menu_items,
-    short_chart_labels, tx_flex_widths,
+    NAV_ROW_INSET, NEW_ACCOUNT, NEW_CATEGORY, PAGE_PAD, Page, PlanState, RestoreBackup,
+    RowMenuItem, SIDEBAR_W, Shell, SummaryRowKind, TABLE_BORDER_X, TEXT_SM_CHAR_PX, TX_FIXED_W,
+    UNDO_ICON_W, UNDO_LABEL_MAX, UndoLastImport, band_label_budget, bar_label_plan,
+    bar_label_slots, bar_share_label, chart_tooltip_value, history_flex_widths, history_undo_col_w,
+    row_menu_items, short_chart_labels, tx_flex_widths,
 };
 
 fn demo(name: &str) -> PathBuf {
@@ -2081,6 +2081,21 @@ fn open_rule_fixture(cx: &mut TestAppContext) -> (AnyWindowHandle, Entity<Shell>
             && s.cat_counts.get(&second) == Some(&1)
     });
     cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Categories, cx)));
+    // 3.23: the page lists only the selected category's rules, so the
+    // fixture selects the rules' parent to put them on screen.
+    let drinks = cx.update(|cx| {
+        shell
+            .read(cx)
+            .categories
+            .iter()
+            .find(|p| p.children.iter().any(|c| c.id == first))
+            .map(|p| p.id)
+            .unwrap()
+    });
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| s.select_category(drinks, window, cx));
+    });
+    cx.run_until_parked();
     (handle, shell, rule, first, second)
 }
 
@@ -2512,6 +2527,9 @@ fn rule_row_actions_are_built_only_for_visible_rows(cx: &mut TestAppContext) {
         shell.read(cx).rules.len() == 2_000 && shell.read(cx).categories.len() == 2_001
     });
     cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Categories, cx)));
+    // 3.23: rules paint only under their selected category; all 2,000 of
+    // them sit under "Cat 0000" (see `seed_thousands`).
+    select_parent(cx, handle, &shell, "Cat 0000");
     draw_frame(cx, handle);
     let first_rule = cx.update(|cx| shell.read(cx).rules[0].id);
     cx.update(|cx| {
@@ -3145,6 +3163,10 @@ fn s_select(shell: &Entity<Shell>, cx: &mut App, ix: usize, window: &mut Window)
 /// 3.12: synthetic data for the long-list tests — 2,000 parents with one
 /// child each (4,000 tree rows) and 2,000 rules, inserted directly.
 fn seed_thousands(conn: &financi_db::rusqlite::Connection) {
+    // 3.23: the page lists only the selected category's rules, so the
+    // long-list tests need them all under one: every rule targets the
+    // first subcategory, under "Cat 0000".
+    let mut first_child = 0i64;
     for i in 0..2_000 {
         conn.execute(
             "INSERT INTO categories (name, kind) VALUES (?1, 'expense')",
@@ -3157,12 +3179,40 @@ fn seed_thousands(conn: &financi_db::rusqlite::Connection) {
             financi_db::rusqlite::params![format!("Kid {i:04}"), parent],
         )
         .unwrap();
+        let child = conn.last_insert_rowid();
+        if i == 0 {
+            first_child = child;
+        }
         conn.execute(
             "INSERT INTO category_rules (pattern, category_id) VALUES (?1, ?2)",
-            financi_db::rusqlite::params![format!("PAT{i:04}"), conn.last_insert_rowid()],
+            financi_db::rusqlite::params![format!("PAT{i:04}"), first_child],
         )
         .unwrap();
     }
+}
+
+/// 3.23: select a top-level category by name — the same `select_category`
+/// call `tree_row` makes. The page's rule list only paints with a
+/// selection, so most Categories tests start here.
+fn select_parent(
+    cx: &mut TestAppContext,
+    handle: AnyWindowHandle,
+    shell: &Entity<Shell>,
+    name: &str,
+) {
+    let id = cx.update(|cx| {
+        shell
+            .read(cx)
+            .categories
+            .iter()
+            .find(|p| p.name == name)
+            .unwrap_or_else(|| panic!("no parent category {name:?}"))
+            .id
+    });
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| s.select_category(id, window, cx));
+    });
+    cx.run_until_parked();
 }
 
 /// Draw one real frame so the virtualized lists lay out and build rows.
@@ -3202,6 +3252,9 @@ fn the_categories_page_builds_only_the_visible_rows(cx: &mut TestAppContext) {
         shell.read(cx).categories.len() == 2_001
     });
     cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Categories, cx)));
+    // 3.23: the rule list paints only for the selected category, and all
+    // 2,000 seeded rules sit under "Cat 0000".
+    select_parent(cx, handle, &shell, "Cat 0000");
     draw_frame(cx, handle);
     cx.update(|cx| {
         let s = shell.read(cx);
@@ -3325,6 +3378,9 @@ fn the_rule_list_keeps_its_scroll_offset(cx: &mut TestAppContext) {
         shell.read(cx).rules.len() == 2_000 && shell.read(cx).categories.len() == 2_001
     });
     cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Categories, cx)));
+    // 3.23: the list shows the selected category's rules; all 2,000 of
+    // them sit under "Cat 0000" (see `seed_thousands`).
+    select_parent(cx, handle, &shell, "Cat 0000");
     draw_frame(cx, handle);
     cx.update(|cx| {
         let s = shell.read(cx);
@@ -3361,6 +3417,23 @@ fn the_rule_list_keeps_its_scroll_offset(cx: &mut TestAppContext) {
         );
         assert_eq!(s.rule_range.get().1, s.rules.len());
     });
+    // 3.23: changing the selection replaces the list's content, and the
+    // offset resets to the top — the one reset 3.21 allowed.
+    select_parent(cx, handle, &shell, "Cat 0001");
+    draw_frame(cx, handle);
+    cx.update(|cx| {
+        let s = shell.read(cx);
+        assert_eq!(
+            s.rule_scroll.offset(),
+            Point::default(),
+            "the selection change reset the rule list's scroll"
+        );
+    });
+    let mut window = VisualTestContext::from_window(handle, cx);
+    assert!(
+        window.debug_bounds("cat:rules-empty").is_some(),
+        "a category without rules shows the empty note"
+    );
 }
 
 // -- page switching (3.11) ---------------------------------------------------
@@ -3492,6 +3565,9 @@ fn categories_page_shows_rows_when_data_arrives_after_it_opens(cx: &mut TestAppC
         let s = shell.read(cx);
         s.categories.len() == 2_001 && s.rules.len() == 2_000
     });
+    // 3.23: the rule list paints with the selection; all 2,000 rules sit
+    // under "Cat 0000" (see `seed_thousands`).
+    select_parent(cx, handle, &shell, "Cat 0000");
     // The first draw that has the data must show rows — no extra action.
     draw_frame(cx, handle);
     cx.update(|cx| {
@@ -3502,7 +3578,7 @@ fn categories_page_shows_rows_when_data_arrives_after_it_opens(cx: &mut TestAppC
             s.tree_rows_built.get()
         );
         assert!(
-            s.rule_rows_built.get() >= 8,
+            s.rule_rows_built.get() > 0,
             "rule rows on first open, before any other action: {}",
             s.rule_rows_built.get()
         );
@@ -3519,6 +3595,9 @@ fn switching_to_categories_after_load_shows_rows(cx: &mut TestAppContext) {
     });
     cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Categories, cx)));
     wait_until(cx, "2000 rules", |cx| shell.read(cx).rules.len() == 2_000);
+    // 3.23: the rule list paints with the selection; all 2,000 rules sit
+    // under "Cat 0000" (see `seed_thousands`).
+    select_parent(cx, handle, &shell, "Cat 0000");
     draw_frame(cx, handle);
     cx.update(|cx| {
         let s = shell.read(cx);
@@ -3528,7 +3607,7 @@ fn switching_to_categories_after_load_shows_rows(cx: &mut TestAppContext) {
             s.tree_rows_built.get()
         );
         assert!(
-            s.rule_rows_built.get() >= 8,
+            s.rule_rows_built.get() > 0,
             "rule rows after switching to the page: {}",
             s.rule_rows_built.get()
         );
@@ -3556,7 +3635,11 @@ fn the_categories_page_labels_its_controls(cx: &mut TestAppContext) {
             .id
     });
     with_window(cx, handle, |window, cx| {
-        shell.update(cx, |s, cx| s.select_category(parent_id, window, cx));
+        shell.update(cx, |s, cx| {
+            s.select_category(parent_id, window, cx);
+            // 3.23: the new-category form only paints once opened.
+            s.new_category_open = true;
+        });
     });
     cx.run_until_parked();
     let mut window = VisualTestContext::from_window(handle, cx);
@@ -3565,7 +3648,10 @@ fn the_categories_page_labels_its_controls(cx: &mut TestAppContext) {
         "label:Category tree",
         "label:New category name",
         "label:Kind",
+        "label:Organize",
         "label:New subcategory name",
+        "label:Rules",
+        "label:Delete",
         "label:Move its transactions to",
         "label:Pattern",
         "label:Category",
@@ -3665,7 +3751,12 @@ fn the_categories_page_never_says_parent_or_child(cx: &mut TestAppContext) {
     });
     let child = cx.update(|cx| find_child(&shell, cx, "Restaurants, Cafés & Takeaway").unwrap());
     with_window(cx, handle, |window, cx| {
-        shell.update(cx, |s, cx| s.select_category(food_id, window, cx));
+        shell.update(cx, |s, cx| {
+            s.select_category(food_id, window, cx);
+            // 3.23: the new-category form only paints once its button
+            // opened it; open it so the scan covers its labels too.
+            s.new_category_open = true;
+        });
     });
     cx.run_until_parked();
     let mut window = VisualTestContext::from_window(handle, cx);
@@ -3675,6 +3766,14 @@ fn the_categories_page_never_says_parent_or_child(cx: &mut TestAppContext) {
     // placeholders included: their text is reachable only through the
     // `label:<text>` debug selectors (3.33).
     let n_cats = cx.update(|cx| shell.read(cx).categories.len());
+    let n_subs = cx.update(|cx| {
+        shell
+            .read(cx)
+            .categories
+            .iter()
+            .map(|p| p.children.len())
+            .sum::<usize>()
+    });
     for sel in [
         "label:Category tree",
         "label:New category name",
@@ -3689,7 +3788,9 @@ fn the_categories_page_never_says_parent_or_child(cx: &mut TestAppContext) {
             "the Categories page paints {sel:?}"
         );
     }
-    let count_sel = leaked(format!("label:{n_cats} categories"));
+    let count_sel = leaked(format!(
+        "label:{n_cats} categories · {n_subs} subcategories"
+    ));
     assert!(
         window.debug_bounds(count_sel).is_some(),
         "the header paints the count {count_sel:?}"
@@ -3857,6 +3958,399 @@ fn the_categories_page_never_says_parent_or_child(cx: &mut TestAppContext) {
         );
     });
     draw_frame(cx, handle);
+}
+
+/// Two parents, each with one subcategory whose rules target that
+/// subcategory (3.23: the rule list filters on the selection). Returns
+/// `(drinks, transport, coffee_rule, fuel_rule)`.
+fn seed_split_rules(conn: &financi_db::rusqlite::Connection) -> (i64, i64, i64, i64) {
+    let drinks =
+        financi_db::categories::create_parent(conn, "Drinks", CategoryKind::Expense).unwrap();
+    let coffee = financi_db::categories::create_child(conn, drinks, "Coffee").unwrap();
+    let transport =
+        financi_db::categories::create_parent(conn, "Transport", CategoryKind::Expense).unwrap();
+    let fuel = financi_db::categories::create_child(conn, transport, "Fuel").unwrap();
+    let coffee_rule = financi_db::rules::add_rule(conn, "COFFEE", false, coffee).unwrap();
+    let fuel_rule = financi_db::rules::add_rule(conn, "SHELL", false, fuel).unwrap();
+    (drinks, transport, coffee_rule, fuel_rule)
+}
+
+/// 3.23: the rule list holds only the selected category's rules — a parent
+/// shows its subcategories', other categories' rules disappear on a new
+/// selection, and a category without rules shows the empty hint instead.
+/// Without a selection the detail panel prompts for one.
+#[gpui::test]
+fn selecting_a_category_lists_only_its_own_rules(cx: &mut TestAppContext) {
+    let mut ids = (0i64, 0i64, 0i64, 0i64);
+    let (handle, shell) = open_shell(cx, |c| ids = seed_split_rules(c));
+    let (_drinks, _transport, coffee_rule, fuel_rule) = ids;
+    // +1: the system `Transfers` parent from migration 0002.
+    wait_until(cx, "both rules loaded", |cx| {
+        shell.read(cx).rules.len() == 2 && shell.read(cx).categories.len() == 3
+    });
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Categories, cx)));
+    cx.run_until_parked();
+    let mut window = VisualTestContext::from_window(handle, cx);
+    draw_frame(cx, handle);
+    assert!(
+        window.debug_bounds("cat:detail-empty").is_some(),
+        "without a selection the detail panel prompts for one"
+    );
+
+    select_parent(cx, handle, &shell, "Drinks");
+    draw_frame(cx, handle);
+    assert!(
+        window
+            .debug_bounds(leaked(format!("rule-row-{coffee_rule}")))
+            .is_some(),
+        "a parent's list holds its subcategories' rules"
+    );
+    assert!(
+        window
+            .debug_bounds(leaked(format!("rule-row-{fuel_rule}")))
+            .is_none(),
+        "another category's rule is not listed"
+    );
+
+    select_parent(cx, handle, &shell, "Transport");
+    draw_frame(cx, handle);
+    assert!(
+        window
+            .debug_bounds(leaked(format!("rule-row-{fuel_rule}")))
+            .is_some(),
+        "the other parent's rule lists after switching"
+    );
+    assert!(
+        window
+            .debug_bounds(leaked(format!("rule-row-{coffee_rule}")))
+            .is_none(),
+        "the first parent's rule is gone after switching"
+    );
+
+    // A category without rules shows the hint and no rows.
+    select_parent(cx, handle, &shell, "Transfers");
+    draw_frame(cx, handle);
+    assert!(
+        window.debug_bounds("cat:rules-empty").is_some(),
+        "a ruleless category shows the empty hint"
+    );
+    assert!(
+        window
+            .debug_bounds(leaked(format!("rule-row-{coffee_rule}")))
+            .is_none()
+            && window
+                .debug_bounds(leaked(format!("rule-row-{fuel_rule}")))
+                .is_none(),
+        "no rule rows paint for the ruleless category"
+    );
+}
+
+/// 3.23: the add-rule Category picker defaults to the selected category
+/// when it lists it (the picker lists subcategories), and clears when the
+/// selection is one it cannot show.
+#[gpui::test]
+fn the_add_rule_picker_defaults_to_the_selected_subcategory(cx: &mut TestAppContext) {
+    let mut ids = (0i64, 0i64, 0i64, 0i64);
+    let (handle, shell) = open_shell(cx, |c| ids = seed_split_rules(c));
+    let (_drinks, _transport, _coffee_rule, _fuel_rule) = ids;
+    wait_until(cx, "both rules loaded", |cx| {
+        shell.read(cx).rules.len() == 2 && shell.read(cx).categories.len() == 3
+    });
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Categories, cx)));
+    let fuel = cx.update(|cx| find_child(&shell, cx, "Fuel").unwrap());
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| s.select_category(fuel, window, cx));
+    });
+    cx.run_until_parked();
+    cx.update(|cx| {
+        let s = shell.read(cx);
+        let want = s
+            .child_choices
+            .iter()
+            .position(|(id, _)| *id == fuel)
+            .expect("Fuel is a subcategory choice");
+        assert_eq!(
+            s.rule_target.read(cx).selected_index(cx).map(|p| p.row),
+            Some(want),
+            "the picker defaults to the selected subcategory"
+        );
+        assert_eq!(s.child_choices[want].1, "Transport › Fuel");
+    });
+    // A parent is not in the picker, so selecting one clears the pick.
+    select_parent(cx, handle, &shell, "Drinks");
+    cx.update(|cx| {
+        let s = shell.read(cx);
+        assert_eq!(
+            s.rule_target.read(cx).selected_index(cx).map(|p| p.row),
+            None,
+            "selecting a parent clears the picker"
+        );
+    });
+}
+
+/// 3.23: the header's "New category…" button opens the add-category form
+/// in place; Cancel hides it again, a successful add closes it, and so does
+/// leaving the page.
+#[gpui::test]
+fn the_new_category_button_opens_and_closes_the_form(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |_| {});
+    wait_until(cx, "initial load", |cx| {
+        shell.read(cx).refresh_task.is_some()
+    });
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Categories, cx)));
+    cx.run_until_parked();
+    let mut window = VisualTestContext::from_window(handle, cx);
+    draw_frame(cx, handle);
+    assert!(
+        window.debug_bounds("cat:new-form").is_none(),
+        "the form starts hidden"
+    );
+    // Click the header button.
+    let b = window
+        .debug_bounds(leaked(format!("label:{NEW_CATEGORY}")))
+        .expect("the header paints the New category… button");
+    window.simulate_click(b.center(), Modifiers::default());
+    cx.run_until_parked();
+    draw_frame(cx, handle);
+    assert!(
+        window.debug_bounds("cat:new-form").is_some(),
+        "the click opens the form"
+    );
+    // Cancel closes it again.
+    let cancel = window
+        .debug_bounds("cat:new-form-cancel")
+        .expect("the form paints its Cancel button");
+    window.simulate_click(cancel.center(), Modifiers::default());
+    cx.run_until_parked();
+    draw_frame(cx, handle);
+    assert!(
+        window.debug_bounds("cat:new-form").is_none(),
+        "Cancel closes the form"
+    );
+    // Reopen, then add a category: success closes the form too.
+    cx.update(|cx| shell.update(cx, |s, _cx| s.new_category_open = true));
+    draw_frame(cx, handle);
+    add_parent(cx, handle, &shell, "Books");
+    cx.update(|cx| {
+        assert!(
+            !shell.read(cx).new_category_open,
+            "adding a category closes the form"
+        );
+    });
+    draw_frame(cx, handle);
+    assert!(
+        window.debug_bounds("cat:new-form").is_none(),
+        "the closed form paints nothing after the add"
+    );
+    // And it never survives a page switch.
+    cx.update(|cx| shell.update(cx, |s, _cx| s.new_category_open = true));
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
+    cx.run_until_parked();
+    draw_frame(cx, handle);
+    assert!(
+        window.debug_bounds("cat:new-form").is_none(),
+        "leaving the page closes the form"
+    );
+}
+
+/// 3.23 fit-test names: long enough that nothing but truncation fits.
+const CAT_FIT_PARENT: &str = "Food, Groceries & Dining Out On Both Sides Of The Boulevard Downtown";
+const CAT_FIT_CHILD: &str = "Restaurants, Cafés, Takeaway & Late-Night Snack Stands Far Uptown";
+const CAT_FIT_PATTERN: &str = "LONG RULE PATTERN THAT WILL NOT FIT THE RULE ROW AT THE MINIMUM WINDOW SIZE SO IT MUST TRUNCATE";
+
+/// One long-named parent and subcategory with one long-pattern rule.
+fn seed_categories_fit(conn: &financi_db::rusqlite::Connection) -> (i64, i64) {
+    let parent =
+        financi_db::categories::create_parent(conn, CAT_FIT_PARENT, CategoryKind::Expense).unwrap();
+    let child = financi_db::categories::create_child(conn, parent, CAT_FIT_CHILD).unwrap();
+    let rule = financi_db::rules::add_rule(conn, CAT_FIT_PATTERN, false, child).unwrap();
+    (child, rule)
+}
+
+/// 3.23: at the 1200 × 720 minimum window both panels, the new-category
+/// form and a rule row with long texts stay fully inside the page; the
+/// long rule pattern truncates to its column.
+#[gpui::test]
+fn the_categories_page_fits_the_minimum_window(cx: &mut TestAppContext) {
+    let mut ids = (0i64, 0i64);
+    let (handle, shell) = open_shell(cx, |c| ids = seed_categories_fit(c));
+    let (child, rule) = ids;
+    wait_until(cx, "the rule loaded", |cx| shell.read(cx).rules.len() == 1);
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Categories, cx)));
+    // The widest state of every part: form open, long subcategory selected.
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.new_category_open = true;
+            s.select_category(child, window, cx);
+        });
+    });
+    with_window(cx, handle, |window, cx| {
+        window.resize(size(px(1200.), px(720.)));
+        window.bounds_changed(cx);
+    });
+    cx.run_until_parked();
+    let mut window = VisualTestContext::from_window(handle, cx);
+    draw_frame(cx, handle);
+
+    let page_right = px(1200. - PAGE_PAD);
+    for (what, sel) in [
+        ("the new-category form", "cat:new-form".to_string()),
+        ("the tree panel", "cat:tree-panel".to_string()),
+        ("the detail panel", "cat:detail-panel".to_string()),
+        ("the selected tree row", format!("cat-tree-row-{child}")),
+        ("the rule row", format!("rule-row-{rule}")),
+    ] {
+        let b = window
+            .debug_bounds(leaked(sel))
+            .unwrap_or_else(|| panic!("the page paints {what}"));
+        assert!(
+            b.origin.x + b.size.width <= page_right + px(1.),
+            "{what} ends at x {:?}, past the page edge {page_right:?}",
+            b.origin.x + b.size.width,
+        );
+    }
+
+    // The rule pattern truncates: its column is far narrower than the
+    // full text needs at 14 px.
+    let col = window
+        .debug_bounds(leaked(format!("rule:pattern-col:{rule}")))
+        .expect("the rule row paints its pattern column");
+    let full_w = TEXT_SM_CHAR_PX * CAT_FIT_PATTERN.chars().count() as f32;
+    assert!(
+        col.size.width < px(full_w / 2.),
+        "the pattern truncates: the column is {:?} wide, the full text \
+         needs about {full_w:?}",
+        col.size.width,
+    );
+    // The detail title box cannot outgrow the panel beside it.
+    let title = window
+        .debug_bounds("cat:detail-title")
+        .expect("the detail panel paints the category title");
+    let panel = window
+        .debug_bounds("cat:detail-panel")
+        .expect("the detail panel");
+    assert!(
+        title.size.width <= panel.size.width,
+        "the detail title truncates inside the panel: title {:?}, panel {:?}",
+        title.size.width,
+        panel.size.width,
+    );
+
+    // A tree row fills its panel: a content-width row would leave the
+    // counts floating mid-panel and a long name would never truncate, so
+    // the row's right edge is the tree panel's content edge (border 1 px
+    // + `p_2`).
+    let tree = window
+        .debug_bounds("cat:tree-panel")
+        .expect("the tree panel");
+    let row = window
+        .debug_bounds(leaked(format!("cat-tree-row-{child}")))
+        .expect("the tree paints the selected row");
+    let tree_content_right = tree.origin.x + tree.size.width - px(9.);
+    assert!(
+        (row.origin.x + row.size.width - tree_content_right).abs() < px(1.),
+        "the tree row fills the panel to its content edge: row right {:?}, \
+         content edge {tree_content_right:?}",
+        row.origin.x + row.size.width,
+    );
+    // A fixed control pinned to the detail panel: the add-rule row's last
+    // child is the primary button, so the row must end exactly at the
+    // panel's content edge (border 1 px + `p_4`).
+    let add_row = window
+        .debug_bounds("cat:add-rule-row")
+        .expect("the detail panel paints the add-rule row");
+    let detail_content_right = panel.origin.x + panel.size.width - px(17.);
+    assert!(
+        (add_row.origin.x + add_row.size.width - detail_content_right).abs() < px(1.),
+        "the add-rule row fills the panel to its content edge: row right \
+         {:?}, content edge {detail_content_right:?}",
+        add_row.origin.x + add_row.size.width,
+    );
+}
+
+/// 3.23: the rule-list headings use the rows' widths, and the Actions
+/// label sits on the same line as the others, right-aligned over the
+/// rows' buttons (3.24 MUST-KEEP). A stacked label-plus-buttons column
+/// measured 83.5 px tall, slid the Actions label 64 px up, and pushed
+/// the Type/Category headings 62 px right of their columns.
+#[gpui::test]
+fn the_rule_list_headings_sit_over_their_columns(cx: &mut TestAppContext) {
+    let (handle, _shell, rule, _first, _second) = open_rule_fixture(cx);
+    with_window(cx, handle, |window, cx| {
+        window.resize(size(px(1200.), px(720.)));
+        window.bounds_changed(cx);
+    });
+    cx.run_until_parked();
+    let mut window = VisualTestContext::from_window(handle, cx);
+    draw_frame(cx, handle);
+    for (label, heading_sel, column_sel) in [
+        (
+            "Pattern",
+            "rule:heading-pattern",
+            format!("rule:pattern-col:{rule}"),
+        ),
+        ("Type", "rule:heading-type", format!("rule:type-col:{rule}")),
+        (
+            "Category",
+            "rule:heading-category",
+            format!("rule:category-col:{rule}"),
+        ),
+    ] {
+        let heading = window
+            .debug_bounds(heading_sel)
+            .unwrap_or_else(|| panic!("the rules list paints the {label:?} heading"));
+        let column = window
+            .debug_bounds(leaked(column_sel))
+            .unwrap_or_else(|| panic!("the rule row paints the {label:?} column"));
+        assert!(
+            (heading.origin.x - column.origin.x).abs() < px(1.),
+            "the {label:?} heading starts where its column starts: \
+             heading x {:?}, column x {:?}",
+            heading.origin.x,
+            column.origin.x,
+        );
+    }
+    // The Actions label is right-aligned over the buttons: its right
+    // edge is the row's right edge (the Delete… button ends there).
+    let actions = window
+        .debug_bounds("rule:heading-actions")
+        .expect("the rules list paints the Actions heading");
+    let row = window
+        .debug_bounds(leaked(format!("rule-row-{rule}")))
+        .expect("the rules list paints the fixture's row");
+    assert!(
+        (actions.origin.x + actions.size.width - (row.origin.x + row.size.width)).abs() < px(1.),
+        "the Actions heading ends where the row's buttons end: \
+         heading right {:?}, row right {:?}",
+        actions.origin.x + actions.size.width,
+        row.origin.x + row.size.width,
+    );
+    // A single line: every heading label shares one line, and the whole
+    // heading is no taller than a line of labels.
+    let type_heading = window
+        .debug_bounds("rule:heading-type")
+        .expect("the rules list paints the Type heading");
+    assert!(
+        (actions.origin.y - type_heading.origin.y).abs() < px(1.),
+        "the Actions heading sits on the same line as the others: \
+         Actions y {:?}, Type y {:?}",
+        actions.origin.y,
+        type_heading.origin.y,
+    );
+    let heading = window
+        .debug_bounds("rule:heading-row")
+        .expect("the rules list paints its heading row");
+    assert!(
+        heading.size.height < px(24.),
+        "the heading is a single line tall: it measures {:?}",
+        heading.size.height,
+    );
+    assert!(
+        heading.origin.y < row.origin.y,
+        "the heading sits above the rows: heading y {:?}, row y {:?}",
+        heading.origin.y,
+        row.origin.y,
+    );
 }
 
 // -- row context menu (2.9) -------------------------------------------------
