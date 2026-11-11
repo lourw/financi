@@ -1385,11 +1385,18 @@ fn short_chart_labels(names: &[String], chars: usize) -> Vec<SharedString> {
 const BAR_LABEL_MAX_CHARS: usize = 4;
 
 /// A bar's share label: whole percent (`18%`), one decimal only below
-/// one percent (`0.4%`) so a thin slice still reads.
+/// one percent (`0.4%`) so a thin slice still reads — and never `0.0%`:
+/// a sliver too small to round to a tenth of a percent reads `0.1%`.
 fn bar_share_label(share: f64) -> String {
     let percent = share * 100.;
-    if percent > 0. && percent < 1. {
-        format!("{percent:.1}%")
+    if percent <= 0. {
+        "0%".into()
+    } else if percent < 1. {
+        if percent < 0.05 {
+            "0.1%".into()
+        } else {
+            format!("{percent:.1}%")
+        }
     } else {
         format!("{percent:.0}%")
     }
@@ -1442,6 +1449,19 @@ fn bar_label_slots(count: usize, labels: usize) -> Vec<bool> {
         }
     }
     slots
+}
+
+/// Fill each row's `bar_label` with its share of the spend (3.31): on the
+/// bars the plan fits across `plot_width`, nothing on the thinned-out
+/// ones. The tooltip carries the exact amount and share for every bar,
+/// labelled or not.
+fn bar_share_labels(rows: &mut [ChartRow], plot_width: f32) {
+    let slots = bar_label_slots(rows.len(), bar_label_plan(plot_width, rows.len()));
+    for (row, labeled) in rows.iter_mut().zip(slots) {
+        if labeled {
+            row.bar_label = bar_share_label(row.share).into();
+        }
+    }
 }
 
 /// What a row of the monthly summary grid (3.6) is, resolved against the
@@ -3736,22 +3756,18 @@ impl Shell {
         band_label_budget(self.chart_plot_width(), self.chart_rows.len())
     }
 
-    fn chart_panel(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let (border, background, muted, list_active, radius, colors) = {
-            let theme = cx.theme();
-            (
-                theme.border,
-                theme.background,
-                theme.muted_foreground,
-                theme.list_active,
-                theme.radius,
-                self.category_colors(theme),
-            )
-        };
-        // Responsive labels (3.15): shorten the names to the current
-        // budget and thin them out if the bands are too narrow; the full
-        // names stay in the legend and the tooltip.
-        let (label_chars, label_count) = self.chart_label_plan();
+    /// The chart's rows prepared for drawing (3.15, 3.31): band labels
+    /// fitted to the current budget, each row's share over its bar
+    /// thinned to `plot_width`, and `Uncategorized` last whatever its
+    /// amount. `colors` maps category ids to palette colors; `muted`
+    /// paints the `Uncategorized` swatch.
+    fn chart_bars(
+        &self,
+        plot_width: f32,
+        colors: &HashMap<i64, Hsla>,
+        muted: Hsla,
+    ) -> Vec<ChartRow> {
+        let (label_chars, _) = self.chart_label_plan();
         let shorts = short_chart_labels(
             &self
                 .chart_rows
@@ -3778,18 +3794,27 @@ impl Shell {
             .collect();
         // Uncategorized is always the last category row, whatever its amount.
         rows.sort_by_key(|r| r.id.is_none());
-        // Share over each bar (3.31), thinned the way band labels are so
-        // centred labels never collide; the tooltip carries the exact
-        // amount and share for every bar, labelled or not.
-        let slots = bar_label_slots(
-            rows.len(),
-            bar_label_plan(self.chart_plot_width(), rows.len()),
-        );
-        for (row, labeled) in rows.iter_mut().zip(slots) {
-            if labeled {
-                row.bar_label = bar_share_label(row.share).into();
-            }
-        }
+        bar_share_labels(&mut rows, plot_width);
+        rows
+    }
+
+    fn chart_panel(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let (border, background, muted, list_active, radius, colors) = {
+            let theme = cx.theme();
+            (
+                theme.border,
+                theme.background,
+                theme.muted_foreground,
+                theme.list_active,
+                theme.radius,
+                self.category_colors(theme),
+            )
+        };
+        // Band label thinning for the axis (3.15); the rows themselves —
+        // fitted names and share labels (3.15, 3.31) — come from the same
+        // preparation the tests exercise.
+        let label_count = self.chart_label_plan().1;
+        let rows = self.chart_bars(self.chart_plot_width(), &colors, muted);
         let selection = self.legend_selection;
         // The `Uncategorized` row is active when the 3.4 checkbox drives the
         // same clause, so the legend never contradicts the toolbar.

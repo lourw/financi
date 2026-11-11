@@ -4529,8 +4529,11 @@ fn top_category_id(shell: &Entity<Shell>, cx: &App, name: &str) -> i64 {
         .expect("a real category")
 }
 
+/// The legend draws no numbers since 3.31, but the model rows still
+/// carry each parent's amount and share — that is what the bar and
+/// legend-row tooltips show.
 #[gpui::test]
-fn legend_shows_parents_with_amounts_and_shares(cx: &mut TestAppContext) {
+fn chart_rows_carry_amounts_and_shares_for_the_tooltips(cx: &mut TestAppContext) {
     let (_handle, shell) = open_shell(cx, seed_chart_rows);
     wait_until(cx, "three chart rows", |cx| {
         shell.read(cx).chart_rows.len() == 3
@@ -4785,6 +4788,23 @@ fn bar_share_labels_read_as_whole_percents() {
     );
     assert_eq!(bar_share_label(0.004), "0.4%");
     assert_eq!(bar_share_label(0.0), "0%");
+    assert_eq!(
+        bar_share_label(0.0095),
+        "0.9%",
+        "0.95–1% still reads with its one decimal"
+    );
+    assert_eq!(bar_share_label(0.0094), "0.9%");
+    assert_eq!(
+        bar_share_label(0.0099),
+        "1.0%",
+        "0.99% rounds to one percent with its decimal, not a bare 1%"
+    );
+    assert_eq!(
+        bar_share_label(0.0004),
+        "0.1%",
+        "a sliver below 0.05% ($1 of $2,500) rounds up, never to 0.0%"
+    );
+    assert_eq!(bar_share_label(0.00004), "0.1%");
 
     // The tooltip body is the bar's and the legend row's one string.
     assert_eq!(
@@ -5027,7 +5047,9 @@ fn fifteen_category_bars_keep_their_share_labels_clear(cx: &mut TestAppContext) 
                 id: Some(i),
                 name: format!("Cat {i:02}"),
                 spend_cents: (i + 1) * 10_000,
-                share: 0.05,
+                // The share of the total this row's spend represents, so
+                // every bar's share label is a different string.
+                share: (i + 1) as f64 / 120.,
             })
             .collect();
         cx.notify();
@@ -5064,6 +5086,31 @@ fn fifteen_category_bars_keep_their_share_labels_clear(cx: &mut TestAppContext) 
         .collect();
     assert_eq!(drawn.first(), Some(&0));
     assert_eq!(drawn.last(), Some(&14));
+
+    // The wiring (3.31): the rows `chart_panel` hands the chart carry
+    // their own share's label on the planned bars and nothing on the
+    // thinned-out ones — drop the label call in `chart_bars` or misalign
+    // it and this fails.
+    let bars = cx.update(|cx| {
+        shell
+            .read(cx)
+            .chart_bars(plan_w, &Default::default(), gpui::black())
+    });
+    assert_eq!(bars.len(), 15);
+    let wired_slots = bar_label_slots(15, bar_label_plan(plan_w, 15));
+    for (ix, bar) in bars.iter().enumerate() {
+        let want = if wired_slots[ix] {
+            bar_share_label(bar.share)
+        } else {
+            String::new()
+        };
+        assert_eq!(bar.bar_label.to_string(), want, "bar {ix}");
+    }
+    assert!(
+        !bars[0].bar_label.is_empty() && !bars[14].bar_label.is_empty(),
+        "the first and last bars carry their share"
+    );
+
     let band_w = plot_w / 15.;
     let half = BAR_LABEL_MAX_CHARS as f32 * CHART_CHAR_PX / 2.;
     for pair in drawn.windows(2) {
