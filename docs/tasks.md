@@ -779,8 +779,8 @@ out.
     rendered text with a long-named tree, a subcategory selected, and each
     validation error triggered); the renamed buttons still work.
 
-**Bugs reported by the user on 2026-11-11** (3.34–3.39, plus a fix folded
-into 3.23). Order: **3.23 → 3.35 → 3.36 → 3.37 → 3.38/3.39 → 3.34**, then the rest of
+**Bugs reported by the user on 2026-11-11** (3.34–3.41, plus a fix folded
+into 3.23). Order: **3.40 → 3.23 → 3.41 → 3.35 → 3.36 → 3.37 → 3.38/3.39 → 3.34**, then the rest of
 the order above (3.28 → 3.29 → 3.26).
 
 - 3.23 also fixes: **the rule list overflows the page.** Today each rule
@@ -790,6 +790,63 @@ the order above (3.28 → 3.29 → 3.26).
   buttons (and the editor row's Save / Cancel) must paint fully inside the
   detail panel at 1200 × 720 and at 1600 × 900, with long patterns and
   long category names. Test that at both sizes.
+
+- [ ] **3.40 Saving a rule is instant.** Clicking Save on a rule edit (and
+  Add / Delete…) takes ~5 s to take effect, with no sign anything is
+  happening, so the button looks broken (user report, 2026-11-11). Cause:
+  `financi_core::rules::rule_matches` builds the regex with
+  `RegexBuilder` on **every call**, and `reapply_rules` calls
+  `pick_category` once per unlocked row, so each save compiles every
+  regex rule once per transaction (rules × rows compiles).
+  `count_rule_matches` does the same per row, so the live preview lags
+  too.
+  - **Core:** add a compiled matcher, e.g. `CompiledRules::new(&[Rule])`
+    (each regex built once, case-insensitive, invalid ones dropped;
+    substring patterns lowercased once) with `pick(&self, description)`.
+    Keep `pick_category` / `pattern_matches` as thin wrappers with the
+    same semantics, so the existing core tests pass unchanged. Add a
+    one-pattern compiled form for `count_rule_matches` (new pattern and
+    the excluded rule's, each compiled once).
+  - **DB:** `reapply_rules` and `count_rule_matches` compile once per
+    call. `reapply_rules` reuses one prepared `UPDATE` statement.
+  - **UI:** while the save/add/delete task runs, the clicked button shows
+    `.loading(true)` and is disabled (no double submit); it clears when the
+    task finishes, on success or error.
+  - Tests: core tests for `CompiledRules` matching the `pick_category`
+    cases (tie-breaks, substring beats regex, invalid regex skipped); a DB
+    test that `reapply_rules` over 5 000 unlocked rows with 50 regex rules
+    finishes in well under a second in a release-agnostic way (assert
+    < 2 s, so a debug build passes); a UI test that Save shows loading
+    until the task ends and the editor closes after. Measure the save time
+    on the dev-seed DB before and after and put both numbers in the
+    commit message.
+
+- [ ] **3.41 Rule category pickers show the full name.** On the
+  Categories page the add-rule **Category** picker (`Select::new(&self.
+  rule_target)`, in a `div().w(px(160.))`) is too narrow: the items are
+  "Parent › Child" (`child_choices`), so both the closed trigger and the
+  open menu cut the name off and the right subcategory is hard to pick
+  (user report, 2026-11-11). The rule editor's picker (`rule_edit_target`,
+  also 160 px) has the same problem. Do this after 3.23 (same row
+  layout):
+  - **Menu:** give both selects `.menu_width(px(320.))` (gpui-component
+    `Select::menu_width`; today `Length::Auto` makes the menu as narrow as
+    the trigger), so the open list shows full "Parent › Child" names, and
+    make them `.searchable(true)` (gpui-component `SelectState::searchable`)
+    so a subcategory can be typed. The menu must stay inside the window
+    at 1200 × 720 (it opens from a trigger near the panel's right edge).
+  - **Trigger:** widen both to `RULE_CATEGORY_W` (200 px), the width of
+    the rule list's Category column, taking the room from the flex
+    Pattern field (keep its `min_w_0`). The selected text ellipsizes and
+    the trigger gets a hover tooltip with the full "Parent › Child".
+  - Must still meet 3.23's fit rule: the Add rule / Save / Cancel buttons
+    paint fully inside the detail panel at 1200 × 720 and 1600 × 900 with
+    long category names.
+  - Tests: with a 40-character "Parent › Child" name, the open menu item's
+    text paints unclipped (its bounds fit inside the menu) for both
+    pickers; typing in the search narrows the list; the trigger is 200 px
+    and shows the tooltip; 3.23's fit tests pass. Update the *Categories*
+    row of `ui-conventions.md`.
 
 - [ ] **3.34 To categorize looks cleaner.** The queue is loose rows on the
   page background: no panel, no row separators, a semibold merchant, and a
@@ -908,7 +965,7 @@ the order above (3.28 → 3.29 → 3.26).
 
 
 **Done when:** on the demo data the dashboard totals match
-`expected.json`, filters compose, tests cover 3.1–3.39.
+`expected.json`, filters compose, tests cover 3.1–3.41.
 
 ---
 
