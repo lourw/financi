@@ -355,6 +355,88 @@ beside the monthly summary (right); then the transaction table.
   (rows near the end are built and the first rows aren't), and the offset
   survives an unrelated `cx.notify()` / refresh.
 
+**Order for the open M3 tasks** (added 2026-11-10; the numbers record when
+a task was written, not when to do it): **3.24 → 3.25 → 3.22 → 3.23 →
+3.26**. They are listed below in that order. 3.24 comes first because it is
+the only one that blocks the user: a wrong rule can't be corrected today.
+3.25 is a small fix to a regression on the main page. 3.26 goes last because
+it attaches scrollbars to lists that 3.22 and 3.23 re-lay out.
+
+- [ ] **3.24 Edit and delete rules.** The Categories page can add a rule but
+  can't change or remove one, so a wrong pattern keeps miscategorizing
+  every import. The storage side exists and is tested
+  (`financi_db::rules::update_rule` and `delete_rule`; both validate, then
+  re-run all rules over unlocked rows per 2.5). This task is UI only.
+  - **Row actions:** each rule row gets **Edit** and **Delete…** at its
+    right end (small ghost buttons, visible on every row; no hover-only
+    controls). Rows stay 24 px and virtualized; create the buttons only
+    for visible rows.
+  - **Edit** swaps that row, in place, for an editor in the same shape as
+    the add-rule row: Pattern input, regex switch, Category picker (all
+    pre-filled from the rule), then Save (primary) and Cancel. It shows
+    the same live "matches N transactions" count as add-rule
+    (`count_rule_matches`). One rule is edited at a time; opening another
+    row's editor, selecting another category or leaving the page cancels
+    it. Enter saves, Escape cancels. A validation error (empty pattern,
+    bad regex) shows in `danger` under the editor and keeps it open.
+  - **Delete…** uses the two-click confirm from `ui-conventions.md` ("Click
+    again to delete"), armed per row; clicking anywhere else disarms it.
+    No modal.
+  - After a save or delete, refresh every view (the rule list, the tree's
+    transaction counts, the To categorize count in the sidebar, the
+    dashboard), the same way `add_rule` does. Both calls go through
+    `on_db`.
+  - 3.23 re-lays out the rule list. It must keep these actions: add an
+    actions column to its heading row and widths.
+  - Tests (`ui_tests.rs`): editing a rule's pattern recategorizes the
+    matching unlocked rows and leaves locked rows alone; changing its
+    category moves them; an invalid regex shows the error and saves
+    nothing; Cancel and Escape leave the rule unchanged; Delete… needs two
+    clicks, and after it the rule is gone and its rows are Uncategorized
+    (or picked up by another rule); with thousands of rules only visible
+    rows build buttons. Update the *Categories* row of
+    `docs/ui-conventions.md` in the same commit.
+
+- [ ] **3.25 Dashboard alignment.** Since the labelling pass (3.16) the
+  dashboard's controls sit at uneven heights and the regions don't share
+  edges. Start by taking a screenshot (see *GPUI pitfalls* → Screenshots)
+  at 1200 × 720 and at a large window, and list what is off before
+  changing code. Known causes in `render_dashboard`:
+  - Both filter rows are `h_flex().items_end()` mixing labelled controls
+    (label + 32 px control) with unlabelled checkboxes and the
+    "N transactions" text, so the checkboxes and the count hang at the
+    controls' bottom edge instead of centering on them.
+  - The two filter rows use unrelated widths (150 / auto / 240), so
+    nothing in row two sits under anything in row one.
+  - The transaction count floats mid-row after the last checkbox.
+
+  Fix, layout only (no new controls, no behaviour change):
+  - Every item in a filter row is a column of the same shape: a label
+    line (`field_label`, or an empty line of the same height for
+    checkboxes) over a 32 px control line in which the content is
+    vertically centered. Controls and checkboxes then share one center
+    line, and all labels share one baseline.
+  - Row two's first column (Search) has the same left edge and width as
+    row one's first column, or the two rows merge into one when they fit
+    at 1200 px. Pick whichever reads cleaner in the screenshot and record
+    it in `ui-conventions.md`.
+  - The transaction count moves to the right end of the first filter row
+    (`ml_auto`), vertically centered on the control line.
+  - The filter region, the chart panel, the monthly summary and the table
+    share the page's left and right edges exactly; the chart panel and
+    summary have equal heights, and their region titles sit at the same
+    y. Inside each panel, titles and content share one left edge
+    (`p_4`).
+  - Spacing stays on the 4/8/12/16 scale.
+  - Tests: at 1200 × 720 and 1600 × 1000, the vertical centers of every
+    control and checkbox in a filter row are within 1 px of each other;
+    the left edges of the filter region, chart panel and table are equal,
+    and so are the right edges of the filter region, summary panel and
+    table; the *Spending by category* and *Monthly summary* titles have
+    the same top; with the Custom date range open (From / To visible) the
+    row still fits and stays aligned. Attach before/after screenshots to
+    the handoff.
+
 - [ ] **3.22 To categorize queue fits the window.** At the minimum window
   size the queue's fixed columns (280 + 140 + 120 + dates + 260 + button +
   gaps ≈ 1,120 px) are wider than the ~958 px content area, so rows are cut
@@ -439,8 +521,50 @@ beside the monthly summary (right); then the transaction table.
     *Categories* row of `docs/ui-conventions.md` to describe this layout
     in the same commit.
 
+- [ ] **3.26 A scrollbar on everything that scrolls.** Most scrolling
+  areas give no sign that there is more content or where you are in it.
+  Every scrollable region shows a vertical scrollbar whenever its content
+  is taller than its viewport, and none when it fits. Do this after 3.22
+  and 3.23, which re-lay out two of the lists.
+  - Use gpui-base's `Scrollbar` (`gpui-base-0.9.0/src/scrollbar.rs`:
+    `Scrollbar::vertical(&handle)`); it takes a `ScrollHandle`, and
+    `VirtualListScrollHandle` implements `ScrollbarHandle` too. Don't
+    hand-roll one.
+  - **Always visible while the content overflows:** set
+    `ScrollbarMode::Always` once, app-wide, on the theme's
+    `ScrollbarTheme` at startup. The default (`Scrolling`) only shows the
+    bar while scrolling, which is the behaviour being replaced.
+  - **Virtualized lists** (category tree, rule list, To categorize queue):
+    reuse the handle each list already keeps on `Shell` (`tree_scroll`,
+    `rule_scroll`, `queue_scroll`, from 3.21).
+  - **Plain scrolling divs** (`overflow_y_scroll` in `ui.rs`: the chart
+    legend `legend-list`, the monthly summary `summary-rows`, the Transfers
+    list `transfer-reviews`): give each a `ScrollHandle` kept as a `Shell`
+    field (one per region, never created in `render`; same trap as 3.21)
+    and `track_scroll` it.
+  - **Popovers and dropdowns** that can outgrow their height: the Accounts
+    filter popover gets a max height, scrolls, and shows a scrollbar; check
+    that `Select` menus already show one for long lists (category pickers)
+    and fix them if not.
+  - **`DataTable`s** (transactions, import history) draw their own
+    scrollbars (`scrollbar_visible`); confirm they follow the app-wide
+    mode and show both when the content overflows.
+  - **Placement:** the bar overlays the region's right edge inside its
+    border (wrap the region in a `relative()` container and add the
+    `Scrollbar` as an absolutely positioned sibling). Content reserves the
+    bar's width (16 px) on the right so the thumb never covers amounts,
+    counts or buttons.
+  - Add a rule to `docs/ui-conventions.md` (*Layout*): every scrollable
+    region has a visible scrollbar while it overflows, and new scrolling
+    regions must add one.
+  - Tests: for each region above, with enough rows to overflow, the
+    scrollbar paints inside the region's bounds and the right-most content
+    (amount, count or button) doesn't overlap it; with content that fits,
+    no scrollbar paints; dragging the thumb (or `set_offset` on the handle)
+    moves the content, and the offset survives an unrelated `cx.notify()`.
+
 **Done when:** on the demo data the dashboard totals match
-`expected.json`, filters compose, tests cover 3.1–3.23.
+`expected.json`, filters compose, tests cover 3.1–3.26.
 
 ---
 

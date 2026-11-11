@@ -11,8 +11,8 @@ This file holds requirements and settled decisions. `docs/tasks.md` is the task 
 | M0: Skeleton + GPUI spike | Done |
 | M1: Amex import, end to end | Done |
 | M2: Master CSVs + categorize | Done |
-| M3: Core views | In progress: 3.1–3.20 done; next 3.21 (lists don't scroll), then 3.22 (queue fits the window), then 3.23 (Categories page layout) |
-| M4: Simplii Visa, transfer pairing, near-match | Not started |
+| M3: Core views | In progress: 3.1–3.21 done. Remaining, in this order: 3.24 (edit and delete rules), 3.25 (dashboard alignment), 3.22 (queue fits the window), 3.23 (Categories page layout), 3.26 (scrollbars everywhere) |
+| M4: Simplii Visa, transfer pairing, near-match | Done |
 | M5: Export / restore | Not started |
 
 The prototype fixes under **Roadmap** are tracked separately from the milestones.
@@ -238,10 +238,13 @@ Decisions recorded in the sections above are not repeated. These are the remaini
 
 ## Roadmap
 
-**v1:** M3 (remaining), M4, M5, per `docs/tasks.md`.
+**v1:** M3 (remaining: 3.24, 3.25, 3.22, 3.23, 3.26, in that order), then M5, per `docs/tasks.md`.
 
 **Prototype fixes** (feedback from 2026-11-08)
 
+- [ ] **Let rules be edited and deleted.** *(Added 2026-11-10; task 3.24 in `docs/tasks.md`. Do first.)* Rules can only be added today, so a wrong pattern can't be corrected and keeps miscategorizing every import. Each rule on the Categories page gets Edit (pattern, regex switch and category, in place, with the live match count) and Delete… (two-click confirm). Saving or deleting re-runs all rules over unlocked transactions, as adding one does.
+- [ ] **Line up the dashboard.** *(Added 2026-11-10; task 3.25.)* Since labels were added, the filter controls sit at different heights and the page's regions don't share edges. Labelled controls, checkboxes and the transaction count share one center line; the two filter rows share column edges; the filters, chart, summary and table share the page's left and right edges; the chart and summary panels match in height and title position.
+- [ ] **Show a scrollbar on everything that scrolls.** *(Added 2026-11-10; task 3.26. Do after 3.22 and 3.23, which re-lay out two of the lists.)* Every scrollable region (category tree, rule list, To categorize queue, chart legend, monthly summary, Transfers list, tables, long popovers and dropdowns) shows a scrollbar whenever its content overflows, visible without having to scroll first, and none when the content fits.
 - [ ] **Ship default categories and merchant rules**, as specified under **Categorization**.
 - [ ] **Keep the app responsive with thousands of rows.** Profile the slowdown after large imports, then render only the rows on screen in every long list, starting with the To categorize queue. Create its per-row category dropdowns only when needed.
 - [ ] **Make category dropdowns usable with thousands of categories.** Scrolling a flat list won't work at that size, so every dropdown that picks a category (rules, the To categorize queue, the move and delete targets on the Categories page) becomes searchable: type to filter, match on both parent and child names, and show each result with its parent so same-named children can be told apart. Works from the keyboard and renders only the visible options.
