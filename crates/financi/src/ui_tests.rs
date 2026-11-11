@@ -19,11 +19,12 @@ use gpui_kit::component::table::{ColumnSort, TableDelegate};
 // shadows the built-in #[test] that #[gpui::test] expands to.
 use gpui_kit::assets::IconName;
 use gpui_kit::component::calendar::Date as CalendarDate;
+use gpui_kit::component::v_flex;
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyWindowHandle, App, Bounds, Entity, Focusable as _, Modifiers, OwnedMenuItem, Pixels, Point,
-    ScrollDelta, ScrollEvent, TestAppContext, VisualTestContext, Window, WindowBounds,
-    WindowOptions, point, px, size,
+    AnyWindowHandle, App, Bounds, Context, Entity, Focusable as _, Modifiers, OwnedMenuItem,
+    Pixels, Point, Render, ScrollDelta, ScrollEvent, TestAppContext, VisualTestContext, Window,
+    WindowBounds, WindowOptions, div, point, px, size,
 };
 
 use super::{
@@ -31,9 +32,9 @@ use super::{
     CHART_LABEL_MAX_CHARS, CHART_LABEL_MIN_CHARS, DashboardBody, ExportData, HISTORY_DATES_W,
     HISTORY_FLEX_MIN_W, HISTORY_ROWS_W, HISTORY_TIME_W, ImportPanel, LEGEND_W, LegendSelection,
     NAV_ROW_INSET, NEW_ACCOUNT, PAGE_PAD, Page, PlanState, RestoreBackup, RowMenuItem, SIDEBAR_W,
-    Shell, SummaryRowKind, TABLE_BORDER_X, TEXT_SM_CHAR_PX, TX_FIXED_W, UNDO_LABEL_MAX,
-    UndoLastImport, band_label_budget, bar_label_plan, bar_label_slots, bar_share_label,
-    chart_tooltip_value, history_flex_widths, history_undo_col_w, row_menu_items,
+    Shell, SummaryRowKind, TABLE_BORDER_X, TEXT_SM_CHAR_PX, TX_FIXED_W, UNDO_ICON_W,
+    UNDO_LABEL_MAX, UndoLastImport, band_label_budget, bar_label_plan, bar_label_slots,
+    bar_share_label, chart_tooltip_value, history_flex_widths, history_undo_col_w, row_menu_items,
     short_chart_labels, tx_flex_widths,
 };
 
@@ -487,6 +488,27 @@ fn seed_long_history(conn: &financi_db::rusqlite::Connection) {
     .unwrap();
 }
 
+/// Seed three imports, oldest first, so the history table has several rows
+/// and the newest one — the only row with the in-row Undo button — stands
+/// out (3.32). The rows differ only in name and time; `imports.id` ascends,
+/// and the history lists `id DESC`.
+fn seed_three_imports(conn: &financi_db::rusqlite::Connection) {
+    let acct = create_account(conn, "simplii", "Simplii Chequing", AccountKind::Chequing).unwrap();
+    for n in 0..3 {
+        conn.execute(
+            "INSERT INTO imports (account_id, parser_id, file_name, imported_at, header_raw,
+                                  encoding, has_bom, line_ending, trailing_newline, row_count)
+             VALUES (?1, 'simplii-chequing', ?2, ?3, X'00', 'utf-8', 0, 'lf', 0, 0)",
+            financi_db::rusqlite::params![
+                acct,
+                format!("import-{n}.csv"),
+                format!("2026-11-0{n}T09:00:00")
+            ],
+        )
+        .unwrap();
+    }
+}
+
 /// The width plan itself: the Undo column fits both button labels, and
 /// from the minimum window's page width up every column fits the page —
 /// File and Account shrink and grow with the window instead of the old
@@ -494,11 +516,15 @@ fn seed_long_history(conn: &financi_db::rusqlite::Connection) {
 #[test]
 fn history_table_columns_fit_every_page_width() {
     // The Undo column budgets the longest label ("Click again to undo")
-    // at the generous per-character width, plus the button and cell
-    // padding, so neither it nor "Undo…" can clip.
+    // at the generous per-character width, plus the xsmall button's icon
+    // and padding and the cell's, so neither it nor the icon-only rest
+    // state can clip (3.32).
     assert!(
         history_undo_col_w()
-            >= UNDO_LABEL_MAX.chars().count() as f32 * TEXT_SM_CHAR_PX + BUTTON_PAD_X + CELL_PAD_X
+            >= UNDO_LABEL_MAX.chars().count() as f32 * TEXT_SM_CHAR_PX
+                + BUTTON_PAD_X
+                + UNDO_ICON_W
+                + CELL_PAD_X
     );
     for win in [1200., 1440., 1920., 2560., 4000.] {
         let page_w = win - SIDEBAR_W - 2. * PAGE_PAD;
@@ -622,6 +648,333 @@ fn the_imports_history_table_fits_the_available_width(cx: &mut TestAppContext) {
         big.iter().sum::<f32>()
     );
     assert!(big[1] > small[1], "File column grows with the window");
+}
+
+/// Horizontal space a medium `Button` draws around its label when it has
+/// an icon: the medium icon (`size_4`, 16 px) plus the `gap_2` (8 px)
+/// between icon and label, and the button's own `px_2p5` per side (3.32).
+const HEADER_ICON_BLOCK_W: f32 = 24.;
+const HEADER_BUTTON_PAD_X: f32 = 20.;
+/// Slack for comparing a drawn button width against label + icon +
+/// padding: layout rounds to physical pixels. Tight enough that a
+/// dropped `.icon()` call — 24 px on a header button, 16 on the armed
+/// in-row one — fails the comparison.
+const WIDTH_TOL: f32 = 3.;
+
+/// 3.32: a window of plain labels — each at the text size the button
+/// with that label renders (medium buttons `text_sm`, xsmall `text_xs`)
+/// — so a test can pin that a button's drawn width is its label plus
+/// exactly the icon block and padding. A debug selector records how a
+/// button was built; only its width shows the icon actually paints.
+struct IconWidthRefs {
+    /// `(selector, text, xsmall?)` per label.
+    labels: Vec<(&'static str, &'static str, bool)>,
+}
+
+impl Render for IconWidthRefs {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        v_flex().children(self.labels.iter().map(|(sel, text, xs)| {
+            // `self_start` so the label's width is its text, not the
+            // full window (columns stretch their children by default).
+            let label = div().self_start().child(*text);
+            if *xs {
+                label.text_xs()
+            } else {
+                label.text_sm()
+            }
+            .debug_selector(move || (*sel).to_string())
+        }))
+    }
+}
+
+/// Open the reference-label window (after `open_shell`, so gpui-kit is
+/// initialized) and draw one frame; the returned context reads the
+/// labels' drawn widths.
+fn open_icon_width_refs(
+    cx: &mut TestAppContext,
+    labels: Vec<(&'static str, &'static str, bool)>,
+) -> VisualTestContext {
+    let handle: AnyWindowHandle = cx.add_window(|_, _| IconWidthRefs { labels }).into();
+    draw_frame(cx, handle);
+    VisualTestContext::from_window(handle, cx)
+}
+
+/// Assert a drawn button's width is its label's drawn width plus the
+/// icon block and horizontal padding (3.32) — the icon must paint.
+fn assert_button_paints_icon(
+    refs: &mut VisualTestContext,
+    what: &str,
+    btn: Bounds<Pixels>,
+    text_sel: &'static str,
+    icon_block_w: f32,
+    pad_x: f32,
+) {
+    let text_w = refs
+        .debug_bounds(text_sel)
+        .unwrap_or_else(|| panic!("the reference window draws {text_sel:?}"))
+        .size
+        .width
+        .as_f32();
+    let got = btn.size.width.as_f32();
+    let want = text_w + icon_block_w + pad_x;
+    assert!(
+        (got - want).abs() <= WIDTH_TOL,
+        "{what}: drawn width {got} is not its label {text_w} + icon block \
+         {icon_block_w} + padding {pad_x} (± {WIDTH_TOL}) — is the icon drawn?",
+    );
+}
+
+/// 3.32: the history table's in-row Undo button is an xsmall ghost button.
+/// Idle and armed it stays fully inside the fixed 32 px row with at least
+/// 4 px above and below, arming never makes the newest row taller than the
+/// others, and the armed label fits the Undo column. Hovering it shows the
+/// "Undo this import" tooltip.
+#[gpui::test]
+fn the_in_row_undo_button_stays_inside_its_row(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_three_imports);
+    wait_until(cx, "import history", |cx| {
+        shell.read(cx).import_history.len() == 3
+    });
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Imports, cx)));
+    cx.run_until_parked();
+    let mut window = VisualTestContext::from_window(handle, cx);
+    draw_frame(cx, handle);
+
+    // Each Undo cell carries a `h_full` marker spanning the cell's content
+    // box, so the button's centring and the row heights are measurable.
+    // The table's 32 px row height and 4 px-per-side cell padding are the
+    // gpui-kit `Size::Medium` defaults the width constants already assume.
+    const ROW_H: f32 = 32.;
+    const CELL_PAD_Y: f32 = 4.;
+    let cell = |window: &mut VisualTestContext, row: usize| {
+        window
+            .debug_bounds(leaked(format!("history:undo-cell:{row}")))
+            .unwrap_or_else(|| panic!("row {row} draws its Undo cell"))
+    };
+    let btn = |window: &mut VisualTestContext| {
+        window
+            .debug_bounds("history:undo-btn")
+            .expect("the newest row draws its Undo button")
+    };
+    // Distance from the button's edges to the row's, the cell padding
+    // included; the spec's floor is 4 px above and below.
+    let clearance = |b: Bounds<Pixels>, c: Bounds<Pixels>| {
+        (
+            b.origin.y.as_f32() - c.origin.y.as_f32() + CELL_PAD_Y,
+            c.origin.y.as_f32() + c.size.height.as_f32()
+                - b.origin.y.as_f32()
+                - b.size.height.as_f32()
+                + CELL_PAD_Y,
+        )
+    };
+
+    // Every row is one row height and every Undo cell the same height.
+    let cells: Vec<_> = (0..3).map(|r| cell(&mut window, r)).collect();
+    for (above, below) in cells.iter().zip(cells[1..].iter()) {
+        assert_eq!(
+            above.size.height, below.size.height,
+            "Undo cells are the same height in every row"
+        );
+        let pitch = below.origin.y.as_f32() - above.origin.y.as_f32();
+        assert!(
+            (pitch - ROW_H).abs() <= 1.,
+            "rows sit one row height apart, pitch {pitch}"
+        );
+    }
+
+    // Idle: the icon-only button is centred with clearance to spare.
+    let (above, below) = clearance(btn(&mut window), cells[0]);
+    assert!(
+        above >= 4. && below >= 4.,
+        "idle: {above} above, {below} below"
+    );
+
+    // Hovering the button shows the tooltip naming the action.
+    let b = btn(&mut window);
+    let centre = point(b.center().x, b.center().y);
+    window.simulate_mouse_move(centre, None, Modifiers::default());
+    cx.executor().advance_clock(Duration::from_millis(600));
+    cx.run_until_parked();
+    draw_frame(cx, handle);
+    assert!(
+        window.debug_bounds("history:undo-tooltip").is_some(),
+        "hovering the Undo button shows its tooltip"
+    );
+    // Move off so the tooltip cannot hold the hover while the button is armed.
+    window.simulate_mouse_move(point(px(2.), px(2.)), None, Modifiers::default());
+    cx.run_until_parked();
+    draw_frame(cx, handle);
+
+    // Arm the confirmation (first click): the button grows its label —
+    // still with clearance, the row no taller than its neighbours, and the
+    // armed label fitting the Undo column.
+    let newest = cx.update(|cx| shell.read(cx).import_history[0].id);
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| s.undo_import(newest, window, cx));
+    });
+    cx.update(|cx| {
+        assert_eq!(
+            shell.read(cx).confirm_undo_import,
+            Some(newest),
+            "the first click only arms the confirmation"
+        );
+    });
+    cx.run_until_parked();
+    draw_frame(cx, handle);
+    let (above, below) = clearance(btn(&mut window), cell(&mut window, 0));
+    assert!(
+        above >= 4. && below >= 4.,
+        "armed: {above} above, {below} below"
+    );
+    let cells: Vec<_> = (0..3).map(|r| cell(&mut window, r)).collect();
+    assert_eq!(
+        cells[0].size.height, cells[1].size.height,
+        "the armed newest row is no taller than the others"
+    );
+    let col_w = cx.update(|cx| shell.read(cx).history_table.read(cx).col_width(5).unwrap());
+    assert!(
+        btn(&mut window).size.width + px(CELL_PAD_X) <= col_w,
+        "the armed label overflows the Undo column: button {:?} + {CELL_PAD_X} > {col_w:?}",
+        btn(&mut window).size.width,
+    );
+    // The header Undo shares the confirmation state: same moment, armed text.
+    assert!(
+        window
+            .debug_bounds("imports:header:Click again to undo:icons/undo-2.svg")
+            .is_some(),
+        "the header Undo arms with the in-row one"
+    );
+}
+
+/// 3.32: the Imports header buttons carry their Lucide icon left of the
+/// label, and no label ends in an ellipsis — the action runs straight away,
+/// and any confirmation is the button's own armed state. Each button's
+/// selector records the exact label it was built with and the icon asset it
+/// draws; the old "…" labels draw nothing.
+#[gpui::test]
+fn the_imports_header_buttons_show_icons_without_ellipses(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_three_imports);
+    wait_until(cx, "import history", |cx| {
+        shell.read(cx).import_history.len() == 3
+    });
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Imports, cx)));
+    cx.run_until_parked();
+    let mut window = VisualTestContext::from_window(handle, cx);
+    draw_frame(cx, handle);
+    for sel in [
+        "imports:header:Import CSV:icons/file-up.svg",
+        "imports:header:Undo:icons/undo-2.svg",
+        "imports:header:Export:icons/download.svg",
+        "imports:header:Restore:icons/archive-restore.svg",
+    ] {
+        assert!(
+            window.debug_bounds(sel).is_some(),
+            "the header draws {sel:?}"
+        );
+    }
+    for sel in [
+        "imports:header:Import CSV…:icons/file-up.svg",
+        "imports:header:Undo…:icons/undo-2.svg",
+        "imports:header:Export…:icons/download.svg",
+        "imports:header:Restore…:icons/archive-restore.svg",
+    ] {
+        assert!(
+            window.debug_bounds(sel).is_none(),
+            "no header label ends in an ellipsis ({sel:?})"
+        );
+    }
+
+    // Pin the icons for real (the selectors above only record how each
+    // button was built): a button's drawn width must be its label plus
+    // the medium icon block and the button's padding, so dropping an
+    // `.icon()` call — 24 px narrower — fails here.
+    let mut refs = open_icon_width_refs(
+        cx,
+        vec![
+            ("ref:import-csv", "Import CSV", false),
+            ("ref:undo", "Undo", false),
+            ("ref:export", "Export", false),
+            ("ref:restore", "Restore", false),
+            ("ref:click-again", "Click again to undo", true),
+        ],
+    );
+    for (sel, text_sel) in [
+        (
+            "imports:header:Import CSV:icons/file-up.svg",
+            "ref:import-csv",
+        ),
+        ("imports:header:Undo:icons/undo-2.svg", "ref:undo"),
+        ("imports:header:Export:icons/download.svg", "ref:export"),
+        (
+            "imports:header:Restore:icons/archive-restore.svg",
+            "ref:restore",
+        ),
+    ] {
+        let b = window
+            .debug_bounds(sel)
+            .unwrap_or_else(|| panic!("the header draws {sel:?}"));
+        assert_button_paints_icon(
+            &mut refs,
+            sel,
+            b,
+            text_sel,
+            HEADER_ICON_BLOCK_W,
+            HEADER_BUTTON_PAD_X,
+        );
+    }
+
+    // The shared confirm, seen from the header: the header button's own
+    // first click arms it, and the in-row Undo reflects it — the armed
+    // in-row button draws the prompt together with its icon (width as
+    // above; at rest the icon-only button is a fixed square, so only the
+    // armed state shows whether the icon paints).
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| s.undo_last_import(window, cx));
+    });
+    cx.run_until_parked();
+    draw_frame(cx, handle);
+    assert!(
+        window
+            .debug_bounds("imports:header:Click again to undo:icons/undo-2.svg")
+            .is_some(),
+        "the header button arms the confirm"
+    );
+    let armed = window
+        .debug_bounds("history:undo-btn")
+        .expect("the newest row draws its Undo button");
+    assert_button_paints_icon(
+        &mut refs,
+        "the armed in-row Undo",
+        armed,
+        "ref:click-again",
+        UNDO_ICON_W,
+        BUTTON_PAD_X,
+    );
+}
+
+/// 3.32: the four icons the Imports page draws are bundled with the app and
+/// resolve through its asset source, the way the check glyph (3.14) must.
+#[test]
+fn the_imports_icons_load_from_the_bundled_assets() {
+    use gpui_kit::AssetSource as _;
+    let icons = [
+        IconName::FileUp,
+        IconName::Undo2,
+        IconName::Download,
+        IconName::ArchiveRestore,
+    ];
+    for icon in icons {
+        let path = icon.path();
+        let svg = crate::icon_assets()
+            .load(&path)
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| panic!("the app bundles the {path} icon"));
+        assert!(
+            std::str::from_utf8(&svg).is_ok_and(|s| s.contains("<svg")),
+            "{path} is an SVG"
+        );
+    }
 }
 
 /// The File menu the native menu bar is built from (3.7). The macOS menu

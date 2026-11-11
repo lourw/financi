@@ -51,8 +51,8 @@ use gpui_kit::component::switch::Switch;
 use gpui_kit::component::table::{Column, ColumnSort, DataTable, TableDelegate, TableState};
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{
-    ActiveTheme as _, Collapsible, Disableable as _, VirtualListScrollHandle, h_flex, v_flex,
-    v_virtual_list,
+    ActiveTheme as _, Collapsible, Disableable as _, Sizable as _, VirtualListScrollHandle, h_flex,
+    v_flex, v_virtual_list,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -559,7 +559,7 @@ impl TableDelegate for ImportHistoryTable {
         row_ix: usize,
         col_ix: usize,
         _: &mut Window,
-        _: &mut Context<TableState<Self>>,
+        cx: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
         let entry = &self.rows[row_ix];
         let text = match col_ix {
@@ -571,23 +571,48 @@ impl TableDelegate for ImportHistoryTable {
             _ => String::new(),
         };
         if col_ix == 5 {
+            // The Undo column (3.32): a `h_full` marker spans the cell's
+            // content box on every row, so tests can pin the button's
+            // vertical centring and that the newest row is no taller than
+            // the others; the cell itself centers it.
+            let cell = div().h_full().flex().items_center();
             // Undo only on the newest row (ui-conventions, Pages).
             if row_ix == 0 {
                 let id = entry.id;
-                let label = if self.confirm_id == Some(id) {
-                    "Click again to undo"
-                } else {
-                    "Undo…"
-                };
+                let armed = self.confirm_id == Some(id);
                 let on_undo = self.on_undo.clone();
-                return div()
-                    .child(
-                        Button::new("undo-import")
-                            .label(label)
-                            .on_click(move |_, window, cx| on_undo(id, window, cx)),
-                    )
+                // xsmall ghost button: the undo glyph alone at rest;
+                // armed, it grows the prompt in danger text.
+                let btn = Button::new("undo-import")
+                    .xsmall()
+                    .ghost()
+                    .icon(IconName::Undo2)
+                    .debug_selector(|| "history:undo-btn".to_string())
+                    .on_click(move |_, window, cx| on_undo(id, window, cx));
+                let btn = if armed {
+                    btn.label(UNDO_LABEL_MAX)
+                        .text_color(cx.theme().danger)
+                        .into_any_element()
+                } else {
+                    btn.into_any_element()
+                };
+                return cell
+                    .id(SharedString::from("undo-import-tip"))
+                    .debug_selector(|| "history:undo-cell:0".to_string())
+                    .tooltip(|window, cx| {
+                        Tooltip::element(|_, _| {
+                            div()
+                                .debug_selector(|| "history:undo-tooltip".to_string())
+                                .child("Undo this import")
+                        })
+                        .build(window, cx)
+                    })
+                    .child(btn)
                     .into_any_element();
             }
+            return cell
+                .debug_selector(move || format!("history:undo-cell:{row_ix}"))
+                .into_any_element();
         }
         if col_ix == 1 || col_ix == 2 {
             // The flexible columns truncate (3.20): a long file name or
@@ -1260,11 +1285,11 @@ fn band_label_budget(chart_width: f32, count: usize) -> (usize, usize) {
 // Imports history table widths (3.20). The old fixed columns summed to
 // 1,110 px, wider than the page beside the sidebar at the minimum window
 // size, which forced the table to scroll sideways. Now `Imported`,
-// `Rows added` and `Dates` keep their widths, `Undo` is sized so both
-// button labels ("Undo…" and "Click again to undo") show in full, and
-// `File` and `Account` share whatever width is left — they truncate
-// with an ellipsis as the window narrows and grow with it, so the table
-// fits the page from the minimum window size up.
+// `Rows added` and `Dates` keep their widths, `Undo` is sized so the
+// armed button — its icon and its widest label, "Click again to undo" —
+// shows in full (3.32), and `File` and `Account` share whatever width is
+// left — they truncate with an ellipsis as the window narrows and grow
+// with it, so the table fits the page from the minimum window size up.
 const HISTORY_TIME_W: f32 = 150.;
 const HISTORY_ROWS_W: f32 = 110.;
 const HISTORY_DATES_W: f32 = 220.;
@@ -1287,8 +1312,12 @@ const TEXT_SM_CHAR_PX: f32 = CHART_CHAR_PX * 14. / 10.;
 /// The Undo button's widest label; the column must fit this without
 /// clipping whatever the window size.
 const UNDO_LABEL_MAX: &str = "Click again to undo";
-/// Horizontal padding inside a medium `Button`: `px_2p5` per side.
-const BUTTON_PAD_X: f32 = 20.;
+/// Horizontal padding inside an xsmall `Button`: `px_1` per side.
+const BUTTON_PAD_X: f32 = 8.;
+/// The in-row Undo button's icon plus the gap between icon and label:
+/// xsmall renders its icon at `size_3` (12 px) with a `gap_1` (4 px)
+/// before the label (3.32).
+const UNDO_ICON_W: f32 = 16.;
 /// Horizontal padding inside a table cell (8 px per side); gpui-kit
 /// draws the cell inside the column width, so it comes off the space
 /// the label has.
@@ -1297,9 +1326,13 @@ const CELL_PAD_X: f32 = 16.;
 const TABLE_BORDER_X: f32 = 2.;
 
 /// The Undo column's width: the longest label at `TEXT_SM_CHAR_PX`,
-/// plus the button's and the cell's horizontal padding.
+/// plus the button's icon and horizontal padding and the cell's.
 fn history_undo_col_w() -> f32 {
-    (UNDO_LABEL_MAX.chars().count() as f32 * TEXT_SM_CHAR_PX + BUTTON_PAD_X + CELL_PAD_X).ceil()
+    (UNDO_LABEL_MAX.chars().count() as f32 * TEXT_SM_CHAR_PX
+        + BUTTON_PAD_X
+        + UNDO_ICON_W
+        + CELL_PAD_X)
+        .ceil()
 }
 
 /// The history table's `File` and `Account` widths for `page_w` pixels
@@ -4824,12 +4857,15 @@ impl Shell {
         let muted = cx.theme().muted_foreground;
         // The page exposes every file action (3.7): the native menu may be
         // absent (Linux), so Import, Undo, Export and Restore live here.
+        // 3.32: each button carries its Lucide icon left of the label, and
+        // no ellipsis — the action runs straight away, any confirmation is
+        // the button's own armed state, not a hidden dialog.
         let latest_undo_id = self.import_history.first().map(|e| e.id);
         let undo_label =
             if self.confirm_undo_import.is_some() && self.confirm_undo_import == latest_undo_id {
                 "Click again to undo"
             } else {
-                "Undo…"
+                "Undo"
             };
         v_flex()
             .flex_1()
@@ -4854,8 +4890,12 @@ impl Shell {
                     .child(div().flex_1())
                     .child(
                         Button::new("pick-file")
-                            .label("Import CSV…")
+                            .label("Import CSV")
+                            .icon(IconName::FileUp)
                             .primary()
+                            .debug_selector(|| {
+                                "imports:header:Import CSV:icons/file-up.svg".to_string()
+                            })
                             .on_click(
                                 cx.listener(|this, _, window, cx| this.pick_file(window, cx)),
                             ),
@@ -4863,19 +4903,31 @@ impl Shell {
                     .child(
                         Button::new("undo-last-import")
                             .label(undo_label)
+                            .icon(IconName::Undo2)
                             .disabled(latest_undo_id.is_none())
+                            .debug_selector(move || {
+                                format!("imports:header:{undo_label}:icons/undo-2.svg")
+                            })
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.undo_last_import(window, cx);
                             })),
                     )
                     .child(
                         Button::new("export-data")
-                            .label("Export…")
+                            .label("Export")
+                            .icon(IconName::Download)
+                            .debug_selector(|| {
+                                "imports:header:Export:icons/download.svg".to_string()
+                            })
                             .on_click(cx.listener(|this, _, _, cx| this.export_data(cx))),
                     )
                     .child(
                         Button::new("restore-backup")
-                            .label("Restore…")
+                            .label("Restore")
+                            .icon(IconName::ArchiveRestore)
+                            .debug_selector(|| {
+                                "imports:header:Restore:icons/archive-restore.svg".to_string()
+                            })
                             .on_click(cx.listener(|this, _, _, cx| this.restore_backup(cx))),
                     ),
             )
