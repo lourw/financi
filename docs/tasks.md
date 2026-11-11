@@ -779,8 +779,8 @@ out.
     rendered text with a long-named tree, a subcategory selected, and each
     validation error triggered); the renamed buttons still work.
 
-**Bugs reported by the user on 2026-11-11** (3.34–3.44, plus a fix folded
-into 3.23). Order: **3.40 → 3.23 → 3.41/3.42 → 3.43 → 3.44 → 3.35 → 3.36 → 3.37 → 3.38/3.39 → 3.34**, then the rest of
+**Bugs reported by the user on 2026-11-11** (3.34–3.46, plus a fix folded
+into 3.23). Order: **3.40 → 3.23 → 3.41/3.42 → 3.43 → 3.44 → 3.35 → 3.36 → 3.45 → 3.46 → 3.37 → 3.38/3.39 → 3.34**, then the rest of
 the order above (3.28 → 3.29 → 3.26).
 
 - 3.23 also fixes: **the rule list overflows the page.** Today each rule
@@ -1006,6 +1006,103 @@ the order above (3.28 → 3.29 → 3.26).
     bar-label tests are updated, not deleted. Update the *Dashboard* row
     of `ui-conventions.md` and D1.
 
+- [ ] **3.45 Chart and summary on their own rows.** The middle row puts
+  the chart panel (`CHART_PANEL_SHARE`, 45 %) and the monthly summary side
+  by side at 340 px tall; both are cramped (user request, 2026-11-11;
+  changes D1's "chart beside the summary"). The user chose **a scrolling
+  dashboard** over tabs or shorter panels:
+  - **Layout, top to bottom:** the filter row (3.35) stays **pinned**
+    above the scroll area. Below it, one vertical scroll container
+    (`id` + `overflow_y_scroll` + a `ScrollHandle` kept on the shell)
+    holds the **chart panel, full width, 340 px**; then the **summary
+    panel, full width, 340 px**; then the **transactions table, full
+    width, fixed ~480 px**, scrolling inside itself. `gap_3` between
+    them, page padding as now. Nothing in the scroll area is `flex_1`
+    in height; a scroll container gives children no height to fill (see
+    *GPUI pitfalls*), so every panel has an explicit height.
+  - **Chart:** `chart_plot_width` uses the full page width (drop
+    `CHART_PANEL_SHARE`; after 3.36 there's no legend column either).
+    The band-label plan (3.15) gets the wider budget for free.
+  - **Summary:** the wider panel shows more month columns before its
+    horizontal scroll kicks in; `NAME_W` / `MONTH_W` / `TOTAL_W` are
+    unchanged. A vertical wheel over its month viewport must scroll the
+    page (today it forwards vertical wheel to the rows; check it reaches
+    the page scroll when the summary has no vertical overflow).
+  - **Table:** wheel over the table scrolls the table. The no-matches
+    state fills the same 480 px box.
+  - **Scroll position** survives refreshes and filter changes (the handle
+    lives on the shell); it resets to the top only on entering the
+    dashboard from another page. The empty-window state (no data) is
+    unchanged and doesn't scroll.
+  - Do it right after 3.36 (both change the chart's width); 3.36's test
+    "plot is ~150 px wider" gets updated to the full-width numbers here.
+  - Tests: at 1200 × 720 the chart and summary panels both span the page
+    width and the summary's top is below the chart's bottom; the table
+    is ~480 px tall; scrolling the page moves the panels while the
+    filter row stays put; the scroll offset survives a filter change;
+    the summary shows more month columns than before with a 12-month
+    range. The 3.25 title-alignment test (chart and summary titles on
+    one line) is replaced, not deleted. Update the *Dashboard* row of
+    `ui-conventions.md` and D1.
+
+- [ ] **3.46 Global dashboard filters, and Clear all.** Every dashboard
+  filter should apply to all three views at once: a category picked on
+  the chart should show in the summary and the table too. Add a button
+  that clears every filter (user request, 2026-11-11). Today the state
+  is already shared (`legend_selection` + `summary_month`, set by chart,
+  legend and summary-cell clicks; `sync_chart_to_selection`), but only
+  the table *filters* by it. The summary highlights just the clicked
+  cell, the chart ignores the month, and search / Uncategorized only /
+  Show hidden are table-only (3.4) and never reach the chart or summary.
+  - **One filter model.** Fold the table-only fields into the shared
+    filter: give `spend_by_category` and `monthly_summary` the same
+    search, `uncategorized_only` and `show_hidden` narrowing as
+    `list_transactions_filtered` (factor the `WHERE` builder in
+    `views.rs` so all three queries share one function; no copies).
+    Sort stays table-only.
+  - **Category selection** (from a bar, a legend chip or a summary cell)
+    shows in all three:
+    - **Chart:** the selected bar keeps its color and the others dim to
+      ~35 % opacity (bars aren't filtered away; the chart stays
+      context). The drill-down (3.5) works as now.
+    - **Summary:** the selected category's **whole row** is `list_active`;
+      a selected subcategory auto-expands its parent. Rows aren't
+      removed.
+    - **Table:** filters to it (as now).
+  - **Month selection** (summary cell) shows in all three:
+    - **Chart:** the chart totals cover only that month, and the panel
+      title reads "Spending by category · Oct 2026".
+    - **Summary:** that month's column is tinted (`list_hover`), the
+      selected cell `list_active`.
+    - **Table:** filters to it (as now).
+    - A month can be selected on its own, without a category: add a click
+      on the summary's **month heading** that toggles the month alone.
+      Today the month only narrows a category selection; drop that rule
+      (keep Esc clearing both).
+  - **Clear all:** a ghost button "Clear all" (`x` icon) at the right of
+    the 3.35 filter row, just before the count, shown only when any
+    filter differs from the default. It resets everything: date range
+    to the default, all accounts checked, search empty, the three
+    Options toggles off, and the category/month selection and drill-down
+    cleared, then one refresh. The no-matches "Clear filters" link calls
+    the same function (rename `clear_filters` → `clear_all_filters` and
+    extend it). Esc keeps clearing just the selection.
+  - The filter row must still fit 1200 × 720 with the custom range open
+    and Clear all shown (3.35's fit test, extended).
+  - Tests: DB tests that chart and summary totals honour search, hidden
+    and uncategorized-only like the table does. UI tests:
+    - clicking a bar dims the other bars, highlights the summary row and
+      filters the table;
+    - a summary cell's month narrows the chart totals and retitles it;
+    - a month heading selects the month alone;
+    - search narrows all three;
+    - Clear all resets every filter (one assertion per filter) and
+      hides itself;
+    - the no-matches link does the same.
+
+    Update the *Dashboard* row and *Interaction* section of
+    `ui-conventions.md` (filters are global; Clear all).
+
 - [ ] **3.37 In-row Undo says "Undo".** 3.32 made the newest history
   row's Undo an icon-only button, which the user finds unclear. Make it
   the `undo-2` icon **plus the label "Undo"** (still `.xsmall().ghost()`,
@@ -1043,7 +1140,7 @@ the order above (3.28 → 3.29 → 3.26).
 
 
 **Done when:** on the demo data the dashboard totals match
-`expected.json`, filters compose, tests cover 3.1–3.44.
+`expected.json`, filters compose, tests cover 3.1–3.46.
 
 ---
 
