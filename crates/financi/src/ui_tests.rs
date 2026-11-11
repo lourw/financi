@@ -1307,6 +1307,519 @@ fn top_group(shell: &Entity<Shell>, cx: &App) -> (String, i64) {
         .expect("queue has a group")
 }
 
+// -- rule edit & delete (3.24) -------------------------------------------------
+
+/// 3.24 fixture: one account, two child categories and three transactions,
+/// plus a rule that puts `COFFEE` rows on `first` (added through
+/// `add_rule`, so the two unlocked rows are categorized by it). "COFFEE
+/// SHOP LOCKED" is then manually overridden to `second` and locked — a
+/// rule re-run must never touch it (2.6). Returns `(rule, first, second)`.
+fn seed_rule_fixture(conn: &financi_db::rusqlite::Connection) -> (i64, i64, i64) {
+    let acct = create_account(conn, "amex", "Cobalt", AccountKind::CreditCard).unwrap();
+    conn.execute(
+        "INSERT INTO imports (account_id, parser_id, file_name, imported_at, header_raw,
+                              encoding, has_bom, line_ending, trailing_newline, row_count)
+         VALUES (?1, 'amex', 'seed.csv', '2026-11-01', X'00', 'utf-8', 0, 'lf', 0, 0)",
+        [acct],
+    )
+    .unwrap();
+    let import = conn.last_insert_rowid();
+    let drinks =
+        financi_db::categories::create_parent(conn, "Drinks", CategoryKind::Expense).unwrap();
+    let first = financi_db::categories::create_child(conn, drinks, "First").unwrap();
+    let second = financi_db::categories::create_child(conn, drinks, "Second").unwrap();
+    for (n, desc) in ["COFFEE SHOP A", "COFFEE SHOP B", "COFFEE SHOP LOCKED"]
+        .iter()
+        .enumerate()
+    {
+        conn.execute(
+            "INSERT INTO transactions (account_id, import_id, source_line, raw_bytes,
+                                       row_hash, posted_date, amount_cents, description_raw)
+             VALUES (?1, ?2, ?3, X'00', ?4, '2026-11-01', -1000, ?5)",
+            (acct, import, n as i64, format!("rule-edit-hash-{n}"), *desc),
+        )
+        .unwrap();
+    }
+    let rule = financi_db::rules::add_rule(conn, "COFFEE", false, first).unwrap();
+    conn.execute(
+        "UPDATE transactions SET category_id = ?1, category_locked = 1 \
+         WHERE description_raw = 'COFFEE SHOP LOCKED'",
+        [second],
+    )
+    .unwrap();
+    (rule, first, second)
+}
+
+/// Open the shell over `seed_rule_fixture`, wait until the rule, the two
+/// child categories and the counts have loaded, and switch to Categories.
+fn open_rule_fixture(cx: &mut TestAppContext) -> (AnyWindowHandle, Entity<Shell>, i64, i64, i64) {
+    let mut ids = (0i64, 0i64, 0i64);
+    let (handle, shell) = open_shell(cx, |c| ids = seed_rule_fixture(c));
+    let (rule, first, second) = ids;
+    wait_until(cx, "rule fixture loaded", |cx| {
+        let s = shell.read(cx);
+        s.rules.len() == 1
+            && s.child_choices.iter().any(|(id, _)| *id == first)
+            && s.child_choices.iter().any(|(id, _)| *id == second)
+            && s.cat_counts.get(&first) == Some(&2)
+            && s.cat_counts.get(&second) == Some(&1)
+    });
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Categories, cx)));
+    (handle, shell, rule, first, second)
+}
+
+/// Click a rule row's Edit — the same `start_edit_rule` the button calls.
+fn start_rule_edit(
+    cx: &mut TestAppContext,
+    handle: AnyWindowHandle,
+    shell: &Entity<Shell>,
+    rule: i64,
+) {
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| s.start_edit_rule(rule, window, cx));
+    });
+}
+
+/// Type into the open editor's Pattern input (the same `set_value` a user's
+/// keystrokes end up as; it drives the live preview like a keystroke).
+fn set_edit_pattern(
+    cx: &mut TestAppContext,
+    handle: AnyWindowHandle,
+    shell: &Entity<Shell>,
+    value: &str,
+) {
+    let value = value.to_string();
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.rule_edit_pattern
+                .update(cx, |i, cx| i.set_value(value, window, cx));
+            s.preview_rule_match(cx);
+        });
+    });
+}
+
+/// Press the editor's Save — the same `save_rule_edit` the button calls.
+fn save_rule_edit(cx: &mut TestAppContext, handle: AnyWindowHandle, shell: &Entity<Shell>) {
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| s.save_rule_edit(window, cx));
+    });
+}
+
+/// 3.24: Edit swaps the row for a pre-filled editor — the rule's pattern,
+/// regex kind and category are in the controls, and the editor is open on
+/// that rule only.
+#[gpui::test]
+fn the_rule_editor_is_prefilled_from_the_rule(cx: &mut TestAppContext) {
+    let (handle, shell, rule, _first, _second) = open_rule_fixture(cx);
+    start_rule_edit(cx, handle, &shell, rule);
+    cx.update(|cx| {
+        let s = shell.read(cx);
+        assert_eq!(s.editing_rule, Some(rule), "the editor is open on the rule");
+        assert_eq!(s.rule_edit_pattern.read(cx).value().to_string(), "COFFEE");
+        assert!(!s.rule_edit_regex, "substring kind pre-filled");
+        let sel = s.rule_edit_target.read(cx).selected_index(cx);
+        assert_eq!(
+            sel.map(|ix| s.child_choices[ix.row].0),
+            Some(s.rules[0].category_id),
+            "the rule's category is selected in the picker"
+        );
+    });
+    wait_until(cx, "live match count for the edit", |cx| {
+        shell.read(cx).rule_match_count.is_some()
+    });
+}
+
+/// 3.24: editing a rule's pattern re-runs every rule over the unlocked
+/// rows — the rows the new pattern drops go back to Uncategorized, the
+/// ones it keeps stay on the rule's category, and the locked row keeps its
+/// manual category even though the new pattern matches it.
+#[gpui::test]
+fn editing_a_rules_pattern_recategorizes_unlocked_rows(cx: &mut TestAppContext) {
+    let (handle, shell, rule, first, second) = open_rule_fixture(cx);
+    start_rule_edit(cx, handle, &shell, rule);
+    set_edit_pattern(cx, handle, &shell, "SHOP B");
+    save_rule_edit(cx, handle, &shell);
+    wait_until(cx, "the edit saved", |cx| {
+        shell
+            .read(cx)
+            .rules
+            .iter()
+            .any(|r| r.id == rule && r.pattern == "SHOP B")
+    });
+    cx.update(|cx| {
+        let s = shell.read(cx);
+        assert_eq!(s.editing_rule, None, "the editor closed on save");
+        assert_eq!(
+            s.cat_counts.get(&first).copied().unwrap_or(0),
+            1,
+            "only SHOP B is still on the rule's category"
+        );
+        assert_eq!(
+            s.cat_counts.get(&second).copied().unwrap_or(0),
+            1,
+            "the locked row keeps its manual category — the new pattern matches it, but locked rows are never re-run"
+        );
+        assert_eq!(
+            s.uncategorized_visible, 1,
+            "the dropped row went back to Uncategorized"
+        );
+    });
+}
+
+/// 3.24: changing a rule's category moves the rows it matches onto the new
+/// one.
+#[gpui::test]
+fn changing_a_rules_category_moves_its_rows(cx: &mut TestAppContext) {
+    let (handle, shell, rule, first, second) = open_rule_fixture(cx);
+    start_rule_edit(cx, handle, &shell, rule);
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            let ix = s
+                .child_choices
+                .iter()
+                .position(|(id, _)| *id == second)
+                .unwrap();
+            s.rule_edit_target.update(cx, |sel, cx| {
+                sel.set_selected_index(Some(gpui_kit::component::IndexPath::new(ix)), window, cx);
+            });
+        });
+    });
+    save_rule_edit(cx, handle, &shell);
+    wait_until(cx, "the category change saved", |cx| {
+        shell
+            .read(cx)
+            .rules
+            .iter()
+            .any(|r| r.id == rule && r.category_id == second)
+    });
+    cx.update(|cx| {
+        let s = shell.read(cx);
+        assert_eq!(
+            s.cat_counts.get(&first).copied().unwrap_or(0),
+            0,
+            "`first` no longer holds the rule's rows"
+        );
+        assert_eq!(
+            s.cat_counts.get(&second).copied().unwrap_or(0),
+            3,
+            "both moved rows joined `second` (with the locked row)"
+        );
+    });
+}
+
+/// 3.24: a bad regex keeps the editor open with the error in `danger`, and
+/// nothing is saved — the rule and the categorized rows are unchanged.
+#[gpui::test]
+fn an_invalid_regex_shows_the_error_and_saves_nothing(cx: &mut TestAppContext) {
+    let (handle, shell, rule, first, _second) = open_rule_fixture(cx);
+    start_rule_edit(cx, handle, &shell, rule);
+    set_edit_pattern(cx, handle, &shell, "[");
+    cx.update(|cx| {
+        shell.update(cx, |s, _cx| s.rule_edit_regex = true);
+    });
+    save_rule_edit(cx, handle, &shell);
+    wait_until(cx, "the editor error", |cx| {
+        shell.read(cx).rule_error.is_some()
+    });
+    cx.update(|cx| {
+        let s = shell.read(cx);
+        assert_eq!(s.editing_rule, Some(rule), "the editor stays open");
+        assert_eq!(s.rules[0].pattern, "COFFEE", "the rule kept its pattern");
+        assert!(!s.rules[0].is_regex, "and its kind");
+        assert_eq!(
+            s.cat_counts.get(&first).copied().unwrap_or(0),
+            2,
+            "no rows moved"
+        );
+    });
+}
+
+/// 3.24 review: a validation error open under the editor must stay inside
+/// its row — the virtual list does not clip per item, so an error taller
+/// than the reserved slot would paint over the next rule row. The error is
+/// clamped to one ellipsized line and the slot grows while it is shown.
+#[gpui::test]
+fn the_editor_error_stays_inside_its_row(cx: &mut TestAppContext) {
+    let (handle, shell, rule, _first, second) = open_rule_fixture(cx);
+    // A second rule below the one being edited: its row is what an
+    // overflowing error would overlap.
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.rule_pattern
+                .update(cx, |i, cx| i.set_value("TOAST".to_string(), window, cx));
+            let ix = s
+                .child_choices
+                .iter()
+                .position(|(id, _)| *id == second)
+                .unwrap();
+            s.rule_target.update(cx, |sel, cx| {
+                sel.set_selected_index(Some(gpui_kit::component::IndexPath::new(ix)), window, cx);
+            });
+            s.add_rule(window, cx);
+        });
+    });
+    wait_until(cx, "the second rule", |cx| shell.read(cx).rules.len() == 2);
+    let toast = cx.update(|cx| {
+        shell
+            .read(cx)
+            .rules
+            .iter()
+            .find(|r| r.pattern == "TOAST")
+            .unwrap()
+            .id
+    });
+
+    // Edit the first rule and leave an invalid regex open — the multi-line
+    // regex-crate message is the one that used to break the layout.
+    start_rule_edit(cx, handle, &shell, rule);
+    set_edit_pattern(cx, handle, &shell, "[");
+    cx.update(|cx| {
+        shell.update(cx, |s, _cx| s.rule_edit_regex = true);
+    });
+    save_rule_edit(cx, handle, &shell);
+    wait_until(cx, "the editor error", |cx| {
+        shell.read(cx).rule_error.is_some()
+    });
+    draw_frame(cx, handle);
+    let mut window = VisualTestContext::from_window(handle, cx);
+    let err = window
+        .debug_bounds("rule-edit-error")
+        .expect("the error paints under the editor");
+    let next = window
+        .debug_bounds(format!("rule-row-{toast}").leak())
+        .expect("the row below still paints");
+    assert!(
+        err.bottom() <= next.top(),
+        "the error (bottom {:?}) must not overlap the next rule row (top {:?})",
+        err.bottom(),
+        next.top()
+    );
+    assert!(
+        err.size.height <= px(24.),
+        "the error is one line (text_sm measures 22.5 px), not {:?}",
+        err.size.height
+    );
+}
+
+/// 3.24 review: while a row's editor is open the live count belongs to the
+/// editor — the add-rule row must not show the editor's count (the same
+/// filter `rule_error` has).
+#[gpui::test]
+fn the_add_rule_preview_stays_hidden_while_editing(cx: &mut TestAppContext) {
+    let (handle, shell, rule, _first, _second) = open_rule_fixture(cx);
+    start_rule_edit(cx, handle, &shell, rule);
+    wait_until(cx, "the editor preview", |cx| {
+        shell.read(cx).rule_match_count.is_some()
+    });
+    draw_frame(cx, handle);
+    let mut window = VisualTestContext::from_window(handle, cx);
+    assert!(
+        window.debug_bounds("rule-edit-preview").is_some(),
+        "the editor shows the live count"
+    );
+    assert!(
+        window.debug_bounds("add-rule-preview").is_none(),
+        "the add-rule row shows none of it"
+    );
+    // Not merely never painted: with the editor closed and the add-rule
+    // row's own pattern, the row shows its own count.
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.cancel_edit_rule(cx);
+            s.rule_pattern
+                .update(cx, |i, cx| i.set_value("COFFEE".to_string(), window, cx));
+            s.preview_rule_match(cx);
+        });
+    });
+    wait_until(cx, "the add-rule preview", |cx| {
+        shell.read(cx).rule_match_count.is_some()
+    });
+    draw_frame(cx, handle);
+    assert!(
+        window.debug_bounds("add-rule-preview").is_some(),
+        "the add-rule row shows its own count once not editing"
+    );
+}
+
+/// 3.24: Cancel and Escape both close the editor without touching the
+/// rule.
+#[gpui::test]
+fn cancel_and_escape_leave_the_rule_unchanged(cx: &mut TestAppContext) {
+    let (handle, shell, rule, _first, _second) = open_rule_fixture(cx);
+
+    // Cancel button.
+    start_rule_edit(cx, handle, &shell, rule);
+    set_edit_pattern(cx, handle, &shell, "ZZZ");
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.cancel_edit_rule(cx);
+            let _ = window;
+        });
+    });
+    cx.update(|cx| {
+        let s = shell.read(cx);
+        assert_eq!(s.editing_rule, None, "Cancel closed the editor");
+        assert_eq!(s.rules[0].pattern, "COFFEE", "Cancel saved nothing");
+    });
+
+    // Escape: the window-level binding cancels the innermost thing first.
+    start_rule_edit(cx, handle, &shell, rule);
+    set_edit_pattern(cx, handle, &shell, "ZZZ");
+    with_window(cx, handle, |window, cx| {
+        let input = shell.read(cx).rule_edit_pattern.read(cx).focus_handle(cx);
+        window.focus(&input, cx);
+    });
+    cx.simulate_keystrokes(handle, "escape");
+    wait_until(cx, "Escape closed the editor", |cx| {
+        shell.read(cx).editing_rule.is_none()
+    });
+    cx.update(|cx| {
+        let s = shell.read(cx);
+        assert_eq!(s.rules[0].pattern, "COFFEE", "Escape saved nothing");
+    });
+}
+
+/// 3.24: selecting another category cancels the open editor — and clears
+/// the shared preview count with it, so the add-rule row never inherits a
+/// stale editor count.
+#[gpui::test]
+fn selecting_another_category_cancels_the_rule_editor(cx: &mut TestAppContext) {
+    let (handle, shell, rule, first, _second) = open_rule_fixture(cx);
+    start_rule_edit(cx, handle, &shell, rule);
+    wait_until(cx, "the editor preview", |cx| {
+        shell.read(cx).rule_match_count.is_some()
+    });
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| s.select_category(first, window, cx));
+    });
+    cx.update(|cx| {
+        let s = shell.read(cx);
+        assert_eq!(s.selected_category, Some(first));
+        assert_eq!(
+            s.editing_rule, None,
+            "selecting a category cancels the edit"
+        );
+        assert!(
+            s.rule_match_count.is_none(),
+            "closing the editor clears the shared preview count"
+        );
+        assert_eq!(s.rules[0].pattern, "COFFEE");
+    });
+}
+
+/// 3.24: Delete… is the two-click confirm — the first click arms the row,
+/// the second deletes; the rule is gone and its rows fall back to
+/// Uncategorized (the locked row keeps its manual category).
+#[gpui::test]
+fn delete_rule_needs_two_clicks_and_uncategorizes_its_rows(cx: &mut TestAppContext) {
+    let (handle, shell, rule, first, second) = open_rule_fixture(cx);
+
+    // First click: arms, nothing is deleted.
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| s.arm_delete_rule(rule, window, cx));
+        assert_eq!(
+            shell.read(cx).armed_delete_rule,
+            Some(rule),
+            "the first click arms the row"
+        );
+        assert_eq!(shell.read(cx).rules.len(), 1, "and deletes nothing yet");
+    });
+
+    // Second click: deletes.
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| s.arm_delete_rule(rule, window, cx));
+    });
+    wait_until(cx, "the rule deleted", |cx| shell.read(cx).rules.is_empty());
+    cx.update(|cx| {
+        let s = shell.read(cx);
+        assert_eq!(s.armed_delete_rule, None, "the armed state reset");
+        assert_eq!(
+            s.cat_counts.get(&first).copied().unwrap_or(0),
+            0,
+            "the rule's rows fell back to Uncategorized"
+        );
+        assert_eq!(s.uncategorized_visible, 2);
+        assert_eq!(
+            s.cat_counts.get(&second).copied().unwrap_or(0),
+            1,
+            "the locked row kept its manual category"
+        );
+    });
+}
+
+/// 3.24: the armed delete is transient like the page's other two-click
+/// confirmations — selecting a category disarms it, and so does switching
+/// pages (which also closes an open rule editor).
+#[gpui::test]
+fn the_armed_rule_delete_is_transient(cx: &mut TestAppContext) {
+    let (handle, shell, rule, first, _second) = open_rule_fixture(cx);
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| s.arm_delete_rule(rule, window, cx));
+        assert_eq!(shell.read(cx).armed_delete_rule, Some(rule));
+        shell.update(cx, |s, cx| s.select_category(first, window, cx));
+        assert_eq!(
+            shell.read(cx).armed_delete_rule,
+            None,
+            "selecting a category disarms the delete"
+        );
+    });
+
+    // A page switch closes the editor (and its preview count) and disarms
+    // in one go.
+    start_rule_edit(cx, handle, &shell, rule);
+    wait_until(cx, "the editor preview", |cx| {
+        shell.read(cx).rule_match_count.is_some()
+    });
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| s.arm_delete_rule(rule, window, cx));
+    });
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
+    cx.update(|cx| {
+        let s = shell.read(cx);
+        assert_eq!(s.editing_rule, None, "the page switch closed the editor");
+        assert!(
+            s.rule_match_count.is_none(),
+            "and cleared the shared preview count"
+        );
+        assert_eq!(s.armed_delete_rule, None, "and disarmed the delete");
+    });
+}
+
+/// 3.24: with thousands of rules the row actions (Edit, Delete…) are built
+/// only for the rows the virtualized list renders — buttons come into the
+/// world inside `rule_row`, so the built-row window proves it. Opening an
+/// editor on a visible row must not change that.
+#[gpui::test]
+fn rule_row_actions_are_built_only_for_visible_rows(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_thousands);
+    wait_until(cx, "2000 rules", |cx| {
+        shell.read(cx).rules.len() == 2_000 && shell.read(cx).categories.len() == 2_001
+    });
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Categories, cx)));
+    draw_frame(cx, handle);
+    let first_rule = cx.update(|cx| shell.read(cx).rules[0].id);
+    cx.update(|cx| {
+        let s = shell.read(cx);
+        assert!(
+            s.rule_rows_built.get() > 0 && s.rule_rows_built.get() < 100,
+            "the rule list built {} rows of 2000 — buttons come with each row, so it must render a window",
+            s.rule_rows_built.get()
+        );
+    });
+    // The editor swaps one row for a taller block; the window stays small.
+    start_rule_edit(cx, handle, &shell, first_rule);
+    draw_frame(cx, handle);
+    cx.update(|cx| {
+        let s = shell.read(cx);
+        assert_eq!(s.editing_rule, Some(first_rule));
+        assert!(
+            s.rule_rows_built.get() < 100,
+            "still a window of rows with the editor open: {}",
+            s.rule_rows_built.get()
+        );
+    });
+}
+
 #[gpui::test]
 fn categorizing_a_queue_group_locks_in_a_rule(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, |c| {

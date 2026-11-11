@@ -22,7 +22,7 @@ use financi_db::import::{
     undo_last_import,
 };
 use financi_db::queue::{UncategorizedGroup, categorize_group, uncategorized_by_merchant};
-use financi_db::rules::{add_rule, count_rule_matches, list_rules};
+use financi_db::rules::{add_rule, count_rule_matches, delete_rule, list_rules, update_rule};
 use financi_db::settings::{self, DateRange};
 use financi_db::{
     Account, CategorySpend, DbWorker, MonthlySummary, TransferReview, TxSort, TxSortColumn,
@@ -1448,6 +1448,25 @@ pub struct Shell {
     rule_match_count: Option<i64>,
     rule_task: Option<Task<()>>,
     rule_error: Option<String>,
+    /// 3.24: the rule whose row currently shows the in-place editor. One at
+    /// a time; `select_category` and `go_page` close it. `start_edit_rule`
+    /// loads the rule into the editor's own controls, so the editor is the
+    /// add-rule row's shape with the row swapped out.
+    editing_rule: Option<i64>,
+    /// 3.24: the rule whose Delete… button is armed ("Click again to
+    /// delete"). Armed per row; `select_category` and `go_page` disarm it
+    /// with the page's other transient confirmations.
+    armed_delete_rule: Option<i64>,
+    /// 3.24: the editor's own controls, separate entities from the add-rule
+    /// row's so the two never share an `InputState`/`SelectState` on screen
+    /// at once. While the editor is open the shared `rule_match_count`
+    /// preview belongs to it (the add-rule row hides it, like `rule_error`)
+    /// and excludes that rule (2.5 re-run semantics); every close path
+    /// clears it, and `sync_category_choices` closes the editor when its
+    /// rule is gone.
+    rule_edit_pattern: Entity<InputState>,
+    rule_edit_target: Entity<SelectState<Names>>,
+    rule_edit_regex: bool,
     /// 3.21: one scroll handle per virtualized list. gpui-kit's
     /// `v_virtual_list` creates a fresh `VirtualListScrollHandle` on every
     /// render and `track_scroll`s it, and GPUI reads the scroll offset from
@@ -1729,10 +1748,29 @@ impl Shell {
         // The live "matches N transactions" preview runs on every pattern
         // keystroke (ui-conventions, Categories page).
         let preview_sub = cx.subscribe(&rule_pattern, |this, _, ev: &InputEvent, cx| {
-            if matches!(ev, InputEvent::Change) {
+            // 3.24: while a rule editor is open, the preview belongs to it.
+            if matches!(ev, InputEvent::Change) && this.editing_rule.is_none() {
                 this.preview_rule_match(cx);
             }
         });
+        // 3.24: the rule editor's Pattern input drives the same preview and
+        // saves on Enter (Escape cancels through the window-level binding
+        // handled in `clear_category_selection`).
+        let rule_edit_pattern = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("Text or regex a description must contain")
+        });
+        let rule_edit_target = cx.new(|cx| SelectState::new(Names::new(), None, window, cx));
+        let rule_edit_sub = cx.subscribe_in(
+            &rule_edit_pattern,
+            window,
+            |this, _, ev: &InputEvent, window, cx| match ev {
+                InputEvent::Change if this.editing_rule.is_some() => this.preview_rule_match(cx),
+                InputEvent::PressEnter {
+                    secondary: false, ..
+                } if this.editing_rule.is_some() => this.save_rule_edit(window, cx),
+                _ => {}
+            },
+        );
         // The dashboard search box filters the table on every keystroke.
         let search_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("Search description or merchant"));
@@ -1824,6 +1862,11 @@ impl Shell {
             rule_match_count: None,
             rule_task: None,
             rule_error: None,
+            editing_rule: None,
+            armed_delete_rule: None,
+            rule_edit_pattern,
+            rule_edit_target,
+            rule_edit_regex: false,
             tree_scroll: VirtualListScrollHandle::new(),
             rule_scroll: VirtualListScrollHandle::new(),
             queue_scroll: VirtualListScrollHandle::new(),
@@ -1845,6 +1888,7 @@ impl Shell {
             queue_range: std::cell::Cell::new((0, 0)),
             _subs: vec![
                 preview_sub,
+                rule_edit_sub,
                 search_sub,
                 date_preset_sub,
                 date_from_sub,
@@ -2326,13 +2370,18 @@ impl Shell {
 
     /// Esc (the `dashboard::ClearCategorySelection` action): clear the
     /// drill-down, the legend selection and the summary month together —
-    /// they are one concept.
+    /// they are one concept. 3.24: an open rule editor is the innermost
+    /// thing, so Esc cancels it first and nothing else.
     fn clear_category_selection(
         &mut self,
         _: &ClearCategorySelection,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.editing_rule.is_some() {
+            self.cancel_edit_rule(cx);
+            return;
+        }
         if self.chart_parent.is_none()
             && self.legend_selection.is_none()
             && self.summary_month.is_none()
@@ -2507,11 +2556,14 @@ impl Shell {
         self.page = page;
         // 3.11: no transient UI travels across a page switch — the two-click
         // confirmations, the rule offer and the inline rename editor all
-        // belong to the page they were opened on.
+        // belong to the page they were opened on. 3.24: the rule editor and
+        // the armed rule delete join that list.
         self.confirm_undo_import = None;
         self.rule_offer = None;
         self.renaming = false;
         self.confirm_delete_category = None;
+        self.close_rule_editor();
+        self.armed_delete_rule = None;
         cx.notify();
     }
 
@@ -2709,6 +2761,19 @@ impl Shell {
             .update(cx, |s, cx| s.set_items(names.clone(), window, cx));
         self.delete_target
             .update(cx, |s, cx| s.set_items(names, window, cx));
+        // 3.24: a refresh that dropped the rule (its category was deleted,
+        // say) drops the editor open on it and its armed delete with it,
+        // like the `rule_offer` check in `refresh`.
+        if let Some(id) = self.editing_rule
+            && !self.rules.iter().any(|r| r.id == id)
+        {
+            self.close_rule_editor();
+        }
+        if let Some(id) = self.armed_delete_rule
+            && !self.rules.iter().any(|r| r.id == id)
+        {
+            self.armed_delete_rule = None;
+        }
     }
 
     /// The selected node as (node, parent), parents having `None`.
@@ -2743,6 +2808,12 @@ impl Shell {
         self.renaming = false;
         self.confirm_delete_category = None;
         self.cat_error = None;
+        // 3.24: selecting another category closes the rule editor (with its
+        // preview count) and disarms any armed rule delete — the same
+        // "transient UI belongs to what it was opened on" rule as the page
+        // switch.
+        self.close_rule_editor();
+        self.armed_delete_rule = None;
         // 3.21: the rule list keeps its scroll offset here — its content
         // (all rules) doesn't change when the selection does. When 3.23
         // scopes the rule list to the selected category, this is the reset
@@ -2947,18 +3018,28 @@ impl Shell {
     /// Count rows the current pattern would categorize, live as the user
     /// types (ui-conventions, Categories page).
     fn preview_rule_match(&mut self, cx: &mut Context<Self>) {
-        let pattern = self.rule_pattern.read(cx).value().trim().to_string();
+        // 3.24: while a rule is being edited, the preview reads the
+        // editor's controls and excludes that rule, so the count shows what
+        // the edit would newly categorize (`count_rule_matches`' contract).
+        let editing = self.editing_rule;
+        let pattern = match editing {
+            Some(_) => self.rule_edit_pattern.read(cx).value().trim().to_string(),
+            None => self.rule_pattern.read(cx).value().trim().to_string(),
+        };
         if pattern.is_empty() {
             self.rule_task = None;
             self.rule_match_count = None;
             cx.notify();
             return;
         }
-        let is_regex = self.rule_regex;
+        let is_regex = match editing {
+            Some(_) => self.rule_edit_regex,
+            None => self.rule_regex,
+        };
         let db = self.db.clone();
         self.rule_task = Some(cx.spawn(async move |this, cx| {
             let result = on_db(&db, move |c| {
-                count_rule_matches(c, &pattern, is_regex, None).map_err(|e| e.to_string())
+                count_rule_matches(c, &pattern, is_regex, editing).map_err(|e| e.to_string())
             })
             .await;
             let _ = this.update(cx, |this, cx| {
@@ -3001,6 +3082,139 @@ impl Shell {
                 this.refresh(window, cx);
             });
         }));
+        cx.notify();
+    }
+
+    /// 3.24: close the rule editor and drop everything it owns — the
+    /// error line and the live preview count, including its in-flight task
+    /// (dropping a `Task` cancels it, so a late result can't repopulate
+    /// the count after the editor is gone). Returns whether an editor was
+    /// open. Every editor-close path goes through here.
+    fn close_rule_editor(&mut self) -> bool {
+        if self.editing_rule.take().is_some() {
+            self.rule_error = None;
+            self.rule_task = None;
+            self.rule_match_count = None;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// 3.24: close the rule editor without saving. The editor's controls
+    /// keep their values (invisible while closed); `start_edit_rule`
+    /// re-fills them from the next rule.
+    fn cancel_edit_rule(&mut self, cx: &mut Context<Self>) {
+        if self.close_rule_editor() {
+            cx.notify();
+        }
+    }
+
+    /// 3.24: swap a rule's row for its editor, pre-filled from the rule —
+    /// same shape as the add-rule row (Pattern, regex switch, Category
+    /// picker, Save, Cancel). One rule is edited at a time, so opening a
+    /// second row's editor closes the first and disarms any pending delete.
+    fn start_edit_rule(&mut self, id: i64, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(rule) = self.rules.iter().find(|r| r.id == id).cloned() else {
+            return;
+        };
+        self.editing_rule = Some(id);
+        self.armed_delete_rule = None;
+        self.rule_error = None;
+        self.rule_edit_regex = rule.is_regex;
+        self.rule_edit_pattern.update(cx, |i, cx| {
+            i.set_value(rule.pattern.clone(), window, cx);
+        });
+        let names: Names = self
+            .child_choices
+            .iter()
+            .map(|(_, n)| SharedString::from(n.clone()))
+            .collect();
+        let selected = self
+            .child_choices
+            .iter()
+            .position(|(cid, _)| *cid == rule.category_id);
+        self.rule_edit_target.update(cx, |s, cx| {
+            s.set_items(names, window, cx);
+            s.set_selected_index(
+                selected.map(gpui_kit::component::IndexPath::new),
+                window,
+                cx,
+            );
+        });
+        self.preview_rule_match(cx);
+        cx.notify();
+    }
+
+    /// 3.24: save the editor through [`update_rule`], which re-runs every
+    /// rule over the unlocked rows (2.5). A validation error (empty
+    /// pattern, bad regex) lands in `rule_error` — shown in `danger` under
+    /// the editor — and the editor stays open. On success every view
+    /// refreshes, as after `add_rule`.
+    fn save_rule_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(id) = self.editing_rule else {
+            return;
+        };
+        let pattern = self.rule_edit_pattern.read(cx).value().trim().to_string();
+        let is_regex = self.rule_edit_regex;
+        let Some(ix) = self.rule_edit_target.read(cx).selected_index(cx) else {
+            self.rule_error = Some("Choose the category the rule assigns.".into());
+            cx.notify();
+            return;
+        };
+        let Some((category_id, _)) = self.child_choices.get(ix.row).cloned() else {
+            return;
+        };
+        if pattern.is_empty() {
+            self.rule_error = Some("Give the rule a pattern.".into());
+            cx.notify();
+            return;
+        }
+        let db = self.db.clone();
+        self.task = Some(cx.spawn_in(window, async move |this, cx| {
+            let result = on_db(&db, move |c| {
+                update_rule(c, id, &pattern, is_regex, category_id)
+            })
+            .await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                match result {
+                    Ok(()) => {
+                        this.close_rule_editor();
+                    }
+                    Err(e) => this.rule_error = Some(e),
+                }
+                this.refresh(window, cx);
+            });
+        }));
+        cx.notify();
+    }
+
+    /// 3.24: Delete… with the two-click confirm (ui-conventions,
+    /// *Interaction*): the first click only arms the button ("Click again
+    /// to delete"), the second deletes through [`delete_rule`] — whose
+    /// re-run leaves the freed rows to the remaining rules or
+    /// Uncategorized — and refreshes every view.
+    fn arm_delete_rule(&mut self, id: i64, window: &mut Window, cx: &mut Context<Self>) {
+        if self.armed_delete_rule == Some(id) {
+            let db = self.db.clone();
+            self.task = Some(cx.spawn_in(window, async move |this, cx| {
+                let result = on_db(&db, move |c| delete_rule(c, id)).await;
+                let _ = this.update_in(cx, |this, window, cx| {
+                    match result {
+                        Ok(()) => {
+                            this.armed_delete_rule = None;
+                            if this.editing_rule == Some(id) {
+                                this.close_rule_editor();
+                            }
+                        }
+                        Err(e) => this.rule_error = Some(e),
+                    }
+                    this.refresh(window, cx);
+                });
+            }));
+        } else {
+            self.armed_delete_rule = Some(id);
+        }
         cx.notify();
     }
 
@@ -4166,18 +4380,23 @@ impl Shell {
 
     /// One row of the selected category's rule list (3.12: built lazily
     /// by the virtualized rule list, fixed height to match its
-    /// `item_sizes`).
-    fn rule_row(&self, rule: &Rule, muted: Hsla) -> AnyElement {
+    /// `item_sizes`). 3.24: every row carries Edit and Delete… at its right
+    /// end — small ghost buttons, visible on every row, built only for the
+    /// rows the list renders.
+    fn rule_row(&self, rule: &Rule, muted: Hsla, cx: &mut Context<Self>) -> AnyElement {
         let target = self
             .child_choices
             .iter()
             .find(|(id, _)| *id == rule.category_id)
             .map(|(_, n)| n.clone())
             .unwrap_or_else(|| format!("#{}", rule.category_id));
+        let id = rule.id;
+        let armed = self.armed_delete_rule == Some(id);
         h_flex()
             .h_6()
             .gap_2()
             .items_center()
+            .debug_selector(move || format!("rule-row-{id}"))
             .child(
                 div()
                     .w(px(320.))
@@ -4193,6 +4412,123 @@ impl Shell {
             }))
             .child(div().text_color(muted).child("→"))
             .child(div().child(target))
+            .child(div().flex_1())
+            .child(
+                Button::new(SharedString::from(format!("rule-edit-{id}")))
+                    .label("Edit")
+                    .ghost()
+                    .text_xs()
+                    .on_click(
+                        cx.listener(move |this, _, window, cx| {
+                            this.start_edit_rule(id, window, cx)
+                        }),
+                    ),
+            )
+            .child(
+                Button::new(SharedString::from(format!("rule-delete-{id}")))
+                    .label(if armed {
+                        "Click again to delete"
+                    } else {
+                        "Delete…"
+                    })
+                    .ghost()
+                    .text_xs()
+                    .on_click(
+                        cx.listener(move |this, _, window, cx| {
+                            this.arm_delete_rule(id, window, cx)
+                        }),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    /// 3.24: the in-place editor that replaces one rule's row — the
+    /// add-rule row's shape (labelled Pattern input, regex switch, labelled
+    /// Category picker, primary Save, Cancel) pre-filled from the rule,
+    /// with the same live "matches N transactions" count. A validation
+    /// error shows in `danger` under the editor and keeps it open — clamped
+    /// to one ellipsized line, because the virtual list doesn't clip per
+    /// item and a taller row would paint over the rows below. The row
+    /// reserves 68 px in `rule_sizes` instead of 24, 92 px while an error
+    /// is open (measured: 55.5 px without, 82 px with one line).
+    fn rule_editor_row(
+        &self,
+        rule: &Rule,
+        muted: Hsla,
+        danger: Hsla,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let preview = match self.rule_match_count {
+            Some(n) => div()
+                .text_sm()
+                .text_color(muted)
+                .debug_selector(|| "rule-edit-preview".into())
+                .child(format!("matches {} transactions", flow::count(n)))
+                .into_any_element(),
+            None => div().into_any_element(),
+        };
+        v_flex()
+            .gap_1()
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_end()
+                    .child(
+                        v_flex()
+                            .gap_1()
+                            .child(field_label(muted, "Pattern"))
+                            .child(div().w(px(280.)).child(Input::new(&self.rule_edit_pattern))),
+                    )
+                    .child(
+                        Switch::new(SharedString::from(format!("rule-edit-regex-{}", rule.id)))
+                            .label("regex")
+                            .checked(self.rule_edit_regex)
+                            .on_click(cx.listener(move |this, checked: &bool, _, cx| {
+                                this.rule_edit_regex = *checked;
+                                this.preview_rule_match(cx);
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        v_flex()
+                            .gap_1()
+                            .child(field_label(muted, "Category"))
+                            .child(div().w(px(240.)).child(
+                                Select::new(&self.rule_edit_target).placeholder("Category…"),
+                            )),
+                    )
+                    .child(
+                        Button::new(SharedString::from(format!("rule-edit-save-{}", rule.id)))
+                            .label("Save")
+                            .primary()
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.save_rule_edit(window, cx)),
+                            ),
+                    )
+                    .child(
+                        Button::new(SharedString::from(format!("rule-edit-cancel-{}", rule.id)))
+                            .label("Cancel")
+                            .ghost()
+                            .on_click(cx.listener(|this, _, _, cx| this.cancel_edit_rule(cx))),
+                    )
+                    .child(preview),
+            )
+            .children(
+                self.rule_error
+                    .clone()
+                    // One line, ellipsized (newlines flattened): the slot
+                    // reserves room for exactly one error line, and the
+                    // regex crate's messages are multi-line.
+                    .map(|e| e.replace('\n', " "))
+                    .map(|e| {
+                        div()
+                            .text_sm()
+                            .text_color(danger)
+                            .text_ellipsis()
+                            .debug_selector(|| "rule-edit-error".into())
+                            .child(e)
+                    }),
+            )
             .into_any_element()
     }
 
@@ -4448,13 +4784,33 @@ impl Shell {
         };
 
         // Rules: list + add row with the live match preview. The list is
-        // virtualized like the tree (3.12); rows are fixed height (24 px).
-        let rule_sizes = Rc::new(vec![size(px(0.), px(24.)); self.rules.len()]);
+        // virtualized like the tree (3.12); rows are fixed height (24 px),
+        // except the one row 3.24's editor swapped in for, which reserves
+        // 68 px (labelled fields) — 92 px while a validation error is open
+        // under it, one ellipsized line (`rule_editor_row`).
+        let editing = self.editing_rule;
+        let edit_error = self.rule_error.is_some();
+        let rule_sizes = Rc::new(
+            self.rules
+                .iter()
+                .map(|r| {
+                    if Some(r.id) == editing {
+                        size(px(0.), if edit_error { px(92.) } else { px(68.) })
+                    } else {
+                        size(px(0.), px(24.))
+                    }
+                })
+                .collect::<Vec<_>>(),
+        );
 
-        let preview = match self.rule_match_count {
+        let preview = match self
+            .rule_match_count
+            .filter(|_| self.editing_rule.is_none())
+        {
             Some(n) => div()
                 .text_sm()
                 .text_color(muted)
+                .debug_selector(|| "add-rule-preview".into())
                 .child(format!("matches {} transactions", flow::count(n)))
                 .into_any_element(),
             None => div().into_any_element(),
@@ -4538,7 +4894,11 @@ impl Shell {
                                                 .text_xs()
                                                 .text_color(muted)
                                                 .child(self.rules.len().to_string()),
-                                        ),
+                                        )
+                                        // 3.24: label over the Edit/Delete…
+                                        // column at the rows' right end.
+                                        .child(div().flex_1())
+                                        .child(div().text_xs().text_color(muted).child("Actions")),
                                 )
                                 // Add-rule group (3.16): the pattern field
                                 // and the category picker carry labels.
@@ -4592,6 +4952,9 @@ impl Shell {
                                 .children(
                                     self.rule_error
                                         .clone()
+                                        // 3.24: while a row's editor is open
+                                        // it shows the error under itself.
+                                        .filter(|_| self.editing_rule.is_none())
                                         .map(|e| div().text_sm().text_color(danger).child(e)),
                                 )
                                 .child(
@@ -4599,13 +4962,19 @@ impl Shell {
                                         cx.entity(),
                                         "rule-list",
                                         rule_sizes,
-                                        move |this, range, _window, _cx| {
+                                        move |this, range, _window, cx| {
                                             let rows: Vec<AnyElement> = this
                                                 .rules
                                                 .iter()
                                                 .skip(range.start)
                                                 .take(range.len())
-                                                .map(|r| this.rule_row(r, muted))
+                                                .map(|r| {
+                                                    if this.editing_rule == Some(r.id) {
+                                                        this.rule_editor_row(r, muted, danger, cx)
+                                                    } else {
+                                                        this.rule_row(r, muted, cx)
+                                                    }
+                                                })
                                                 .collect();
                                             #[cfg(test)]
                                             this.rule_rows_built.set(rows.len());

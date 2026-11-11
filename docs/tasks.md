@@ -366,7 +366,7 @@ that give back space on the dashboard and other pages. 3.28 builds on 3.24's row
 last because it attaches scrollbars to lists that 3.23, 3.28 and 3.30 lay
 out.
 
-- [ ] **3.24 Edit and delete rules.** The Categories page can add a rule but
+- [x] **3.24 Edit and delete rules.** The Categories page can add a rule but
   can't change or remove one, so a wrong pattern keeps miscategorizing
   every import. The storage side exists and is tested
   (`financi_db::rules::update_rule` and `delete_rule`; both validate, then
