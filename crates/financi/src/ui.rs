@@ -33,7 +33,10 @@ use financi_db::{
     unpair_transaction,
 };
 use gpui_kit::assets::IconName;
-use gpui_kit::base::{Toast, ToastManager, ToastMotion, ToastOptions, ToastStack, ToastStackState};
+use gpui_kit::base::{
+    Scrollbar, ScrollbarMode, Toast, ToastManager, ToastMotion, ToastOptions, ToastStack,
+    ToastStackState,
+};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::calendar::Date as CalendarDate;
 use gpui_kit::component::chart::BarChart;
@@ -1469,6 +1472,11 @@ pub struct Shell {
     summary: MonthlySummary,
     expanded_parents: HashSet<i64>,
     summary_month: Option<String>,
+    /// One horizontal scroll handle for the whole month strip of the
+    /// dashboard summary (3.30): the header's month row and every row's
+    /// month cells track it, so they scroll together, while the name
+    /// column and the `Total` column stay pinned.
+    summary_scroll: ScrollHandle,
     // -- Dashboard date range (3.2): the control state, the `ViewFilter`
     // it drives (used by 3.4–3.6), and the picker entities.
     date_range: DateRange,
@@ -1912,6 +1920,7 @@ impl Shell {
             },
             expanded_parents: HashSet::new(),
             summary_month: None,
+            summary_scroll: ScrollHandle::new(),
             date_range: DateRange::default(),
             view_filter: ViewFilter::default(),
             date_preset_select,
@@ -2123,6 +2132,15 @@ impl Shell {
                         this.sync_account_filter();
                         this.row_count = rows.len();
                         this.chart_rows = chart_rows;
+                        // A range change shows new months: park the month
+                        // strip (3.30) at its right end so the most recent
+                        // month sits beside the pinned `Total` column. The
+                        // huge negative offset clamps to the true maximum
+                        // when the strip next paints.
+                        if this.summary.months != summary.months {
+                            this.summary_scroll
+                                .set_offset(point(px(-1_000_000.), px(0.)));
+                        }
                         this.summary = summary;
                         // Revalidate the legend state against the rows we
                         // can actually show: a date/accounts change can
@@ -4091,22 +4109,66 @@ impl Shell {
         let month_values = self.summary.months.clone();
         let rows = self.summary_rows();
 
+        // Pinned columns and scrolling months (3.30): the name column and
+        // `Total` keep fixed widths at the row edges, and the month columns
+        // — 88px each, as before — live in a viewport between them that
+        // scrolls horizontally. One `ScrollHandle` is tracked by every
+        // month viewport, the header's included, so they always show the
+        // same slice of months.
+        const NAME_W: f32 = 160.;
+        const MONTH_W: f32 = 88.;
+        const TOTAL_W: f32 = 96.;
+        let month_count = month_values.len();
+        let month_viewport = |selector: String, handle: &ScrollHandle| {
+            div()
+                .id(SharedString::from(selector.clone()))
+                .flex_1()
+                .min_w_0()
+                .overflow_x_scroll()
+                // Keep a vertical wheel moving the rows: without this a
+                // vertical-only delta on an x-scrollable div is remapped to
+                // the horizontal axis instead of reaching `summary-rows`.
+                .restrict_scroll_to_axis()
+                .track_scroll(handle)
+                .debug_selector(move || selector.clone())
+        };
+        // The strip is flush right against `Total` while every month fits —
+        // today's look — and once it overflows it packs to its natural
+        // width and scrolls.
+        let months_strip = move || {
+            div()
+                .flex()
+                .gap_2()
+                .w_full()
+                .min_w(px(
+                    month_count as f32 * MONTH_W + (month_count as f32 - 1.) * 8.
+                ))
+                .justify_end()
+        };
+
         let header = h_flex()
             .gap_2()
             .px_1()
-            .child(div().flex_1().min_w_0())
-            .children(month_values.iter().map(|month| {
-                div()
-                    .w(px(88.))
-                    .flex_none()
-                    .text_right()
-                    .text_sm()
-                    .text_color(muted)
-                    .child(flow::month_label(month))
-            }))
+            .child(div().w(px(NAME_W)).flex_none())
+            .child(
+                month_viewport("summary:months-header".into(), &self.summary_scroll).child(
+                    months_strip().children(month_values.iter().enumerate().map(
+                        |(col_ix, month)| {
+                            div()
+                                .w(px(MONTH_W))
+                                .flex_none()
+                                .debug_selector(move || format!("summary:month-label-{col_ix}"))
+                                .text_right()
+                                .text_sm()
+                                .text_color(muted)
+                                .child(flow::month_label(month))
+                        },
+                    )),
+                ),
+            )
             .child(
                 div()
-                    .w(px(96.))
+                    .w(px(TOTAL_W))
                     .flex_none()
                     .text_right()
                     .text_sm()
@@ -4119,6 +4181,10 @@ impl Shell {
             .flex_1()
             .min_h_0()
             .overflow_y_scroll()
+            // Without this a horizontal wheel delta over the month zone is
+            // remapped onto this scroller's vertical axis too, so a swipe
+            // would scroll the months and jump the rows at once (3.30).
+            .restrict_scroll_to_axis()
             .children(rows.into_iter().enumerate().map(|(ix, row)| {
                 let id = row.id;
                 let is_category = !matches!(
@@ -4152,8 +4218,9 @@ impl Shell {
                 };
                 let name_cell = h_flex()
                     .id(SharedString::from(format!("summary-name-{ix}")))
-                    .flex_1()
-                    .min_w_0()
+                    .w(px(NAME_W))
+                    .flex_none()
+                    .debug_selector(move || format!("summary:name-{ix}"))
                     .gap_2()
                     .items_center()
                     .when(matches!(row.kind, SummaryRowKind::Child), |c| c.pl(px(14.)))
@@ -4178,6 +4245,24 @@ impl Shell {
                     .when_some(swatch, |c, color| {
                         c.child(div().size(px(10.)).flex_none().rounded(px(2.)).bg(color))
                     })
+                    // The fixed name column truncates long names, so hover
+                    // shows the full one (3.30), same tooltip idiom as the
+                    // queue's merchants.
+                    .tooltip({
+                        let full = row.name.clone();
+                        move |window, cx| {
+                            let tip = full.clone();
+                            Tooltip::element(move |_, _| {
+                                div()
+                                    .debug_selector({
+                                        let n = tip.clone();
+                                        move || format!("summary:name-tooltip:{n}")
+                                    })
+                                    .child(tip.clone())
+                            })
+                            .build(window, cx)
+                        }
+                    })
                     .child(
                         div()
                             .min_w_0()
@@ -4193,6 +4278,55 @@ impl Shell {
                             .child(row.name.clone()),
                     );
 
+                // The month cells go into the scrolling viewport; the
+                // `Total` cell stays pinned right. Both keep their exact
+                // behaviour — click-to-filter, the selected highlight, the
+                // `Income`/`Net` colours (3.6).
+                let mut month_cells: Vec<AnyElement> = Vec::with_capacity(month_count);
+                let mut total_cell: AnyElement =
+                    div().w(px(TOTAL_W)).flex_none().into_any_element();
+                for (col_ix, &cents) in row.cells.iter().enumerate() {
+                    let is_total = col_ix >= month_count;
+                    let cell_month = month_values.get(col_ix).cloned();
+                    let selected = is_category
+                        && cell_month == selected_month
+                        && match (id, selection) {
+                            (None, Some(LegendSelection::Uncategorized)) => true,
+                            (Some(id), Some(LegendSelection::Category(c))) => c == id,
+                            _ => false,
+                        };
+                    let color = match row.kind {
+                        SummaryRowKind::Income => Some(success),
+                        SummaryRowKind::Net if cents < 0 => Some(danger),
+                        _ => None,
+                    };
+                    let cell = div()
+                        .id(SharedString::from(format!("summary-cell-{ix}-{col_ix}")))
+                        .w(if is_total { px(TOTAL_W) } else { px(MONTH_W) })
+                        .flex_none()
+                        .debug_selector(move || format!("summary:cell-{ix}-{col_ix}"))
+                        .text_right()
+                        .text_sm()
+                        .rounded(px(2.))
+                        .when_some(color, |c, color| c.text_color(color))
+                        .when(selected, |c| c.bg(list_active))
+                        .when(is_category, |c| {
+                            let month = cell_month.clone();
+                            c.cursor_pointer().on_click(cx.listener(
+                                move |this, _: &ClickEvent, window, cx| {
+                                    this.click_summary_cell(id, month.clone(), window, cx);
+                                },
+                            ))
+                        })
+                        .child(flow::money(cents))
+                        .into_any_element();
+                    if is_total {
+                        total_cell = cell;
+                    } else {
+                        month_cells.push(cell);
+                    }
+                }
+
                 h_flex()
                     .id(SharedString::from(format!("summary-row-{ix}")))
                     .gap_2()
@@ -4204,43 +4338,11 @@ impl Shell {
                     // the category rows.
                     .when(is_income, |r| r.border_t_1().border_color(border))
                     .child(name_cell)
-                    .children(row.cells.iter().enumerate().map(|(col_ix, &cents)| {
-                        let cell_month = month_values.get(col_ix).cloned();
-                        let selected = is_category
-                            && cell_month == selected_month
-                            && match (id, selection) {
-                                (None, Some(LegendSelection::Uncategorized)) => true,
-                                (Some(id), Some(LegendSelection::Category(c))) => c == id,
-                                _ => false,
-                            };
-                        let color = match row.kind {
-                            SummaryRowKind::Income => Some(success),
-                            SummaryRowKind::Net if cents < 0 => Some(danger),
-                            _ => None,
-                        };
-                        div()
-                            .id(SharedString::from(format!("summary-cell-{ix}-{col_ix}")))
-                            .w(if col_ix == month_values.len() {
-                                px(96.)
-                            } else {
-                                px(88.)
-                            })
-                            .flex_none()
-                            .text_right()
-                            .text_sm()
-                            .rounded(px(2.))
-                            .when_some(color, |c, color| c.text_color(color))
-                            .when(selected, |c| c.bg(list_active))
-                            .when(is_category, |c| {
-                                let month = cell_month.clone();
-                                c.cursor_pointer().on_click(cx.listener(
-                                    move |this, _: &ClickEvent, window, cx| {
-                                        this.click_summary_cell(id, month.clone(), window, cx);
-                                    },
-                                ))
-                            })
-                            .child(flow::money(cents))
-                    }))
+                    .child(
+                        month_viewport(format!("summary:months-{ix}"), &self.summary_scroll)
+                            .child(months_strip().children(month_cells)),
+                    )
+                    .child(total_cell)
                     .into_any_element()
             }));
 
@@ -4248,6 +4350,7 @@ impl Shell {
             .h(px(340.))
             .flex_1()
             .min_w_0()
+            .relative()
             .debug_selector(|| "panel:summary".into())
             .p_4()
             .gap_2()
@@ -4264,6 +4367,26 @@ impl Shell {
                     .gap_1()
                     .child(header)
                     .child(body),
+            )
+            // The month strip's horizontal scrollbar (3.30): a thin overlay
+            // pinned to the panel's bottom edge, inset to span only the
+            // month zone — the name column and `Total` stay clear of it.
+            // `Always` so it shows while the strip overflows (the theme
+            // default hides it until hover); it disappears by itself when
+            // every month fits.
+            .child(
+                div()
+                    .id("summary-hscrollbar")
+                    .absolute()
+                    .left(px(20. + NAME_W + 8.))
+                    .right(px(20. + TOTAL_W + 8.))
+                    .bottom(px(4.))
+                    .h(px(12.))
+                    .child(
+                        Scrollbar::horizontal(&self.summary_scroll)
+                            .mode(ScrollbarMode::Always)
+                            .viewport_from_layout(),
+                    ),
             )
             .into_any_element()
     }

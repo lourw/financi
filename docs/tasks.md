@@ -650,7 +650,7 @@ out.
     is visible in the list; locked and card-payment rows show the disabled
     item with the right reason.
 
-- [ ] **3.30 Monthly summary scrolls sideways.** The summary's month
+- [x] **3.30 Monthly summary scrolls sideways.** The summary's month
   columns are fixed at 88 px each plus a 96 px Total, so a range longer
   than a few months is wider than the panel (≈ 470 px at 1200 × 720): the
   category names shrink to nothing and the right-hand months and Total

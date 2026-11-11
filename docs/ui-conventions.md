@@ -83,6 +83,15 @@ header row is the filters.
   fixed height (~340px) — both panels carry an explicit height so their
   titles share one line. The summary scrolls if it overflows. The chart
   never scrolls.
+- **Summary month strip (3.30):** the category name column is fixed
+  (~160px, swatch + name ellipsized with a hover tooltip, child indent
+  unchanged) and `Total` (~96px) is pinned right; only the 88px month
+  columns between them scroll sideways (Shift+wheel / trackpad, plus a
+  thin horizontal scrollbar over the month zone while they overflow).
+  One shared handle keeps the header months over their cells; vertical
+  scrolling moves whole rows, names included. A range change lands on
+  the most recent month; when every month fits there is no scrolling and
+  the months sit flush against `Total`, as before.
 - **Dashboard filter rows (3.25):** two rows, not merged — at the minimum
   window (1200px) the merged row doesn't fit once the custom From/To
   pickers join. Every item in a row is one column: a `field_label` line
