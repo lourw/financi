@@ -80,8 +80,21 @@ header row is the filters.
 | **Imports** | Header actions: Import CSV… (primary), Undo… (two-click, newest import, disabled with no history), Export… and Restore… (live in M5; say so for now). The import preview (while a file is open) on top, then import history (time, file, account, rows added, dates). Undo… on the newest row only. |
 
 - **Dashboard middle row:** chart and summary side by side, ~45/55, same
-  fixed height (~340px). The summary scrolls if it overflows. The chart
+  fixed height (~340px) — both panels carry an explicit height so their
+  titles share one line. The summary scrolls if it overflows. The chart
   never scrolls.
+- **Dashboard filter rows (3.25):** two rows, not merged — at the minimum
+  window (1200px) the merged row doesn't fit once the custom From/To
+  pickers join. Every item in a row is one column: a `field_label` line
+  (an invisible placeholder line of the same height where there's no
+  label) over a 32px control line with the control vertically centered,
+  so controls, checkboxes and the count share one center line. The first
+  column of each row is the same width (240px), so Search sits exactly
+  under Date range. The transaction count is the row's last column,
+  `ml_auto`, ending at the page's right edge. The filter region, the
+  chart panel, the summary and the table span the page's left and right
+  edges exactly; the table's flexible columns (Account, Description,
+  Category) absorb the window width so it never overhangs the page.
 - **Tables** take `flex_1` and scroll. Minimum window size: 1200 × 720.
 - **Opening a file** (drop anywhere on any page, ⌘O, Imports → Import CSV…,
   `FINANCI_DEV_OPEN`)

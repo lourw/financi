@@ -92,6 +92,24 @@ fn region_title(text: &'static str) -> Div {
         .child(text)
 }
 
+/// One column of a dashboard filter row (3.25, ui-conventions *Pages*): a
+/// label line over a control line [`FILTER_CONTROL_H`] tall with the control
+/// vertically centred, so every control in the row shares one centre line
+/// however tall it is. A column whose label is `""` (checkboxes, the
+/// transaction count) carries an invisible label line of the same height so
+/// its control still sits on the row's control line.
+fn filter_column(muted: Hsla, label: &'static str, control: impl IntoElement) -> Div {
+    v_flex()
+        .gap_1()
+        .flex_none()
+        .child(if label.is_empty() {
+            div().text_xs().invisible().child(".").into_any_element()
+        } else {
+            field_label(muted, label).into_any_element()
+        })
+        .child(h_flex().h(FILTER_CONTROL_H).items_center().child(control))
+}
+
 /// Run `f` on the database thread, flattening worker and query errors.
 async fn on_db<R, E, F>(db: &DbWorker, f: F) -> Result<R, String>
 where
@@ -273,6 +291,9 @@ pub struct TxTable {
     /// Called with the new ordering when a header's sort icon is clicked;
     /// the shell re-queries and refreshes.
     on_sort: SortFn,
+    /// Widths of the three flexible columns (Account, Description,
+    /// Category), kept in sync with the window (3.25, `tx_flex_widths`).
+    flex_widths: (f32, f32, f32),
 }
 
 /// Callback from a sortable table header back to the [`Shell`] (task 3.4).
@@ -307,10 +328,10 @@ impl TableDelegate for TxTable {
                 TxSortColumn::Date,
                 Column::new("date", "Date").width(px(110.)),
             ),
-            1 => Column::new("account", "Account").width(px(300.)),
-            2 => Column::new("description", "Description").width(px(360.)),
+            1 => Column::new("account", "Account").width(px(self.flex_widths.0)),
+            2 => Column::new("description", "Description").width(px(self.flex_widths.1)),
             // Room for the post-edit "Apply to all matching …" affordance.
-            3 => Column::new("category", "Category").width(px(260.)),
+            3 => Column::new("category", "Category").width(px(self.flex_widths.2)),
             _ => sort(
                 TxSortColumn::Amount,
                 Column::new("amount", "Amount").width(px(120.)).text_right(),
@@ -1180,6 +1201,10 @@ const LEGEND_W: f32 = 220.;
 const CHART_PANEL_SHARE: f32 = 0.45;
 const PAGE_PAD: f32 = 16.;
 const REGION_GAP: f32 = 12.;
+// Filter rows (3.25): the control line every filter column shares, and the
+// width of the first column of each row (the row-2 search box matches it).
+const FILTER_CONTROL_H: Pixels = px(32.);
+const FILTER_COL_W: Pixels = px(240.);
 
 /// Generous width of one 10px system-font character, rounded up so the
 /// budget errs towards labels that are too short rather than overlapping.
@@ -1271,6 +1296,24 @@ fn history_flex_widths(page_w: f32) -> (f32, f32) {
         HISTORY_TIME_W + HISTORY_ROWS_W + HISTORY_DATES_W + history_undo_col_w() + TABLE_BORDER_X;
     let flex = (page_w - fixed).max(2. * HISTORY_FLEX_MIN_W);
     (flex / 2., flex / 2.)
+}
+
+/// The dashboard table's fixed columns (3.25): the `Date` and `Amount`
+/// widths, which never change with the window.
+const TX_FIXED_W: f32 = 110. + 120.;
+/// The dashboard table's `Account`, `Description` and `Category` widths for
+/// `page_w` pixels of page (3.25, the same shape as `history_flex_widths`):
+/// what the fixed columns leave over, split in the widths' original
+/// proportions, never below `HISTORY_FLEX_MIN_W` each. The sum always
+/// reaches the page's right edge, so the table never overhangs it.
+fn tx_flex_widths(page_w: f32) -> (f32, f32, f32) {
+    let flex = (page_w - TX_FIXED_W - TABLE_BORDER_X).max(3. * HISTORY_FLEX_MIN_W);
+    const TOTAL: f32 = 300. + 360. + 260.;
+    (
+        flex * 300. / TOTAL,
+        flex * 360. / TOTAL,
+        flex * 260. / TOTAL,
+    )
 }
 
 /// Fit `names` into the band axis (3.15): a name longer than `chars`
@@ -1580,6 +1623,10 @@ impl Shell {
                     on_apply_rule,
                     on_unpair,
                     on_sort,
+                    // 3.25: start at the widths the current window allows.
+                    flex_widths: tx_flex_widths(
+                        (window.bounds().size.width.as_f32() - SIDEBAR_W - 2. * PAGE_PAD).max(0.),
+                    ),
                 },
                 window,
                 cx,
@@ -1747,15 +1794,22 @@ impl Shell {
             },
         );
         // The chart's label plan follows the window width (3.15), and so
-        // do the Imports history table's flexible columns (3.20).
+        // do the Imports history table's (3.20) and the dashboard table's
+        // flexible columns (3.25).
         let bounds_sub = cx.observe_window_bounds(window, |this, window, cx| {
             let width = window.bounds().size.width.as_f32();
             if this.window_width != width {
                 this.window_width = width;
-                let flex = history_flex_widths((width - SIDEBAR_W - 2. * PAGE_PAD).max(0.));
+                let page_w = (width - SIDEBAR_W - 2. * PAGE_PAD).max(0.);
+                let flex = history_flex_widths(page_w);
                 this.history_table.update(cx, |t, cx| {
                     t.delegate_mut().flex_widths = flex;
                     // Re-read the delegate's columns with the new widths.
+                    t.refresh(cx);
+                });
+                let flex = tx_flex_widths(page_w);
+                this.table.update(cx, |t, cx| {
+                    t.delegate_mut().flex_widths = flex;
                     t.refresh(cx);
                 });
                 cx.notify();
@@ -3542,14 +3596,21 @@ impl Shell {
             }));
 
         h_flex()
+            .w_full()
+            .min_w_0()
             .h(px(340.))
             .flex_none()
             .gap_3()
             .child(
-                // 3.16: the panel names itself, as the mockups show.
+                // 3.16: the panel names itself, as the mockups show. The
+                // height is explicit (3.25): the row's cross alignment does
+                // not stretch, so without it the panel keeps its content
+                // height and its title misses the summary's title line.
                 v_flex()
                     .w(relative(CHART_PANEL_SHARE))
+                    .h_full()
                     .min_w_0()
+                    .debug_selector(|| "panel:chart".into())
                     .gap_2()
                     .p_4()
                     .rounded(radius)
@@ -3601,6 +3662,7 @@ impl Shell {
                 .h(px(340.))
                 .flex_1()
                 .min_w_0()
+                .debug_selector(|| "panel:summary".into())
                 .gap_2()
                 .p_4()
                 .rounded(radius)
@@ -3782,6 +3844,7 @@ impl Shell {
             .h(px(340.))
             .flex_1()
             .min_w_0()
+            .debug_selector(|| "panel:summary".into())
             .p_4()
             .gap_2()
             .rounded(radius)
@@ -3832,8 +3895,10 @@ impl Shell {
         let muted = cx.theme().muted_foreground;
         let body = self.dashboard_body();
         v_flex()
+            .w_full()
             .flex_1()
             .min_h_0()
+            .min_w_0()
             .gap_3()
             // One labelled filter region (3.16): the date range, accounts
             // and transfers controls, then search and the table toggles —
@@ -3842,95 +3907,123 @@ impl Shell {
             // (ui-conventions, *Pages*).
             .child(
                 v_flex()
+                    .w_full()
+                    .debug_selector(|| "filters:region".into())
                     .gap_2()
                     .child(region_title("Filters"))
                     .child(
                         h_flex()
+                            .w_full()
+                            .debug_selector(|| "filters:row1".into())
                             .gap_3()
-                            .items_end()
-                            .child(
-                                v_flex()
-                                    .gap_1()
-                                    .child(field_label(muted, "Date range"))
-                                    .child(
-                                        div()
-                                            .w(px(150.))
-                                            .child(Select::new(&self.date_preset_select)),
-                                    ),
-                            )
+                            .items_start()
+                            .child(filter_column(
+                                muted,
+                                "Date range",
+                                div()
+                                    .debug_selector(|| "filters:date-range".into())
+                                    .w(FILTER_COL_W)
+                                    .child(Select::new(&self.date_preset_select)),
+                            ))
                             .when(matches!(self.date_range, DateRange::Custom { .. }), |g| {
-                                g.child(
-                                    v_flex().gap_1().child(field_label(muted, "From")).child(
-                                        div()
-                                            .w(px(140.))
-                                            .child(DatePicker::new(&self.date_from_picker)),
-                                    ),
-                                )
-                                .child(
-                                    v_flex().gap_1().child(field_label(muted, "To")).child(
-                                        div()
-                                            .w(px(140.))
-                                            .child(DatePicker::new(&self.date_to_picker)),
-                                    ),
-                                )
+                                g.child(filter_column(
+                                    muted,
+                                    "From",
+                                    div()
+                                        .debug_selector(|| "filters:from".into())
+                                        .w(px(140.))
+                                        .child(DatePicker::new(&self.date_from_picker)),
+                                ))
+                                .child(filter_column(
+                                    muted,
+                                    "To",
+                                    div()
+                                        .debug_selector(|| "filters:to".into())
+                                        .w(px(140.))
+                                        .child(DatePicker::new(&self.date_to_picker)),
+                                ))
                             })
                             // Accounts multi-select (3.3): a dropdown popover of
                             // checkboxes, one per account, all checked by default.
-                            .child(
-                                v_flex()
-                                    .gap_1()
-                                    .child(field_label(muted, "Accounts"))
-                                    .child(
-                                        // The selector (test builds only, 3.11)
-                                        // lets headless tests find the trigger
-                                        // and click it.
-                                        div()
-                                            .debug_selector(|| "accounts:filter".into())
-                                            .child(self.accounts_popover(cx)),
-                                    ),
-                            )
-                            .child(
+                            .child(filter_column(
+                                muted,
+                                "Accounts",
+                                // The selector (test builds only, 3.11) lets
+                                // headless tests find the trigger and click it.
+                                div()
+                                    .debug_selector(|| "accounts:filter".into())
+                                    .child(self.accounts_popover(cx)),
+                            ))
+                            .child(filter_column(
+                                muted,
+                                // No label of its own: the invisible label
+                                // line (3.25) keeps the control centred on
+                                // the same line as its neighbours.
+                                "",
                                 checkbox("include-transfers")
                                     .label("Include transfers")
                                     .checked(self.include_transfers)
                                     .on_click(cx.listener(|this, on: &bool, window, cx| {
                                         this.set_include_transfers(*on, window, cx);
                                     })),
-                            )
-                            .child(div().text_sm().text_color(muted).child(format!(
-                                "{} transactions",
-                                flow::count(self.row_count as i64)
-                            ))),
+                            ))
+                            // The count rides the end of the row (3.25): it
+                            // shares the control line and anchors the region's
+                            // right edge to the page.
+                            .child(
+                                filter_column(
+                                    muted,
+                                    "",
+                                    div()
+                                        .debug_selector(|| "filters:count".into())
+                                        .text_sm()
+                                        .text_color(muted)
+                                        .child(format!(
+                                            "{} transactions",
+                                            flow::count(self.row_count as i64)
+                                        )),
+                                )
+                                .ml_auto(),
+                            ),
                     )
                     // Second filter row (3.4): search box and the two table-only
                     // toggles. Kept on their own line so the date-range pickers
-                    // never crowd them.
+                    // never crowd them. The search column matches the first
+                    // column of the row above (3.25, ui-conventions *Pages*).
                     .child(
                         h_flex()
+                            .w_full()
+                            .debug_selector(|| "filters:row2".into())
                             .gap_3()
-                            .items_end()
-                            .child(
-                                v_flex()
-                                    .gap_1()
-                                    .child(field_label(muted, "Search"))
-                                    .child(div().w(px(240.)).child(Input::new(&self.search_input))),
-                            )
-                            .child(
+                            .items_start()
+                            .child(filter_column(
+                                muted,
+                                "Search",
+                                div()
+                                    .debug_selector(|| "filters:search".into())
+                                    .w(FILTER_COL_W)
+                                    .child(Input::new(&self.search_input)),
+                            ))
+                            .child(filter_column(
+                                muted,
+                                "",
                                 checkbox("uncategorized-only")
                                     .label("Uncategorized only")
                                     .checked(self.uncategorized_only)
                                     .on_click(cx.listener(|this, on: &bool, window, cx| {
                                         this.set_uncategorized_only(*on, window, cx);
                                     })),
-                            )
-                            .child(
+                            ))
+                            .child(filter_column(
+                                muted,
+                                "",
                                 checkbox("show-hidden")
                                     .label("Show hidden")
                                     .checked(self.show_hidden)
                                     .on_click(cx.listener(|this, on: &bool, window, cx| {
                                         this.set_show_hidden(*on, window, cx);
                                     })),
-                            ),
+                            )),
                     ),
             )
             .child(match body {
@@ -3944,19 +4037,27 @@ impl Shell {
                     .into_any_element(),
                 _ => {
                     v_flex()
+                        .w_full()
+                        .min_w_0()
                         .flex_1()
                         .min_h_0()
                         .gap_3()
                         // Middle row: chart + legend left (3.5), the monthly
                         // summary right (3.6), both inside `chart_panel`.
                         .child(self.chart_panel(cx))
-                        .child(div().flex_1().min_h_0().child(
-                            if body == DashboardBody::NoMatches {
-                                self.no_matches_panel(cx)
-                            } else {
-                                DataTable::new(&self.table).stripe(true).into_any_element()
-                            },
-                        ))
+                        .child(
+                            div()
+                                .w_full()
+                                .min_w_0()
+                                .flex_1()
+                                .min_h_0()
+                                .debug_selector(|| "panel:table".into())
+                                .child(if body == DashboardBody::NoMatches {
+                                    self.no_matches_panel(cx)
+                                } else {
+                                    DataTable::new(&self.table).stripe(true).into_any_element()
+                                }),
+                        )
                         .into_any_element()
                 }
             })
@@ -5064,8 +5165,10 @@ impl Render for Shell {
         let page_area = v_flex()
             .id(self.page.content_id())
             .debug_selector(|| format!("page:{}", self.page.content_id()))
+            .w_full()
             .flex_1()
             .min_h_0()
+            .min_w_0()
             .child(page_area)
             .into_any_element();
 

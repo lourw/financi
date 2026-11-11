@@ -1170,6 +1170,205 @@ fn the_dashboard_panels_name_themselves(cx: &mut TestAppContext) {
     }
 }
 
+/// 3.25: resize to `w` × `h` and paint, so `debug_bounds` reports the
+/// geometry of that size (the alignment pass is tested at the minimum and
+/// at a large window).
+fn resize_and_draw(cx: &mut TestAppContext, handle: AnyWindowHandle, w: f32, h: f32) {
+    with_window(cx, handle, |window, cx| {
+        window.resize(size(px(w), px(h)));
+        window.bounds_changed(cx);
+    });
+    cx.run_until_parked();
+    draw_frame(cx, handle);
+}
+
+/// 3.25: the centre-line y of a selector, panicking with its name when the
+/// element did not paint at all.
+fn centre_y(window: &mut VisualTestContext, sel: &'static str) -> f32 {
+    let b = window
+        .debug_bounds(sel)
+        .unwrap_or_else(|| panic!("{sel} paints on the dashboard"));
+    f32::from(b.origin.y) + f32::from(b.size.height) / 2.
+}
+
+/// 3.25: the dashboard with the demo import, measured at `w` × `h`.
+fn open_dashboard_for_geometry(
+    cx: &mut TestAppContext,
+    w: f32,
+    h: f32,
+) -> (AnyWindowHandle, Entity<Shell>) {
+    let (handle, shell) = open_shell(cx, |c| {
+        settings::set(c, UI_DATE_RANGE, "all").unwrap();
+    });
+    wait_until(cx, "all-time range restored", |cx| {
+        shell.read(cx).date_range == DateRange::Preset(DatePreset::AllTime)
+    });
+    import_demo_file(cx, handle, &shell, "amex-sep-nov.csv", "Amex");
+    wait_until(cx, "dashboard shows the import", |cx| {
+        shell.read(cx).row_count == 100 && shell.read(cx).total_visible == 102
+    });
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
+    resize_and_draw(cx, handle, w, h);
+    (handle, shell)
+}
+
+/// 3.25 (dashboard alignment): every control in a filter row — dropdowns,
+/// pickers, checkboxes, the transaction count — sits on one centre line,
+/// vertically centred in the row's 32px control line. At both window sizes.
+#[gpui::test]
+fn the_dashboard_filter_rows_share_one_centre_line(cx: &mut TestAppContext) {
+    for (w, h) in [(1200., 720.), (1600., 1000.)] {
+        let (handle, _shell) = open_dashboard_for_geometry(cx, w, h);
+        let mut window = VisualTestContext::from_window(handle, cx);
+        let centre = centre_y(&mut window, "filters:date-range");
+        for sel in [
+            "accounts:filter",
+            "checkbox:include-transfers",
+            "filters:count",
+        ] {
+            let cy = centre_y(&mut window, sel);
+            assert!(
+                (cy - centre).abs() <= 1.,
+                "{sel} centres at y {cy}, not on the first filter row's centre line {centre} ({w}x{h})"
+            );
+        }
+        let centre = centre_y(&mut window, "filters:search");
+        for sel in ["checkbox:uncategorized-only", "checkbox:show-hidden"] {
+            let cy = centre_y(&mut window, sel);
+            assert!(
+                (cy - centre).abs() <= 1.,
+                "{sel} centres at y {cy}, not on the second filter row's centre line {centre} ({w}x{h})"
+            );
+        }
+        // The rows stay separate, and the search column stacks under the
+        // first column: same left edge, same width (ui-conventions *Pages*).
+        let date = window
+            .debug_bounds("filters:date-range")
+            .expect("the date-range column paints");
+        let search = window
+            .debug_bounds("filters:search")
+            .expect("the search column paints");
+        assert!(
+            (f32::from(search.origin.x) - f32::from(date.origin.x)).abs() <= 1.,
+            "the search column starts at x {}, the date-range column at x {} ({w}x{h})",
+            f32::from(search.origin.x),
+            f32::from(date.origin.x),
+        );
+        assert!(
+            (f32::from(search.size.width) - f32::from(date.size.width)).abs() <= 1.,
+            "the search column is {} wide, the date-range column {} ({w}x{h})",
+            f32::from(search.size.width),
+            f32::from(date.size.width),
+        );
+    }
+}
+
+/// 3.25 (dashboard alignment): the filter region, the chart panel, the
+/// monthly summary and the table share the page's left and right edges
+/// exactly; the two middle panels are the same height and their titles sit
+/// on one line. At both window sizes.
+#[gpui::test]
+fn the_dashboard_regions_share_the_page_edges(cx: &mut TestAppContext) {
+    for (w, h) in [(1200., 720.), (1600., 1000.)] {
+        let (handle, _shell) = open_dashboard_for_geometry(cx, w, h);
+        let mut window = VisualTestContext::from_window(handle, cx);
+        let left = SIDEBAR_W + PAGE_PAD;
+        let right = w - PAGE_PAD;
+        for sel in ["filters:region", "panel:chart", "panel:table"] {
+            let b = window
+                .debug_bounds(sel)
+                .unwrap_or_else(|| panic!("{sel} paints on the dashboard"));
+            assert!(
+                (f32::from(b.origin.x) - left).abs() <= 1.,
+                "{sel} starts at x {}, not the page's left edge {left} ({w}x{h})",
+                f32::from(b.origin.x),
+            );
+        }
+        for sel in ["filters:region", "panel:summary", "panel:table"] {
+            let b = window
+                .debug_bounds(sel)
+                .unwrap_or_else(|| panic!("{sel} paints on the dashboard"));
+            let r = f32::from(b.origin.x) + f32::from(b.size.width);
+            assert!(
+                (r - right).abs() <= 1.,
+                "{sel} ends at x {r}, not the page's right edge {right} ({w}x{h})",
+            );
+        }
+        let chart = window
+            .debug_bounds("panel:chart")
+            .expect("the chart panel paints");
+        let summary = window
+            .debug_bounds("panel:summary")
+            .expect("the summary panel paints");
+        assert!(
+            (f32::from(chart.size.height) - f32::from(summary.size.height)).abs() <= 1.,
+            "the chart panel is {} tall, the summary {} ({w}x{h})",
+            f32::from(chart.size.height),
+            f32::from(summary.size.height),
+        );
+        let chart_title = window
+            .debug_bounds("label:Spending by category")
+            .expect("the chart title paints");
+        let summary_title = window
+            .debug_bounds("label:Monthly summary")
+            .expect("the summary title paints");
+        assert!(
+            (f32::from(chart_title.origin.y) - f32::from(summary_title.origin.y)).abs() <= 1.,
+            "the panel titles sit at y {} and y {}, not on one line ({w}x{h})",
+            f32::from(chart_title.origin.y),
+            f32::from(summary_title.origin.y),
+        );
+    }
+}
+
+/// 3.25 (dashboard alignment): opening the custom date range adds the From
+/// and To pickers without breaking anything — they join the first row's
+/// centre line and the filter region still spans the page exactly.
+#[gpui::test]
+fn the_dashboard_stays_aligned_with_a_custom_date_range(cx: &mut TestAppContext) {
+    for (w, h) in [(1200., 720.), (1600., 1000.)] {
+        let (handle, shell) = open_dashboard_for_geometry(cx, w, h);
+        with_window(cx, handle, |window, cx| {
+            shell.update(cx, |s, cx| {
+                s.change_date_preset(DatePreset::Custom, window, cx)
+            });
+        });
+        wait_until(cx, "custom range open", |cx| {
+            matches!(shell.read(cx).date_range, DateRange::Custom { .. })
+        });
+        draw_frame(cx, handle);
+        let mut window = VisualTestContext::from_window(handle, cx);
+        let centre = centre_y(&mut window, "filters:date-range");
+        for sel in [
+            "filters:from",
+            "filters:to",
+            "accounts:filter",
+            "checkbox:include-transfers",
+            "filters:count",
+        ] {
+            let cy = centre_y(&mut window, sel);
+            assert!(
+                (cy - centre).abs() <= 1.,
+                "{sel} centres at y {cy}, not on the first filter row's centre line {centre} (custom range, {w}x{h})"
+            );
+        }
+        let b = window
+            .debug_bounds("filters:region")
+            .expect("the filter region paints");
+        assert!(
+            (f32::from(b.origin.x) - (SIDEBAR_W + PAGE_PAD)).abs() <= 1.,
+            "with the custom range the filter region starts at x {}, not the page's left edge ({w}x{h})",
+            f32::from(b.origin.x),
+        );
+        let r = f32::from(b.origin.x) + f32::from(b.size.width);
+        assert!(
+            (r - (w - PAGE_PAD)).abs() <= 1.,
+            "with the custom range the filter region ends at x {r}, not the page's right edge {} ({w}x{h})",
+            w - PAGE_PAD,
+        );
+    }
+}
+
 // -- categories page -------------------------------------------------------
 
 /// Type a parent name, pick the Expense kind (index 0) and add it.
