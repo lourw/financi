@@ -362,7 +362,7 @@ the only one that blocks the user: a wrong rule can't be corrected today.
 3.25 is a small fix to a regression on the main page. 3.26 goes last because
 it attaches scrollbars to lists that 3.22 and 3.23 re-lay out.
 
-- [ ] **3.24 Edit and delete rules.** The Categories page can add a rule but
+- [x] **3.24 Edit and delete rules.** The Categories page can add a rule but
   can't change or remove one, so a wrong pattern keeps miscategorizing
   every import. The storage side exists and is tested
   (`financi_db::rules::update_rule` and `delete_rule`; both validate, then
