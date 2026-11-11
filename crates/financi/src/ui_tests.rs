@@ -31,7 +31,7 @@ use super::{
     BAR_LABEL_MAX_CHARS, BUTTON_PAD_X, CELL_PAD_X, CHART_CHAR_PX, CHART_LABEL_GAP,
     CHART_LABEL_MAX_CHARS, CHART_LABEL_MIN_CHARS, DashboardBody, ExportData, HISTORY_DATES_W,
     HISTORY_FLEX_MIN_W, HISTORY_ROWS_W, HISTORY_TIME_W, ImportPanel, LEGEND_W, LegendSelection,
-    NAV_ROW_INSET, NEW_ACCOUNT, NEW_CATEGORY, PAGE_PAD, Page, PlanState, RestoreBackup,
+    NAV_ROW_INSET, NEW_ACCOUNT, NEW_CATEGORY, NEW_RULE, PAGE_PAD, Page, PlanState, RestoreBackup,
     RowMenuItem, SIDEBAR_W, Shell, SummaryRowKind, TABLE_BORDER_X, TEXT_SM_CHAR_PX, TX_FIXED_W,
     UNDO_ICON_W, UNDO_LABEL_MAX, UndoLastImport, band_label_budget, bar_label_plan,
     bar_label_slots, bar_share_label, chart_tooltip_value, history_flex_widths, history_undo_col_w,
@@ -3436,6 +3436,551 @@ fn the_rule_list_keeps_its_scroll_offset(cx: &mut TestAppContext) {
     );
 }
 
+// -- Rules page (3.28) -------------------------------------------------------
+
+/// 3.28 fixture: rules and rows for the Rules page tests. Categories
+/// Food › Coffee, Food › Snacks, Fun › Games. Rules:
+/// - r1 "COFFEE" (substring) → Coffee: wins the two roast rows (Uses 2);
+/// - r2 "COFFEE SHOP" (substring) → Coffee: wins the shop row (Uses 1);
+/// - r3 "GAME" (substring) → Games: nothing matches (unused);
+/// - r4 "^SNACK" (regex) → Snacks: unused.
+///   "COFFEE SHOP LOCKED" is overridden to Games and locked — no rule
+///   re-run may touch it — and "PARKING FEE" stays uncategorised. Returns
+///   `(coffee, snacks, games, [r1, r2, r3, r4])`.
+fn seed_rules_page(conn: &financi_db::rusqlite::Connection) -> (i64, i64, i64, [i64; 4]) {
+    let acct = create_account(conn, "amex", "Cobalt", AccountKind::CreditCard).unwrap();
+    conn.execute(
+        "INSERT INTO imports (account_id, parser_id, file_name, imported_at, header_raw,
+                              encoding, has_bom, line_ending, trailing_newline, row_count)
+         VALUES (?1, 'amex', 'seed.csv', '2026-11-01', X'00', 'utf-8', 0, 'lf', 0, 0)",
+        [acct],
+    )
+    .unwrap();
+    let import = conn.last_insert_rowid();
+    let food = financi_db::categories::create_parent(conn, "Food", CategoryKind::Expense).unwrap();
+    let coffee = financi_db::categories::create_child(conn, food, "Coffee").unwrap();
+    let snacks = financi_db::categories::create_child(conn, food, "Snacks").unwrap();
+    let fun = financi_db::categories::create_parent(conn, "Fun", CategoryKind::Expense).unwrap();
+    let games = financi_db::categories::create_child(conn, fun, "Games").unwrap();
+    for (n, desc) in [
+        "COFFEE BEAN ROAST 1",
+        "COFFEE BEAN ROAST 2",
+        "COFFEE SHOP A",
+        "COFFEE SHOP LOCKED",
+        "PARKING FEE",
+    ]
+    .iter()
+    .enumerate()
+    {
+        conn.execute(
+            "INSERT INTO transactions (account_id, import_id, source_line, raw_bytes,
+                                       row_hash, posted_date, amount_cents, description_raw)
+             VALUES (?1, ?2, ?3, X'00', ?4, '2026-11-01', -1000, ?5)",
+            (
+                acct,
+                import,
+                n as i64,
+                format!("rules-page-hash-{n}"),
+                *desc,
+            ),
+        )
+        .unwrap();
+    }
+    let r1 = financi_db::rules::add_rule(conn, "COFFEE", false, coffee).unwrap();
+    let r2 = financi_db::rules::add_rule(conn, "COFFEE SHOP", false, coffee).unwrap();
+    let r3 = financi_db::rules::add_rule(conn, "GAME", false, games).unwrap();
+    let r4 = financi_db::rules::add_rule(conn, "^SNACK", true, snacks).unwrap();
+    conn.execute(
+        "UPDATE transactions SET category_id = ?1, category_locked = 1 \
+         WHERE description_raw = 'COFFEE SHOP LOCKED'",
+        [games],
+    )
+    .unwrap();
+    (coffee, snacks, games, [r1, r2, r3, r4])
+}
+
+/// Open the shell over `seed_rules_page`, wait for the rules and their Uses
+/// counts to load, and switch to the Rules page.
+fn open_rules_page(
+    cx: &mut TestAppContext,
+) -> (AnyWindowHandle, Entity<Shell>, i64, i64, i64, [i64; 4]) {
+    let mut ids = (0i64, 0i64, 0i64, [0i64; 4]);
+    let (handle, shell) = open_shell(cx, |c| ids = seed_rules_page(c));
+    let (coffee, snacks, games, rules) = ids;
+    wait_until(cx, "rules page fixture loaded", |cx| {
+        let s = shell.read(cx);
+        s.rules.len() == 4
+            && s.rule_uses.get(&rules[0]) == Some(&2)
+            && s.rule_uses.get(&rules[1]) == Some(&1)
+            && s.cat_counts.get(&coffee) == Some(&3)
+            && s.cat_counts.get(&games) == Some(&1)
+    });
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Rules, cx)));
+    cx.run_until_parked();
+    (handle, shell, coffee, snacks, games, rules)
+}
+
+/// Type into the Rules page search box (the same `set_value` a user's
+/// keystrokes end up as).
+fn set_rules_search(
+    cx: &mut TestAppContext,
+    handle: AnyWindowHandle,
+    shell: &Entity<Shell>,
+    value: &str,
+) {
+    let value = value.to_string();
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.rules_search
+                .update(cx, |i, cx| i.set_value(value, window, cx));
+        });
+    });
+    cx.run_until_parked();
+}
+
+/// Does a widget with this debug selector paint in the last frame?
+fn paints(window: &mut VisualTestContext, sel: String) -> bool {
+    window.debug_bounds(leaked(sel)).is_some()
+}
+
+/// The y of a painted selector's top edge, panicking with a Rules-page
+/// message when it is not painted.
+fn rules_sel_y(window: &mut VisualTestContext, sel: &str) -> f32 {
+    let b = window
+        .debug_bounds(leaked(sel.to_string()))
+        .unwrap_or_else(|| panic!("{sel} paints on the Rules page"));
+    f32::from(b.origin.y)
+}
+
+/// 3.28: the list groups rules by their subcategory with a header row per
+/// group ("Food › Coffee · 3 rules"), groups in label order, and rows
+/// within a group by Pattern (the default).
+#[gpui::test]
+fn rules_page_groups_rows_by_target_category(cx: &mut TestAppContext) {
+    let (handle, _shell, coffee, snacks, games, rules) = open_rules_page(cx);
+    let mut window = VisualTestContext::from_window(handle, cx);
+    draw_frame(cx, handle);
+
+    assert!(
+        paints(&mut window, "label:4 rules".into()),
+        "the header counts the rules"
+    );
+    for id in [coffee, snacks, games] {
+        assert!(
+            paints(&mut window, format!("rules:group-{id}")),
+            "a group header for category {id}"
+        );
+    }
+    for id in rules {
+        assert!(
+            paints(&mut window, format!("rules:row-{id}")),
+            "a row for rule {id}"
+        );
+    }
+    // Groups sorted by label: Food › Coffee before Food › Snacks before
+    // Fun › Games.
+    assert!(
+        rules_sel_y(&mut window, &format!("rules:group-{coffee}")) < {
+            draw_frame(cx, handle);
+            rules_sel_y(&mut window, &format!("rules:group-{snacks}"))
+        }
+    );
+    assert!(
+        rules_sel_y(&mut window, &format!("rules:group-{snacks}")) < {
+            draw_frame(cx, handle);
+            rules_sel_y(&mut window, &format!("rules:group-{games}"))
+        }
+    );
+    // Within the Coffee group the rows are by Pattern: "COFFEE" above
+    // "COFFEE SHOP".
+    assert!(
+        rules_sel_y(&mut window, &format!("rules:row-{}", rules[0])) < {
+            draw_frame(cx, handle);
+            rules_sel_y(&mut window, &format!("rules:row-{}", rules[1]))
+        },
+        "rows sort by Pattern within their group"
+    );
+}
+
+/// 3.28: Search filters live over the pattern and the target category's
+/// child and parent names, case-insensitively.
+#[gpui::test]
+fn rules_page_search_covers_patterns_and_category_names(cx: &mut TestAppContext) {
+    let (handle, shell, _coffee, _snacks, _games, rules) = open_rules_page(cx);
+    let mut window = VisualTestContext::from_window(handle, cx);
+
+    // A pattern substring: only r2 ("COFFEE SHOP").
+    set_rules_search(cx, handle, &shell, "shop");
+    draw_frame(cx, handle);
+    assert!(paints(&mut window, format!("rules:row-{}", rules[1])));
+    for id in [rules[0], rules[2], rules[3]] {
+        assert!(
+            !paints(&mut window, format!("rules:row-{id}")),
+            "r{id} does not match \"shop\""
+        );
+    }
+
+    // A child-category name in another case: only r3 (targets Games).
+    set_rules_search(cx, handle, &shell, "games");
+    draw_frame(cx, handle);
+    assert!(paints(&mut window, format!("rules:row-{}", rules[2])));
+    for id in [rules[0], rules[1], rules[3]] {
+        assert!(
+            !paints(&mut window, format!("rules:row-{id}")),
+            "rule {id} does not match \"games\""
+        );
+    }
+
+    // A parent-category name: "fun" is r3's parent.
+    set_rules_search(cx, handle, &shell, "fun");
+    draw_frame(cx, handle);
+    assert!(paints(&mut window, format!("rules:row-{}", rules[2])));
+    assert!(!paints(&mut window, format!("rules:row-{}", rules[0])));
+
+    // Nothing matches: the empty state, no rows.
+    set_rules_search(cx, handle, &shell, "zzz");
+    draw_frame(cx, handle);
+    assert!(paints(&mut window, "rules:empty".into()));
+    for id in rules {
+        assert!(!paints(&mut window, format!("rules:row-{id}")));
+    }
+    // Clearing the box shows everything again.
+    set_rules_search(cx, handle, &shell, "");
+    draw_frame(cx, handle);
+    assert!(!paints(&mut window, "rules:empty".into()));
+    for id in rules {
+        assert!(paints(&mut window, format!("rules:row-{id}")));
+    }
+}
+
+/// 3.28: "Test a description" shows only the rules matching the text, in
+/// the order the categoriser tries them, and marks the rule that would
+/// actually win — the same one `winning_rule` picks.
+#[gpui::test]
+fn rules_page_test_mode_marks_the_winner_first(cx: &mut TestAppContext) {
+    let (handle, shell, _coffee, _snacks, _games, rules) = open_rules_page(cx);
+    with_window(cx, handle, |_, cx| {
+        shell.update(cx, |s, cx| {
+            s.rules_test_mode = true;
+            cx.notify();
+        });
+    });
+    set_rules_search(cx, handle, &shell, "COFFEE SHOP A");
+    let mut window = VisualTestContext::from_window(handle, cx);
+    draw_frame(cx, handle);
+
+    // Both substring rules match the description; the unused ones don't.
+    assert!(paints(&mut window, format!("rules:row-{}", rules[0])));
+    assert!(paints(&mut window, format!("rules:row-{}", rules[1])));
+    for id in &rules[2..] {
+        assert!(
+            !paints(&mut window, format!("rules:row-{id}")),
+            "r{id} does not match the description"
+        );
+    }
+    // "COFFEE SHOP" is the longer substring, so it wins and is the first
+    // row, marked "wins"; "COFFEE" follows unmarked.
+    assert!(paints(&mut window, format!("rules:wins-{}", rules[1])));
+    assert!(!paints(&mut window, format!("rules:wins-{}", rules[0])));
+    assert!(
+        rules_sel_y(&mut window, &format!("rules:row-{}", rules[1])) < {
+            draw_frame(cx, handle);
+            rules_sel_y(&mut window, &format!("rules:row-{}", rules[0]))
+        },
+        "the winner is the first row"
+    );
+
+    // Leaving test mode restores the grouped list.
+    set_rules_search(cx, handle, &shell, "");
+    with_window(cx, handle, |_, cx| {
+        shell.update(cx, |s, cx| {
+            s.rules_test_mode = false;
+            cx.notify();
+        });
+    });
+    draw_frame(cx, handle);
+    assert!(!paints(&mut window, format!("rules:wins-{}", rules[1])));
+    assert!(paints(&mut window, format!("rules:row-{}", rules[2])));
+}
+
+/// 3.28: the Unused checkbox keeps only the rules deciding zero
+/// transactions; their Uses column reads 0.
+#[gpui::test]
+fn rules_page_unused_shows_only_zero_use_rules(cx: &mut TestAppContext) {
+    let (handle, shell, _coffee, _snacks, _games, rules) = open_rules_page(cx);
+    with_window(cx, handle, |_, cx| {
+        shell.update(cx, |s, cx| {
+            s.rules_unused_only = true;
+            cx.notify();
+        });
+    });
+    let mut window = VisualTestContext::from_window(handle, cx);
+    draw_frame(cx, handle);
+    // r1 (2 uses) and r2 (1 use) hide; the two rules nothing matches stay.
+    for id in &rules[..2] {
+        assert!(
+            !paints(&mut window, format!("rules:row-{id}")),
+            "a used rule hides behind Unused"
+        );
+    }
+    for id in &rules[2..] {
+        assert!(
+            paints(&mut window, format!("rules:row-{id}")),
+            "the unused rule {id} stays listed"
+        );
+    }
+}
+
+/// 3.28: the Type picker keeps only rows of the chosen kind.
+#[gpui::test]
+fn rules_page_type_picker_filters_by_kind(cx: &mut TestAppContext) {
+    let (handle, shell, _coffee, _snacks, _games, rules) = open_rules_page(cx);
+    let pick = |cx: &mut TestAppContext, row: Option<usize>| {
+        with_window(cx, handle, |window, cx| {
+            shell.update(cx, |s, cx| {
+                s.rules_type_select.update(cx, |sel, cx| {
+                    sel.set_selected_index(
+                        row.map(gpui_kit::component::IndexPath::new),
+                        window,
+                        cx,
+                    );
+                });
+            });
+        });
+        cx.run_until_parked();
+    };
+    let mut window = VisualTestContext::from_window(handle, cx);
+
+    pick(cx, Some(2)); // Regex
+    draw_frame(cx, handle);
+    assert!(paints(&mut window, format!("rules:row-{}", rules[3])));
+    for id in &rules[..3] {
+        assert!(
+            !paints(&mut window, format!("rules:row-{id}")),
+            "substring rules hide under Regex"
+        );
+    }
+
+    pick(cx, Some(1)); // Substring
+    draw_frame(cx, handle);
+    for id in &rules[..3] {
+        assert!(paints(&mut window, format!("rules:row-{id}")));
+    }
+    assert!(!paints(&mut window, format!("rules:row-{}", rules[3])));
+
+    pick(cx, None); // All types
+    draw_frame(cx, handle);
+    for id in rules {
+        assert!(paints(&mut window, format!("rules:row-{id}")));
+    }
+}
+
+/// 3.28: clicking a group header collapses the group — its rows are gone,
+/// the header stays — and clicking it again expands.
+#[gpui::test]
+fn rules_page_collapse_hides_a_groups_rows(cx: &mut TestAppContext) {
+    let (handle, _shell, coffee, _snacks, _games, rules) = open_rules_page(cx);
+    let mut window = VisualTestContext::from_window(handle, cx);
+    draw_frame(cx, handle);
+
+    let header = window
+        .debug_bounds(leaked(format!("rules:group-{coffee}")))
+        .expect("the Coffee group header paints");
+    window.simulate_click(header.center(), Modifiers::default());
+    cx.run_until_parked();
+    draw_frame(cx, handle);
+    assert!(
+        paints(&mut window, format!("rules:group-{coffee}")),
+        "the collapsed group keeps its header"
+    );
+    for id in [rules[0], rules[1]] {
+        assert!(
+            !paints(&mut window, format!("rules:row-{id}")),
+            "rule {id} hides with its collapsed group"
+        );
+    }
+    assert!(
+        paints(&mut window, format!("rules:row-{}", rules[2])),
+        "other groups stay open"
+    );
+
+    let header = window
+        .debug_bounds(leaked(format!("rules:group-{coffee}")))
+        .expect("the header still paints");
+    window.simulate_click(header.center(), Modifiers::default());
+    cx.run_until_parked();
+    draw_frame(cx, handle);
+    assert!(paints(&mut window, format!("rules:row-{}", rules[0])));
+    assert!(paints(&mut window, format!("rules:row-{}", rules[1])));
+}
+
+/// 3.28: checking rules opens the Move bar; Move points them at another
+/// subcategory in one call, which re-runs the rules over the unlocked rows
+/// (the locked row keeps its override) and clears the selection.
+#[gpui::test]
+fn rules_page_move_recategorizes_rows_and_clears_selection(cx: &mut TestAppContext) {
+    let (handle, shell, coffee, snacks, games, rules) = open_rules_page(cx);
+    let (r1, r2) = (rules[0], rules[1]);
+    with_window(cx, handle, |_, cx| {
+        shell.update(cx, |s, cx| {
+            s.set_rule_selected(r1, true, cx);
+            s.set_rule_selected(r2, true, cx);
+        });
+    });
+    let mut window = VisualTestContext::from_window(handle, cx);
+    draw_frame(cx, handle);
+    assert!(
+        paints(&mut window, "rules:move-bar".into()),
+        "checked rows open the Move bar"
+    );
+
+    // Target: Food › Snacks, the same child list the rule pickers use.
+    let ix = cx.update(|cx| {
+        shell
+            .read(cx)
+            .child_choices
+            .iter()
+            .position(|(id, _)| *id == snacks)
+            .unwrap()
+    });
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.move_rules_target.update(cx, |sel, cx| {
+                sel.set_selected_index(Some(gpui_kit::component::IndexPath::new(ix)), window, cx);
+            });
+            s.move_selected_rules(window, cx);
+        });
+    });
+    wait_until(cx, "the move lands", |cx| {
+        let s = shell.read(cx);
+        s.rules.iter().all(|r| r.category_id != coffee) && s.cat_counts.get(&snacks) == Some(&3)
+    });
+    // Both moved rules now target Snacks; the other two are untouched.
+    shell.read_with(cx, |s, _| {
+        assert_eq!(
+            s.rules.iter().filter(|r| r.category_id == snacks).count(),
+            3
+        );
+    });
+    // The unlocked rows followed the rules; the locked row stayed in Games.
+    // A category with no rows drops out of `cat_counts` entirely.
+    cx.update(|cx| {
+        let s = shell.read(cx);
+        assert!(
+            !s.cat_counts.contains_key(&coffee),
+            "Coffee has no rows left after the move"
+        );
+        assert_eq!(s.cat_counts.get(&snacks), Some(&3));
+        assert_eq!(s.cat_counts.get(&games), Some(&1));
+        assert!(s.selected_rules.is_empty(), "the selection clears");
+    });
+    draw_frame(cx, handle);
+    assert!(
+        !paints(&mut window, "rules:move-bar".into()),
+        "the Move bar closes with the cleared selection"
+    );
+}
+
+/// 3.28: thousands of rules — the virtualized list builds only the rows
+/// that can be on screen, headers included.
+#[gpui::test]
+fn rules_page_builds_only_the_visible_rows(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_thousands);
+    wait_until(cx, "two thousand rules", |cx| {
+        shell.read(cx).rules.len() == 2_000
+    });
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Rules, cx)));
+    draw_frame(cx, handle);
+    let built = shell.read_with(cx, |s, _| s.rules_page_rows_built.get());
+    assert!(
+        built > 0 && built < 200,
+        "the list built {built} of 2000 rules, only the visible slice"
+    );
+}
+
+/// 3.28: at the 1200 × 720 minimum window the Rules page fits: header,
+/// filter row, group header and a rule row with long names stay inside the
+/// page, and the long pattern truncates to its column.
+#[gpui::test]
+fn the_rules_page_fits_the_minimum_window(cx: &mut TestAppContext) {
+    let mut ids = (0i64, 0i64);
+    let (handle, shell) = open_shell(cx, |c| ids = seed_categories_fit(c));
+    let (child, rule) = ids;
+    wait_until(cx, "the rule loaded", |cx| shell.read(cx).rules.len() == 1);
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Rules, cx)));
+    with_window(cx, handle, |window, cx| {
+        window.resize(size(px(1200.), px(720.)));
+        window.bounds_changed(cx);
+    });
+    cx.run_until_parked();
+    let mut window = VisualTestContext::from_window(handle, cx);
+    draw_frame(cx, handle);
+
+    let page_right = px(1200. - PAGE_PAD);
+    for (what, sel) in [
+        ("the filter row", "rules:filter-row".to_string()),
+        ("the group header", format!("rules:group-{child}")),
+        ("the rule row", format!("rules:row-{rule}")),
+        ("the New rule… button", format!("label:{NEW_RULE}")),
+    ] {
+        let b = window
+            .debug_bounds(leaked(sel))
+            .unwrap_or_else(|| panic!("the page paints {what}"));
+        assert!(
+            b.origin.x + b.size.width <= page_right + px(1.),
+            "{what} ends at x {:?}, past the page edge {page_right:?}",
+            b.origin.x + b.size.width,
+        );
+    }
+    // The pattern truncates inside its column, like on Categories.
+    let col = window
+        .debug_bounds(leaked(format!("rules:pattern-col:{rule}")))
+        .expect("the rule row paints its pattern column");
+    let full_w = TEXT_SM_CHAR_PX * CAT_FIT_PATTERN.chars().count() as f32;
+    assert!(
+        col.size.width < px(full_w),
+        "the pattern truncates: the column is {:?} wide, the full text \
+         needs about {full_w:?}",
+        col.size.width,
+    );
+}
+
+/// 3.28: opening the Rules page focuses the search box (D5), so the user
+/// can type straight away.
+#[gpui::test]
+fn rules_page_opens_with_the_search_focused(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |conn| {
+        seed_categories_fit(conn);
+    });
+    wait_until(cx, "the rule loaded", |cx| shell.read(cx).rules.len() == 1);
+    // The focus request lands on the first frame of the Rules page.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Rules, cx)));
+    draw_frame(cx, handle);
+    let focused = with_window(cx, handle, |window, cx| {
+        shell
+            .read(cx)
+            .rules_search
+            .read(cx)
+            .focus_handle(cx)
+            .is_focused(window)
+    });
+    assert!(focused, "opening the Rules page focuses Search");
+    // Leaving and returning focuses it again.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
+    draw_frame(cx, handle);
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Rules, cx)));
+    draw_frame(cx, handle);
+    let focused = with_window(cx, handle, |window, cx| {
+        shell
+            .read(cx)
+            .rules_search
+            .read(cx)
+            .focus_handle(cx)
+            .is_focused(window)
+    });
+    assert!(focused, "returning to the Rules page focuses Search again");
+}
+
 // -- page switching (3.11) ---------------------------------------------------
 
 /// 3.11: after a page switch only the current page paints. Walks every page,
@@ -3453,10 +3998,11 @@ fn page_switches_paint_only_the_current_page(cx: &mut TestAppContext) {
 
     // Everything a painted frame may reveal: the page-area selector and
     // two page-specific widgets. Exactly one page root may appear per frame.
-    const PAINTED: [&str; 4] = [
+    const PAINTED: [&str; 5] = [
         "page:page-dashboard",
         "page:page-queue",
         "page:page-categories",
+        "page:page-rules",
         "checkbox:account-1",
     ];
     let painted = |window: &mut VisualTestContext| -> Vec<&'static str> {
@@ -3471,6 +4017,7 @@ fn page_switches_paint_only_the_current_page(cx: &mut TestAppContext) {
             Page::Dashboard => vec!["page:page-dashboard"],
             Page::ToCategorize => vec!["page:page-queue"],
             Page::Categories => vec!["page:page-categories"],
+            Page::Rules => vec!["page:page-rules"],
             Page::Transfers | Page::Imports => vec![],
         }
     };
@@ -3479,6 +4026,7 @@ fn page_switches_paint_only_the_current_page(cx: &mut TestAppContext) {
         Page::Dashboard,
         Page::ToCategorize,
         Page::Categories,
+        Page::Rules,
         Page::Transfers,
         Page::Imports,
         Page::Dashboard,
