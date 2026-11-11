@@ -5558,6 +5558,41 @@ fn summary_months_scroll_under_pinned_name_and_total(cx: &mut TestAppContext) {
     );
 }
 
+/// 3.30: a horizontal swipe over the months scrolls the month strip only.
+/// A y-only scroller remaps a horizontal wheel delta onto its own axis,
+/// so `summary-rows` must restrict itself to the vertical axis — otherwise
+/// the same swipe that moves the months also jumps the rows.
+#[gpui::test]
+fn a_horizontal_swipe_does_not_jump_the_summary_rows_vertically(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |conn| seed_summary_months(conn, 24));
+    resize_and_draw(cx, handle, 1200., 720.);
+    set_all_time_covering(cx, handle, &shell, 24);
+    draw_frame(cx, handle);
+    let mut window = VisualTestContext::from_window(handle, cx);
+    let zone = bounds_of(&mut window, "summary:months-0");
+
+    // Wheel the body down first, so there is somewhere to jump back to.
+    let y_top = bounds_of(&mut window, "summary:name-0").origin.y;
+    wheel_over(cx, handle, viewport_centre(zone), -40.);
+    draw_frame(cx, handle);
+    let y_scrolled = bounds_of(&mut window, "summary:name-0").origin.y;
+    assert!(y_scrolled < y_top, "the body is scrolled down");
+
+    // A horizontal swipe over the month zone moves the months…
+    let x0 = cx.update(|cx| shell.read(cx).summary_scroll.offset().x);
+    wheel_over_x(cx, handle, viewport_centre(zone), 200.);
+    draw_frame(cx, handle);
+    let x1 = cx.update(|cx| shell.read(cx).summary_scroll.offset().x);
+    assert_ne!(x1, x0, "the month strip scrolled sideways");
+
+    // …and leaves the body exactly where it was.
+    let y_after = bounds_of(&mut window, "summary:name-0").origin.y;
+    assert_eq!(
+        y_after, y_scrolled,
+        "the horizontal swipe left the rows' vertical position alone"
+    );
+}
+
 /// 3.30: changing the range re-lands the month strip on its most recent
 /// month — even after the user had scrolled away.
 #[gpui::test]

@@ -3994,6 +3994,10 @@ impl Shell {
             .flex_1()
             .min_h_0()
             .overflow_y_scroll()
+            // Without this a horizontal wheel delta over the month zone is
+            // remapped onto this scroller's vertical axis too, so a swipe
+            // would scroll the months and jump the rows at once (3.30).
+            .restrict_scroll_to_axis()
             .children(rows.into_iter().enumerate().map(|(ix, row)| {
                 let id = row.id;
                 let is_category = !matches!(
