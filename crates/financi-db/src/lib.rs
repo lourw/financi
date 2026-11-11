@@ -75,18 +75,18 @@ pub enum DbError {
     DuplicateAccount { name: String },
     #[error("no category with id {0}")]
     UnknownCategory(i64),
-    #[error("a category named {name:?} already exists under the same parent")]
+    #[error("a category named {name:?} already exists under the same category")]
     DuplicateCategory { name: String },
-    #[error("category {0} is a parent; only child categories can hold transactions and rules")]
-    ParentCategoryNotAssignable(i64),
-    #[error("only child categories can be moved; category {0} is a parent")]
-    CannotMoveParent(i64),
-    #[error("category {0} is a child; children cannot have children")]
-    CategoryHasParent(i64),
-    #[error("category {0} still has children; delete or move them first")]
-    CategoryHasChildren(i64),
-    #[error("cannot move category {child} under category {parent}: the kinds differ")]
-    CategoryKindMismatch { child: i64, parent: i64 },
+    #[error("{0} is a category; only subcategories can hold transactions and rules")]
+    ParentCategoryNotAssignable(String),
+    #[error("only subcategories can be moved; {0} is a category")]
+    CannotMoveParent(String),
+    #[error("{0} is a subcategory; subcategories cannot have subcategories")]
+    CategoryHasParent(String),
+    #[error("{0} still has subcategories; delete or move them first")]
+    CategoryHasChildren(String),
+    #[error("cannot move subcategory {child:?} under category {parent:?}: the kinds differ")]
+    CategoryKindMismatch { child: String, parent: String },
     #[error("category {id} is a system category and cannot be {action}")]
     SystemCategory { id: i64, action: &'static str },
     #[error("the system category {0:?} is missing from the database")]

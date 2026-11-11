@@ -85,6 +85,15 @@ fn field_label(muted: Hsla, text: &'static str) -> Div {
         .child(text)
 }
 
+/// Words for Categories page controls whose painted text is reachable by
+/// tests only through debug selectors (3.33): each const feeds both the
+/// label/placeholder and its `label:<text>` selector, so the two can't
+/// desync and the scan test pins the exact words.
+const ADD_CATEGORY: &str = "Add category";
+const ADD_SUBCATEGORY: &str = "Add subcategory";
+const MOVE_TO_CATEGORY_PH: &str = "Move to category…";
+const MOVE_TXNS_TO_PH: &str = "Move its transactions to…";
+
 /// Region title (ui-conventions *Typography*: `text_sm`, `font_semibold`).
 /// Names a group of related controls or a data panel (3.16: the filter bar,
 /// the chart, the monthly summary, the category tree). Same debug selector
@@ -1950,7 +1959,7 @@ impl Shell {
         );
         Self::on_shell_action(&shell, window_handle, cx, |_, _: &QuitApp, _, cx| cx.quit());
         let new_parent_name =
-            cx.new(|cx| InputState::new(window, cx).placeholder("New parent name"));
+            cx.new(|cx| InputState::new(window, cx).placeholder("New category name"));
         let new_parent_kind = cx.new(|cx| {
             SelectState::new(
                 KIND_LABELS.iter().map(|(l, _)| (*l).into()).collect(),
@@ -1959,7 +1968,8 @@ impl Shell {
                 cx,
             )
         });
-        let new_child_name = cx.new(|cx| InputState::new(window, cx).placeholder("New child name"));
+        let new_child_name =
+            cx.new(|cx| InputState::new(window, cx).placeholder("New subcategory name"));
         let rename_input = cx.new(|cx| InputState::new(window, cx).placeholder("New name"));
         let move_target = cx.new(|cx| SelectState::new(Names::new(), None, window, cx));
         let delete_target = cx.new(|cx| SelectState::new(Names::new(), None, window, cx));
@@ -3105,7 +3115,7 @@ impl Shell {
             .map(|ix| KIND_LABELS[ix.row].1)
             .unwrap_or(CategoryKind::Expense);
         if name.is_empty() {
-            self.cat_error = Some("Give the parent a name.".into());
+            self.cat_error = Some("Give the category a name.".into());
             cx.notify();
             return;
         }
@@ -3136,7 +3146,7 @@ impl Shell {
         let parent_id = parent.id;
         let name = self.new_child_name.read(cx).value().trim().to_string();
         if name.is_empty() {
-            self.cat_error = Some("Give the child a name.".into());
+            self.cat_error = Some("Give the subcategory a name.".into());
             cx.notify();
             return;
         }
@@ -3203,7 +3213,7 @@ impl Shell {
         };
         let child_id = node.id;
         let Some(ix) = self.move_target.read(cx).selected_index(cx) else {
-            self.cat_error = Some("Choose the parent to move it under.".into());
+            self.cat_error = Some("Choose the category to move it under.".into());
             cx.notify();
             return;
         };
@@ -5300,7 +5310,7 @@ impl Shell {
                                 row.child(
                                     v_flex()
                                         .gap_1()
-                                        .child(field_label(muted, "New child name"))
+                                        .child(field_label(muted, "New subcategory name"))
                                         .child(
                                             h_flex()
                                                 .gap_2()
@@ -5312,7 +5322,10 @@ impl Shell {
                                                 )
                                                 .child(
                                                     Button::new("add-child")
-                                                        .label("Add child")
+                                                        .label(ADD_SUBCATEGORY)
+                                                        .debug_selector(move || {
+                                                            format!("label:{ADD_SUBCATEGORY}")
+                                                        })
                                                         .on_click(cx.listener(
                                                             |this, _, window, cx| {
                                                                 this.add_child(window, cx)
@@ -5334,16 +5347,21 @@ impl Shell {
                                 row.child(
                                     v_flex()
                                         .gap_1()
-                                        .child(field_label(muted, "Move to parent"))
+                                        .child(field_label(muted, "Move to category"))
                                         .child(
                                             h_flex()
                                                 .gap_2()
                                                 .items_end()
                                                 .child(
-                                                    div().w(px(200.)).child(
-                                                        Select::new(&self.move_target)
-                                                            .placeholder("Move to parent…"),
-                                                    ),
+                                                    div()
+                                                        .w(px(200.))
+                                                        .debug_selector(move || {
+                                                            format!("label:{MOVE_TO_CATEGORY_PH}")
+                                                        })
+                                                        .child(
+                                                            Select::new(&self.move_target)
+                                                                .placeholder(MOVE_TO_CATEGORY_PH),
+                                                        ),
                                                 )
                                                 .child(
                                                     Button::new("move-child")
@@ -5370,12 +5388,15 @@ impl Shell {
                                                 .gap_2()
                                                 .items_end()
                                                 .child(
-                                                    div().w(px(260.)).child(
-                                                        Select::new(&self.delete_target)
-                                                            .placeholder(
-                                                                "Move its transactions to…",
-                                                            ),
-                                                    ),
+                                                    div()
+                                                        .w(px(260.))
+                                                        .debug_selector(move || {
+                                                            format!("label:{MOVE_TXNS_TO_PH}")
+                                                        })
+                                                        .child(
+                                                            Select::new(&self.delete_target)
+                                                                .placeholder(MOVE_TXNS_TO_PH),
+                                                        ),
                                                 )
                                                 .child(
                                                     Button::new("delete-category")
@@ -5428,6 +5449,12 @@ impl Shell {
             None => div().into_any_element(),
         };
 
+        // The header count paints `count_text` and its selector mirrors it
+        // (3.33): the scan test asserts the exact words and cannot be
+        // satisfied by a retired one.
+        let count_text = format!("{} categories", self.categories.len());
+        let count_sel = count_text.clone();
+
         v_flex()
             .flex_1()
             .min_h_0()
@@ -5446,7 +5473,8 @@ impl Shell {
                         div()
                             .text_sm()
                             .text_color(muted)
-                            .child(format!("{} parents", self.categories.len())),
+                            .debug_selector(move || format!("label:{count_sel}"))
+                            .child(count_text),
                     ),
             )
             .children(
@@ -5462,7 +5490,7 @@ impl Shell {
                     .child(
                         v_flex()
                             .gap_1()
-                            .child(field_label(muted, "New parent name"))
+                            .child(field_label(muted, "New category name"))
                             .child(div().w(px(220.)).child(Input::new(&self.new_parent_name))),
                     )
                     .child(
@@ -5473,7 +5501,8 @@ impl Shell {
                     )
                     .child(
                         Button::new("add-parent")
-                            .label("Add parent")
+                            .label(ADD_CATEGORY)
+                            .debug_selector(move || format!("label:{ADD_CATEGORY}"))
                             .primary()
                             .on_click(
                                 cx.listener(|this, _, window, cx| this.add_parent(window, cx)),

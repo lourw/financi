@@ -745,7 +745,7 @@ out.
     no "…" and each paints an icon; hovering the in-row Undo shows its
     tooltip.
 
-- [ ] **3.33 Say "category" and "subcategory", never "parent" and "child".**
+- [x] **3.33 Say "category" and "subcategory", never "parent" and "child".**
   The UI copy uses the data model's words. Users think in categories and
   subcategories. Change every user-visible string; keep code, schema and
   identifiers (`parent_id`, `create_child`, element ids such as

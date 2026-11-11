@@ -31,7 +31,7 @@ dashboard gets its own page.
 ┌────────────────┬──────────────────────────────────────────────────────┐
 │ financi        │ Page header: filters (Dashboard) or title + actions  │
 │                │ ┌ Spending by category ─────┐ ┌ Monthly summary ──┐ │
-│ ▣ Dashboard    │ │ BarChart + legend (~45%)  │ │ parents × months  │ │
+│ ▣ Dashboard    │ │ BarChart + legend (~45%)  │ │categories × months│ │
 │                │ └───────────────────────────┘ └───────────────────┘ │
 │ ORGANIZE       │ chips · search · toggles                             │
 │ ☑ To categorize 12                                                    │
@@ -84,7 +84,7 @@ header row is the filters.
   titles share one line. The summary scrolls if it overflows. The chart
   never scrolls.
 - **Summary month strip (3.30):** the category name column is fixed
-  (~160px, swatch + name ellipsized with a hover tooltip, child indent
+  (~160px, swatch + name ellipsized with a hover tooltip, subcategory indent
   unchanged) and `Total` (~96px) is pinned right; only the 88px month
   columns between them scroll sideways (Shift+wheel / trackpad, plus a
   thin horizontal scrollbar over the month zone while they overflow).
@@ -205,8 +205,8 @@ before its name in the monthly summary.
   danger and money in.
 - **Stable, not by rank.** Assign by position among siblings sorted by
   category id (`index % 12`), so a category keeps its color when the date
-  range changes the order. Drilling into a parent gives its children their
-  own colors from the start of the palette.
+  range changes the order. Drilling into a category gives its subcategories
+  their own colors from the start of the palette.
 - Uncategorized is always `muted_foreground` grey, never a palette color.
 - The swatch is a 10×10 square with a 2px radius. Don't color text with
   category colors.
@@ -241,12 +241,23 @@ case, and a table full of red reads as an alarm.
 - **Accounts:** the account's own name ("Amex Gold", "Simplii Chequing").
   Don't add the institution unless two accounts would otherwise show the
   same name.
-- **Categories in the table:** the child name, with the parent in
-  `muted_foreground` before it: `Food › Groceries`. Uncategorized rows show
-  `Uncategorized` in `muted_foreground`.
+- **Categories in the table:** the subcategory name, with the category it
+  belongs to in `muted_foreground` before it: `Food › Groceries`.
+  Uncategorized rows show `Uncategorized` in `muted_foreground`.
 - **Uncategorized in the legend and summary:** always the last category row
   (whatever its amount), with its name in `muted_foreground`, so it reads as
   work still to do rather than as a category.
+
+## Copy
+
+- **Say "category" and "subcategory", never "parent", "child" or
+  "children".** The two-level tree is a category and its subcategories;
+  every string the user can see (labels, placeholders, buttons, errors,
+  tooltips) uses those words, including error text from `financi-db` that
+  the UI shows. Code identifiers, DB columns and element ids keep the old
+  names (`parent_id`, `add-child`) — only the wording changes. Pending
+  copy (3.23's `N parents · M categories`, 3.28's text) follows this rule
+  when it lands: `N categories · M subcategories`.
 
 ## Interaction
 
@@ -302,7 +313,7 @@ Decided from mockups. Don't reopen these without asking.
 | # | Question | Decision |
 |---|---|---|
 | D1 | Category chart | gpui-kit `BarChart` beside a clickable legend, as task 3.5 says. Bars aren't drawn into the legend rows. |
-| D2 | Category label in the table | `Parent › Child`, with the parent muted. |
+| D2 | Category label in the table | `Category › Subcategory`, with the category muted. |
 | D3 | Color of money going out | Normal `foreground`. Only money in is colored (green). |
 | D4 | Undo last import | On the Imports page (newest row) and in File → Undo last import. |
 | D5 | Category colors | Each category has its own stable color (see *Category colors*). |

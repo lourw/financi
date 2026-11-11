@@ -315,7 +315,7 @@ mod tests {
         let parent = create_parent(&conn, "Food", CategoryKind::Expense).unwrap();
         assert!(matches!(
             add_rule(&conn, "COFFEE", false, parent).unwrap_err(),
-            DbError::ParentCategoryNotAssignable(id) if id == parent
+            DbError::ParentCategoryNotAssignable(name) if name == "Food"
         ));
         assert!(matches!(
             add_rule(&conn, "COFFEE", false, 999).unwrap_err(),
