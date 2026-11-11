@@ -8,7 +8,7 @@ use financi_db::import::{
 };
 use financi_db::{add_rule, create_account, get_account, open_in_memory, rusqlite::Connection};
 use financi_parsers::amex::Amex;
-use financi_parsers::simplii_chequing::SimpliiChequing;
+use financi_parsers::simplii::Simplii;
 
 const HEADER: &str = "Date,Date Processed,Description,Amount";
 
@@ -69,7 +69,7 @@ fn import_simplii(conn: &mut Connection, account: i64, file: &RawFile) -> Import
     commit_import(
         conn,
         account,
-        &SimpliiChequing,
+        &Simplii,
         file,
         "chequing.csv",
         "2026-11-07T12:00:00",
