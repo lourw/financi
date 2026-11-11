@@ -6,6 +6,7 @@ use financi_db::import::{
     CommitOptions, ImportError, ImportOutcome, commit_import, list_transactions, plan_import,
     undo_last_import,
 };
+use financi_db::master_csv::rewrite_years;
 use financi_db::{add_rule, create_account, get_account, open_in_memory, rusqlite::Connection};
 use financi_parsers::amex::Amex;
 use financi_parsers::simplii::Simplii;
@@ -137,6 +138,7 @@ fn reimporting_the_same_file_adds_nothing_and_records_no_import() {
         ImportOutcome {
             import_id: None,
             inserted: 0,
+            replaced: 0,
             already_present: 5,
             affected_years: Default::default(),
         }
@@ -246,6 +248,7 @@ fn one_row_from_another_account_blocks_until_overridden() {
 
     let forced = CommitOptions {
         allow_other_account_overlap: true,
+        ..CommitOptions::default()
     };
     let out = commit_import(&mut conn, gold, &Amex, &file, "activity.csv", "t", forced).unwrap();
     assert_eq!(out.inserted, 2);
@@ -650,4 +653,391 @@ fn undoing_a_paired_import_releases_the_surviving_partner() {
         "the released debit pairs with the new payment"
     );
     assert_eq!(stored(&conn, "BILL PAYMENT AMEX").0, Some(card_payment));
+}
+
+// ---------------------------------------------------------------------------
+// Near-match review (4.3)
+
+/// Commit `file`, marking the given preview pairs as "Same charge".
+fn import_marking(
+    conn: &mut Connection,
+    account: i64,
+    file: &RawFile,
+    same_charges: Vec<(usize, i64)>,
+) -> ImportOutcome {
+    commit_import(
+        conn,
+        account,
+        &Amex,
+        file,
+        "activity.csv",
+        "2026-11-07T12:00:00",
+        CommitOptions {
+            same_charges,
+            ..CommitOptions::default()
+        },
+    )
+    .unwrap()
+}
+
+fn plan(conn: &Connection, account: i64, file: &RawFile) -> financi_db::import::ImportPlan {
+    plan_import(conn, account, &Amex, file, "activity.csv").unwrap()
+}
+
+fn txn_id(conn: &Connection, description: &str) -> i64 {
+    conn.query_row(
+        "SELECT id FROM transactions WHERE description_raw = ?1",
+        [description],
+        |r| r.get(0),
+    )
+    .unwrap()
+}
+
+fn row_values(conn: &Connection, id: i64) -> (String, i64, String, Vec<u8>, String) {
+    conn.query_row(
+        "SELECT posted_date, amount_cents, description_raw, raw_bytes, row_hash
+           FROM transactions WHERE id = ?1",
+        [id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+    )
+    .unwrap()
+}
+
+const COFFEE: &str = "05 Nov 2026,08 Nov 2026,COFFEE SHOP    VANCOUVER,15.74";
+const COFFEE_TIP: &str = "06 Nov 2026,08 Nov 2026,COFFEE SHOP    VANCOUVER,18.74";
+
+#[test]
+fn tip_added_charge_is_offered_as_a_near_match() {
+    let (mut conn, acct) = setup();
+    import(&mut conn, acct, &csv(&[COFFEE]));
+
+    let p = plan(&conn, acct, &csv(&[COFFEE_TIP]));
+    assert_eq!(p.new_rows.len(), 1);
+    assert_eq!(p.near_matches.len(), 1, "the tip is suspected");
+    let m = &p.near_matches[0];
+    assert_eq!(m.new_row, 0);
+    assert_eq!(m.source_line, 0, "the file's first record");
+    assert_eq!(m.existing_id, txn_id(&conn, "COFFEE SHOP    VANCOUVER"));
+    assert_eq!(
+        (m.new_date.as_str(), m.new_amount_cents),
+        ("2026-11-06", -1874)
+    );
+    assert_eq!(
+        (m.existing_date.as_str(), m.existing_amount_cents),
+        ("2026-11-05", -1574)
+    );
+}
+
+#[test]
+fn near_match_windows_are_inclusive_and_merchant_sensitive() {
+    let (mut conn, acct) = setup();
+    import(&mut conn, acct, &csv(&[COFFEE]));
+
+    let offered = |row: &str| plan(&conn, acct, &csv(&[row])).near_matches.len() == 1;
+    // Amount: 20% of 1574 is 314.8, so up to 18.88 is within, 18.89 is not.
+    assert!(offered(
+        "05 Nov 2026,08 Nov 2026,COFFEE SHOP    VANCOUVER,18.88"
+    ));
+    assert!(!offered(
+        "05 Nov 2026,08 Nov 2026,COFFEE SHOP    VANCOUVER,18.89"
+    ));
+    // Date: ±3 days inclusive.
+    assert!(offered(
+        "08 Nov 2026,08 Nov 2026,COFFEE SHOP    VANCOUVER,15.74"
+    ));
+    assert!(offered(
+        "02 Nov 2026,08 Nov 2026,COFFEE SHOP    VANCOUVER,15.74"
+    ));
+    assert!(!offered(
+        "09 Nov 2026,08 Nov 2026,COFFEE SHOP    VANCOUVER,15.74"
+    ));
+    // Merchant: case-insensitive on the cleaned merchant…
+    assert!(offered(
+        "05 Nov 2026,08 Nov 2026,Coffee Shop    vancouver,15.74"
+    ));
+    // …but a different merchant never pairs.
+    assert!(!offered(
+        "05 Nov 2026,08 Nov 2026,TEA SHOP    VANCOUVER,15.74"
+    ));
+    // A payment (opposite direction) never pairs with a charge.
+    assert!(!offered(
+        "05 Nov 2026,08 Nov 2026,COFFEE SHOP    VANCOUVER,-15.74"
+    ));
+}
+
+#[test]
+fn near_matches_take_the_nearest_existing_row_then_the_lowest_id() {
+    let (mut conn, acct) = setup();
+    import(
+        &mut conn,
+        acct,
+        &csv(&[
+            "04 Nov 2026,08 Nov 2026,COFFEE SHOP    VANCOUVER,15.74",
+            "08 Nov 2026,08 Nov 2026,COFFEE SHOP    VANCOUVER,15.74",
+        ]),
+    );
+    let ids: Vec<(i64, String)> = conn
+        .prepare("SELECT id, posted_date FROM transactions ORDER BY id")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(ids.len(), 2);
+    let (early_id, early_date) = &ids[0];
+    let (late_id, late_date) = (&ids[1].0, &ids[1].1);
+
+    // Nearest posted date: 07 Nov is 1 day from 08 Nov, 3 from 04 Nov.
+    let p = plan(
+        &conn,
+        acct,
+        &csv(&["07 Nov 2026,08 Nov 2026,COFFEE SHOP    VANCOUVER,16.00"]),
+    );
+    assert_eq!(p.near_matches.len(), 1);
+    assert_eq!(p.near_matches[0].existing_id, *late_id);
+    assert_eq!(&p.near_matches[0].existing_date, late_date);
+
+    // Equidistant candidates: the lower transaction id wins.
+    let p = plan(
+        &conn,
+        acct,
+        &csv(&["06 Nov 2026,08 Nov 2026,COFFEE SHOP    VANCOUVER,16.00"]),
+    );
+    assert_eq!(p.near_matches.len(), 1);
+    assert_eq!(p.near_matches[0].existing_id, *early_id);
+    assert_eq!(&p.near_matches[0].existing_date, early_date);
+}
+
+#[test]
+fn an_existing_row_matches_only_one_new_row() {
+    let (mut conn, acct) = setup();
+    import(&mut conn, acct, &csv(&[COFFEE]));
+
+    // Two new rows both look like the one existing charge: only the first
+    // (file order) pairs; the second imports as new.
+    let p = plan(
+        &conn,
+        acct,
+        &csv(&[
+            "05 Nov 2026,08 Nov 2026,COFFEE SHOP    VANCOUVER,16.00",
+            "05 Nov 2026,08 Nov 2026,COFFEE SHOP    VANCOUVER,16.10",
+        ]),
+    );
+    assert_eq!(p.near_matches.len(), 1);
+    assert_eq!(p.near_matches[0].new_row, 0);
+
+    // With two existing rows, two new rows can each take one.
+    import(
+        &mut conn,
+        acct,
+        &csv(&["03 Nov 2026,08 Nov 2026,COFFEE SHOP    VANCOUVER,15.74"]),
+    );
+    let p = plan(
+        &conn,
+        acct,
+        &csv(&[
+            "05 Nov 2026,08 Nov 2026,COFFEE SHOP    VANCOUVER,16.00",
+            "03 Nov 2026,08 Nov 2026,COFFEE SHOP    VANCOUVER,16.10",
+        ]),
+    );
+    assert_eq!(p.near_matches.len(), 2);
+    assert_ne!(
+        p.near_matches[0].existing_id, p.near_matches[1].existing_id,
+        "one-to-one"
+    );
+}
+
+#[test]
+fn same_charge_replaces_and_aliases_then_overlapping_export_adds_zero() {
+    let (mut conn, acct) = setup();
+    import(&mut conn, acct, &csv(&[COFFEE]));
+    let food = create_parent(&conn, "Food", CategoryKind::Expense).unwrap();
+    let id = txn_id(&conn, "COFFEE SHOP    VANCOUVER");
+    conn.execute(
+        "UPDATE transactions SET category_id = ?1 WHERE id = ?2",
+        rusqlite::params![food, id],
+    )
+    .unwrap();
+    let (old_date, old_amount, old_desc, old_raw, old_hash) = row_values(&conn, id);
+
+    let tip = csv(&[COFFEE_TIP]);
+    let out = import_marking(&mut conn, acct, &tip, vec![(0, id)]);
+    assert_eq!((out.inserted, out.replaced), (0, 1));
+    assert!(out.import_id.is_some());
+
+    // The existing id survives with the new values…
+    assert_eq!(count(&conn, acct), 1, "nothing new was inserted");
+    let (date, amount, desc, raw, hash) = row_values(&conn, id);
+    assert_eq!(date, "2026-11-06");
+    assert_eq!(amount, -1874);
+    assert_eq!(desc, "COFFEE SHOP    VANCOUVER");
+    assert_eq!(raw, tip.records[0].bytes, "raw bytes replaced");
+    assert_ne!(hash, old_hash);
+    assert_eq!(
+        conn.query_row::<i64, _, _>(
+            "SELECT category_id FROM transactions WHERE id = ?1",
+            [id],
+            |r| r.get(0)
+        )
+        .unwrap(),
+        food,
+        "id and category survive"
+    );
+
+    // …the old hash is aliased to it under the new import…
+    let import_id: i64 = conn
+        .query_row("SELECT id FROM imports ORDER BY id DESC LIMIT 1", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    let aliases: Vec<(i64, String, i64)> = conn
+        .prepare("SELECT transaction_id, row_hash, import_id FROM row_aliases")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(aliases.len(), 1);
+    assert_eq!(aliases[0], (id, old_hash.clone(), import_id));
+
+    // …and the replacement is recorded with the old values.
+    let recorded: (String, Option<String>, i64, String, Vec<u8>, Option<String>) = conn
+        .query_row(
+            "SELECT old_posted_date, old_processed_date, old_amount_cents,
+                    old_description_raw, old_raw_bytes, old_merchant
+               FROM replacements WHERE import_id = ?1 AND transaction_id = ?2",
+            rusqlite::params![import_id, id],
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        recorded,
+        (
+            old_date,
+            Some("2026-11-08".to_string()),
+            old_amount,
+            old_desc,
+            old_raw,
+            Some("COFFEE SHOP".to_string())
+        )
+    );
+
+    // A later overlapping export of the same file adds nothing: it matches
+    // the new hash directly.
+    let out = import(&mut conn, acct, &tip);
+    assert_eq!((out.inserted, out.replaced), (0, 0));
+    assert_eq!(out.import_id, None, "nothing to record");
+
+    // Even the old file reconciles silently through the alias.
+    let old_file = csv(&[COFFEE]);
+    let out = import(&mut conn, acct, &old_file);
+    assert_eq!(out.inserted, 0, "the alias answers the old hash");
+}
+
+#[test]
+fn undo_restores_the_replaced_transaction() {
+    let (mut conn, acct) = setup();
+    import(&mut conn, acct, &csv(&[COFFEE]));
+    let id = txn_id(&conn, "COFFEE SHOP    VANCOUVER");
+    let before = row_values(&conn, id);
+
+    let tip = csv(&[COFFEE_TIP]);
+    import_marking(&mut conn, acct, &tip, vec![(0, id)]);
+    assert_ne!(row_values(&conn, id), before);
+
+    let undone = undo_last_import(&mut conn, acct).unwrap().unwrap();
+    assert_eq!(
+        undone.removed, 0,
+        "the replacement belonged to the earlier import"
+    );
+    assert_eq!(row_values(&conn, id), before, "old values restored");
+    let aliases: i64 = conn
+        .query_row("SELECT COUNT(*) FROM row_aliases", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(aliases, 0, "the import's aliases cascade away with it");
+    let reps: i64 = conn
+        .query_row("SELECT COUNT(*) FROM replacements", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(reps, 0);
+
+    // After undo the original file is still "already present"…
+    let out = import(&mut conn, acct, &csv(&[COFFEE]));
+    assert_eq!((out.inserted, out.already_present), (0, 1));
+    // …and the tip file offers its near-match again.
+    assert_eq!(plan(&conn, acct, &tip).near_matches.len(), 1);
+}
+
+#[test]
+fn different_charge_imports_as_new() {
+    let (mut conn, acct) = setup();
+    import(&mut conn, acct, &csv(&[COFFEE]));
+    let id = txn_id(&conn, "COFFEE SHOP    VANCOUVER");
+    let before = row_values(&conn, id);
+
+    // The pair is offered, but the default (Different charge) is not marked.
+    let tip = csv(&[COFFEE_TIP]);
+    assert_eq!(plan(&conn, acct, &tip).near_matches.len(), 1);
+    let out = import(&mut conn, acct, &tip);
+    assert_eq!((out.inserted, out.replaced), (1, 0));
+    assert_eq!(count(&conn, acct), 2, "the tip imports as a new row");
+    assert_eq!(
+        row_values(&conn, id),
+        before,
+        "the existing row is untouched"
+    );
+}
+
+#[test]
+fn same_charge_moves_the_master_csv_row_across_the_year_boundary() {
+    let (mut conn, acct) = setup();
+    let root =
+        std::env::temp_dir().join(format!("financi-near-match-csv-{}", uuid::Uuid::new_v4()));
+    let account = get_account(&conn, acct).unwrap();
+    let dir = root
+        .join(&account.institution.key)
+        .join(&account.account_key.0);
+
+    // Old row in 2026, its replacement three days later, across the year
+    // boundary: the two dates live in different master CSVs.
+    let old = "30 Dec 2026,31 Dec 2026,LATE SNACKS    TORONTO,15.74";
+    let new = "02 Jan 2027,03 Jan 2027,LATE SNACKS    TORONTO,18.74";
+    import(&mut conn, acct, &csv(&[old]));
+    rewrite_years(&conn, &root, acct, &[2026]).unwrap();
+    assert_eq!(
+        std::fs::read(dir.join("2026.csv")).unwrap(),
+        format!("{HEADER}\n{old}").as_bytes()
+    );
+
+    // "Same charge" moves the row: 2026 empties out, 2027 holds the new
+    // bytes exactly as exported, and both years are flagged for rewriting.
+    let id = txn_id(&conn, "LATE SNACKS    TORONTO");
+    let out = import_marking(&mut conn, acct, &csv(&[new]), vec![(0, id)]);
+    assert_eq!(out.affected_years, [2026, 2027].into_iter().collect());
+    rewrite_years(&conn, &root, acct, &[2026, 2027]).unwrap();
+    assert!(!dir.join("2026.csv").exists(), "the old row is gone");
+    assert_eq!(
+        std::fs::read(dir.join("2027.csv")).unwrap(),
+        format!("{HEADER}\n{new}").as_bytes(),
+        "the new row appears exactly as exported"
+    );
+
+    // Undo puts the old row back, byte for byte, and empties 2027.
+    let undone = undo_last_import(&mut conn, acct).unwrap().unwrap();
+    assert_eq!(undone.affected_years, [2026, 2027].into_iter().collect());
+    rewrite_years(&conn, &root, acct, &[2026, 2027]).unwrap();
+    assert!(!dir.join("2027.csv").exists());
+    assert_eq!(
+        std::fs::read(dir.join("2026.csv")).unwrap(),
+        format!("{HEADER}\n{old}").as_bytes()
+    );
+    std::fs::remove_dir_all(root).unwrap();
 }

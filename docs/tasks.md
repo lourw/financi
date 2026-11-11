@@ -482,7 +482,7 @@ beside the monthly summary (right); then the transaction table.
   - Tests: single match pairs, tie goes to review, resolving a review,
     unpair, an unrelated equal amount is not paired.
 
-- [ ] **4.3 Near-match review in the import preview.**
+- [x] **4.3 Near-match review in the import preview.**
   - After reconciliation, for each new row find existing rows in the same
     account with the **same cleaned merchant** (case-insensitive), amount
     within **20%** of the existing amount, date within **±3 days**, not

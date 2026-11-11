@@ -607,6 +607,10 @@ pub struct ImportPanel {
     account_id: Option<i64>,
     plan: PlanState,
     override_overlap: bool,
+    /// Near-match review (4.3): pairs the user marked "Same charge", keyed
+    /// by `(source_line, existing transaction id)`. Absent means "Different
+    /// charge" — the default, so an unreviewed row imports as new.
+    same_charges: HashSet<(usize, i64)>,
     busy: bool,
     error: Option<String>,
     task: Option<Task<()>>,
@@ -667,6 +671,7 @@ impl ImportPanel {
             account_id: None,
             plan: PlanState::NeedAccount,
             override_overlap: false,
+            same_charges: HashSet::new(),
             busy: false,
             error: None,
             task: Some(load),
@@ -784,6 +789,7 @@ impl ImportPanel {
         let csv_root = self.csv_root.clone();
         let options = CommitOptions {
             allow_other_account_overlap: self.override_overlap,
+            same_charges: self.same_charges.iter().copied().collect(),
         };
         self.busy = true;
         self.task = Some(cx.spawn(async move |this, cx| {
@@ -814,10 +820,11 @@ impl ImportPanel {
                 this.busy = false;
                 match result {
                     Ok((out, csv_error)) => {
-                        let mut message = format!(
-                            "Imported {name}: {} new, {} already imported",
-                            out.inserted, out.already_present
-                        );
+                        let mut message = format!("Imported {name}: {} new, ", out.inserted);
+                        if out.replaced > 0 {
+                            message.push_str(&format!("{} replaced, ", out.replaced));
+                        }
+                        message.push_str(&format!("{} already imported", out.already_present));
                         let mut is_error = false;
                         if let Some(e) = csv_error {
                             message.push_str(&format!(" (master CSV update failed: {e})"));
@@ -838,6 +845,17 @@ impl ImportPanel {
             PlanState::Ready(s) => !self.busy && (s.overlap.is_none() || self.override_overlap),
             _ => false,
         }
+    }
+
+    /// Choose "Same charge" / "Different charge" for one near-match pair
+    /// (4.3). The default (absent) is Different: the row imports as new.
+    fn set_same_charge(&mut self, key: (usize, i64), same: bool, cx: &mut Context<Self>) {
+        if same {
+            self.same_charges.insert(key);
+        } else {
+            self.same_charges.remove(&key);
+        }
+        cx.notify();
     }
 }
 
@@ -898,6 +916,77 @@ impl Render for ImportPanel {
             _ => div().into_any_element(),
         };
 
+        // Near-match review (4.3): each suspected pair on one compact line
+        // with a Same/Different choice; the default is Different, so an
+        // unreviewed row imports as new.
+        let near_matches: AnyElement = match &self.plan {
+            PlanState::Ready(s) if !s.near_matches.is_empty() => {
+                let rows: Vec<AnyElement> = s
+                    .near_matches
+                    .iter()
+                    .map(|m| {
+                        let key = (m.source_line, m.existing_id);
+                        let same = self.same_charges.contains(&key);
+                        let side = |label: &str, date: &str, cents: i64, desc: &str| {
+                            div().text_xs().min_w_0().child(format!(
+                                "{label} {} · {} · {}",
+                                date,
+                                flow::money(cents),
+                                financi_core::parse::merchant(desc)
+                            ))
+                        };
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .child(side(
+                                "new",
+                                &m.new_date,
+                                m.new_amount_cents,
+                                &m.new_description_raw,
+                            ))
+                            .child(side(
+                                "existing",
+                                &m.existing_date,
+                                m.existing_amount_cents,
+                                &m.existing_description_raw,
+                            ))
+                            .child(div().flex_1())
+                            .child(
+                                Button::new(SharedString::from(format!(
+                                    "near-same-{}-{}",
+                                    m.source_line, m.existing_id
+                                )))
+                                .label("Same charge")
+                                .when(same, |b| b.primary())
+                                .on_click(cx.listener(
+                                    move |this, _, _, cx| this.set_same_charge(key, true, cx),
+                                )),
+                            )
+                            .child(
+                                Button::new(SharedString::from(format!(
+                                    "near-different-{}-{}",
+                                    m.source_line, m.existing_id
+                                )))
+                                .label("Different charge")
+                                .when(!same, |b| b.primary())
+                                .on_click(cx.listener(
+                                    move |this, _, _, cx| this.set_same_charge(key, false, cx),
+                                )),
+                            )
+                            .into_any_element()
+                    })
+                    .collect();
+                v_flex()
+                    .gap_1()
+                    .child(div().text_sm().text_color(muted).child(
+                        "Possible changed charges — pick Same charge to replace the existing row:",
+                    ))
+                    .children(rows)
+                    .into_any_element()
+            }
+            _ => div().into_any_element(),
+        };
+
         // New-account field (3.16): a visible label above the input, not
         // just its placeholder.
         let new_account = self.creating_new.then(|| {
@@ -921,7 +1010,15 @@ impl Render for ImportPanel {
         });
 
         let import_label = match &self.plan {
-            PlanState::Ready(s) => format!("Import {} transactions", s.new_rows),
+            PlanState::Ready(s) => {
+                // Rows marked "Same charge" (4.3) replace instead of add.
+                let replaced = s
+                    .near_matches
+                    .iter()
+                    .filter(|m| self.same_charges.contains(&(m.source_line, m.existing_id)))
+                    .count();
+                format!("Import {} transactions", s.new_rows - replaced)
+            }
             _ => "Import".into(),
         };
 
@@ -977,6 +1074,7 @@ impl Render for ImportPanel {
                     .child(summary),
             )
             .child(overlap)
+            .child(near_matches)
             .children(new_account)
             .children(
                 self.error
