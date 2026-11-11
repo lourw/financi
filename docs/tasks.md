@@ -779,8 +779,8 @@ out.
     rendered text with a long-named tree, a subcategory selected, and each
     validation error triggered); the renamed buttons still work.
 
-**Bugs reported by the user on 2026-11-11** (3.34–3.42, plus a fix folded
-into 3.23). Order: **3.40 → 3.23 → 3.41/3.42 → 3.35 → 3.36 → 3.37 → 3.38/3.39 → 3.34**, then the rest of
+**Bugs reported by the user on 2026-11-11** (3.34–3.43, plus a fix folded
+into 3.23). Order: **3.40 → 3.23 → 3.41/3.42 → 3.43 → 3.35 → 3.36 → 3.37 → 3.38/3.39 → 3.34**, then the rest of
 the order above (3.28 → 3.29 → 3.26).
 
 - 3.23 also fixes: **the rule list overflows the page.** Today each rule
@@ -866,6 +866,38 @@ the order above (3.28 → 3.29 → 3.26).
     input's centre within 1 px, and the Save / Add rule button's centre
     too. Note the rule in `ui-conventions.md` (*Forms*: an unlabelled
     control in a labelled row sits in a 32 px slot, centred).
+
+- [ ] **3.43 No buttons end in "…".** The user doesn't want "…" on
+  buttons; use an icon instead, or just drop it (user request,
+  2026-11-11). This applies 3.32's Imports-header rule to every button.
+  All of them are on the Categories page today:
+  - **New category…** (`NEW_CATEGORY`, header, primary): `plus` icon +
+    "New category".
+  - **Rename…** (detail panel title row): `pencil` icon + "Rename".
+  - **Delete…** in the detail panel's Delete section (`confirm_label`):
+    `trash-2` icon + "Delete"; armed, it still reads "Click again to
+    delete" in `danger`.
+  - Rule rows: **Edit** gets `pencil`, **Delete…** becomes `trash-2` +
+    "Delete" (armed text unchanged); both stay `.ghost()` `text_xs`. The
+    invisible heading spacers (`rule-heading-edit-spacer`,
+    `rule-heading-delete-spacer`) change the same way so the headings stay
+    aligned with the columns.
+  - **Not buttons, unchanged:** app-menu items ("Import CSV…", "Export…",
+    "Restore…"), the row context menu's "Change category…" submenu,
+    select placeholders ("Move to category…", "Category…") and the
+    "+ New account…" picker item. Menus keep the platform's "…" for items
+    that open a dialog.
+  - Check 3.23's fit rule still holds (Edit / Delete paint inside the
+    detail panel at 1200 × 720 and 1600 × 900): an icon adds ~20 px per
+    button.
+  - Tests: each of the buttons above paints an icon and its text has no
+    "…"; the armed labels are unchanged (existing two-click tests); a
+    guard test that scans `ui.rs` for `.label("…")` / `const … = "……"`
+    used as a button label and fails, so no new one creeps in; 3.23's
+    heading-alignment and fit tests pass. In `ui-conventions.md`, replace
+    the *Copy* bullet's "Use an ellipsis when the button opens a dialog or
+    picker" with "Buttons never end in "…"; actions carry a Lucide icon
+    left of the label (menus keep "…")", and update the *Categories* row.
 
 - [ ] **3.34 To categorize looks cleaner.** The queue is loose rows on the
   page background: no panel, no row separators, a semibold merchant, and a
@@ -984,7 +1016,7 @@ the order above (3.28 → 3.29 → 3.26).
 
 
 **Done when:** on the demo data the dashboard totals match
-`expected.json`, filters compose, tests cover 3.1–3.42.
+`expected.json`, filters compose, tests cover 3.1–3.43.
 
 ---
 
