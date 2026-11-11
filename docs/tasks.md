@@ -707,7 +707,7 @@ out.
     panel without overlapping at 1200 × 720 with 15 categories. Update
     the dashboard row of `ui-conventions.md`.
 
-- [ ] **3.32 Imports page buttons: row-sized Undo, icons instead of "…".** The Undo… button in
+- [x] **3.32 Imports page buttons: row-sized Undo, icons instead of "…".** The Undo… button in
   the newest row of the Imports history table (`HistoryDelegate`,
   `Button::new("undo-import")`) is a default medium `Button` (32 px tall)
   inside a 32 px table row (`Size::table_row_height`), so it fills the row
