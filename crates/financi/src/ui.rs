@@ -85,6 +85,15 @@ fn field_label(muted: Hsla, text: &'static str) -> Div {
         .child(text)
 }
 
+/// Words for Categories page controls whose painted text is reachable by
+/// tests only through debug selectors (3.33): each const feeds both the
+/// label/placeholder and its `label:<text>` selector, so the two can't
+/// desync and the scan test pins the exact words.
+const ADD_CATEGORY: &str = "Add category";
+const ADD_SUBCATEGORY: &str = "Add subcategory";
+const MOVE_TO_CATEGORY_PH: &str = "Move to category…";
+const MOVE_TXNS_TO_PH: &str = "Move its transactions to…";
+
 /// Region title (ui-conventions *Typography*: `text_sm`, `font_semibold`).
 /// Names a group of related controls or a data panel (3.16: the filter bar,
 /// the chart, the monthly summary, the category tree). Same debug selector
@@ -5313,7 +5322,10 @@ impl Shell {
                                                 )
                                                 .child(
                                                     Button::new("add-child")
-                                                        .label("Add subcategory")
+                                                        .label(ADD_SUBCATEGORY)
+                                                        .debug_selector(move || {
+                                                            format!("label:{ADD_SUBCATEGORY}")
+                                                        })
                                                         .on_click(cx.listener(
                                                             |this, _, window, cx| {
                                                                 this.add_child(window, cx)
@@ -5341,10 +5353,15 @@ impl Shell {
                                                 .gap_2()
                                                 .items_end()
                                                 .child(
-                                                    div().w(px(200.)).child(
-                                                        Select::new(&self.move_target)
-                                                            .placeholder("Move to category…"),
-                                                    ),
+                                                    div()
+                                                        .w(px(200.))
+                                                        .debug_selector(move || {
+                                                            format!("label:{MOVE_TO_CATEGORY_PH}")
+                                                        })
+                                                        .child(
+                                                            Select::new(&self.move_target)
+                                                                .placeholder(MOVE_TO_CATEGORY_PH),
+                                                        ),
                                                 )
                                                 .child(
                                                     Button::new("move-child")
@@ -5371,12 +5388,15 @@ impl Shell {
                                                 .gap_2()
                                                 .items_end()
                                                 .child(
-                                                    div().w(px(260.)).child(
-                                                        Select::new(&self.delete_target)
-                                                            .placeholder(
-                                                                "Move its transactions to…",
-                                                            ),
-                                                    ),
+                                                    div()
+                                                        .w(px(260.))
+                                                        .debug_selector(move || {
+                                                            format!("label:{MOVE_TXNS_TO_PH}")
+                                                        })
+                                                        .child(
+                                                            Select::new(&self.delete_target)
+                                                                .placeholder(MOVE_TXNS_TO_PH),
+                                                        ),
                                                 )
                                                 .child(
                                                     Button::new("delete-category")
@@ -5429,6 +5449,12 @@ impl Shell {
             None => div().into_any_element(),
         };
 
+        // The header count paints `count_text` and its selector mirrors it
+        // (3.33): the scan test asserts the exact words and cannot be
+        // satisfied by a retired one.
+        let count_text = format!("{} categories", self.categories.len());
+        let count_sel = count_text.clone();
+
         v_flex()
             .flex_1()
             .min_h_0()
@@ -5447,7 +5473,8 @@ impl Shell {
                         div()
                             .text_sm()
                             .text_color(muted)
-                            .child(format!("{} categories", self.categories.len())),
+                            .debug_selector(move || format!("label:{count_sel}"))
+                            .child(count_text),
                     ),
             )
             .children(
@@ -5474,7 +5501,8 @@ impl Shell {
                     )
                     .child(
                         Button::new("add-parent")
-                            .label("Add category")
+                            .label(ADD_CATEGORY)
+                            .debug_selector(move || format!("label:{ADD_CATEGORY}"))
                             .primary()
                             .on_click(
                                 cx.listener(|this, _, window, cx| this.add_parent(window, cx)),

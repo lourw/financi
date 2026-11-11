@@ -3671,20 +3671,37 @@ fn the_categories_page_never_says_parent_or_child(cx: &mut TestAppContext) {
     let mut window = VisualTestContext::from_window(handle, cx);
     draw_frame(cx, handle);
 
-    // The painted labels carry the new words…
+    // The painted labels carry the new words… buttons and Select
+    // placeholders included: their text is reachable only through the
+    // `label:<text>` debug selectors (3.33).
+    let n_cats = cx.update(|cx| shell.read(cx).categories.len());
     for sel in [
         "label:Category tree",
         "label:New category name",
         "label:Kind",
+        "label:Add category",
         "label:New subcategory name",
+        "label:Add subcategory",
+        "label:Move its transactions to…",
     ] {
         assert!(
             window.debug_bounds(sel).is_some(),
             "the Categories page paints {sel:?}"
         );
     }
+    let count_sel = leaked(format!("label:{n_cats} categories"));
+    assert!(
+        window.debug_bounds(count_sel).is_some(),
+        "the header paints the count {count_sel:?}"
+    );
     // …and none of the retired ones.
-    for sel in ["label:New parent name", "label:New child name"] {
+    for sel in [
+        "label:New parent name",
+        "label:New child name",
+        "label:Add parent",
+        "label:Add child",
+        leaked(format!("label:{n_cats} parents")),
+    ] {
         assert!(
             window.debug_bounds(sel).is_none(),
             "the Categories page never paints {sel:?}"
@@ -3702,9 +3719,15 @@ fn the_categories_page_never_says_parent_or_child(cx: &mut TestAppContext) {
         "the Categories page paints the move picker's label"
     );
     assert!(
-        window.debug_bounds("label:Move to parent").is_none(),
-        "the Categories page never paints the retired move label"
+        window.debug_bounds("label:Move to category…").is_some(),
+        "the move picker paints its placeholder in the new words"
     );
+    for sel in ["label:Move to parent", "label:Move to parent…"] {
+        assert!(
+            window.debug_bounds(sel).is_none(),
+            "the Categories page never paints {sel:?}"
+        );
+    }
 
     // The placeholders are the exact strings the inputs render.
     cx.update(|cx| {
