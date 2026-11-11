@@ -19,6 +19,7 @@ use financi_core::{ParseError, RawFile, RawTransaction, RowHash, StatementParser
 use rusqlite::{Connection, params};
 
 use crate::categories::card_payment_category;
+use crate::overrides::clear_override;
 use crate::rules::list_rules;
 use crate::{Account, DbError, get_account, list_accounts};
 
@@ -239,6 +240,10 @@ pub fn commit_import(
             ])?;
         }
     }
+    // Transfer pairing (4.2) runs automatically after every import, in
+    // this same transaction: new rows and their older unpaired partners
+    // are matched before anything else can observe the import.
+    crate::transfers::run_transfer_pairing(&tx)?;
     tx.commit()?;
     Ok(ImportOutcome {
         import_id: Some(import_id),
@@ -310,6 +315,22 @@ pub fn undo_last_import(
         let dates = stmt.query_map([import_id], |r| r.get::<_, String>(0))?;
         years_of(dates.filter_map(|r| r.ok()))
     };
+    // Surviving partners of the undone rows' transfer pairs (4.2). The
+    // `transfer_pair_id` foreign key NULLs the link on delete, but the lock
+    // and the transfer category would stick — release them the way *Unpair*
+    // does, so rules re-apply and the row is pairable again.
+    let partners: Vec<i64> = {
+        let mut stmt = tx.prepare(
+            "SELECT id FROM transactions
+              WHERE import_id <> ?1
+                AND transfer_pair_id IN (SELECT id FROM transactions WHERE import_id = ?1)",
+        )?;
+        let ids = stmt.query_map([import_id], |r| r.get::<_, i64>(0))?;
+        ids.collect::<Result<Vec<_>, _>>()?
+    };
+    for partner in partners {
+        clear_override(&tx, partner)?;
+    }
     tx.execute("DELETE FROM imports WHERE id = ?1", [import_id])?;
     tx.commit()?;
     Ok(Some(UndoneImport {
@@ -481,6 +502,9 @@ pub struct TransactionRow {
     pub category_id: Option<i64>,
     pub amount_cents: i64,
     pub hidden: bool,
+    /// The row this one is paired with as a transfer (4.2), `Some` for
+    /// paired rows — the table draws a link icon and offers *Unpair*.
+    pub transfer_pair_id: Option<i64>,
 }
 
 /// Transactions newest first, optionally for one account. Hidden rows are
@@ -491,7 +515,7 @@ pub fn list_transactions(
 ) -> Result<Vec<TransactionRow>, DbError> {
     let mut stmt = conn.prepare(
         "SELECT t.id, i.name || ' · ' || a.name, t.posted_date, t.description_raw, t.merchant,
-                c.name, t.amount_cents, t.category_id, t.hidden
+                c.name, t.amount_cents, t.category_id, t.hidden, t.transfer_pair_id
            FROM transactions t
            JOIN accounts a ON a.id = t.account_id
            JOIN institutions i ON i.id = a.institution_id
@@ -510,6 +534,7 @@ pub fn list_transactions(
             amount_cents: r.get(6)?,
             category_id: r.get(7)?,
             hidden: r.get(8)?,
+            transfer_pair_id: r.get(9)?,
         })
     })?;
     Ok(rows.collect::<Result<_, _>>()?)

@@ -35,6 +35,12 @@ pub use rules::{add_rule, delete_rule, list_rules, update_rule};
 
 pub mod settings;
 
+pub mod transfers;
+pub use transfers::{
+    PairingSummary, TransferCandidate, TransferReview, list_transfer_reviews,
+    resolve_transfer_review, run_transfer_pairing, unpair_transaction,
+};
+
 pub mod views;
 pub use views::{
     CategorySpend, MonthlySummary, MonthlySummaryRow, TxSort, TxSortColumn, TxTableFilter,
@@ -97,6 +103,12 @@ pub enum DbError {
     EmptyRulePattern,
     #[error("invalid regex pattern {pattern:?}: {message}")]
     InvalidRulePattern { pattern: String, message: String },
+    #[error("transaction {0} is not paired with anything")]
+    NotPaired(i64),
+    #[error("transaction {0} has no open transfer review")]
+    NoTransferReview(i64),
+    #[error("transaction {candidate} is not a pairable candidate for transaction {transaction}")]
+    NotTransferCandidate { transaction: i64, candidate: i64 },
 }
 
 pub type Result<T, E = DbError> = std::result::Result<T, E>;
@@ -105,6 +117,7 @@ pub type Result<T, E = DbError> = std::result::Result<T, E>;
 const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0001_init.sql"),
     include_str!("../migrations/0002_categorize.sql"),
+    include_str!("../migrations/0003_transfers.sql"),
 ];
 
 pub const SCHEMA_VERSION: u32 = MIGRATIONS.len() as u32;

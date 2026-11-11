@@ -720,24 +720,32 @@ fn import_end_to_end_shows_expected_values_on_every_page(cx: &mut TestAppContext
     });
     // amex-sep-nov: 102 rows (100 unique + 2 genuine repeats), of which the
     // 2 card payments are auto-categorized as transfers and drop out of the
-    // default view; simplii-chequing: 11 rows, no detected transfers.
+    // default view; simplii-chequing: 11 rows, of which the 2 "INTERNET BILL
+    // PAY DEMO AMEX" debits pair with those payments (4.2) and are
+    // categorized as Card Payment too.
     wait_until(cx, "all-time view over both imports", |cx| {
         shell.read(cx).summary.months == ["2026-09", "2026-10", "2026-11"]
-            && shell.read(cx).row_count == 111
+            && shell.read(cx).row_count == 109
     });
 
     // Spend per month from expected.json with transfers excluded: the Amex
-    // money-in rows are card payments (they leave the view entirely), the
-    // Simplii money-in rows stay uncategorized and offset its spend.
+    // money-in rows are card payments (they leave the view entirely), and so
+    // do the two paired chequing debits since 4.2; the Simplii money-in rows
+    // stay uncategorized and offset its spend.
     let expected = expected_totals();
     let cents =
         |file: &str, month: &str, key: &str| expected[file]["months"][month][key].as_i64().unwrap();
+    let paired_debit = |month: &str| match month {
+        "2026-09" | "2026-10" => 150_000,
+        _ => 0,
+    };
     let want_spend: Vec<i64> = ["2026-09", "2026-10", "2026-11"]
         .iter()
         .map(|m| {
             cents("amex-sep-nov.csv", m, "money_out_cents")
                 + cents("simplii-chequing.csv", m, "money_out_cents")
                 - cents("simplii-chequing.csv", m, "money_in_cents")
+                - paired_debit(m)
         })
         .collect();
     let spend_total: i64 = want_spend.iter().sum();
@@ -769,8 +777,9 @@ fn import_end_to_end_shows_expected_values_on_every_page(cx: &mut TestAppContext
             .collect();
         assert_eq!(chart, [("Uncategorized", spend_total)]);
         // Sidebar count pills (task 2.x): every visible row, uncategorized
-        // ones apart. The 2 card payments are categorized, not hidden.
-        assert_eq!((s.total_visible, s.uncategorized_visible), (113, 111));
+        // ones apart. The 2 card payments and their 2 paired chequing debits
+        // are categorized, not hidden.
+        assert_eq!((s.total_visible, s.uncategorized_visible), (113, 109));
     });
 
     // -- To categorize: the queue covers every uncategorized row ----------
@@ -806,8 +815,9 @@ fn import_end_to_end_shows_expected_values_on_every_page(cx: &mut TestAppContext
         let card = find_child(&shell, cx, "Card Payment").expect("Card Payment child");
         assert_eq!(
             s.cat_counts.get(&card).copied(),
-            Some(2),
-            "the import auto-categorized both Amex payments"
+            Some(4),
+            "the import auto-categorized both Amex payments and, since 4.2, \
+             their two paired chequing debits"
         );
     });
 
@@ -1864,7 +1874,7 @@ fn the_categories_page_labels_its_controls(cx: &mut TestAppContext) {
 // -- row context menu (2.9) -------------------------------------------------
 
 /// A minimal row for the pure menu-model test.
-fn browse_row(hidden: bool) -> TransactionRow {
+fn browse_row(hidden: bool, paired: bool) -> TransactionRow {
     TransactionRow {
         id: 1,
         account: "American Express · Cobalt".into(),
@@ -1875,26 +1885,317 @@ fn browse_row(hidden: bool) -> TransactionRow {
         category_id: None,
         amount_cents: -450,
         hidden,
+        transfer_pair_id: paired.then_some(2),
     }
 }
 
 #[test]
 fn menu_shows_hide_for_a_visible_row_and_unhide_only_for_a_hidden_one() {
     assert_eq!(
-        row_menu_items(&browse_row(false)),
+        row_menu_items(&browse_row(false, false)),
         [RowMenuItem::ChangeCategory, RowMenuItem::Hide],
         "a visible row offers Hide, never Unhide"
     );
     assert_eq!(
-        row_menu_items(&browse_row(true)),
+        row_menu_items(&browse_row(true, false)),
         [RowMenuItem::ChangeCategory, RowMenuItem::Unhide],
         "a hidden row offers Unhide, never Hide"
+    );
+    assert_eq!(
+        row_menu_items(&browse_row(false, true)),
+        [
+            RowMenuItem::ChangeCategory,
+            RowMenuItem::Hide,
+            RowMenuItem::Unpair
+        ],
+        "a paired row also offers Unpair"
+    );
+    assert_eq!(
+        row_menu_items(&browse_row(true, false)),
+        [RowMenuItem::ChangeCategory, RowMenuItem::Unhide],
+        "an unpaired row never offers Unpair"
     );
 }
 
 /// The dashboard table's rows.
 fn table_rows(shell: &Entity<Shell>, cx: &App) -> Vec<TransactionRow> {
     shell.read(cx).table.read(cx).delegate().rows.clone()
+}
+
+// ---------------------------------------------------------------------------
+// Transfer pairing (task 4.2)
+
+/// `Window::debug_bounds` takes a `&'static str`; dynamic selectors are
+/// leaked (test processes are short-lived).
+fn leaked(s: String) -> &'static str {
+    Box::leak(s.into_boxed_str())
+}
+
+/// Insert one row the way the importer's final insert does, returning its id.
+fn seed_txn(
+    conn: &financi_db::rusqlite::Connection,
+    import: i64,
+    account: i64,
+    line: i64,
+    date: &str,
+    cents: i64,
+    description: &str,
+) -> i64 {
+    conn.execute(
+        "INSERT INTO transactions (account_id, import_id, source_line, raw_bytes,
+                                   row_hash, posted_date, amount_cents, description_raw)
+         VALUES (?1, ?2, ?3, X'00', ?4, ?5, ?6, ?7)",
+        (
+            account,
+            import,
+            line,
+            format!("hash-{account}-{line}"),
+            date,
+            cents,
+            description,
+        ),
+    )
+    .unwrap();
+    conn.last_insert_rowid()
+}
+
+/// A minimal import row. The parser id must be a real one: unpairing rewrites
+/// the account's master CSV, which resolves the parser of the account's
+/// earliest import.
+fn seed_import(conn: &financi_db::rusqlite::Connection, account: i64) -> i64 {
+    conn.execute(
+        "INSERT INTO imports (account_id, parser_id, file_name, imported_at, header_raw,
+                              encoding, has_bom, line_ending, trailing_newline, row_count)
+         VALUES (?1, 'amex', 'seed.csv', '2026-11-08', X'00', 'utf-8', 0, 'lf', 0, 0)",
+        [account],
+    )
+    .unwrap();
+    conn.last_insert_rowid()
+}
+
+/// Chequing → savings tie: one debit on Alpha could pair with either of two
+/// equal credits on Beta, so the engine opens exactly one review (on the
+/// debit) and pairs nothing. Returns `(debit, credit_a, credit_b)`.
+fn seed_transfer_tie(conn: &financi_db::rusqlite::Connection) -> (i64, i64, i64) {
+    let alpha = create_account(conn, "simplii", "Alpha Chequing", AccountKind::Chequing).unwrap();
+    let beta = create_account(conn, "simplii", "Beta Savings", AccountKind::Savings).unwrap();
+    let ai = seed_import(conn, alpha);
+    let bi = seed_import(conn, beta);
+    let debit = seed_txn(
+        conn,
+        ai,
+        alpha,
+        0,
+        "2026-11-05",
+        -50_000,
+        "INTERAC TRANSFER SEND",
+    );
+    let credit_a = seed_txn(
+        conn,
+        bi,
+        beta,
+        0,
+        "2026-11-05",
+        50_000,
+        "INTERAC TRANSFER RECEIVE",
+    );
+    let credit_b = seed_txn(
+        conn,
+        bi,
+        beta,
+        1,
+        "2026-11-06",
+        50_000,
+        "INTERAC TRANSFER RECEIVE",
+    );
+    financi_db::run_transfer_pairing(conn).unwrap();
+    (debit, credit_a, credit_b)
+}
+
+/// Two accounts, one clean mutual transfer, paired by the engine at seed
+/// time. Returns `(outgoing, incoming)`.
+fn seed_paired_transfer(conn: &financi_db::rusqlite::Connection) -> (i64, i64) {
+    let alpha = create_account(conn, "simplii", "Alpha Chequing", AccountKind::Chequing).unwrap();
+    let beta = create_account(conn, "simplii", "Beta Savings", AccountKind::Savings).unwrap();
+    let ai = seed_import(conn, alpha);
+    let bi = seed_import(conn, beta);
+    let out = seed_txn(
+        conn,
+        ai,
+        alpha,
+        0,
+        "2026-11-05",
+        -75_000,
+        "INTERAC TRANSFER OUT",
+    );
+    let incoming = seed_txn(
+        conn,
+        bi,
+        beta,
+        0,
+        "2026-11-06",
+        75_000,
+        "INTERAC TRANSFER IN",
+    );
+    financi_db::run_transfer_pairing(conn).unwrap();
+    (out, incoming)
+}
+
+#[gpui::test]
+fn the_transfers_page_offers_every_candidate_for_a_tie_and_pairs_the_chosen_one(
+    cx: &mut TestAppContext,
+) {
+    let mut seeded = None;
+    let (handle, shell) = open_shell(cx, |c| seeded = Some(seed_transfer_tie(c)));
+    let Some((debit, credit_a, credit_b)) = seeded else {
+        unreachable!()
+    };
+
+    // The tie is not guessed: one review, carried by the debit, listing both
+    // credits in (posted_date, id) order; the pill counts it.
+    wait_until(cx, "review appears", |cx| {
+        shell.read(cx).transfer_reviews.len() == 1
+    });
+    let review = cx.update(|cx| shell.read(cx).transfer_reviews[0].clone());
+    assert_eq!(review.transaction_id, debit);
+    assert_eq!(
+        review.candidates.iter().map(|c| c.id).collect::<Vec<_>>(),
+        [credit_a, credit_b]
+    );
+
+    // The page opens with the review panel and one row per candidate.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Transfers, cx)));
+    let mut window = VisualTestContext::from_window(handle, cx);
+    draw_frame(cx, handle);
+    assert!(window.debug_bounds("page:page-transfers").is_some());
+    assert!(
+        window
+            .debug_bounds(leaked(format!("transfer-review:{debit}")))
+            .is_some()
+    );
+    assert!(
+        window
+            .debug_bounds(leaked(format!("transfer-candidate:{debit}:{credit_a}")))
+            .is_some()
+    );
+    assert!(
+        window
+            .debug_bounds(leaked(format!("transfer-candidate:{debit}:{credit_b}")))
+            .is_some()
+    );
+
+    // Choosing a candidate pairs exactly that couple, categorizes both sides
+    // *Between Accounts*, and clears the review (and the pill).
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| s.pair_transfer(debit, credit_b, window, cx));
+    });
+    wait_until(cx, "review cleared", |cx| {
+        shell.read(cx).transfer_reviews.is_empty()
+    });
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| s.set_include_transfers(true, window, cx));
+    });
+    wait_until(cx, "all three rows in the table", |cx| {
+        table_rows(&shell, cx).len() == 3
+    });
+    cx.update(|cx| {
+        assert_eq!(
+            shell.read(cx).status,
+            Some(("Paired transfer.".into(), false))
+        );
+        let rows = table_rows(&shell, cx);
+        let find = |id: i64| rows.iter().find(|r| r.id == id).unwrap();
+        assert_eq!(find(debit).transfer_pair_id, Some(credit_b));
+        assert_eq!(find(credit_b).transfer_pair_id, Some(debit));
+        assert_eq!(find(debit).category.as_deref(), Some("Between Accounts"));
+        assert_eq!(find(credit_b).category.as_deref(), Some("Between Accounts"));
+        // The rejected candidate stays alone and uncategorized.
+        assert_eq!(find(credit_a).transfer_pair_id, None);
+        assert_eq!(find(credit_a).category, None);
+    });
+}
+
+#[gpui::test]
+fn marking_a_review_not_a_transfer_clears_it_and_blocks_re_pairing(cx: &mut TestAppContext) {
+    let mut seeded = None;
+    let (handle, shell) = open_shell(cx, |c| seeded = Some(seed_transfer_tie(c)));
+    let Some((debit, _, _)) = seeded else {
+        unreachable!()
+    };
+    wait_until(cx, "review appears", |cx| {
+        shell.read(cx).transfer_reviews.len() == 1
+    });
+
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| s.mark_not_transfer(debit, window, cx));
+    });
+    wait_until(cx, "review gone", |cx| {
+        shell.read(cx).transfer_reviews.is_empty()
+    });
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| s.set_include_transfers(true, window, cx));
+    });
+    wait_until(cx, "all three rows in the table", |cx| {
+        table_rows(&shell, cx).len() == 3
+    });
+    cx.update(|cx| {
+        assert_eq!(
+            shell.read(cx).status,
+            Some(("Marked as not a transfer.".into(), false))
+        );
+        let rows = table_rows(&shell, cx);
+        assert!(
+            rows.iter().all(|r| r.transfer_pair_id.is_none()),
+            "a marked-as-not-a-transfer row never pairs again"
+        );
+        assert!(rows.iter().all(|r| r.category.is_none()));
+    });
+}
+
+#[gpui::test]
+fn unpairing_a_row_clears_both_sides_and_they_stay_apart(cx: &mut TestAppContext) {
+    let mut seeded = None;
+    let (handle, shell) = open_shell(cx, |c| seeded = Some(seed_paired_transfer(c)));
+    let Some((out, incoming)) = seeded else {
+        unreachable!()
+    };
+
+    // The pair is linked (the table would hide it without the toggle).
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| s.set_include_transfers(true, window, cx));
+    });
+    wait_until(cx, "paired rows in the table", |cx| {
+        let rows = table_rows(&shell, cx);
+        rows.len() == 2 && rows.iter().all(|r| r.transfer_pair_id.is_some())
+    });
+
+    // Unpair from one side: both partners are cleared…
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| s.unpair_row(out, window, cx));
+    });
+    wait_until(cx, "unpaired", |cx| {
+        let rows = table_rows(&shell, cx);
+        rows.len() == 2 && rows.iter().all(|r| r.transfer_pair_id.is_none())
+    });
+    cx.update(|cx| {
+        assert_eq!(
+            shell.read(cx).status,
+            Some(("Unpaired transaction.".into(), false))
+        );
+        assert!(shell.read(cx).transfer_reviews.is_empty());
+        let rows = table_rows(&shell, cx);
+        let find = |id: i64| rows.iter().find(|r| r.id == id).unwrap();
+        assert_eq!(find(out).category, None);
+        assert_eq!(find(incoming).category, None);
+    });
+
+    // …and the engine's re-run leaves them apart: no new review, no pair.
+    cx.run_until_parked();
+    cx.update(|cx| {
+        assert!(shell.read(cx).transfer_reviews.is_empty());
+        let rows = table_rows(&shell, cx);
+        assert!(rows.iter().all(|r| r.transfer_pair_id.is_none()));
+    });
 }
 
 /// Import October onto a fresh Cobalt and return the busiest merchant with

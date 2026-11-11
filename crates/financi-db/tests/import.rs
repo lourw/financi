@@ -8,6 +8,7 @@ use financi_db::import::{
 };
 use financi_db::{add_rule, create_account, get_account, open_in_memory, rusqlite::Connection};
 use financi_parsers::amex::Amex;
+use financi_parsers::simplii::Simplii;
 
 const HEADER: &str = "Date,Date Processed,Description,Amount";
 
@@ -19,11 +20,29 @@ fn csv(rows: &[&str]) -> RawFile {
     read_raw_file(text.as_bytes()).unwrap()
 }
 
+/// A Simplii chequing export: `Date, Transaction Details, Funds Out, Funds In `
+/// with mm/dd/yyyy dates.
+const SIMPLII_HEADER: &str = "Date, Transaction Details, Funds Out, Funds In ";
+
+fn simplii_csv(rows: &[&str]) -> RawFile {
+    let text = std::iter::once(SIMPLII_HEADER)
+        .chain(rows.iter().copied())
+        .collect::<Vec<_>>()
+        .join("\n");
+    read_raw_file(text.as_bytes()).unwrap()
+}
+
 fn fixture(name: &str) -> RawFile {
     let path = format!(
         "{}/../financi-parsers/tests/fixtures/amex/{name}",
         env!("CARGO_MANIFEST_DIR")
     );
+    read_raw_file(&std::fs::read(path).unwrap()).unwrap()
+}
+
+/// A demo fixture (the realistic month files), read through the real parser.
+fn demo_fixture(name: &str) -> RawFile {
+    let path = format!("{}/../../fixtures/demo/{name}", env!("CARGO_MANIFEST_DIR"));
     read_raw_file(&std::fs::read(path).unwrap()).unwrap()
 }
 
@@ -40,6 +59,19 @@ fn import(conn: &mut Connection, account: i64, file: &RawFile) -> ImportOutcome 
         &Amex,
         file,
         "activity.csv",
+        "2026-11-07T12:00:00",
+        CommitOptions::default(),
+    )
+    .unwrap()
+}
+
+fn import_simplii(conn: &mut Connection, account: i64, file: &RawFile) -> ImportOutcome {
+    commit_import(
+        conn,
+        account,
+        &Simplii,
+        file,
+        "chequing.csv",
         "2026-11-07T12:00:00",
         CommitOptions::default(),
     )
@@ -432,4 +464,190 @@ fn history_lists_imports_newest_first_with_their_rows() {
         1,
         "the undone import is gone from the history"
     );
+}
+
+#[test]
+fn importing_a_statement_pairs_the_card_payment_with_the_chequing_debit() {
+    let (mut conn, cobalt) = setup();
+    let chequing = create_account(&conn, "simplii", "Chequing", AccountKind::Chequing).unwrap();
+    // The debit that funded the fixture's 25 Sep payment, one day later.
+    conn.execute(
+        "INSERT INTO imports (account_id, parser_id, file_name, imported_at, header_raw,
+                              encoding, has_bom, line_ending, trailing_newline, row_count)
+         VALUES (?1, 'amex', 'prior.csv', '2026-11-01', X'00', 'utf-8', 0, 'lf', 0, 1)",
+        rusqlite::params![chequing],
+    )
+    .unwrap();
+    let prior_import = conn.last_insert_rowid();
+    conn.execute(
+        "INSERT INTO transactions (account_id, import_id, source_line, raw_bytes, row_hash,
+                                   posted_date, amount_cents, description_raw)
+         VALUES (?1, ?2, 0, X'00', 'prior-debit', '2026-09-26', -150000,
+                 'CREDIT CARD PAYMENT - AMEX')",
+        rusqlite::params![chequing, prior_import],
+    )
+    .unwrap();
+
+    let prior_debit = conn.last_insert_rowid();
+
+    import(&mut conn, cobalt, &demo_fixture("amex-sep-nov.csv"));
+
+    let rows = list_transactions(&conn, Some(cobalt)).unwrap();
+    let payments: Vec<_> = rows
+        .iter()
+        .filter(|r| r.description.contains("PAYMENT RECEIVED"))
+        .collect();
+    assert_eq!(payments.len(), 2, "the fixture has two payments");
+    let sep = payments
+        .iter()
+        .find(|r| r.posted_date == "2026-09-25")
+        .unwrap();
+    let oct = payments
+        .iter()
+        .find(|r| r.posted_date == "2026-10-25")
+        .unwrap();
+    let card_payment = card_payment_category(&conn).unwrap();
+    assert_eq!(
+        sep.transfer_pair_id,
+        Some(prior_debit),
+        "the September payment pairs with the chequing debit inside 5 days"
+    );
+    assert_eq!(
+        sep.category_id,
+        Some(card_payment),
+        "the payment takes its partner's category"
+    );
+    assert_eq!(
+        oct.transfer_pair_id, None,
+        "the October payment has no debit near it and stays unpaired"
+    );
+    assert_eq!(
+        oct.category_id,
+        Some(card_payment),
+        "the October payment is still Card Payment from import (2.5), just unpaired"
+    );
+    let debits = list_transactions(&conn, Some(chequing)).unwrap();
+    assert_eq!(debits[0].transfer_pair_id, Some(sep.id));
+    assert_eq!(
+        debits[0].category_id,
+        Some(card_payment),
+        "the chequing debit takes the Card Payment category from pairing"
+    );
+}
+
+#[test]
+fn a_row_ambiguous_under_both_rules_leaves_one_review_and_imports_calmly() {
+    let (mut conn, cobalt) = setup();
+    let alpha = create_account(&conn, "simplii", "Alpha", AccountKind::Chequing).unwrap();
+    let beta = create_account(&conn, "simplii", "Beta", AccountKind::Chequing).unwrap();
+
+    // Two card payments on the card…
+    import(
+        &mut conn,
+        cobalt,
+        &csv(&[
+            "25 Oct 2026,25 Oct 2026,PAYMENT RECEIVED,-1500.00",
+            "28 Oct 2026,28 Oct 2026,PAYMENT RECEIVED,-1500.00",
+        ]),
+    );
+    // …two transfer credits on Beta…
+    import_simplii(
+        &mut conn,
+        beta,
+        &simplii_csv(&[
+            "10/26/2026,TRANSFER IN,,1500.00",
+            "10/27/2026,TRANSFER IN,,1500.00",
+        ]),
+    );
+    // …and one Alpha debit ambiguous under both rules at once. Committing
+    // this import used to crash on the review table's UNIQUE constraint.
+    import_simplii(
+        &mut conn,
+        alpha,
+        &simplii_csv(&["10/26/2026,BILL SEND,1500.00,"]),
+    );
+
+    let n: i64 = conn
+        .query_row("SELECT COUNT(*) FROM transfer_reviews", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(n, 1, "one review per row, not one per rule");
+    let list: String = conn
+        .query_row(
+            "SELECT r.candidate_ids FROM transfer_reviews r
+               JOIN transactions t ON t.id = r.transaction_id
+              WHERE t.description_raw = 'BILL SEND'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        list.split(',').count(),
+        4,
+        "the review carries the union of both rules' candidates"
+    );
+}
+
+#[test]
+fn undoing_a_paired_import_releases_the_surviving_partner() {
+    let (mut conn, cobalt) = setup();
+    let alpha = create_account(&conn, "simplii", "Alpha", AccountKind::Chequing).unwrap();
+    let bills = create_parent(&conn, "Bills", CategoryKind::Expense).unwrap();
+    let card_bill = create_child(&conn, bills, "Card Bill").unwrap();
+    add_rule(&conn, "BILL PAYMENT", false, card_bill).unwrap();
+
+    // A pair formed at import: the statement payment and its debit.
+    import(
+        &mut conn,
+        cobalt,
+        &csv(&["25 Oct 2026,25 Oct 2026,PAYMENT RECEIVED,-1500.00"]),
+    );
+    import_simplii(
+        &mut conn,
+        alpha,
+        &simplii_csv(&["10/26/2026,BILL PAYMENT AMEX,1500.00,"]),
+    );
+    let card_payment = card_payment_category(&conn).unwrap();
+    assert_eq!(
+        stored(&conn, "BILL PAYMENT AMEX"),
+        (Some(card_payment), true),
+        "pairing categorized the debit and locked it"
+    );
+
+    // Undo the statement: the surviving debit loses link, lock and transfer
+    // category — rules re-apply, as after *Unpair*.
+    undo_last_import(&mut conn, cobalt).unwrap().unwrap();
+    assert_eq!(
+        stored(&conn, "BILL PAYMENT AMEX"),
+        (Some(card_bill), false),
+        "the partner is unlocked and re-categorized by rules"
+    );
+    let pair: Option<i64> = conn
+        .query_row(
+            "SELECT transfer_pair_id FROM transactions
+              WHERE description_raw = 'BILL PAYMENT AMEX'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(pair, None, "the link is gone with its partner");
+
+    // And it is available for future pairing: a fresh payment finds it.
+    import(
+        &mut conn,
+        cobalt,
+        &csv(&["25 Oct 2026,25 Oct 2026,PAYMENT RECEIVED AGAIN,-1500.00"]),
+    );
+    let pair: Option<i64> = conn
+        .query_row(
+            "SELECT transfer_pair_id FROM transactions
+              WHERE description_raw = 'BILL PAYMENT AMEX'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        pair.is_some(),
+        "the released debit pairs with the new payment"
+    );
+    assert_eq!(stored(&conn, "BILL PAYMENT AMEX").0, Some(card_payment));
 }
