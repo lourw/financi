@@ -21,8 +21,9 @@ use gpui_kit::assets::IconName;
 use gpui_kit::component::calendar::Date as CalendarDate;
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyWindowHandle, App, Bounds, Entity, Focusable as _, Modifiers, OwnedMenuItem, Point,
-    TestAppContext, VisualTestContext, Window, WindowBounds, WindowOptions, point, px, size,
+    AnyWindowHandle, App, Bounds, Entity, Focusable as _, Modifiers, OwnedMenuItem, Pixels, Point,
+    ScrollDelta, ScrollEvent, TestAppContext, VisualTestContext, Window, WindowBounds,
+    WindowOptions, point, px, size,
 };
 
 use super::{
@@ -1389,6 +1390,69 @@ fn a_queue_group_at_the_very_bottom_can_still_be_categorized(cx: &mut TestAppCon
     });
 }
 
+/// 3.21: the To-categorize queue keeps its scroll offset across frames and
+/// across a plain refresh, so the bottom of a thousands-group queue stays
+/// reachable once scrolled to (the same bug as the tree: a per-render
+/// scroll handle reset the offset to 0 every frame).
+#[gpui::test]
+fn the_queue_keeps_its_scroll_offset(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |conn| seed_queue_thousands(conn, 2_000));
+    wait_until(cx, "2000 queue groups", |cx| {
+        shell.read(cx).queue.len() == 2_000
+    });
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::ToCategorize, cx)));
+    draw_frame(cx, handle);
+    cx.update(|cx| {
+        let s = shell.read(cx);
+        assert_eq!(
+            s.queue_scroll.offset(),
+            Point::default(),
+            "starts unscrolled"
+        );
+        assert_eq!(s.queue_range.get().0, 0, "the first frame shows the top");
+        // Jump straight to the bottom; layout clamps to the scroll max.
+        s.queue_scroll.set_offset(point(px(0.), px(-1_000_000.)));
+    });
+    draw_frame(cx, handle);
+    let scrolled = cx.update(|cx| shell.read(cx).queue_scroll.offset().y);
+    cx.update(|cx| {
+        let s = shell.read(cx);
+        assert!(scrolled < px(0.), "the queue is scrolled down");
+        let (start, end) = s.queue_range.get();
+        assert!(
+            start > 0,
+            "the built window moved off the top (start {start})"
+        );
+        assert_eq!(
+            end,
+            s.queue.len(),
+            "the built window reached the last group"
+        );
+        // Pickers come with the rows that rendered: the bottom group's
+        // picker is there, a middle group that was never on screen isn't.
+        assert!(
+            s.queue_pickers.contains_key("QUEUE MERCHANT 1999"),
+            "the bottom group is on screen, so it has a picker"
+        );
+        assert!(
+            !s.queue_pickers.contains_key("QUEUE MERCHANT 1000"),
+            "a middle group never scrolled into view, so it must not have a picker"
+        );
+    });
+    // A refresh that doesn't replace the queue must not move the offset.
+    cx.update(|cx| shell.update(cx, |_, cx| cx.notify()));
+    draw_frame(cx, handle);
+    cx.update(|cx| {
+        let s = shell.read(cx);
+        assert_eq!(
+            s.queue_scroll.offset().y,
+            scrolled,
+            "the offset survived an unrelated notify"
+        );
+        assert_eq!(s.queue_range.get().1, s.queue.len());
+    });
+}
+
 /// 3.16: every queue column, the category picker included, has a visible
 /// heading above the rows — the picker's placeholder alone is not a label.
 #[gpui::test]
@@ -1584,6 +1648,25 @@ fn draw_frame(cx: &mut TestAppContext, handle: AnyWindowHandle) {
     });
 }
 
+/// 3.21: wheel `dy` pixels over a point — `v_virtual_list` scrolls under
+/// the mouse, so tests aim at the centre of the list handle's viewport.
+fn wheel_over(cx: &mut TestAppContext, handle: AnyWindowHandle, at: Point<Pixels>, dy: f32) {
+    let mut window = VisualTestContext::from_window(handle, cx);
+    window.simulate_event(ScrollEvent {
+        position: at,
+        delta: ScrollDelta::Pixels(point(px(0.), px(dy))),
+        ..Default::default()
+    });
+}
+
+/// The centre of a window-space rectangle's viewport, to aim `wheel_over`.
+fn viewport_centre(b: Bounds<Pixels>) -> Point<Pixels> {
+    point(
+        b.origin.x + b.size.width / 2.0,
+        b.origin.y + b.size.height / 2.0,
+    )
+}
+
 /// 3.12: with thousands of categories and rules the Categories page must
 /// still render, and the virtualized lists must build only the visible
 /// rows, not all 4,000 / 2,000.
@@ -1642,6 +1725,117 @@ fn clicking_a_category_still_works_with_a_long_tree(cx: &mut TestAppContext) {
             s.tree_rows_built.get() < 100,
             "still windowed after selecting"
         );
+    });
+}
+
+/// 3.21: wheel-scrolling the category tree must stick. `v_virtual_list`
+/// created a fresh `VirtualListScrollHandle` per render and `track_scroll`ed
+/// it, and GPUI prefers a tracked handle over element state — so the offset
+/// snapped back to 0 every frame and rows past the first screen were
+/// unreachable. With the handle a `Shell` field, the built window of rows
+/// must follow the wheel to the bottom and survive an unrelated refresh.
+#[gpui::test]
+fn the_category_tree_keeps_its_scroll_offset(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_thousands);
+    wait_until(cx, "2001 category parents", |cx| {
+        shell.read(cx).categories.len() == 2_001
+    });
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Categories, cx)));
+    draw_frame(cx, handle);
+    cx.update(|cx| {
+        let s = shell.read(cx);
+        assert_eq!(
+            s.tree_scroll.offset(),
+            Point::default(),
+            "starts unscrolled"
+        );
+        assert_eq!(s.tree_range.get().0, 0, "the first frame shows the top");
+    });
+    // Wheel down to the bottom (content is ~36 px a row for thousands of
+    // rows); the offset clamps at the last row.
+    for _ in 0..120 {
+        let centre = cx.update(|cx| viewport_centre(shell.read(cx).tree_scroll.bounds()));
+        wheel_over(cx, handle, centre, -2_000.);
+        draw_frame(cx, handle);
+    }
+    cx.update(|cx| {
+        let s = shell.read(cx);
+        let rows: usize = s.categories.iter().map(|p| 1 + p.children.len()).sum();
+        assert!(
+            s.tree_scroll.offset().y < px(0.),
+            "the tree is scrolled down"
+        );
+        let (start, end) = s.tree_range.get();
+        assert!(
+            start > 0,
+            "the built window moved off the top (start {start})"
+        );
+        assert_eq!(end, rows, "the built window reached the last row");
+        assert!(
+            s.tree_rows_built.get() < 100,
+            "still windowed while scrolled to the bottom"
+        );
+    });
+    // An unrelated refresh must not scroll the tree back to the top.
+    let scrolled = cx.update(|cx| shell.read(cx).tree_scroll.offset().y);
+    cx.update(|cx| shell.update(cx, |_, cx| cx.notify()));
+    draw_frame(cx, handle);
+    cx.update(|cx| {
+        let s = shell.read(cx);
+        assert_eq!(
+            s.tree_scroll.offset().y,
+            scrolled,
+            "the offset survived an unrelated notify"
+        );
+        assert!(s.tree_range.get().0 > 0, "still showing rows past the top");
+    });
+}
+
+/// 3.21: the Categories-page rule list keeps its scroll offset across
+/// frames and across a plain refresh — only a content replacement (3.23:
+/// the selected category changes) may reset it.
+#[gpui::test]
+fn the_rule_list_keeps_its_scroll_offset(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_thousands);
+    wait_until(cx, "2000 rules", |cx| {
+        shell.read(cx).rules.len() == 2_000 && shell.read(cx).categories.len() == 2_001
+    });
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Categories, cx)));
+    draw_frame(cx, handle);
+    cx.update(|cx| {
+        let s = shell.read(cx);
+        assert_eq!(
+            s.rule_scroll.offset(),
+            Point::default(),
+            "starts unscrolled"
+        );
+        assert_eq!(s.rule_range.get().0, 0, "the first frame shows the top");
+        // Jump straight to the bottom; layout clamps to the scroll max.
+        s.rule_scroll.set_offset(point(px(0.), px(-1_000_000.)));
+    });
+    draw_frame(cx, handle);
+    let scrolled = cx.update(|cx| shell.read(cx).rule_scroll.offset().y);
+    cx.update(|cx| {
+        let s = shell.read(cx);
+        assert!(scrolled < px(0.), "the rule list is scrolled down");
+        let (start, end) = s.rule_range.get();
+        assert!(
+            start > 0,
+            "the built window moved off the top (start {start})"
+        );
+        assert_eq!(end, s.rules.len(), "the built window reached the last rule");
+    });
+    // A refresh that doesn't replace the rules must not move the offset.
+    cx.update(|cx| shell.update(cx, |_, cx| cx.notify()));
+    draw_frame(cx, handle);
+    cx.update(|cx| {
+        let s = shell.read(cx);
+        assert_eq!(
+            s.rule_scroll.offset().y,
+            scrolled,
+            "the offset survived an unrelated notify"
+        );
+        assert_eq!(s.rule_range.get().1, s.rules.len());
     });
 }
 

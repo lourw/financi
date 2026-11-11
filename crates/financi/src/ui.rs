@@ -45,7 +45,8 @@ use gpui_kit::component::sidebar::{Sidebar, SidebarItem, SidebarMenuItem};
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::table::{Column, ColumnSort, DataTable, TableDelegate, TableState};
 use gpui_kit::component::{
-    ActiveTheme as _, Collapsible, Disableable as _, h_flex, v_flex, v_virtual_list,
+    ActiveTheme as _, Collapsible, Disableable as _, VirtualListScrollHandle, h_flex, v_flex,
+    v_virtual_list,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -1340,13 +1341,32 @@ pub struct Shell {
     rule_match_count: Option<i64>,
     rule_task: Option<Task<()>>,
     rule_error: Option<String>,
+    /// 3.21: one scroll handle per virtualized list. gpui-kit's
+    /// `v_virtual_list` creates a fresh `VirtualListScrollHandle` on every
+    /// render and `track_scroll`s it, and GPUI reads the scroll offset from
+    /// a tracked handle in preference to element state — so a per-render
+    /// handle snaps the offset back to 0 every frame. One handle per list
+    /// lives as long as the `Shell`. Reset an offset only where the list's
+    /// content is actually replaced, never on a plain refresh (the rule
+    /// list's reset point arrives with 3.23, where the selected category
+    /// replaces the rules shown).
+    tree_scroll: VirtualListScrollHandle,
+    rule_scroll: VirtualListScrollHandle,
+    queue_scroll: VirtualListScrollHandle,
     // -- Virtualized Categories-page lists (3.12): how many rows each list
     // built for the last layout pass — the visible slice, not the whole
     // data set. Observability for the long-list tests.
     #[cfg(test)]
     tree_rows_built: std::cell::Cell<usize>,
+    /// 3.21: the range of rows the tree built last frame, so the scroll
+    /// tests can see the window move.
+    #[cfg(test)]
+    tree_range: std::cell::Cell<(usize, usize)>,
     #[cfg(test)]
     rule_rows_built: std::cell::Cell<usize>,
+    /// 3.21: the range of rows the rule list built last frame.
+    #[cfg(test)]
+    rule_range: std::cell::Cell<(usize, usize)>,
     // -- To categorize queue
     queue: Vec<UncategorizedGroup>,
     /// 3.19: pickers exist only for rows `render_queue` has built, so this
@@ -1361,6 +1381,9 @@ pub struct Shell {
     /// for the long-queue tests (like `tree_rows_built`).
     #[cfg(test)]
     queue_rows_built: std::cell::Cell<usize>,
+    /// 3.21: the range of rows the queue built last frame.
+    #[cfg(test)]
+    queue_range: std::cell::Cell<(usize, usize)>,
     _subs: Vec<Subscription>,
 }
 
@@ -1694,16 +1717,25 @@ impl Shell {
             rule_match_count: None,
             rule_task: None,
             rule_error: None,
+            tree_scroll: VirtualListScrollHandle::new(),
+            rule_scroll: VirtualListScrollHandle::new(),
+            queue_scroll: VirtualListScrollHandle::new(),
             #[cfg(test)]
             tree_rows_built: std::cell::Cell::new(0),
             #[cfg(test)]
+            tree_range: std::cell::Cell::new((0, 0)),
+            #[cfg(test)]
             rule_rows_built: std::cell::Cell::new(0),
+            #[cfg(test)]
+            rule_range: std::cell::Cell::new((0, 0)),
             queue: Vec::new(),
             queue_pickers: HashMap::new(),
             queue_picker_items: None,
             queue_error: None,
             #[cfg(test)]
             queue_rows_built: std::cell::Cell::new(0),
+            #[cfg(test)]
+            queue_range: std::cell::Cell::new((0, 0)),
             _subs: vec![
                 preview_sub,
                 search_sub,
@@ -2604,6 +2636,11 @@ impl Shell {
         self.renaming = false;
         self.confirm_delete_category = None;
         self.cat_error = None;
+        // 3.21: the rule list keeps its scroll offset here — its content
+        // (all rules) doesn't change when the selection does. When 3.23
+        // scopes the rule list to the selected category, this is the reset
+        // point: `self.rule_scroll.set_offset(Point::default())`, where
+        // the content is actually replaced.
         self.rebuild_move_target(window, cx);
         cx.notify();
     }
@@ -4120,9 +4157,15 @@ impl Shell {
                         }
                         #[cfg(test)]
                         this.tree_rows_built.set(rows.len());
+                        #[cfg(test)]
+                        this.tree_range.set((range.start, range.end));
                         rows
                     },
                 )
+                // 3.21: track the Shell-owned handle, not the fresh one
+                // `v_virtual_list` creates per render — that one resets the
+                // offset to 0 every frame.
+                .track_scroll(&self.tree_scroll)
                 .gap_1()
                 .flex_1()
                 .min_h_0(),
@@ -4459,9 +4502,13 @@ impl Shell {
                                                 .collect();
                                             #[cfg(test)]
                                             this.rule_rows_built.set(rows.len());
+                                            #[cfg(test)]
+                                            this.rule_range.set((range.start, range.end));
                                             rows
                                         },
                                     )
+                                    // 3.21: Shell-owned handle (see the tree).
+                                    .track_scroll(&self.rule_scroll)
                                     .gap_1()
                                     .flex_1()
                                     .min_h_0(),
@@ -4531,6 +4578,8 @@ impl Shell {
                         "queue-list",
                         sizes,
                         move |this, range, window, cx| {
+                            #[cfg(test)]
+                            let range_bounds = (range.start, range.end);
                             let groups = this.queue[range].to_vec();
                             let mut rows = Vec::with_capacity(groups.len());
                             for g in groups {
@@ -4599,9 +4648,13 @@ impl Shell {
                             }
                             #[cfg(test)]
                             this.queue_rows_built.set(rows.len());
+                            #[cfg(test)]
+                            this.queue_range.set(range_bounds);
                             rows
                         },
                     )
+                    // 3.21: Shell-owned handle (see the tree).
+                    .track_scroll(&self.queue_scroll)
                     .gap_1()
                     .flex_1()
                     .min_h_0(),
