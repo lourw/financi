@@ -74,7 +74,7 @@ header row is the filters.
 | Page | Contents |
 |---|---|
 | **Dashboard** | Filters (date range, accounts, include transfers); chart + legend beside the monthly summary; filter chips, search, toggles; transaction table. |
-| **To categorize** | The Uncategorized queue (2.7) as a table: merchant, transactions, total, dates, category picker. Choosing a category adds a rule. |
+| **To categorize** | The Uncategorized queue (2.7) as a table: merchant (`flex_1`, truncates with a tooltip showing the full name), transactions (bare number, right-aligned ~96 px), total (right-aligned ~110 px), dates (~190 px, `text_sm` muted), category picker (~220 px), Categorize button at natural width — fits the 1200 px minimum window, headings share the row widths. Choosing a category adds a rule. |
 | **Categories** | Category tree on the left (~300px panel); the selected category on the right: name, Rename…/Delete…, its rules table, and an add-rule row with a live "matches N transactions" count. Rules live here; there's no Rules page. Header action: New category…. |
 | **Transfers** | Open transfer reviews (4.2): each row with its candidates and "Not a transfer". |
 | **Imports** | Header actions: Import CSV… (primary), Undo… (two-click, newest import, disabled with no history), Export… and Restore… (live in M5; say so for now). The import preview (while a file is open) on top, then import history (time, file, account, rows added, dates). Undo… on the newest row only. |

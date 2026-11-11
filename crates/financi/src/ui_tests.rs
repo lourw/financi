@@ -1580,37 +1580,51 @@ fn the_queue_page_labels_its_columns(cx: &mut TestAppContext) {
 }
 
 /// The heading row reserves the same tail as the rows (picker + Categorize
-/// button), so the "Category" heading sits over the picker column instead of
-/// sliding right by the button's width. Measured at a width where a row fits
-/// without overflowing.
+/// button) and shares the QUEUE_*_W column widths, so every heading sits
+/// over its own column — measured at the 1200 × 720 minimum window, where
+/// a row just fits (3.16, extended for 3.22).
 #[gpui::test]
 fn the_queue_category_heading_sits_over_the_picker_column(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, |conn| {
         create_account(conn, "amex", "Cobalt", AccountKind::CreditCard).unwrap();
     });
-    import_and_top_merchant(cx, handle, &shell);
+    let (merchant, _, _) = import_and_top_merchant(cx, handle, &shell);
     cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::ToCategorize, cx)));
     cx.run_until_parked();
     with_window(cx, handle, |window, cx| {
-        window.resize(size(px(1600.), px(900.)));
+        window.resize(size(px(1200.), px(720.)));
         window.bounds_changed(cx);
     });
     cx.run_until_parked();
     let mut window = VisualTestContext::from_window(handle, cx);
     draw_frame(cx, handle);
+    for (label, sel) in [
+        ("Merchant", format!("queue:merchant-col:{merchant}")),
+        ("Transactions", format!("queue:txns-col:{merchant}")),
+        ("Total", format!("queue:total-col:{merchant}")),
+        ("Dates", format!("queue:dates-col:{merchant}")),
+        ("Category", format!("queue:picker-col:{merchant}")),
+    ] {
+        let heading = window
+            .debug_bounds(leaked(format!("label:{label}")))
+            .unwrap_or_else(|| panic!("the queue paints the {label:?} heading"));
+        let column = window
+            .debug_bounds(leaked(sel))
+            .unwrap_or_else(|| panic!("the queue paints the {label:?} column"));
+        assert!(
+            (heading.origin.x - column.origin.x).abs() < px(1.),
+            "the {label:?} heading starts where its column starts: \
+             heading x {}, column x {}",
+            heading.origin.x,
+            column.origin.x
+        );
+    }
     let heading = window
         .debug_bounds("label:Category")
         .expect("the queue paints a Category heading");
     let picker = window
-        .debug_bounds("queue:picker-col")
+        .debug_bounds(leaked(format!("queue:picker-col:{merchant}")))
         .expect("the queue paints a picker column");
-    assert!(
-        (heading.origin.x - picker.origin.x).abs() < px(1.),
-        "the Category heading starts where the picker column starts: \
-         heading x {}, picker x {}",
-        heading.origin.x,
-        picker.origin.x
-    );
     assert!(
         (heading.size.width - picker.size.width).abs() < px(1.),
         "the Category heading is as wide as the picker column: \
@@ -1623,6 +1637,131 @@ fn the_queue_category_heading_sits_over_the_picker_column(cx: &mut TestAppContex
         "the heading is above the rows: heading y {}, picker y {}",
         heading.origin.y,
         picker.origin.y
+    );
+}
+
+/// The queue rows for the 1200 × 720 fit test: the first merchant's name is
+/// exactly 120 characters, the others are ordinary ones.
+const QUEUE_FIT_MERCHANTS: [&str; 3] = [
+    "LONG MERCHANT NAME THAT WILL NOT FIT THE QUEUE COLUMN AT MINIMUM WINDOW SIZE SO IT MUST TRUNCATE AND SHOW FULL TEXT IN A",
+    "CORNER CAFE",
+    "TRANSIT FARE",
+];
+
+/// One uncategorized group per name in [`QUEUE_FIT_MERCHANTS`].
+fn seed_queue_fit(conn: &financi_db::rusqlite::Connection) {
+    let acct = create_account(conn, "amex", "Cobalt", AccountKind::CreditCard).unwrap();
+    conn.execute(
+        "INSERT INTO imports (account_id, parser_id, file_name, imported_at, header_raw,
+                              encoding, has_bom, line_ending, trailing_newline, row_count)
+         VALUES (?1, 'amex', 'seed.csv', '2026-11-01', X'00', 'utf-8', 0, 'lf', 0, 0)",
+        [acct],
+    )
+    .unwrap();
+    let import = conn.last_insert_rowid();
+    for (i, name) in QUEUE_FIT_MERCHANTS.iter().enumerate() {
+        conn.execute(
+            "INSERT INTO transactions (account_id, import_id, source_line, raw_bytes,
+                                       row_hash, posted_date, amount_cents, description_raw)
+             VALUES (?1, ?2, ?3, X'00', ?4, '2026-11-01', -123456, ?5)",
+            (
+                acct,
+                import,
+                i as i64,
+                format!("fit-hash-{i}"),
+                name.to_string(),
+            ),
+        )
+        .unwrap();
+    }
+}
+
+/// 3.22: at the 1200 × 720 minimum window every queue row keeps its category
+/// picker and Categorize button fully inside the page; a 120-character
+/// merchant name truncates with its full text in a hover tooltip, and the
+/// Transactions cell shows just the number.
+#[gpui::test]
+fn the_queue_fits_the_minimum_window(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_queue_fit);
+    wait_until(cx, "3 queue groups", |cx| shell.read(cx).queue.len() == 3);
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::ToCategorize, cx)));
+    cx.run_until_parked();
+    with_window(cx, handle, |window, cx| {
+        window.resize(size(px(1200.), px(720.)));
+        window.bounds_changed(cx);
+    });
+    cx.run_until_parked();
+    let mut window = VisualTestContext::from_window(handle, cx);
+    draw_frame(cx, handle);
+
+    // The row's right edge — its Categorize button — ends inside the page
+    // for every row, and so does the picker next to it.
+    let page_right = px(1200. - PAGE_PAD);
+    for m in QUEUE_FIT_MERCHANTS {
+        for (what, sel) in [
+            ("category picker", format!("queue:picker-col:{m}")),
+            ("Categorize button", format!("queue:categorize-col:{m}")),
+        ] {
+            let b = window
+                .debug_bounds(leaked(sel))
+                .unwrap_or_else(|| panic!("the row for {m:?} draws its {what}"));
+            assert!(
+                b.origin.x + b.size.width <= page_right + px(1.),
+                "the {what} of {m:?} ends at x {:?}, past the page edge {page_right:?}",
+                b.origin.x + b.size.width,
+            );
+        }
+    }
+
+    // The 120-character name truncates: the Merchant cell is far narrower
+    // than the full text needs at 14 px.
+    let long = QUEUE_FIT_MERCHANTS[0];
+    let cell = window
+        .debug_bounds(leaked(format!("queue:merchant-col:{long}")))
+        .expect("the long merchant's row draws its cell");
+    let full_w = TEXT_SM_CHAR_PX * long.chars().count() as f32;
+    assert!(
+        cell.size.width < px(full_w / 2.),
+        "the merchant name truncates: the cell is {:?} wide, the full text \
+         needs about {full_w:?}",
+        cell.size.width,
+    );
+
+    // The Transactions cell shows the bare number, not "N transactions".
+    assert!(
+        window
+            .debug_bounds(leaked(format!("queue:txns-text:{long}=1")))
+            .is_some(),
+        "the Transactions cell shows the bare count"
+    );
+    assert!(
+        window
+            .debug_bounds(leaked(format!("queue:txns-text:{long}=1 transactions")))
+            .is_none(),
+        "the old \"N transactions\" text is gone"
+    );
+
+    // Hovering the truncated name shows the tooltip with the full text.
+    assert!(
+        window
+            .debug_bounds(leaked(format!("queue:merchant-tooltip:{long}")))
+            .is_none(),
+        "nothing hovers the row, so no tooltip is drawn yet"
+    );
+    let centre = point(
+        cell.origin.x + cell.size.width / 2.,
+        cell.origin.y + cell.size.height / 2.,
+    );
+    window.simulate_mouse_move(centre, None, Modifiers::default());
+    // The tooltip appears after a 500 ms hover; the test clock is fake.
+    cx.executor().advance_clock(Duration::from_millis(600));
+    cx.run_until_parked();
+    draw_frame(cx, handle);
+    assert!(
+        window
+            .debug_bounds(leaked(format!("queue:merchant-tooltip:{long}")))
+            .is_some(),
+        "hovering the truncated merchant name shows a tooltip with the full name",
     );
 }
 

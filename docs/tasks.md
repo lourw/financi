@@ -355,7 +355,7 @@ beside the monthly summary (right); then the transaction table.
   (rows near the end are built and the first rows aren't), and the offset
   survives an unrelated `cx.notify()` / refresh.
 
-- [ ] **3.22 To categorize queue fits the window.** At the minimum window
+- [x] **3.22 To categorize queue fits the window.** At the minimum window
   size the queue's fixed columns (280 + 140 + 120 + dates + 260 + button +
   gaps ≈ 1,120 px) are wider than the ~958 px content area, so rows are cut
   off on the right and the Dates cell has no width at all. Make it fit from
