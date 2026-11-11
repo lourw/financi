@@ -19,11 +19,12 @@ use gpui_kit::component::table::{ColumnSort, TableDelegate};
 // shadows the built-in #[test] that #[gpui::test] expands to.
 use gpui_kit::assets::IconName;
 use gpui_kit::component::calendar::Date as CalendarDate;
+use gpui_kit::component::v_flex;
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyWindowHandle, App, Bounds, Entity, Focusable as _, Modifiers, OwnedMenuItem, Pixels, Point,
-    ScrollDelta, ScrollEvent, TestAppContext, VisualTestContext, Window, WindowBounds,
-    WindowOptions, point, px, size,
+    AnyWindowHandle, App, Bounds, Context, Entity, Focusable as _, Modifiers, OwnedMenuItem,
+    Pixels, Point, Render, ScrollDelta, ScrollEvent, TestAppContext, VisualTestContext, Window,
+    WindowBounds, WindowOptions, div, point, px, size,
 };
 
 use super::{
@@ -619,6 +620,80 @@ fn the_imports_history_table_fits_the_available_width(cx: &mut TestAppContext) {
     assert!(big[1] > small[1], "File column grows with the window");
 }
 
+/// Horizontal space a medium `Button` draws around its label when it has
+/// an icon: the medium icon (`size_4`, 16 px) plus the `gap_2` (8 px)
+/// between icon and label, and the button's own `px_2p5` per side (3.32).
+const HEADER_ICON_BLOCK_W: f32 = 24.;
+const HEADER_BUTTON_PAD_X: f32 = 20.;
+/// Slack for comparing a drawn button width against label + icon +
+/// padding: layout rounds to physical pixels. Tight enough that a
+/// dropped `.icon()` call — 24 px on a header button, 16 on the armed
+/// in-row one — fails the comparison.
+const WIDTH_TOL: f32 = 3.;
+
+/// 3.32: a window of plain labels — each at the text size the button
+/// with that label renders (medium buttons `text_sm`, xsmall `text_xs`)
+/// — so a test can pin that a button's drawn width is its label plus
+/// exactly the icon block and padding. A debug selector records how a
+/// button was built; only its width shows the icon actually paints.
+struct IconWidthRefs {
+    /// `(selector, text, xsmall?)` per label.
+    labels: Vec<(&'static str, &'static str, bool)>,
+}
+
+impl Render for IconWidthRefs {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        v_flex().children(self.labels.iter().map(|(sel, text, xs)| {
+            // `self_start` so the label's width is its text, not the
+            // full window (columns stretch their children by default).
+            let label = div().self_start().child(*text);
+            if *xs {
+                label.text_xs()
+            } else {
+                label.text_sm()
+            }
+            .debug_selector(move || (*sel).to_string())
+        }))
+    }
+}
+
+/// Open the reference-label window (after `open_shell`, so gpui-kit is
+/// initialized) and draw one frame; the returned context reads the
+/// labels' drawn widths.
+fn open_icon_width_refs(
+    cx: &mut TestAppContext,
+    labels: Vec<(&'static str, &'static str, bool)>,
+) -> VisualTestContext {
+    let handle: AnyWindowHandle = cx.add_window(|_, _| IconWidthRefs { labels }).into();
+    draw_frame(cx, handle);
+    VisualTestContext::from_window(handle, cx)
+}
+
+/// Assert a drawn button's width is its label's drawn width plus the
+/// icon block and horizontal padding (3.32) — the icon must paint.
+fn assert_button_paints_icon(
+    refs: &mut VisualTestContext,
+    what: &str,
+    btn: Bounds<Pixels>,
+    text_sel: &'static str,
+    icon_block_w: f32,
+    pad_x: f32,
+) {
+    let text_w = refs
+        .debug_bounds(text_sel)
+        .unwrap_or_else(|| panic!("the reference window draws {text_sel:?}"))
+        .size
+        .width
+        .as_f32();
+    let got = btn.size.width.as_f32();
+    let want = text_w + icon_block_w + pad_x;
+    assert!(
+        (got - want).abs() <= WIDTH_TOL,
+        "{what}: drawn width {got} is not its label {text_w} + icon block \
+         {icon_block_w} + padding {pad_x} (± {WIDTH_TOL}) — is the icon drawn?",
+    );
+}
+
 /// 3.32: the history table's in-row Undo button is an xsmall ghost button.
 /// Idle and armed it stays fully inside the fixed 32 px row with at least
 /// 4 px above and below, arming never makes the newest row taller than the
@@ -778,6 +853,73 @@ fn the_imports_header_buttons_show_icons_without_ellipses(cx: &mut TestAppContex
             "no header label ends in an ellipsis ({sel:?})"
         );
     }
+
+    // Pin the icons for real (the selectors above only record how each
+    // button was built): a button's drawn width must be its label plus
+    // the medium icon block and the button's padding, so dropping an
+    // `.icon()` call — 24 px narrower — fails here.
+    let mut refs = open_icon_width_refs(
+        cx,
+        vec![
+            ("ref:import-csv", "Import CSV", false),
+            ("ref:undo", "Undo", false),
+            ("ref:export", "Export", false),
+            ("ref:restore", "Restore", false),
+            ("ref:click-again", "Click again to undo", true),
+        ],
+    );
+    for (sel, text_sel) in [
+        (
+            "imports:header:Import CSV:icons/file-up.svg",
+            "ref:import-csv",
+        ),
+        ("imports:header:Undo:icons/undo-2.svg", "ref:undo"),
+        ("imports:header:Export:icons/download.svg", "ref:export"),
+        (
+            "imports:header:Restore:icons/archive-restore.svg",
+            "ref:restore",
+        ),
+    ] {
+        let b = window
+            .debug_bounds(sel)
+            .unwrap_or_else(|| panic!("the header draws {sel:?}"));
+        assert_button_paints_icon(
+            &mut refs,
+            sel,
+            b,
+            text_sel,
+            HEADER_ICON_BLOCK_W,
+            HEADER_BUTTON_PAD_X,
+        );
+    }
+
+    // The shared confirm, seen from the header: the header button's own
+    // first click arms it, and the in-row Undo reflects it — the armed
+    // in-row button draws the prompt together with its icon (width as
+    // above; at rest the icon-only button is a fixed square, so only the
+    // armed state shows whether the icon paints).
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| s.undo_last_import(window, cx));
+    });
+    cx.run_until_parked();
+    draw_frame(cx, handle);
+    assert!(
+        window
+            .debug_bounds("imports:header:Click again to undo:icons/undo-2.svg")
+            .is_some(),
+        "the header button arms the confirm"
+    );
+    let armed = window
+        .debug_bounds("history:undo-btn")
+        .expect("the newest row draws its Undo button");
+    assert_button_paints_icon(
+        &mut refs,
+        "the armed in-row Undo",
+        armed,
+        "ref:click-again",
+        UNDO_ICON_W,
+        BUTTON_PAD_X,
+    );
 }
 
 /// 3.32: the four icons the Imports page draws are bundled with the app and
