@@ -679,7 +679,7 @@ out.
     last month; a 3-month range shows no horizontal scrollbar. Update the
     dashboard row of `ui-conventions.md`.
 
-- [ ] **3.31 A slimmer chart legend.** The legend beside *Spending by
+- [x] **3.31 A slimmer chart legend.** The legend beside *Spending by
   category* is 220 px (`LEGEND_W`) because every row repeats the amount
   (76 px) and share (52 px) that the chart already shows, which leaves
   the plot narrow and the band labels short. Make the legend just the key.

@@ -1170,12 +1170,15 @@ enum DashboardBody {
 /// A `spend_by_category` row prepared for drawing: the resolved palette
 /// color and the fields `BarChart` and the legend render. `name` is the
 /// full category name (legend, tooltip); `short` is the fitted band-axis
-/// label (3.15), produced by [`short_chart_labels`].
+/// label (3.15), produced by [`short_chart_labels`]; `bar_label` is the
+/// share drawn above the bar (3.31), empty when the bar is thinned out
+/// of the label plan by [`bar_label_plan`].
 #[derive(Clone)]
 struct ChartRow {
     id: Option<i64>,
     name: SharedString,
     short: SharedString,
+    bar_label: SharedString,
     cents: i64,
     share: f64,
     color: Hsla,
@@ -1197,7 +1200,10 @@ struct ChartRow {
 // of the dashboard's middle row, the 16px padding of pages and panels
 // (`p_4`) and the 12px gap between regions (`gap_3`).
 const SIDEBAR_W: f32 = 210.;
-const LEGEND_W: f32 = 220.;
+/// The legend column inside the chart panel (3.31): just swatch and name,
+/// so it no longer carries the amount and share columns and the plot gets
+/// the width back.
+const LEGEND_W: f32 = 140.;
 const CHART_PANEL_SHARE: f32 = 0.45;
 const PAGE_PAD: f32 = 16.;
 const REGION_GAP: f32 = 12.;
@@ -1363,6 +1369,79 @@ fn short_chart_labels(names: &[String], chars: usize) -> Vec<SharedString> {
             }
         })
         .collect()
+}
+
+// -- Bar share labels (3.31) --------------------------------------------
+//
+// Each bar carries its share of the spend above it (`18%`), drawn by
+// `BarChart::label` in gpui-kit's 10px chart font, centred on the bar.
+// `gpui-component` reserves a line of text past the tallest bar for
+// them, but offers no thinning of its own, so the app skips labels the
+// way band labels are thinned (3.15): a whole number of bands per drawn
+// label, spread evenly first-to-last, so centred labels cannot collide.
+
+/// Widest share label: `100%`, or `0.4%` below one percent — four
+/// characters of the 10px chart font.
+const BAR_LABEL_MAX_CHARS: usize = 4;
+
+/// A bar's share label: whole percent (`18%`), one decimal only below
+/// one percent (`0.4%`) so a thin slice still reads.
+fn bar_share_label(share: f64) -> String {
+    let percent = share * 100.;
+    if percent > 0. && percent < 1. {
+        format!("{percent:.1}%")
+    } else {
+        format!("{percent:.0}%")
+    }
+}
+
+/// The tooltip body of a chart row (3.31), shared by the bar's own
+/// tooltip and the legend row's: `$1,234.56 · 18.2% of Food`. `parent`
+/// carries the ` of …` suffix when the chart is drilled into a category,
+/// and is empty at the top level.
+fn chart_tooltip_value(cents: i64, share: f64, parent: &str) -> String {
+    format!("{} · {:.1}%{parent}", flow::money(cents), share * 100.)
+}
+
+/// How many of `count` bars carry their share label across
+/// `chart_width` pixels. A drawn label is at most `BAR_LABEL_MAX_CHARS`
+/// characters wide and keeps `CHART_LABEL_GAP` from its neighbours, so
+/// their band centres must sit
+/// `BAR_LABEL_MAX_CHARS · CHART_CHAR_PX + CHART_LABEL_GAP` apart; the
+/// even first-to-last spread keeps the closest pair
+/// `floor((count − 1) / (labels − 1))` bands apart, which the formula
+/// below inverts.
+fn bar_label_plan(chart_width: f32, count: usize) -> usize {
+    if count <= 1 {
+        return count;
+    }
+    let band_w = chart_width / count as f32;
+    let need = BAR_LABEL_MAX_CHARS as f32 * CHART_CHAR_PX + CHART_LABEL_GAP;
+    // Whole bands a drawn label needs beside it; at least one. A zero
+    // width saturates `step`, and the division below leaves one label.
+    let step = (need / band_w).ceil().max(1.) as usize;
+    (count - 1) / step + 1
+}
+
+/// Which bars carry a share label: `labels` of the `count` bars, spread
+/// evenly from the first to the last — the thinning
+/// `BarChart::band_tick_count` applies to band labels (3.15), done here
+/// because `BarChart::label` paints whatever text it is handed for
+/// every bar.
+fn bar_label_slots(count: usize, labels: usize) -> Vec<bool> {
+    let mut slots = vec![false; count];
+    match labels {
+        0 => {}
+        1 if count > 0 => slots[0] = true,
+        n if n >= count => slots.iter_mut().for_each(|s| *s = true),
+        n => {
+            for k in 0..n {
+                let ix = (k as f32 * (count - 1) as f32 / (n - 1) as f32).round() as usize;
+                slots[ix] = true;
+            }
+        }
+    }
+    slots
 }
 
 /// What a row of the monthly summary grid (3.6) is, resolved against the
@@ -3642,16 +3721,19 @@ impl Shell {
         colors
     }
 
+    /// The plot's width for the current window: the sidebar and page
+    /// padding come off the window width, `CHART_PANEL_SHARE` of what
+    /// remains is the chart panel, and inside the panel its padding, the
+    /// legend and the gap come off before the plot is left.
+    fn chart_plot_width(&self) -> f32 {
+        let page_w = (self.window_width - SIDEBAR_W - 2. * PAGE_PAD).max(0.);
+        (page_w * CHART_PANEL_SHARE - 2. * PAGE_PAD - LEGEND_W - REGION_GAP).max(0.)
+    }
+
     /// The chart's label plan (3.15) for the current window: how many
     /// characters a band label may use and how many labels are drawn.
-    /// The plot shares the window with everything left of it: the sidebar
-    /// and page padding come off the window width, `CHART_PANEL_SHARE` of
-    /// what remains is the chart panel, and inside the panel its padding,
-    /// the legend and the gap come off before the plot is left.
     fn chart_label_plan(&self) -> (usize, usize) {
-        let page_w = (self.window_width - SIDEBAR_W - 2. * PAGE_PAD).max(0.);
-        let chart_w = (page_w * CHART_PANEL_SHARE - 2. * PAGE_PAD - LEGEND_W - REGION_GAP).max(0.);
-        band_label_budget(chart_w, self.chart_rows.len())
+        band_label_budget(self.chart_plot_width(), self.chart_rows.len())
     }
 
     fn chart_panel(&mut self, cx: &mut Context<Self>) -> AnyElement {
@@ -3686,6 +3768,7 @@ impl Shell {
                 id: r.id,
                 name: r.name.clone().into(),
                 short,
+                bar_label: SharedString::default(),
                 cents: r.spend_cents,
                 share: r.share,
                 color: r
@@ -3695,11 +3778,31 @@ impl Shell {
             .collect();
         // Uncategorized is always the last category row, whatever its amount.
         rows.sort_by_key(|r| r.id.is_none());
+        // Share over each bar (3.31), thinned the way band labels are so
+        // centred labels never collide; the tooltip carries the exact
+        // amount and share for every bar, labelled or not.
+        let slots = bar_label_slots(
+            rows.len(),
+            bar_label_plan(self.chart_plot_width(), rows.len()),
+        );
+        for (row, labeled) in rows.iter_mut().zip(slots) {
+            if labeled {
+                row.bar_label = bar_share_label(row.share).into();
+            }
+        }
         let selection = self.legend_selection;
         // The `Uncategorized` row is active when the 3.4 checkbox drives the
         // same clause, so the legend never contradicts the toolbar.
         let uncategorized_active =
             matches!(selection, Some(LegendSelection::Uncategorized)) || self.uncategorized_only;
+        // The parent suffix of the tooltip text (" of Food" once drilled
+        // in); empty at the top level.
+        let parent_name = self
+            .chart_parent
+            .and_then(|p| self.categories.iter().find(|n| n.id == p))
+            .map(|n| format!(" of {}", n.name))
+            .unwrap_or_default();
+        let bar_parent_name = parent_name.clone();
 
         let chart = if rows.is_empty() {
             div()
@@ -3713,14 +3816,10 @@ impl Shell {
                 .child("No spending in this range")
                 .into_any_element()
         } else {
-            let parent_name = self
-                .chart_parent
-                .and_then(|p| self.categories.iter().find(|n| n.id == p))
-                .map(|n| format!(" of {}", n.name))
-                .unwrap_or_default();
             div()
                 .flex_1()
                 .min_w_0()
+                .debug_selector(|| "chart:plot".into())
                 .child(
                     BarChart::new(rows.clone())
                         .id("category-chart")
@@ -3732,14 +3831,13 @@ impl Shell {
                         .band_tick_count(label_count)
                         .value(|r| r.cents as f64)
                         .fill(|r, _, _, _| r.color)
+                        // The share above each bar (3.31): empty text on
+                        // the bars the plan thinned out.
+                        .label(|r| r.bar_label.clone())
+                        .label_color(move |_| muted)
                         .tooltip_title(|r| r.name.clone())
                         .tooltip_value(move |r, _| {
-                            format!(
-                                "{} · {:.1}%{parent_name}",
-                                flow::money(r.cents),
-                                r.share * 100.
-                            )
-                            .into()
+                            chart_tooltip_value(r.cents, r.share, &bar_parent_name).into()
                         }),
                 )
                 .into_any_element()
@@ -3747,6 +3845,7 @@ impl Shell {
 
         let legend = v_flex()
             .id("legend-list")
+            .debug_selector(|| "chart:legend".into())
             .w(px(LEGEND_W))
             .flex_none()
             .min_h_0()
@@ -3773,8 +3872,13 @@ impl Shell {
                     (Some(id), Some(LegendSelection::Category(c))) => c == id,
                     _ => false,
                 };
+                // The row is just the key (3.31): swatch and name. What
+                // the amount and share columns used to carry moves into
+                // the hover tooltip, in the bar's own tooltip text.
+                let value = chart_tooltip_value(r.cents, r.share, &parent_name);
                 div()
                     .id(SharedString::from(format!("legend-{ix}")))
+                    .debug_selector(move || format!("chart:legend-row:{ix}"))
                     .flex()
                     .items_center()
                     .gap_2()
@@ -3793,25 +3897,30 @@ impl Shell {
                             .min_w_0()
                             .overflow_hidden()
                             .text_ellipsis()
+                            .debug_selector({
+                                let name = r.name.clone();
+                                move || format!("chart:legend-text:{ix}={name}")
+                            })
                             .when(id.is_none(), |name| name.text_color(muted))
                             .child(r.name.clone()),
                     )
-                    .child(
-                        div()
-                            .text_sm()
-                            .w(px(76.))
-                            .flex_none()
-                            .text_right()
-                            .child(flow::money(r.cents)),
-                    )
-                    .child(
-                        div()
-                            .text_sm()
-                            .w(px(52.))
-                            .flex_none()
-                            .text_right()
-                            .child(format!("{:.1}%", r.share * 100.)),
-                    )
+                    .tooltip({
+                        let (name, value) = (r.name.clone(), value);
+                        move |window, cx| {
+                            let (name, value) = (name.clone(), value.clone());
+                            Tooltip::element(move |_, _| {
+                                let sel = format!("chart:legend-tooltip:{name}={value}");
+                                v_flex()
+                                    .gap_0p5()
+                                    .debug_selector(move || sel)
+                                    .child(
+                                        div().font_weight(FontWeight::SEMIBOLD).child(name.clone()),
+                                    )
+                                    .child(value.clone())
+                            })
+                            .build(window, cx)
+                        }
+                    })
             }));
 
         h_flex()
