@@ -6,7 +6,7 @@ use std::path::Path;
 
 use financi_core::{AccountKind, RawFile, ReadError, StatementParser, read_raw_file};
 use financi_db::Account;
-use financi_db::import::ImportPlan;
+use financi_db::import::{ImportPlan, NearMatch};
 
 pub type Parser = Box<dyn StatementParser + Send + Sync>;
 
@@ -101,6 +101,9 @@ pub struct PlanSummary {
     pub last_date: String,
     /// Other account name and how many rows it already holds.
     pub overlap: Option<(String, usize)>,
+    /// Suspected changed charges to review (4.3), shown under the summary
+    /// line with a Same/Different choice each; default Different.
+    pub near_matches: Vec<NearMatch>,
 }
 
 impl PlanSummary {
@@ -115,6 +118,7 @@ impl PlanSummary {
                 .overlap
                 .as_ref()
                 .map(|o| (o.account.display_name(), o.matching_rows)),
+            near_matches: plan.near_matches.clone(),
         }
     }
 

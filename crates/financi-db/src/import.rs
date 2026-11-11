@@ -12,10 +12,11 @@
 //! can never insert duplicates. New rows are categorized in the same
 //! transaction: built-in card-payment detection first, then the user rules.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
+use chrono::NaiveDate;
 use financi_core::rules::pick_category;
-use financi_core::{ParseError, RawFile, RawTransaction, RowHash, StatementParser};
+use financi_core::{ParseError, RawFile, RawTransaction, RowHash, StatementParser, parse};
 use rusqlite::{Connection, params};
 
 use crate::categories::card_payment_category;
@@ -25,9 +26,14 @@ use crate::{Account, DbError, get_account, list_accounts};
 
 /// Whether to import even though some rows already exist under a different
 /// account. Off by default: the user must explicitly override.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CommitOptions {
     pub allow_other_account_overlap: bool,
+    /// Near-match pairs (4.3) the user confirmed as "Same charge" in the
+    /// preview, keyed by `(source_line of the file row, existing transaction
+    /// id)` — the same pair the preview listed. Any other near-match stays
+    /// "Different charge" and imports as new.
+    pub same_charges: Vec<(usize, i64)>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -83,6 +89,30 @@ pub struct ImportPlan {
     /// Earliest and latest posted date in the file (ISO).
     pub date_range: (String, String),
     pub overlap: Option<OverlapWarning>,
+    /// Suspected changed charges to review (4.3), one entry per new row
+    /// that looks like a re-export of an existing transaction.
+    pub near_matches: Vec<NearMatch>,
+}
+
+/// One suspected pair from the near-match review (4.3): a new row that
+/// could be the same charge as an existing transaction whose raw fields
+/// changed (e.g. a tip added), so its hash differs and count reconciliation
+/// cannot see it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NearMatch {
+    /// Index of the new row in [`ImportPlan::new_rows`].
+    pub new_row: usize,
+    /// Its record index in the source file — part of the stable
+    /// preview/commit key.
+    pub source_line: usize,
+    pub new_date: String,
+    pub new_amount_cents: i64,
+    pub new_description_raw: String,
+    /// The existing transaction it may replace.
+    pub existing_id: i64,
+    pub existing_date: String,
+    pub existing_amount_cents: i64,
+    pub existing_description_raw: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -90,8 +120,12 @@ pub struct ImportOutcome {
     /// `None` when every row was already present (nothing to record or undo).
     pub import_id: Option<i64>,
     pub inserted: usize,
+    /// Near-match replacements applied (4.3): the existing transactions
+    /// overwritten by rows the user confirmed as "Same charge".
+    pub replaced: usize,
     pub already_present: usize,
     /// Calendar years of the inserted rows, whose master CSVs need rewriting.
+    /// A replacement contributes both its old and its new date's year.
     pub affected_years: BTreeSet<i32>,
 }
 
@@ -149,6 +183,7 @@ pub fn plan_import(
     let new_rows = reconcile(rows, &existing_hash_counts(conn, account.id)?);
     let already_present = total_rows - new_rows.len();
     let overlap = other_account_overlap(conn, &account, parser, file)?;
+    let near_matches = find_near_matches(conn, account.id, &new_rows)?;
 
     Ok(ImportPlan {
         account,
@@ -159,6 +194,7 @@ pub fn plan_import(
         already_present,
         date_range,
         overlap,
+        near_matches,
     })
 }
 
@@ -188,6 +224,7 @@ pub fn commit_import(
         return Ok(ImportOutcome {
             import_id: None,
             inserted: 0,
+            replaced: 0,
             already_present: plan.already_present,
             affected_years: BTreeSet::new(),
         });
@@ -211,6 +248,17 @@ pub fn commit_import(
         ],
     )?;
     let import_id = tx.last_insert_rowid();
+    // Near-match review (4.3): rows the user marked "Same charge" overwrite
+    // their existing pair instead of being inserted. The pair keys come from
+    // the preview, so only matches still present in the fresh plan apply.
+    let confirmed: HashSet<(usize, i64)> = options.same_charges.iter().copied().collect();
+    let replacements: Vec<&NearMatch> = plan
+        .near_matches
+        .iter()
+        .filter(|m| confirmed.contains(&(m.source_line, m.existing_id)))
+        .collect();
+    let replacing: HashSet<usize> = replacements.iter().map(|m| m.new_row).collect();
+
     let categories = categorize_new_rows(&tx, parser, &plan.new_rows)?;
     {
         let mut insert = tx.prepare(
@@ -220,7 +268,12 @@ pub fn commit_import(
                 description_raw, merchant, category_id, category_locked)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
         )?;
-        for (row, (category_id, category_locked)) in plan.new_rows.iter().zip(&categories) {
+        for (ix, (row, (category_id, category_locked))) in
+            plan.new_rows.iter().zip(&categories).enumerate()
+        {
+            if replacing.contains(&ix) {
+                continue;
+            }
             let t = &row.txn;
             insert.execute(params![
                 account_id,
@@ -240,17 +293,114 @@ pub fn commit_import(
             ])?;
         }
     }
+    let mut affected_years = years_of(
+        plan.new_rows
+            .iter()
+            .enumerate()
+            .filter(|(ix, _)| !replacing.contains(ix))
+            .map(|(_, row)| row.txn.posted_date.as_str()),
+    );
+    for m in &replacements {
+        let old_posted_date =
+            apply_replacement(&tx, import_id, &plan.new_rows[m.new_row], m.existing_id)?;
+        // The old row leaves its year's master CSV, the new values join the
+        // new date's (often the same year).
+        affected_years.extend(years_of([
+            old_posted_date.as_str(),
+            plan.new_rows[m.new_row].txn.posted_date.as_str(),
+        ]));
+    }
     // Transfer pairing (4.2) runs automatically after every import, in
     // this same transaction: new rows and their older unpaired partners
-    // are matched before anything else can observe the import.
+    // are matched before anything else can observe the import. Running it
+    // after the replacements means pairing sees the final dates/amounts.
     crate::transfers::run_transfer_pairing(&tx)?;
     tx.commit()?;
     Ok(ImportOutcome {
         import_id: Some(import_id),
-        inserted: plan.new_rows.len(),
+        inserted: plan.new_rows.len() - replacements.len(),
+        replaced: replacements.len(),
         already_present: plan.already_present,
-        affected_years: years_of(plan.new_rows.iter().map(|row| row.txn.posted_date.as_str())),
+        affected_years,
     })
+}
+
+/// Apply one confirmed near-match (4.3): keep the existing transaction's id
+/// and category (and its import), overwrite its date/amount/description/
+/// merchant/raw bytes/`row_hash` with the new row's, add the old hash to
+/// `row_aliases` under the new import — so later overlapping exports
+/// reconcile against it silently — and record the old values in
+/// `replacements` so undo can restore them. Returns the old posted date.
+fn apply_replacement(
+    tx: &Connection,
+    import_id: i64,
+    row: &PreparedRow,
+    existing_id: i64,
+) -> Result<String, ImportError> {
+    let old: (
+        Vec<u8>,
+        String,
+        String,
+        Option<String>,
+        i64,
+        String,
+        Option<String>,
+    ) = tx.query_row(
+        "SELECT raw_bytes, row_hash, posted_date, processed_date, amount_cents,
+                description_raw, merchant
+           FROM transactions WHERE id = ?1",
+        [existing_id],
+        |r| {
+            Ok((
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get(3)?,
+                r.get(4)?,
+                r.get(5)?,
+                r.get(6)?,
+            ))
+        },
+    )?;
+    tx.execute(
+        "INSERT INTO replacements
+           (import_id, transaction_id, old_raw_bytes, old_row_hash, old_posted_date,
+            old_processed_date, old_amount_cents, old_description_raw, old_merchant)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        params![
+            import_id,
+            existing_id,
+            old.0,
+            old.1,
+            old.2,
+            old.3,
+            old.4,
+            old.5,
+            old.6
+        ],
+    )?;
+    tx.execute(
+        "INSERT INTO row_aliases (transaction_id, row_hash, import_id) VALUES (?1, ?2, ?3)",
+        params![existing_id, old.1, import_id],
+    )?;
+    let t = &row.txn;
+    tx.execute(
+        "UPDATE transactions
+            SET posted_date = ?2, processed_date = ?3, amount_cents = ?4,
+                description_raw = ?5, merchant = ?6, raw_bytes = ?7, row_hash = ?8
+          WHERE id = ?1",
+        params![
+            existing_id,
+            t.posted_date,
+            t.processed_date,
+            t.amount_cents,
+            t.description_raw,
+            t.merchant,
+            row.raw_bytes,
+            row.row_hash.0,
+        ],
+    )?;
+    Ok(old.2)
 }
 
 /// The `(category_id, category_locked)` pair for each new row, in order.
@@ -310,7 +460,7 @@ pub fn undo_last_import(
         [import_id],
         |r| r.get(0),
     )?;
-    let affected_years: BTreeSet<i32> = {
+    let mut affected_years: BTreeSet<i32> = {
         let mut stmt = tx.prepare("SELECT posted_date FROM transactions WHERE import_id = ?1")?;
         let dates = stmt.query_map([import_id], |r| r.get::<_, String>(0))?;
         years_of(dates.filter_map(|r| r.ok()))
@@ -330,6 +480,67 @@ pub fn undo_last_import(
     };
     for partner in partners {
         clear_override(&tx, partner)?;
+    }
+    // Near-match replacements (4.3): restore every transaction this import
+    // overwrote *before* deleting the import — `replacements` and the
+    // aliases it added cascade with the import row. Affected master CSV
+    // years include both the restored (old) and the replaced (current) dates.
+    struct Replacement {
+        id: i64,
+        new_posted_date: String,
+        old_raw_bytes: Vec<u8>,
+        old_row_hash: String,
+        old_posted_date: String,
+        old_processed_date: Option<String>,
+        old_amount_cents: i64,
+        old_description_raw: String,
+        old_merchant: Option<String>,
+    }
+    let replacements: Vec<Replacement> = {
+        let mut stmt = tx.prepare(
+            "SELECT r.transaction_id, t.posted_date, r.old_raw_bytes, r.old_row_hash,
+                    r.old_posted_date, r.old_processed_date, r.old_amount_cents,
+                    r.old_description_raw, r.old_merchant
+               FROM replacements r
+               JOIN transactions t ON t.id = r.transaction_id
+              WHERE r.import_id = ?1",
+        )?;
+        let rows = stmt.query_map([import_id], |r| {
+            Ok(Replacement {
+                id: r.get(0)?,
+                new_posted_date: r.get(1)?,
+                old_raw_bytes: r.get(2)?,
+                old_row_hash: r.get(3)?,
+                old_posted_date: r.get(4)?,
+                old_processed_date: r.get(5)?,
+                old_amount_cents: r.get(6)?,
+                old_description_raw: r.get(7)?,
+                old_merchant: r.get(8)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>()?
+    };
+    for r in &replacements {
+        affected_years.extend(years_of([
+            r.old_posted_date.as_str(),
+            r.new_posted_date.as_str(),
+        ]));
+        tx.execute(
+            "UPDATE transactions
+                SET raw_bytes = ?2, row_hash = ?3, posted_date = ?4, processed_date = ?5,
+                    amount_cents = ?6, description_raw = ?7, merchant = ?8
+              WHERE id = ?1",
+            params![
+                r.id,
+                r.old_raw_bytes,
+                r.old_row_hash,
+                r.old_posted_date,
+                r.old_processed_date,
+                r.old_amount_cents,
+                r.old_description_raw,
+                r.old_merchant,
+            ],
+        )?;
     }
     tx.execute("DELETE FROM imports WHERE id = ?1", [import_id])?;
     tx.commit()?;
@@ -394,6 +605,118 @@ fn date_range(rows: &[PreparedRow]) -> (String, String) {
     let lo = dates.clone().min().cloned().unwrap_or_default();
     let hi = dates.max().cloned().unwrap_or_default();
     (lo, hi)
+}
+
+/// Posted dates of a near-match pair may be at most this many days apart
+/// (inclusive: exactly 3 days matches).
+const NEAR_MATCH_MAX_DAYS: i64 = 3;
+
+/// Whether `new_cents` could be the same charge as `existing_cents` (4.3):
+/// same direction, and within **20%** of the existing amount — inclusive,
+/// so exactly +20% (a tip) matches. Integer cents, so the comparison is
+/// exact (`i128` to keep the products away from overflow).
+fn amount_near(new_cents: i64, existing_cents: i64) -> bool {
+    let (new, old) = (
+        new_cents.unsigned_abs() as i128,
+        existing_cents.unsigned_abs() as i128,
+    );
+    new_cents.signum() == existing_cents.signum() && new * 100 >= old * 80 && new * 100 <= old * 120
+}
+
+/// A stored transaction as the near-match review sees it.
+struct ExistingRow {
+    id: i64,
+    posted_date: String,
+    amount_cents: i64,
+    description_raw: String,
+}
+
+/// Near-match review (4.3): for each new row, the existing row in the same
+/// account it could be a changed re-export of — same cleaned merchant
+/// ([`financi_core::parse::merchant`] over `description_raw`, compared
+/// case-insensitively, as the rules queue does), amount within 20% and
+/// posted date within ±3 days (both inclusive). Hidden rows (deleted) and
+/// rows whose cleaned merchant is empty (nothing to compare) never pair.
+///
+/// Greedy and deterministic: new rows are considered in file order and each
+/// takes the best remaining candidate — nearest posted date, ties by lowest
+/// transaction id — and an existing row is never matched to two new rows.
+pub fn find_near_matches(
+    conn: &Connection,
+    account_id: i64,
+    new_rows: &[PreparedRow],
+) -> Result<Vec<NearMatch>, DbError> {
+    if new_rows.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut existing: Vec<ExistingRow> = Vec::new();
+    {
+        let mut stmt = conn.prepare(
+            "SELECT id, posted_date, amount_cents, description_raw
+               FROM transactions
+              WHERE account_id = ?1 AND hidden = 0",
+        )?;
+        let rows = stmt.query_map([account_id], |r| {
+            Ok(ExistingRow {
+                id: r.get(0)?,
+                posted_date: r.get(1)?,
+                amount_cents: r.get(2)?,
+                description_raw: r.get(3)?,
+            })
+        })?;
+        for row in rows {
+            existing.push(row?);
+        }
+    }
+
+    let parse_date = |d: &str| NaiveDate::parse_from_str(d, "%Y-%m-%d").ok();
+    let mut taken: HashSet<i64> = HashSet::new();
+    let mut matches = Vec::new();
+    for (ix, row) in new_rows.iter().enumerate() {
+        let merchant = parse::merchant(&row.txn.description_raw);
+        // Parser-produced dates always parse; skip rather than panic.
+        let Some(new_date) = parse_date(&row.txn.posted_date) else {
+            continue;
+        };
+        if merchant.is_empty() {
+            continue;
+        }
+        let mut best: Option<(i64, i64, &ExistingRow)> = None; // (|days|, id, row)
+        for e in &existing {
+            if taken.contains(&e.id)
+                || !amount_near(row.txn.amount_cents, e.amount_cents)
+                || parse::merchant(&e.description_raw).is_empty()
+                || !parse::merchant(&e.description_raw).eq_ignore_ascii_case(&merchant)
+            {
+                continue;
+            }
+            let Some(days) = parse_date(&e.posted_date).map(|d| (new_date - d).num_days().abs())
+            else {
+                continue;
+            };
+            if days > NEAR_MATCH_MAX_DAYS {
+                continue;
+            }
+            if best.is_none_or(|(best_days, best_id, _)| (days, e.id) < (best_days, best_id)) {
+                best = Some((days, e.id, e));
+            }
+        }
+        if let Some((_, _, e)) = best {
+            taken.insert(e.id);
+            matches.push(NearMatch {
+                new_row: ix,
+                source_line: row.source_line,
+                new_date: row.txn.posted_date.clone(),
+                new_amount_cents: row.txn.amount_cents,
+                new_description_raw: row.txn.description_raw.clone(),
+                existing_id: e.id,
+                existing_date: e.posted_date.clone(),
+                existing_amount_cents: e.amount_cents,
+                existing_description_raw: e.description_raw.clone(),
+            });
+        }
+    }
+    Ok(matches)
 }
 
 /// The other account holding the most of this file's rows, if it holds any.
