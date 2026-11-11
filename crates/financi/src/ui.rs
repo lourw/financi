@@ -44,6 +44,7 @@ use gpui_kit::component::select::{Select, SelectEvent, SelectState};
 use gpui_kit::component::sidebar::{Sidebar, SidebarItem, SidebarMenuItem};
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::table::{Column, ColumnSort, DataTable, TableDelegate, TableState};
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{
     ActiveTheme as _, Collapsible, Disableable as _, VirtualListScrollHandle, h_flex, v_flex,
     v_virtual_list,
@@ -1227,6 +1228,14 @@ fn band_label_budget(chart_width: f32, count: usize) -> (usize, usize) {
 const HISTORY_TIME_W: f32 = 150.;
 const HISTORY_ROWS_W: f32 = 110.;
 const HISTORY_DATES_W: f32 = 220.;
+/// The To-categorize columns (3.22): heading row and row bodies share these
+/// so each heading sits over its column, and Merchant — the one flex column
+/// — absorbs a narrow window instead of pushing the picker and the
+/// Categorize button past the app's minimum width.
+const QUEUE_TXNS_W: f32 = 96.;
+const QUEUE_TOTAL_W: f32 = 110.;
+const QUEUE_DATES_W: f32 = 190.;
+const QUEUE_PICKER_W: f32 = 220.;
 /// Floor for one flexible column: below this a File or Account cell is
 /// unreadable anyway. The app's minimum window never reaches it.
 const HISTORY_FLEX_MIN_W: f32 = 80.;
@@ -4644,7 +4653,9 @@ impl Shell {
             // mirror the queue rows below in order and width, down to an
             // invisible copy of the Categorize button, so each heading sits
             // over its column (the picker's heading would otherwise slide
-            // right by the button's width).
+            // right by the button's width). 3.22: the widths come from the
+            // QUEUE_*_W consts and Merchant is the only flex column, so the
+            // whole row fits the minimum window and the headings stay put.
             v_flex()
                 .flex_1()
                 .min_h_0()
@@ -4654,20 +4665,29 @@ impl Shell {
                         .gap_3()
                         .child(
                             field_label(muted, "Merchant")
-                                .w(px(280.))
+                                .flex_1()
                                 .min_w_0()
                                 .overflow_hidden()
                                 .text_ellipsis(),
                         )
-                        .child(field_label(muted, "Transactions").w(px(140.)))
-                        .child(field_label(muted, "Total").w(px(120.)).text_right())
-                        .child(field_label(muted, "Dates").flex_1().min_w_0())
-                        .child(field_label(muted, "Category").w(px(260.)))
+                        .child(
+                            field_label(muted, "Transactions")
+                                .w(px(QUEUE_TXNS_W))
+                                .text_right(),
+                        )
+                        .child(
+                            field_label(muted, "Total")
+                                .w(px(QUEUE_TOTAL_W))
+                                .text_right(),
+                        )
+                        .child(field_label(muted, "Dates").w(px(QUEUE_DATES_W)))
+                        .child(field_label(muted, "Category").w(px(QUEUE_PICKER_W)))
                         .child(
                             Button::new("queue-heading-categorize-spacer")
                                 .label("Categorize")
                                 .primary()
-                                .opacity(0.0),
+                                .opacity(0.0)
+                                .flex_shrink_0(),
                         ),
                 )
                 .child(
@@ -4687,7 +4707,7 @@ impl Shell {
                                     h_flex()
                                         // Fill the list's width, or the row
                                         // stays at its natural width and the
-                                        // `flex_1` spacer never grows: the
+                                        // Merchant column never grows: the
                                         // picker and button would then float
                                         // left of the column headings.
                                         .w_full()
@@ -4695,52 +4715,147 @@ impl Shell {
                                         .gap_3()
                                         .items_center()
                                         .child(
+                                            // 3.22: Merchant is the flex
+                                            // column; a name too long for
+                                            // the leftover space truncates,
+                                            // and the tooltip still shows
+                                            // the full one.
                                             div()
-                                                .w(px(280.))
+                                                .id(SharedString::from(format!(
+                                                    "queue-merchant-{merchant}"
+                                                )))
+                                                .flex_1()
                                                 .min_w_0()
                                                 .overflow_hidden()
                                                 .text_ellipsis()
                                                 .font_weight(FontWeight::SEMIBOLD)
+                                                .debug_selector({
+                                                    let m = merchant.clone();
+                                                    move || {
+                                                        format!("queue:merchant-col:{m}")
+                                                    }
+                                                })
+                                                .tooltip({
+                                                    let full = merchant.clone();
+                                                    move |window, cx| {
+                                                        let tip = full.clone();
+                                                        Tooltip::element(move |_, _| {
+                                                            div()
+                                                                .debug_selector({
+                                                                    let m = tip.clone();
+                                                                    move || {
+                                                                        format!(
+                                                                            "queue:merchant-tooltip:{m}"
+                                                                        )
+                                                                    }
+                                                                })
+                                                                .child(tip.clone())
+                                                        })
+                                                        .build(window, cx)
+                                                    }
+                                                })
                                                 .child(g.merchant.clone()),
                                         )
-                                        .child(div().w(px(140.)).child(format!(
-                                            "{} transactions",
-                                            flow::count(g.count)
-                                        )))
+                                        .child(
+                                            // The Transactions cell is just
+                                            // the number (3.22); its debug
+                                            // selector records the exact
+                                            // text so a test can pin that.
+                                            div()
+                                                .w(px(QUEUE_TXNS_W))
+                                                .text_right()
+                                                .debug_selector({
+                                                    let m = merchant.clone();
+                                                    move || {
+                                                        format!("queue:txns-col:{m}")
+                                                    }
+                                                })
+                                                .child(
+                                                    div()
+                                                        .debug_selector({
+                                                            let m = merchant.clone();
+                                                            let n = g.count;
+                                                            move || {
+                                                                format!(
+                                                                    "queue:txns-text:{m}={}",
+                                                                    flow::count(n)
+                                                                )
+                                                            }
+                                                        })
+                                                        .child(flow::count(g.count)),
+                                                ),
+                                        )
                                         .child(
                                             div()
-                                                .w(px(120.))
+                                                .w(px(QUEUE_TOTAL_W))
                                                 .text_right()
+                                                .debug_selector({
+                                                    let m = merchant.clone();
+                                                    move || {
+                                                        format!("queue:total-col:{m}")
+                                                    }
+                                                })
                                                 .child(flow::money(g.total_cents)),
                                         )
                                         .child(
-                                            div().text_sm().text_color(muted).child(
-                                                flow::date_range(&g.first_date, &g.last_date),
-                                            ),
+                                            div()
+                                                .w(px(QUEUE_DATES_W))
+                                                .min_w_0()
+                                                .overflow_hidden()
+                                                .text_ellipsis()
+                                                .text_sm()
+                                                .text_color(muted)
+                                                .debug_selector({
+                                                    let m = merchant.clone();
+                                                    move || {
+                                                        format!("queue:dates-col:{m}")
+                                                    }
+                                                })
+                                                .child(flow::date_range(
+                                                    &g.first_date,
+                                                    &g.last_date,
+                                                )),
                                         )
-                                        .child(div().flex_1())
                                         .child(
                                             div()
-                                                .w(px(260.))
-                                                .debug_selector(|| "queue:picker-col".into())
+                                                .w(px(QUEUE_PICKER_W))
+                                                .flex_shrink_0()
+                                                .debug_selector({
+                                                    let m = merchant.clone();
+                                                    move || {
+                                                        format!("queue:picker-col:{m}")
+                                                    }
+                                                })
                                                 .child(
                                                     Select::new(&picker).placeholder("Category…"),
                                                 ),
                                         )
                                         .child(
-                                            Button::new(SharedString::from(format!(
-                                                "categorize-{}",
-                                                g.merchant
-                                            )))
-                                            .label("Categorize")
-                                            .primary()
-                                            .on_click(cx.listener(move |this, _, window, cx| {
-                                                this.categorize_merchant(
-                                                    merchant.clone(),
-                                                    window,
-                                                    cx,
-                                                );
-                                            })),
+                                            div()
+                                                .flex_shrink_0()
+                                                .debug_selector({
+                                                    let m = merchant.clone();
+                                                    move || {
+                                                        format!("queue:categorize-col:{m}")
+                                                    }
+                                                })
+                                                .child(
+                                                    Button::new(SharedString::from(format!(
+                                                        "categorize-{}",
+                                                        g.merchant
+                                                    )))
+                                                    .label("Categorize")
+                                                    .primary()
+                                                    .on_click(cx.listener(
+                                                        move |this, _, window, cx| {
+                                                            this.categorize_merchant(
+                                                                merchant.clone(),
+                                                                window,
+                                                                cx,
+                                                            );
+                                                        }
+                                                    )),
+                                                ),
                                         ),
                                 );
                             }
