@@ -31,8 +31,8 @@ use super::{
     CHART_LABEL_MIN_CHARS, DashboardBody, ExportData, HISTORY_DATES_W, HISTORY_FLEX_MIN_W,
     HISTORY_ROWS_W, HISTORY_TIME_W, ImportPanel, LegendSelection, NAV_ROW_INSET, NEW_ACCOUNT,
     PAGE_PAD, Page, PlanState, RestoreBackup, RowMenuItem, SIDEBAR_W, Shell, SummaryRowKind,
-    TABLE_BORDER_X, TEXT_SM_CHAR_PX, UNDO_LABEL_MAX, UndoLastImport, band_label_budget,
-    history_flex_widths, history_undo_col_w, row_menu_items, short_chart_labels,
+    TABLE_BORDER_X, TEXT_SM_CHAR_PX, TX_FIXED_W, UNDO_LABEL_MAX, UndoLastImport, band_label_budget,
+    history_flex_widths, history_undo_col_w, row_menu_items, short_chart_labels, tx_flex_widths,
 };
 
 fn demo(name: &str) -> PathBuf {
@@ -498,6 +498,41 @@ fn history_table_columns_fit_every_page_width() {
     assert_eq!(
         history_flex_widths(100.),
         (HISTORY_FLEX_MIN_W, HISTORY_FLEX_MIN_W)
+    );
+}
+
+/// 3.25: the dashboard table's width plan — the flexed `Account`,
+/// `Description` and `Category` columns plus the fixed ones always sum to
+/// exactly the page width, so the table reaches the page's right edge
+/// without overhanging it at any window size (the wrapper alone cannot
+/// pin this, and the old fixed 300/360/260 columns overflowed 1200 px).
+#[test]
+fn dashboard_table_columns_fit_every_page_width() {
+    for win in [1200., 1600., 1920., 2560.] {
+        let page_w = win - SIDEBAR_W - 2. * PAGE_PAD;
+        let (account, description, category) = tx_flex_widths(page_w);
+        let total = TX_FIXED_W + TABLE_BORDER_X + account + description + category;
+        assert!(
+            (total - page_w).abs() <= 0.01,
+            "window {win}: columns sum to {total}, page is {page_w}"
+        );
+        assert!(
+            account >= HISTORY_FLEX_MIN_W
+                && description >= HISTORY_FLEX_MIN_W
+                && category >= HISTORY_FLEX_MIN_W,
+            "window {win}: flexed columns below the floor"
+        );
+    }
+    // The columns grow with the window...
+    let small = tx_flex_widths(1200. - SIDEBAR_W - 2. * PAGE_PAD).1;
+    let big = tx_flex_widths(2560. - SIDEBAR_W - 2. * PAGE_PAD).1;
+    assert!(big > small, "{big} vs {small}");
+    // ...and below any real window the flexed total stops at its floor.
+    let (a, d, c) = tx_flex_widths(100.);
+    assert!(
+        (a + d + c - 3. * HISTORY_FLEX_MIN_W).abs() <= 0.01,
+        "floored total {} is not 3 × {HISTORY_FLEX_MIN_W}",
+        a + d + c,
     );
 }
 
@@ -1352,6 +1387,28 @@ fn the_dashboard_stays_aligned_with_a_custom_date_range(cx: &mut TestAppContext)
                 "{sel} centres at y {cy}, not on the first filter row's centre line {centre} (custom range, {w}x{h})"
             );
         }
+        // The row still fits: with From and To visible the rightmost
+        // row-1 control stops at the page's right edge — the count may
+        // not hang off the page (the pickers shrink to make room).
+        let mut rightmost = 0_f32;
+        for sel in [
+            "filters:date-range",
+            "filters:from",
+            "filters:to",
+            "accounts:filter",
+            "checkbox:include-transfers",
+            "filters:count",
+        ] {
+            let b = window
+                .debug_bounds(sel)
+                .unwrap_or_else(|| panic!("{sel} paints on the dashboard"));
+            rightmost = rightmost.max(f32::from(b.origin.x) + f32::from(b.size.width));
+        }
+        assert!(
+            rightmost <= w - PAGE_PAD + 0.01,
+            "with the custom range the row-1 controls reach x {rightmost}, past the page's right edge {} ({w}x{h})",
+            w - PAGE_PAD,
+        );
         let b = window
             .debug_bounds("filters:region")
             .expect("the filter region paints");

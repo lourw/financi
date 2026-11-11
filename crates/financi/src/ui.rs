@@ -1205,6 +1205,10 @@ const REGION_GAP: f32 = 12.;
 // width of the first column of each row (the row-2 search box matches it).
 const FILTER_CONTROL_H: Pixels = px(32.);
 const FILTER_COL_W: Pixels = px(240.);
+/// The narrowest the custom range's From/To columns shrink (3.25): row 1
+/// gives them 140 px when there is room, and only down to this when the
+/// window is at its minimum and the count must still fit on the page.
+const FILTER_DATE_MIN_W: Pixels = px(110.);
 
 /// Generous width of one 10px system-font character, rounded up so the
 /// budget errs towards labels that are too short rather than overlapping.
@@ -1304,8 +1308,9 @@ const TX_FIXED_W: f32 = 110. + 120.;
 /// The dashboard table's `Account`, `Description` and `Category` widths for
 /// `page_w` pixels of page (3.25, the same shape as `history_flex_widths`):
 /// what the fixed columns leave over, split in the widths' original
-/// proportions, never below `HISTORY_FLEX_MIN_W` each. The sum always
-/// reaches the page's right edge, so the table never overhangs it.
+/// proportions, with the flexed total floored at three times
+/// `HISTORY_FLEX_MIN_W`. The sum always reaches the page's right edge, so
+/// the table never overhangs it.
 fn tx_flex_widths(page_w: f32) -> (f32, f32, f32) {
     let flex = (page_w - TX_FIXED_W - TABLE_BORDER_X).max(3. * HISTORY_FLEX_MIN_W);
     const TOTAL: f32 = 300. + 360. + 260.;
@@ -3925,23 +3930,35 @@ impl Shell {
                                     .w(FILTER_COL_W)
                                     .child(Select::new(&self.date_preset_select)),
                             ))
+                            // The From/To columns want 140 px but shrink
+                            // first when the row runs out of room, so the
+                            // custom range fits the minimum window with the
+                            // count (3.25 fix); the other columns hold.
                             .when(matches!(self.date_range, DateRange::Custom { .. }), |g| {
-                                g.child(filter_column(
-                                    muted,
-                                    "From",
-                                    div()
-                                        .debug_selector(|| "filters:from".into())
-                                        .w(px(140.))
-                                        .child(DatePicker::new(&self.date_from_picker)),
-                                ))
-                                .child(filter_column(
-                                    muted,
-                                    "To",
-                                    div()
-                                        .debug_selector(|| "filters:to".into())
-                                        .w(px(140.))
-                                        .child(DatePicker::new(&self.date_to_picker)),
-                                ))
+                                g.child(
+                                    filter_column(
+                                        muted,
+                                        "From",
+                                        div()
+                                            .debug_selector(|| "filters:from".into())
+                                            .child(DatePicker::new(&self.date_from_picker)),
+                                    )
+                                    .w(px(140.))
+                                    .flex_shrink(1.)
+                                    .min_w(FILTER_DATE_MIN_W),
+                                )
+                                .child(
+                                    filter_column(
+                                        muted,
+                                        "To",
+                                        div()
+                                            .debug_selector(|| "filters:to".into())
+                                            .child(DatePicker::new(&self.date_to_picker)),
+                                    )
+                                    .w(px(140.))
+                                    .flex_shrink(1.)
+                                    .min_w(FILTER_DATE_MIN_W),
+                                )
                             })
                             // Accounts multi-select (3.3): a dropdown popover of
                             // checkboxes, one per account, all checked by default.

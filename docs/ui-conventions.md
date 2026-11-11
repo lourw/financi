@@ -90,8 +90,11 @@ header row is the filters.
   label) over a 32px control line with the control vertically centered,
   so controls, checkboxes and the count share one center line. The first
   column of each row is the same width (240px), so Search sits exactly
-  under Date range. The transaction count is the row's last column,
-  `ml_auto`, ending at the page's right edge. The filter region, the
+  under Date range. The custom From/To columns take 140px but shrink
+  first (floor 110px) when space runs short, so row one with the custom
+  range open still fits the minimum window. The transaction count is the
+  row's last column, `ml_auto`, ending at the page's right edge. The
+  filter region, the
   chart panel, the summary and the table span the page's left and right
   edges exactly; the table's flexible columns (Account, Description,
   Category) absorb the window width so it never overhangs the page.
