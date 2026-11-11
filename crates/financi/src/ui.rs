@@ -93,6 +93,16 @@ const ADD_CATEGORY: &str = "Add category";
 const ADD_SUBCATEGORY: &str = "Add subcategory";
 const MOVE_TO_CATEGORY_PH: &str = "Move to category…";
 const MOVE_TXNS_TO_PH: &str = "Move its transactions to…";
+/// 3.23: the Categories page's header action; it opens the new-category
+/// form in place under the header (ui-conventions, *Pages*).
+const NEW_CATEGORY: &str = "New category…";
+
+/// 3.23: the Categories rule list's fixed columns — the row and its column
+/// headings share these widths so the headings sit over their columns
+/// (same rule as the queue's `QUEUE_*_W`). Pattern takes the remaining
+/// width (`flex_1`) and truncates with a tooltip.
+const RULE_TYPE_W: f32 = 80.;
+const RULE_CATEGORY_W: f32 = 200.;
 
 /// Region title (ui-conventions *Typography*: `text_sm`, `font_semibold`).
 /// Names a group of related controls or a data panel (3.16: the filter bar,
@@ -1661,6 +1671,10 @@ pub struct Shell {
     new_parent_name: Entity<InputState>,
     new_parent_kind: Entity<SelectState<Names>>,
     new_child_name: Entity<InputState>,
+    /// 3.23: the New category… form under the page header is open. The
+    /// header button opens it, Cancel and a successful add close it, and
+    /// `go_page` clears it like the page's other transient UI.
+    new_category_open: bool,
     renaming: bool,
     rename_input: Entity<InputState>,
     move_target: Entity<SelectState<Names>>,
@@ -2092,6 +2106,7 @@ impl Shell {
             new_parent_name,
             new_parent_kind,
             new_child_name,
+            new_category_open: false,
             renaming: false,
             rename_input,
             move_target,
@@ -2814,6 +2829,7 @@ impl Shell {
         self.confirm_undo_import = None;
         self.rule_offer = None;
         self.renaming = false;
+        self.new_category_open = false;
         self.confirm_delete_category = None;
         self.close_rule_editor();
         self.armed_delete_rule = None;
@@ -3061,7 +3077,27 @@ impl Shell {
         }
     }
 
+    /// 3.23: the rules the Categories page lists — the ones targeting the
+    /// selected category, which for a parent means its subcategories' too
+    /// (rules always target a child, but count the parent's own id in case
+    /// one ever lands there). Nothing without a selection.
+    fn visible_rules(&self) -> Vec<Rule> {
+        let Some(id) = self.selected_category else {
+            return Vec::new();
+        };
+        let mut ids: HashSet<i64> = [id].into_iter().collect();
+        if let Some(parent) = self.categories.iter().find(|p| p.id == id) {
+            ids.extend(parent.children.iter().map(|c| c.id));
+        }
+        self.rules
+            .iter()
+            .filter(|r| ids.contains(&r.category_id))
+            .cloned()
+            .collect()
+    }
+
     fn select_category(&mut self, id: i64, window: &mut Window, cx: &mut Context<Self>) {
+        let changed = self.selected_category != Some(id);
         self.selected_category = Some(id);
         self.renaming = false;
         self.confirm_delete_category = None;
@@ -3072,11 +3108,18 @@ impl Shell {
         // switch.
         self.close_rule_editor();
         self.armed_delete_rule = None;
-        // 3.21: the rule list keeps its scroll offset here — its content
-        // (all rules) doesn't change when the selection does. When 3.23
-        // scopes the rule list to the selected category, this is the reset
-        // point: `self.rule_scroll.set_offset(Point::default())`, where
-        // the content is actually replaced.
+        // 3.23: the rule list now shows only this category's rules, so its
+        // content is replaced with the selection and the scroll offset
+        // resets (the reset point 3.21 documented).
+        if changed {
+            self.rule_scroll.set_offset(Point::default());
+            // The add-rule picker lists subcategories; when the selected
+            // category is one of them, default the pick to it.
+            let ix = self.child_choices.iter().position(|(cid, _)| *cid == id);
+            self.rule_target.update(cx, |s, cx| {
+                s.set_selected_index(ix.map(gpui_kit::component::IndexPath::new), window, cx);
+            });
+        }
         self.rebuild_move_target(window, cx);
         cx.notify();
     }
@@ -3127,6 +3170,8 @@ impl Shell {
                     Ok(id) => {
                         this.new_parent_name
                             .update(cx, |i, cx| i.set_value("", window, cx));
+                        // 3.23: adding closes the New category… form.
+                        this.new_category_open = false;
                         this.selected_category = Some(id);
                         this.cat_error = None;
                     }
@@ -4951,19 +4996,26 @@ impl Shell {
             .into_any_element()
     }
 
-    /// One clickable row of the category tree.
+    /// One clickable row of the category tree (3.23): a color swatch
+    /// (`category_colors`, the same color the transaction views show),
+    /// the name — semibold for a top-level category — truncating with an
+    /// ellipsis, and the transaction count right-aligned. The selected row
+    /// takes `list_active`, an unselected one lights up `list_hover` under
+    /// the pointer (gpui-component's `list_item` pattern).
     fn tree_row(
         &self,
         node: &CategoryNode,
         depth: u8,
         selected: bool,
         palette: (Hsla, Hsla, Hsla),
+        colors: &HashMap<i64, Hsla>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let (muted, accent, accent_foreground) = palette;
+        let (muted, list_active, list_hover) = palette;
         let id = node.id;
         let count = self.node_count(node);
         let radius = cx.theme().radius;
+        let color = colors.get(&id).copied().unwrap_or(muted);
         div()
             .id(SharedString::from(format!("cat-row-{id}")))
             .h_8()
@@ -4974,26 +5026,39 @@ impl Shell {
             .gap_2()
             .rounded(radius)
             .cursor_pointer()
-            .when(selected, |d| d.bg(accent).text_color(accent_foreground))
+            .debug_selector(move || format!("cat-tree-row-{id}"))
+            .when(selected, |d| d.bg(list_active))
+            // A selected row keeps its `list_active` under the pointer.
+            .hover(move |s| if selected { s } else { s.bg(list_hover) })
             .child(
                 div()
+                    .w(px(10.))
+                    .h(px(10.))
+                    .flex_shrink_0()
+                    .rounded(px(2.))
+                    .bg(color),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .text_ellipsis()
                     .when(depth == 0, |d| d.font_weight(FontWeight::SEMIBOLD))
                     .child(node.name.clone()),
             )
+            .when(node.is_system, |d| {
+                d.child(div().text_xs().text_color(muted).child("system"))
+            })
             .child(
                 div()
+                    .w(px(48.))
+                    .flex_shrink_0()
+                    .text_right()
                     .text_xs()
-                    .text_color(if selected { accent_foreground } else { muted })
+                    .text_color(muted)
                     .child(flow::count(count)),
             )
-            .when(node.is_system, |d| {
-                d.child(
-                    div()
-                        .text_xs()
-                        .text_color(if selected { accent_foreground } else { muted })
-                        .child("system"),
-                )
-            })
             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                 this.select_category(id, window, cx);
             }))
@@ -5004,7 +5069,10 @@ impl Shell {
     /// by the virtualized rule list, fixed height to match its
     /// `item_sizes`). 3.24: every row carries Edit and Delete… at its right
     /// end — small ghost buttons, visible on every row, built only for the
-    /// rows the list renders.
+    /// rows the list renders. 3.23: the columns line up with the list's
+    /// headings (`RULE_TYPE_W`/`RULE_CATEGORY_W`); the pattern column is
+    /// the flex one and truncates with a tooltip, like the queue's
+    /// merchant column.
     fn rule_row(&self, rule: &Rule, muted: Hsla, cx: &mut Context<Self>) -> AnyElement {
         let target = self
             .child_choices
@@ -5016,30 +5084,59 @@ impl Shell {
         let armed = self.armed_delete_rule == Some(id);
         h_flex()
             .h_6()
+            .w_full()
             .gap_2()
             .items_center()
             .debug_selector(move || format!("rule-row-{id}"))
             .child(
                 div()
-                    .w(px(320.))
+                    .id(SharedString::from(format!("rule-pattern-{id}")))
+                    .flex_1()
                     .min_w_0()
                     .overflow_hidden()
                     .text_ellipsis()
+                    .debug_selector(move || format!("rule:pattern-col:{id}"))
+                    .tooltip({
+                        let full = rule.pattern.clone();
+                        move |window, cx| {
+                            let tip = full.clone();
+                            Tooltip::element(move |_, _| {
+                                div()
+                                    .debug_selector({
+                                        let p = tip.clone();
+                                        move || format!("rule:pattern-tooltip:{p}")
+                                    })
+                                    .child(tip.clone())
+                            })
+                            .build(window, cx)
+                        }
+                    })
                     .child(rule.pattern.clone()),
             )
-            .child(div().text_xs().text_color(muted).child(if rule.is_regex {
-                "regex"
-            } else {
-                "substring"
-            }))
-            .child(div().text_color(muted).child("→"))
-            .child(div().child(target))
-            .child(div().flex_1())
+            .child(
+                div()
+                    .w(px(RULE_TYPE_W))
+                    .flex_shrink_0()
+                    .text_xs()
+                    .text_color(muted)
+                    .child(if rule.is_regex { "regex" } else { "substring" }),
+            )
+            .child(
+                div()
+                    .w(px(RULE_CATEGORY_W))
+                    .flex_shrink_0()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .text_color(muted)
+                    .child(target),
+            )
             .child(
                 Button::new(SharedString::from(format!("rule-edit-{id}")))
                     .label("Edit")
                     .ghost()
                     .text_xs()
+                    .flex_shrink_0()
                     .on_click(
                         cx.listener(move |this, _, window, cx| {
                             this.start_edit_rule(id, window, cx)
@@ -5055,6 +5152,7 @@ impl Shell {
                     })
                     .ghost()
                     .text_xs()
+                    .flex_shrink_0()
                     .on_click(
                         cx.listener(move |this, _, window, cx| {
                             this.arm_delete_rule(id, window, cx)
@@ -5070,9 +5168,12 @@ impl Shell {
     /// with the same live "matches N transactions" count. A validation
     /// error shows in `danger` under the editor and keeps it open — clamped
     /// to one ellipsized line, because the virtual list doesn't clip per
-    /// item and a taller row would paint over the rows below. The row
-    /// reserves 68 px in `rule_sizes` instead of 24, 92 px while an error
-    /// is open (measured: 55.5 px without, 82 px with one line).
+    /// item and a taller row would paint over the rows below. 3.23: inside
+    /// the detail panel the row is too narrow for the count beside the
+    /// fields, so it moves under them (like the add-rule row's) and the
+    /// row reserves 80 px in `rule_sizes` instead of 24, 108 px while an
+    /// error is open (measured: 75.5 px with the count, 102.5 with one
+    /// error line).
     fn rule_editor_row(
         &self,
         rule: &Rule,
@@ -5096,10 +5197,15 @@ impl Shell {
                     .gap_2()
                     .items_end()
                     .child(
+                        // 3.23: the pattern field is the flex column, so
+                        // the editor fits the detail panel's width; the
+                        // other controls keep their size.
                         v_flex()
+                            .flex_1()
+                            .min_w_0()
                             .gap_1()
                             .child(field_label(muted, "Pattern"))
-                            .child(div().w(px(280.)).child(Input::new(&self.rule_edit_pattern))),
+                            .child(Input::new(&self.rule_edit_pattern)),
                     )
                     .child(
                         Switch::new(SharedString::from(format!("rule-edit-regex-{}", rule.id)))
@@ -5113,9 +5219,10 @@ impl Shell {
                     )
                     .child(
                         v_flex()
+                            .flex_shrink_0()
                             .gap_1()
                             .child(field_label(muted, "Category"))
-                            .child(div().w(px(240.)).child(
+                            .child(div().w(px(160.)).child(
                                 Select::new(&self.rule_edit_target).placeholder("Category…"),
                             )),
                     )
@@ -5123,6 +5230,7 @@ impl Shell {
                         Button::new(SharedString::from(format!("rule-edit-save-{}", rule.id)))
                             .label("Save")
                             .primary()
+                            .flex_shrink_0()
                             .on_click(
                                 cx.listener(|this, _, window, cx| this.save_rule_edit(window, cx)),
                             ),
@@ -5131,10 +5239,13 @@ impl Shell {
                         Button::new(SharedString::from(format!("rule-edit-cancel-{}", rule.id)))
                             .label("Cancel")
                             .ghost()
+                            .flex_shrink_0()
                             .on_click(cx.listener(|this, _, _, cx| this.cancel_edit_rule(cx))),
-                    )
-                    .child(preview),
+                    ),
             )
+            // 3.23: the count sits under the fields (as in the add-rule
+            // row): the detail panel is too narrow to keep it inline.
+            .child(preview)
             .children(
                 self.rule_error
                     .clone()
@@ -5155,17 +5266,20 @@ impl Shell {
     }
 
     fn render_categories(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let (muted, border, accent, accent_foreground, danger) = {
+        let (muted, border, list_active, list_hover, danger) = {
             let theme = cx.theme();
             (
                 theme.muted_foreground,
                 theme.border,
-                theme.accent,
-                theme.accent_foreground,
+                theme.list_active,
+                theme.list_hover,
                 theme.danger,
             )
         };
-        let palette = (muted, accent, accent_foreground);
+        let palette = (muted, list_active, list_hover);
+        // 3.23: the tree's swatches use the same palette and assignment the
+        // transaction views show (ui-conventions, *Category colors*).
+        let colors = Rc::new(self.category_colors(cx.theme()));
 
         // 3.12: the tree is virtualized (gpui-kit `v_virtual_list`). The
         // closure runs during layout with the visible range, so a tree of
@@ -5174,24 +5288,25 @@ impl Shell {
         // is added to the stride by the list.
         let n_tree_rows: usize = self.categories.iter().map(|p| 1 + p.children.len()).sum();
         let tree_sizes = Rc::new(vec![size(px(0.), px(32.)); n_tree_rows]);
+        // 3.23: the tree lives in its own bordered panel beside the detail
+        // panel (ui-conventions, *Pages*).
         // `h_flex` centers children on the cross axis (unlike `v_flex`), so
         // each column needs `h_full` for the virtual list inside it to
         // resolve a real height; without it the lists collapse to 0 px and
         // the page opens blank (3.18).
+        let tree_colors = Rc::clone(&colors);
         let tree = v_flex()
             .w(px(300.))
             .flex_shrink_0()
             .h_full()
-            .gap_1()
             .min_h_0()
-            .child(
-                div()
-                    .px_2()
-                    .min_w_0()
-                    .overflow_hidden()
-                    .text_ellipsis()
-                    .child(region_title("Category tree")),
-            )
+            .p_2()
+            .gap_1()
+            .border_1()
+            .border_color(border)
+            .rounded_lg()
+            .debug_selector(|| "cat:tree-panel".into())
+            .child(region_title("Category tree"))
             .child(
                 v_virtual_list(
                     cx.entity(),
@@ -5206,7 +5321,14 @@ impl Shell {
                             }
                             if ix >= range.start {
                                 let selected = this.selected_category == Some(parent.id);
-                                rows.push(this.tree_row(parent, 0, selected, palette, cx));
+                                rows.push(this.tree_row(
+                                    parent,
+                                    0,
+                                    selected,
+                                    palette,
+                                    &tree_colors,
+                                    cx,
+                                ));
                             }
                             ix += 1;
                             for child in &parent.children {
@@ -5215,7 +5337,14 @@ impl Shell {
                                 }
                                 if ix >= range.start {
                                     let selected = this.selected_category == Some(child.id);
-                                    rows.push(this.tree_row(child, 1, selected, palette, cx));
+                                    rows.push(this.tree_row(
+                                        child,
+                                        1,
+                                        selected,
+                                        palette,
+                                        &tree_colors,
+                                        cx,
+                                    ));
                                 }
                                 ix += 1;
                             }
@@ -5236,199 +5365,21 @@ impl Shell {
                 .min_h_0(),
             );
 
-        // Detail panel for the selected category.
-        let detail: AnyElement = match self.selected_node() {
-            None => div()
-                .text_sm()
-                .text_color(muted)
-                .child("Select a category to rename, move or delete it.")
-                .into_any_element(),
-            Some((node, parent)) => {
-                let count = self.node_count(node);
-                let name = node.name.clone();
-                let kind = node.kind;
-                let is_system = node.is_system;
-                let is_child = parent.is_some();
-                let renaming = self.renaming;
-                let confirm_label = if self.confirm_delete_category == Some(node.id) {
-                    "Click again to delete"
-                } else {
-                    "Delete…"
-                };
-                v_flex()
-                    .gap_3()
-                    .p_4()
-                    .rounded_lg()
-                    .border_1()
-                    .border_color(border)
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .items_center()
-                            .child(
-                                div()
-                                    .text_lg()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child(name),
-                            )
-                            .child(div().text_sm().text_color(muted).child(format!(
-                                "{} · {} transactions",
-                                kind_label(kind),
-                                flow::count(count)
-                            ))),
-                    )
-                    .child(if renaming {
-                        // Rename editor (3.16): the input carries a label.
-                        h_flex()
-                            .gap_2()
-                            .items_end()
-                            .child(
-                                v_flex()
-                                    .gap_1()
-                                    .child(field_label(muted, "New name"))
-                                    .child(div().w(px(260.)).child(Input::new(&self.rename_input))),
-                            )
-                            .child(Button::new("save-rename").label("Save").primary().on_click(
-                                cx.listener(|this, _, window, cx| this.save_rename(window, cx)),
-                            ))
-                            .child(Button::new("cancel-rename").label("Cancel").on_click(
-                                cx.listener(|this, _, _, cx| {
-                                    this.renaming = false;
-                                    cx.notify();
-                                }),
-                            ))
-                            .into_any_element()
-                    } else {
-                        // Detail actions (3.16): each picker or field sits
-                        // in its own labelled group beside its button,
-                        // instead of a row of unlabelled boxes.
-                        h_flex()
-                            .flex_wrap()
-                            .gap_3()
-                            .items_end()
-                            .when(!is_child, |row| {
-                                row.child(
-                                    v_flex()
-                                        .gap_1()
-                                        .child(field_label(muted, "New subcategory name"))
-                                        .child(
-                                            h_flex()
-                                                .gap_2()
-                                                .items_end()
-                                                .child(
-                                                    div()
-                                                        .w(px(220.))
-                                                        .child(Input::new(&self.new_child_name)),
-                                                )
-                                                .child(
-                                                    Button::new("add-child")
-                                                        .label(ADD_SUBCATEGORY)
-                                                        .debug_selector(move || {
-                                                            format!("label:{ADD_SUBCATEGORY}")
-                                                        })
-                                                        .on_click(cx.listener(
-                                                            |this, _, window, cx| {
-                                                                this.add_child(window, cx)
-                                                            },
-                                                        )),
-                                                ),
-                                        ),
-                                )
-                            })
-                            .child(
-                                Button::new("rename-category")
-                                    .label("Rename…")
-                                    .disabled(is_system)
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.start_rename(window, cx)
-                                    })),
-                            )
-                            .when(is_child, |row| {
-                                row.child(
-                                    v_flex()
-                                        .gap_1()
-                                        .child(field_label(muted, "Move to category"))
-                                        .child(
-                                            h_flex()
-                                                .gap_2()
-                                                .items_end()
-                                                .child(
-                                                    div()
-                                                        .w(px(200.))
-                                                        .debug_selector(move || {
-                                                            format!("label:{MOVE_TO_CATEGORY_PH}")
-                                                        })
-                                                        .child(
-                                                            Select::new(&self.move_target)
-                                                                .placeholder(MOVE_TO_CATEGORY_PH),
-                                                        ),
-                                                )
-                                                .child(
-                                                    Button::new("move-child")
-                                                        .label("Move")
-                                                        .disabled(is_system)
-                                                        .on_click(cx.listener(
-                                                            |this, _, window, cx| {
-                                                                this.move_child_to_selected_parent(
-                                                                    window, cx,
-                                                                )
-                                                            },
-                                                        )),
-                                                ),
-                                        ),
-                                )
-                            })
-                            .when(!is_system, |row| {
-                                row.child(
-                                    v_flex()
-                                        .gap_1()
-                                        .child(field_label(muted, "Move its transactions to"))
-                                        .child(
-                                            h_flex()
-                                                .gap_2()
-                                                .items_end()
-                                                .child(
-                                                    div()
-                                                        .w(px(260.))
-                                                        .debug_selector(move || {
-                                                            format!("label:{MOVE_TXNS_TO_PH}")
-                                                        })
-                                                        .child(
-                                                            Select::new(&self.delete_target)
-                                                                .placeholder(MOVE_TXNS_TO_PH),
-                                                        ),
-                                                )
-                                                .child(
-                                                    Button::new("delete-category")
-                                                        .label(confirm_label)
-                                                        .on_click(cx.listener(
-                                                            |this, _, window, cx| {
-                                                                this.arm_delete_category(window, cx)
-                                                            },
-                                                        )),
-                                                ),
-                                        ),
-                                )
-                            })
-                            .into_any_element()
-                    })
-                    .into_any_element()
-            }
-        };
-
-        // Rules: list + add row with the live match preview. The list is
-        // virtualized like the tree (3.12); rows are fixed height (24 px),
-        // except the one row 3.24's editor swapped in for, which reserves
-        // 68 px (labelled fields) — 92 px while a validation error is open
-        // under it, one ellipsized line (`rule_editor_row`).
+        // Rules of the selected category (3.23): the list shows only these
+        // (`visible_rules`). The list is virtualized like the tree (3.12);
+        // rows are fixed height (24 px), except the one row 3.24's editor
+        // swapped in for, which reserves 68 px (labelled fields) — 92 px
+        // while a validation error is open under it, one ellipsized line
+        // (`rule_editor_row`).
         let editing = self.editing_rule;
         let edit_error = self.rule_error.is_some();
+        let visible = Rc::new(self.visible_rules());
         let rule_sizes = Rc::new(
-            self.rules
+            visible
                 .iter()
                 .map(|r| {
                     if Some(r.id) == editing {
-                        size(px(0.), if edit_error { px(92.) } else { px(68.) })
+                        size(px(0.), if edit_error { px(108.) } else { px(80.) })
                     } else {
                         size(px(0.), px(24.))
                     }
@@ -5449,163 +5400,300 @@ impl Shell {
             None => div().into_any_element(),
         };
 
-        // The header count paints `count_text` and its selector mirrors it
-        // (3.33): the scan test asserts the exact words and cannot be
-        // satisfied by a retired one.
-        let count_text = format!("{} categories", self.categories.len());
-        let count_sel = count_text.clone();
-
-        v_flex()
-            .flex_1()
-            .min_h_0()
-            .gap_3()
-            .child(
-                h_flex()
-                    .gap_2()
-                    .items_center()
-                    .child(
-                        div()
-                            .text_lg()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child("Categories"),
-                    )
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(muted)
-                            .debug_selector(move || format!("label:{count_sel}"))
-                            .child(count_text),
-                    ),
-            )
-            .children(
-                self.cat_error
-                    .clone()
-                    .map(|e| div().text_sm().text_color(danger).child(e)),
-            )
-            // New-parent group (3.16): labelled fields, one deliberate row.
-            .child(
-                h_flex()
-                    .gap_2()
-                    .items_end()
+        // Detail panel: the selected category, or the prompt to pick one.
+        let detail: AnyElement = match self.selected_node() {
+            None => v_flex()
+                .flex_1()
+                .min_w_0()
+                .h_full()
+                .min_h_0()
+                .items_center()
+                .justify_center()
+                .border_1()
+                .border_color(border)
+                .rounded_lg()
+                .debug_selector(|| "cat:detail-empty".into())
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(muted)
+                        .child("Select a category to see its rules and settings."),
+                )
+                .into_any_element(),
+            Some((node, parent)) => {
+                let count = self.node_count(node);
+                let name = node.name.clone();
+                let kind = node.kind;
+                let is_system = node.is_system;
+                let is_child = parent.is_some();
+                let renaming = self.renaming;
+                let confirm_label = if self.confirm_delete_category == Some(node.id) {
+                    "Click again to delete"
+                } else {
+                    "Delete…"
+                };
+                v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .min_h_0()
+                    .gap_3()
+                    .p_4()
+                    .border_1()
+                    .border_color(border)
+                    .rounded_lg()
+                    .debug_selector(|| "cat:detail-panel".into())
+                    // Title line (3.23): the name, its kind and transaction
+                    // count, Rename… at the right end; the rename editor
+                    // (3.16) replaces this line in place.
+                    .child(if renaming {
+                        h_flex()
+                            .gap_2()
+                            .items_end()
+                            .child(
+                                v_flex()
+                                    .gap_1()
+                                    .child(field_label(muted, "New name"))
+                                    .child(div().w(px(260.)).child(Input::new(&self.rename_input))),
+                            )
+                            .child(Button::new("save-rename").label("Save").primary().on_click(
+                                cx.listener(|this, _, window, cx| this.save_rename(window, cx)),
+                            ))
+                            .child(Button::new("cancel-rename").label("Cancel").on_click(
+                                cx.listener(|this, _, _, cx| {
+                                    this.renaming = false;
+                                    cx.notify();
+                                }),
+                            ))
+                            .into_any_element()
+                    } else {
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .debug_selector(|| "cat:detail-title".into())
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .text_lg()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(name),
+                            )
+                            .child(div().flex_shrink_0().text_sm().text_color(muted).child(
+                                format!(
+                                    "{} · {} transactions",
+                                    kind_label(kind),
+                                    flow::count(count)
+                                ),
+                            ))
+                            .child(
+                                Button::new("rename-category")
+                                    .label("Rename…")
+                                    .disabled(is_system)
+                                    .ml_auto()
+                                    .flex_shrink_0()
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.start_rename(window, cx)
+                                    })),
+                            )
+                            .into_any_element()
+                    })
+                    .child(div().w_full().border_t_1().border_color(border))
+                    // Organize (3.16's labelled groups): a category gains
+                    // a subcategory; a subcategory moves under another.
                     .child(
                         v_flex()
                             .gap_1()
-                            .child(field_label(muted, "New category name"))
-                            .child(div().w(px(220.)).child(Input::new(&self.new_parent_name))),
-                    )
-                    .child(
-                        v_flex()
-                            .gap_1()
-                            .child(field_label(muted, "Kind"))
-                            .child(div().w(px(140.)).child(Select::new(&self.new_parent_kind))),
-                    )
-                    .child(
-                        Button::new("add-parent")
-                            .label(ADD_CATEGORY)
-                            .debug_selector(move || format!("label:{ADD_CATEGORY}"))
-                            .primary()
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.add_parent(window, cx)),
-                            ),
-                    ),
-            )
-            .child(
-                h_flex().flex_1().min_h_0().gap_6().child(tree).child(
-                    v_flex()
-                        .flex_1()
-                        .min_w_0()
-                        .h_full()
-                        .min_h_0()
-                        .gap_4()
-                        .child(detail)
-                        .child(
-                            v_flex()
-                                .flex_1()
-                                .min_h_0()
-                                .gap_2()
-                                .child(
-                                    h_flex()
-                                        .gap_2()
-                                        .items_center()
-                                        .child(
-                                            div().font_weight(FontWeight::SEMIBOLD).child("Rules"),
-                                        )
-                                        .child(
-                                            div()
-                                                .text_xs()
-                                                .text_color(muted)
-                                                .child(self.rules.len().to_string()),
-                                        )
-                                        // 3.24: label over the Edit/Delete…
-                                        // column at the rows' right end.
-                                        .child(div().flex_1())
-                                        .child(div().text_xs().text_color(muted).child("Actions")),
-                                )
-                                // Add-rule group (3.16): the pattern field
-                                // and the category picker carry labels.
-                                .child(
+                            .child(region_title("Organize"))
+                            .when(!is_child, |section| {
+                                section.child(
                                     h_flex()
                                         .gap_2()
                                         .items_end()
                                         .child(
                                             v_flex()
                                                 .gap_1()
-                                                .child(field_label(muted, "Pattern"))
+                                                .child(field_label(muted, "New subcategory name"))
                                                 .child(
                                                     div()
-                                                        .w(px(280.))
-                                                        .child(Input::new(&self.rule_pattern)),
+                                                        .w(px(220.))
+                                                        .child(Input::new(&self.new_child_name)),
                                                 ),
                                         )
                                         .child(
-                                            Switch::new("rule-regex")
-                                                .label("regex")
-                                                .checked(self.rule_regex)
-                                                .on_click(cx.listener(
-                                                    |this, checked: &bool, _, cx| {
-                                                        this.rule_regex = *checked;
-                                                        this.preview_rule_match(cx);
-                                                        cx.notify();
-                                                    },
-                                                )),
-                                        )
+                                            Button::new("add-child")
+                                                .label(ADD_SUBCATEGORY)
+                                                .debug_selector(move || {
+                                                    format!("label:{ADD_SUBCATEGORY}")
+                                                })
+                                                .on_click(cx.listener(|this, _, window, cx| {
+                                                    this.add_child(window, cx)
+                                                })),
+                                        ),
+                                )
+                            })
+                            .when(is_child, |section| {
+                                section.child(
+                                    h_flex()
+                                        .gap_2()
+                                        .items_end()
                                         .child(
                                             v_flex()
                                                 .gap_1()
-                                                .child(field_label(muted, "Category"))
+                                                .child(field_label(muted, "Move to category"))
                                                 .child(
-                                                    div().w(px(240.)).child(
-                                                        Select::new(&self.rule_target)
-                                                            .placeholder("Category…"),
-                                                    ),
+                                                    div()
+                                                        .w(px(200.))
+                                                        .debug_selector(move || {
+                                                            format!("label:{MOVE_TO_CATEGORY_PH}")
+                                                        })
+                                                        .child(
+                                                            Select::new(&self.move_target)
+                                                                .placeholder(MOVE_TO_CATEGORY_PH),
+                                                        ),
                                                 ),
                                         )
                                         .child(
-                                            Button::new("add-rule")
-                                                .label("Add rule")
-                                                .primary()
+                                            Button::new("move-child")
+                                                .label("Move")
+                                                .disabled(is_system)
                                                 .on_click(cx.listener(|this, _, window, cx| {
-                                                    this.add_rule(window, cx)
+                                                    this.move_child_to_selected_parent(window, cx)
                                                 })),
-                                        )
-                                        .child(preview),
+                                        ),
                                 )
-                                .children(
-                                    self.rule_error
-                                        .clone()
-                                        // 3.24: while a row's editor is open
-                                        // it shows the error under itself.
-                                        .filter(|_| self.editing_rule.is_none())
-                                        .map(|e| div().text_sm().text_color(danger).child(e)),
+                            }),
+                    )
+                    // Rules for this category (3.23): the list below holds
+                    // only these, and the add-rule picker defaults to the
+                    // selection where it can list it.
+                    .child(div().w_full().border_t_1().border_color(border))
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_h_0()
+                            .gap_2()
+                            .child(region_title("Rules"))
+                            // Add-rule group (3.16): labelled fields; the
+                            // pattern column is the flex one, so the row
+                            // fits the panel's width.
+                            .child(
+                                h_flex()
+                                    .gap_2()
+                                    .items_end()
+                                    .child(
+                                        v_flex()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .gap_1()
+                                            .child(field_label(muted, "Pattern"))
+                                            .child(Input::new(&self.rule_pattern)),
+                                    )
+                                    .child(
+                                        Switch::new("rule-regex")
+                                            .label("regex")
+                                            .checked(self.rule_regex)
+                                            .on_click(cx.listener(
+                                                |this, checked: &bool, _, cx| {
+                                                    this.rule_regex = *checked;
+                                                    this.preview_rule_match(cx);
+                                                    cx.notify();
+                                                },
+                                            )),
+                                    )
+                                    .child(
+                                        v_flex()
+                                            .flex_shrink_0()
+                                            .gap_1()
+                                            .child(field_label(muted, "Category"))
+                                            .child(
+                                                div().w(px(160.)).child(
+                                                    Select::new(&self.rule_target)
+                                                        .placeholder("Category…"),
+                                                ),
+                                            ),
+                                    )
+                                    .child(
+                                        Button::new("add-rule")
+                                            .label("Add rule")
+                                            .primary()
+                                            .flex_shrink_0()
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.add_rule(window, cx)
+                                            })),
+                                    ),
+                            )
+                            .child(preview)
+                            .children(
+                                self.rule_error
+                                    .clone()
+                                    // 3.24: while a row's editor is open it
+                                    // shows the error under itself.
+                                    .filter(|_| self.editing_rule.is_none())
+                                    .map(|e| div().text_sm().text_color(danger).child(e)),
+                            )
+                            .when(visible.is_empty(), |section| {
+                                section.child(
+                                    div()
+                                        .text_sm()
+                                        .text_color(muted)
+                                        .debug_selector(|| "cat:rules-empty".into())
+                                        .child("No rules for this category yet"),
                                 )
-                                .child(
+                            })
+                            .when(!visible.is_empty(), |section| {
+                                // The headings mirror `rule_row`'s columns
+                                // (the queue's pattern, 3.16); Actions sits
+                                // over the buttons through invisible
+                                // copies of them.
+                                let heading = h_flex()
+                                    .gap_2()
+                                    .items_end()
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .child(field_label(muted, "Pattern")),
+                                    )
+                                    .child(
+                                        div()
+                                            .w(px(RULE_TYPE_W))
+                                            .flex_shrink_0()
+                                            .child(field_label(muted, "Type")),
+                                    )
+                                    .child(
+                                        div()
+                                            .w(px(RULE_CATEGORY_W))
+                                            .flex_shrink_0()
+                                            .child(field_label(muted, "Category")),
+                                    )
+                                    .child(
+                                        v_flex()
+                                            .items_end()
+                                            .child(field_label(muted, "Actions"))
+                                            .child(
+                                                Button::new("rule-heading-edit-spacer")
+                                                    .label("Edit")
+                                                    .ghost()
+                                                    .text_xs()
+                                                    .opacity(0.0),
+                                            )
+                                            .child(
+                                                Button::new("rule-heading-delete-spacer")
+                                                    .label("Delete…")
+                                                    .ghost()
+                                                    .text_xs()
+                                                    .opacity(0.0),
+                                            ),
+                                    );
+                                section.child(heading).child(
                                     v_virtual_list(
                                         cx.entity(),
                                         "rule-list",
                                         rule_sizes,
                                         move |this, range, _window, cx| {
-                                            let rows: Vec<AnyElement> = this
-                                                .rules
+                                            let rows: Vec<AnyElement> = visible
                                                 .iter()
                                                 .skip(range.start)
                                                 .take(range.len())
@@ -5629,9 +5717,158 @@ impl Shell {
                                     .gap_1()
                                     .flex_1()
                                     .min_h_0(),
+                                )
+                            }),
+                    )
+                    // Delete (3.16's labelled group): the transactions move
+                    // first; system categories can't be deleted, so their
+                    // detail has no Delete section at all.
+                    .when(!is_system, |detail| {
+                        detail
+                            .child(div().w_full().border_t_1().border_color(border))
+                            .child(
+                                v_flex().gap_1().child(region_title("Delete")).child(
+                                    h_flex()
+                                        .gap_2()
+                                        .items_end()
+                                        .child(
+                                            v_flex()
+                                                .gap_1()
+                                                .child(field_label(
+                                                    muted,
+                                                    "Move its transactions to",
+                                                ))
+                                                .child(
+                                                    div()
+                                                        .w(px(260.))
+                                                        .debug_selector(move || {
+                                                            format!("label:{MOVE_TXNS_TO_PH}")
+                                                        })
+                                                        .child(
+                                                            Select::new(&self.delete_target)
+                                                                .placeholder(MOVE_TXNS_TO_PH),
+                                                        ),
+                                                ),
+                                        )
+                                        .child(
+                                            Button::new("delete-category")
+                                                .label(confirm_label)
+                                                .on_click(cx.listener(|this, _, window, cx| {
+                                                    this.arm_delete_category(window, cx)
+                                                })),
+                                        ),
+                                ),
+                            )
+                    })
+                    .into_any_element()
+            }
+        };
+
+        // The header count paints `count_text` and its selector mirrors it
+        // (3.33): the scan test asserts the exact words and cannot be
+        // satisfied by a retired one. 3.23: it counts categories and
+        // subcategories apart.
+        let n_subcategories: usize = self.categories.iter().map(|p| p.children.len()).sum();
+        let count_text = format!(
+            "{} categories · {} subcategories",
+            self.categories.len(),
+            n_subcategories
+        );
+        let count_sel = count_text.clone();
+
+        v_flex()
+            .flex_1()
+            .min_h_0()
+            .gap_3()
+            // Page header (3.23): title, count summary, and the primary
+            // action that opens the new-category form in place.
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(
+                        div()
+                            .text_lg()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("Categories"),
+                    )
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(muted)
+                            .debug_selector(move || format!("label:{count_sel}"))
+                            .child(count_text),
+                    )
+                    .child(
+                        Button::new("new-category")
+                            .label(NEW_CATEGORY)
+                            .debug_selector(move || format!("label:{NEW_CATEGORY}"))
+                            .primary()
+                            .ml_auto()
+                            .flex_shrink_0()
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.new_category_open = true;
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .children(
+                self.cat_error
+                    .clone()
+                    .map(|e| div().text_sm().text_color(danger).child(e)),
+            )
+            // New-category form (3.23): hidden until the header button
+            // opens it; Cancel and a successful add close it.
+            .when(self.new_category_open, |page| {
+                page.child(
+                    h_flex()
+                        .gap_2()
+                        .items_end()
+                        .p_2()
+                        .border_1()
+                        .border_color(border)
+                        .rounded_lg()
+                        .debug_selector(|| "cat:new-form".into())
+                        .child(
+                            v_flex()
+                                .gap_1()
+                                .child(field_label(muted, "New category name"))
+                                .child(div().w(px(220.)).child(Input::new(&self.new_parent_name))),
+                        )
+                        .child(
+                            v_flex()
+                                .gap_1()
+                                .child(field_label(muted, "Kind"))
+                                .child(div().w(px(140.)).child(Select::new(&self.new_parent_kind))),
+                        )
+                        .child(
+                            Button::new("cancel-new-category")
+                                .label("Cancel")
+                                .debug_selector(|| "cat:new-form-cancel".into())
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.new_category_open = false;
+                                    cx.notify();
+                                })),
+                        )
+                        .child(
+                            Button::new("add-parent")
+                                .label(ADD_CATEGORY)
+                                .debug_selector(move || format!("label:{ADD_CATEGORY}"))
+                                .primary()
+                                .on_click(
+                                    cx.listener(|this, _, window, cx| this.add_parent(window, cx)),
                                 ),
                         ),
-                ),
+                )
+            })
+            // Body: the tree panel and the detail panel side by side.
+            .child(
+                h_flex()
+                    .flex_1()
+                    .min_h_0()
+                    .gap_3()
+                    .child(tree)
+                    .child(detail),
             )
             .into_any_element()
     }
