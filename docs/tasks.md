@@ -779,9 +779,111 @@ out.
     rendered text with a long-named tree, a subcategory selected, and each
     validation error triggered); the renamed buttons still work.
 
+**Bugs reported by the user on 2026-11-11** (3.34–3.37, plus a fix folded
+into 3.23). Order: **3.23 → 3.35 → 3.36 → 3.37 → 3.34**, then the rest of
+the order above (3.28 → 3.29 → 3.26).
+
+- 3.23 also fixes: **the rule list overflows the page.** Today each rule
+  row has a fixed 320 px pattern column, a `flex_1` spacer and Edit /
+  Delete… after it, so at 1200 × 720 the buttons are cut off by the window
+  edge and can't be clicked. In 3.23's layout, the Edit and Delete…
+  buttons (and the editor row's Save / Cancel) must paint fully inside the
+  detail panel at 1200 × 720 and at 1600 × 900, with long patterns and
+  long category names. Test that at both sizes.
+
+- [ ] **3.34 To categorize looks cleaner.** The queue is loose rows on the
+  page background: no panel, no row separators, a semibold merchant, and a
+  bright primary Categorize button on every row, so the page is a column
+  of blue buttons. Keep the columns, widths and behavior of 3.22; change
+  the look:
+  - **Header:** "To categorize" and a muted summary "N transactions · M
+    merchants" (`flow::count`).
+  - **One bordered panel** (D7, `radius`, no fill) that fills the rest of
+    the page and holds the list. Column headings are a 32 px heading row
+    inside the panel (`text_sm` muted, `px_3`), with a bottom `border`.
+    Rows are 40 px, `px_3`, each with a bottom `border` divider (none
+    after the last), `list_hover` on hover. Headings keep sharing the row
+    widths.
+  - **Merchant** in normal weight `foreground`; Transactions and Total
+    right-aligned; Dates `text_sm` muted (as now).
+  - **Categorize button:** `.small()` and not primary (outline/ghost
+    style) and **disabled until the row's picker has a category**; it
+    becomes `primary` once one is chosen, so only rows ready to apply
+    stand out. The heading row's invisible spacer matches the new button
+    size.
+  - Empty state unchanged, centered inside the panel.
+  - Still fits 1200 × 720 with no horizontal overflow (3.22 tests stay).
+  - Tests: the panel paints inside the page; a row's Categorize is
+    disabled with no pick and enabled + primary after picking; the summary
+    text shows both counts; 3.22's heading-alignment and fit tests pass.
+    Update the *To categorize* row of `ui-conventions.md`.
+
+- [ ] **3.35 Dashboard filters on one line.** The filter region (a
+  "Filters" title, then two rows each with a label line over a control
+  line) takes about a fifth of the window height. Make it one 32 px row
+  with no region title and no label lines (user request, 2026-11-11; this
+  replaces 3.16's visible-label rule and 3.25's two-row layout for the
+  dashboard filters only):
+  - Left to right, `gap_2`, all controls the default 32 px height and
+    vertically centered: **Date range** select (~170 px); the custom
+    **From** / **To** pickers when the range is Custom (140 px each,
+    shrinking first to a 110 px floor); **Accounts** popover trigger
+    (shows "All accounts" / "N accounts"); **Search** input `flex_1` with a
+    `min_w` of ~140 px, a leading search icon and the placeholder "Search
+    transactions"; an **Options** button (`list-filter` icon + "Options",
+    showing "Options · N" when N of its toggles are on) that opens a
+    popover with the three checkboxes **Include transfers**,
+    **Uncategorized only** and **Show hidden** (same state and handlers as
+    today); then the muted transaction count, `ml_auto`, ending at the
+    page's right edge.
+  - Each control without a visible label gets a hover tooltip naming it
+    (Date range, Accounts, Options).
+  - Must fit 1200 × 720 with the custom range open, nothing clipped and
+    no wrapping. If it can't, return BLOCKED with the measured widths
+    instead of dropping a control.
+  - Tests: the filter region is a single row ≤ 40 px tall; every control
+    and the count paint inside the page at 1200 × 720 with the custom
+    range open; the Options popover's checkboxes toggle the same filters
+    as before (reuse the existing toggle tests); "Options · 2" when two
+    are on; the chart panel's top is at least 80 px higher than before.
+    Update the *Dashboard* row and the *Dashboard filter rows* bullet of
+    `ui-conventions.md`.
+
+- [ ] **3.36 Chart legend under the chart.** The legend column beside the
+  bars (`LEGEND_W`, 140 px) still takes width the plot needs. Move it
+  below the chart and condense it (user request, 2026-11-11; changes
+  decision D1 from "beside" to "below"):
+  - The plot takes the panel's full inner width; `chart_label_plan` /
+    `chart_plot_width` no longer subtract `LEGEND_W` (remove the const).
+  - **Legend:** a wrapping row of chips under the plot (`flex_wrap`,
+    `gap_x_3`, `gap_y_1`): each chip is the 10×10 swatch and the name in
+    `text_xs`, name ellipsized at ~120 px. Clicking, the tooltip
+    (amount · share), the selected chip's `list_active` and "← All
+    categories" (first chip when drilled in) all work as in 3.31.
+  - At most **two lines** of chips (~40 px). If more chips than fit, the
+    last visible chip is "+N more" (muted), whose tooltip lists the hidden
+    names; clicking it does nothing. The chart panel keeps its fixed
+    height (~340 px); the plot takes what the title and legend leave.
+  - Tests: the plot is wider than before at 1200 × 720 (about +150 px);
+    the legend paints below the plot's bottom edge and inside the panel;
+    with 15 categories it uses ≤ 2 lines and shows "+N more" with the
+    right N; clicking a chip still selects / drills; the 3.31 legend and
+    bar-label tests are updated, not deleted. Update the *Dashboard* row
+    of `ui-conventions.md` and D1.
+
+- [ ] **3.37 In-row Undo says "Undo".** 3.32 made the newest history
+  row's Undo an icon-only button, which the user finds unclear. Make it
+  the `undo-2` icon **plus the label "Undo"** (still `.xsmall().ghost()`,
+  vertically centered with ≥ 4 px above and below); armed it still reads
+  "Click again to undo" in `danger`. Keep the "Undo this import" tooltip.
+  Recompute `history_undo_col_w` so both labels show in full and the
+  column is no wider than needed. Tests: the idle button's text is
+  "Undo" and it paints an icon; 3.32's bounds and fit tests still pass
+  in both states. Update the *Imports* row of `ui-conventions.md`.
+
 
 **Done when:** on the demo data the dashboard totals match
-`expected.json`, filters compose, tests cover 3.1–3.33.
+`expected.json`, filters compose, tests cover 3.1–3.37.
 
 ---
 
