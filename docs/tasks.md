@@ -779,8 +779,8 @@ out.
     rendered text with a long-named tree, a subcategory selected, and each
     validation error triggered); the renamed buttons still work.
 
-**Bugs reported by the user on 2026-11-11** (3.34–3.38, plus a fix folded
-into 3.23). Order: **3.23 → 3.35 → 3.36 → 3.37 → 3.38 → 3.34**, then the rest of
+**Bugs reported by the user on 2026-11-11** (3.34–3.39, plus a fix folded
+into 3.23). Order: **3.23 → 3.35 → 3.36 → 3.37 → 3.38/3.39 → 3.34**, then the rest of
 the order above (3.28 → 3.29 → 3.26).
 
 - 3.23 also fixes: **the rule list overflows the page.** Today each rule
@@ -891,9 +891,24 @@ the order above (3.28 → 3.29 → 3.26).
   tooltip whose text is the full `db_path`, with a path longer than the
   sidebar. Note it in the *Sidebar* section of `ui-conventions.md`.
 
+- [ ] **3.39 Show the version in the sidebar.** From `plan.md` → *Show the
+  version subtly in the UI* (planned with the semver tags but never made a
+  task; user asked again 2026-11-11). Add a `crates/financi/build.rs` that
+  sets `FINANCI_VERSION` from `git describe --tags --always --dirty`,
+  falling back to `CARGO_PKG_VERSION` when git or the tags aren't there
+  (and `rerun-if-changed` on `.git/HEAD` and the refs so it stays
+  current). Expose it as one `pub const`/fn (M5's export manifest will
+  reuse it). Show it as the last line of the sidebar footer, `text_xs`
+  muted, e.g. "v0.13.7" (or "v0.13.7-3-gabc1234-dirty"), ellipsized with
+  the same kind of hover tooltip as 3.38. Do 3.38 and 3.39 in one branch
+  (same footer). Tests: the footer paints the version text and it equals
+  the const; the fallback path is unit-tested (factor the choice into a
+  function that takes the git output). Tick the plan.md box too, and note
+  it in the *Sidebar* section of `ui-conventions.md`.
+
 
 **Done when:** on the demo data the dashboard totals match
-`expected.json`, filters compose, tests cover 3.1–3.38.
+`expected.json`, filters compose, tests cover 3.1–3.39.
 
 ---
 
