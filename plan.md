@@ -11,7 +11,7 @@ This file holds requirements and settled decisions. `docs/tasks.md` is the task 
 | M0: Skeleton + GPUI spike | Done |
 | M1: Amex import, end to end | Done |
 | M2: Master CSVs + categorize | Done |
-| M3: Core views | In progress: 3.1–3.22 done. Remaining, in this order: 3.24 (edit and delete rules), 3.25 (dashboard alignment), 3.27 (status toasts), 3.30 (summary scrolls sideways), 3.31 (slimmer chart legend), 3.32 (Undo fits its row), 3.23 (Categories page layout), 3.28 (Rules page), 3.29 (show a row's rule), 3.26 (scrollbars everywhere) |
+| M3: Core views | In progress: 3.1–3.22 done. Remaining, in this order: 3.24 (edit and delete rules), 3.25 (dashboard alignment), 3.27 (status toasts), 3.30 (summary scrolls sideways), 3.31 (slimmer chart legend), 3.32 (Imports buttons: row-sized Undo, icons), 3.33 (category / subcategory wording), 3.23 (Categories page layout), 3.28 (Rules page), 3.29 (show a row's rule), 3.26 (scrollbars everywhere) |
 | M4: Simplii Visa, transfer pairing, near-match | Done |
 | M5: Export / restore | Not started |
 
@@ -238,7 +238,7 @@ Decisions recorded in the sections above are not repeated. These are the remaini
 
 ## Roadmap
 
-**v1:** M3 (remaining: 3.24, 3.25, 3.27, 3.30, 3.31, 3.32, 3.23, 3.28, 3.29, 3.26, in that order), then M5, per `docs/tasks.md`.
+**v1:** M3 (remaining: 3.24, 3.25, 3.27, 3.30, 3.31, 3.32, 3.33, 3.23, 3.28, 3.29, 3.26, in that order), then M5, per `docs/tasks.md`.
 
 **Prototype fixes** (feedback from 2026-11-08)
 
@@ -247,7 +247,8 @@ Decisions recorded in the sections above are not repeated. These are the remaini
 - [ ] **Show status messages as toasts.** *(Added 2026-11-10; task 3.27.)* The "Categorized MERCHANT" line and other status text sit at the top of every page until cleared and push the content down. They become toasts in the window corner that take no layout space: confirmations fade after a few seconds, errors stay until closed.
 - [ ] **Let the monthly summary scroll sideways.** *(Added 2026-11-10; task 3.30.)* Long ranges overflow the panel and cut off months and the total. Category names and Total stay pinned while the months scroll horizontally, starting at the latest month, with a scrollbar while they overflow.
 - [ ] **Slim the chart legend.** *(Added 2026-11-10; task 3.31.)* The legend repeats each category's amount and share, so it is wide and squeezes the chart. It shows only the color and name; hovering a row shows the amount and share, and each bar shows its share above it.
-- [ ] **Fit the Undo button in its import history row.** *(Added 2026-11-10; task 3.32.)* The in-row Undo… is a full-size button that fills the 32 px row. It becomes a small ghost button centered in the row, and buttons inside table rows are small from now on.
+- [ ] **Fit the Undo button in its import history row.** *(Added 2026-11-10; task 3.32.)* The in-row Undo… is a full-size button that fills the 32 px row. It becomes a small ghost button centered in the row, and buttons inside table rows are small from now on. The page's buttons use icons instead of a trailing "…" (Import CSV, Undo, Export, Restore); the in-row Undo is icon-only with a tooltip.
+- [ ] **Say category and subcategory, not parent and child.** *(Added 2026-11-10; task 3.33.)* Every user-visible label, placeholder, button and error uses category / subcategory; the code and schema keep their names.
 - [ ] **Find and organize rules on a Rules page.** *(Added 2026-11-10; task 3.28. After 3.24.)* Rules can only be seen per category, so finding one means guessing its category. A Rules page lists every rule grouped by category, searchable by pattern or category name, with a "test a description" mode that shows which rule wins, an Unused filter, a per-rule count of the transactions it decides, and checkbox selection to move several rules to another category at once.
 - [ ] **Show which rule categorized a transaction.** *(Added 2026-11-10; task 3.29.)* The dashboard row menu gets Show rule, which opens the Rules page on that rule, or says why no rule applies (set by hand, card payment, no match).
 - [ ] **Show a scrollbar on everything that scrolls.** *(Added 2026-11-10; task 3.26. Do after 3.22 and 3.23, which re-lay out two of the lists.)* Every scrollable region (category tree, rule list, To categorize queue, chart legend, monthly summary, Transfers list, tables, long popovers and dropdowns) shows a scrollbar whenever its content overflows, visible without having to scroll first, and none when the content fits.

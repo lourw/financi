@@ -357,7 +357,9 @@ beside the monthly summary (right); then the transaction table.
 
 **Order for the open M3 tasks** (added 2026-11-10; the numbers record when
 a task was written, not when to do it): **3.24 → 3.25 → 3.27 → 3.30 →
-3.31 → 3.32 → 3.23 → 3.28 → 3.29 → 3.26** (3.22 is done). 3.24 comes
+3.31 → 3.32 → 3.33 → 3.23 → 3.28 → 3.29 → 3.26** (3.22 is done).
+3.33 comes before 3.23 so the re-laid-out page is written with the new
+words. 3.24 comes
 first because it is the only one that blocks the user: a wrong rule can't
 be corrected today. 3.25, 3.27, 3.30, 3.31 and 3.32 are small layout fixes
 that give back space on the dashboard and other pages. 3.28 builds on 3.24's row editor, and 3.29 on 3.28's page. 3.26 goes
@@ -635,7 +637,8 @@ out.
     three checked rules recategorizes their unlocked rows and leaves
     locked rows alone; with thousands of rules only visible rows build;
     everything fits at 1200 × 720. Add a *Rules* row to
-    `ui-conventions.md`.
+    `ui-conventions.md`, and drop "there's no Rules page" from its
+    *Categories* row.
 
 - [ ] **3.29 "Which rule did this?" from a transaction.** On the dashboard
   table's row context menu, add **Show rule**: it opens the Rules page
@@ -704,7 +707,7 @@ out.
     panel without overlapping at 1200 × 720 with 15 categories. Update
     the dashboard row of `ui-conventions.md`.
 
-- [ ] **3.32 Undo fits its row in the import history.** The Undo… button in
+- [ ] **3.32 Imports page buttons: row-sized Undo, icons instead of "…".** The Undo… button in
   the newest row of the Imports history table (`HistoryDelegate`,
   `Button::new("undo-import")`) is a default medium `Button` (32 px tall)
   inside a 32 px table row (`Size::table_row_height`), so it fills the row
@@ -719,15 +722,66 @@ out.
     show in full and the column isn't wider than it needs to be.
   - The header's **Undo…** next to Import CSV… stays; the two share the
     same confirm state as today.
+  - **Icons instead of the trailing "…"** (user request, 2026-11-10). The
+    app already registers the full Lucide catalog (`icon_assets()` →
+    `AllAssets`), so use `IconName` with `Button::icon`:
+    - Header: **Import CSV** (`file-up`, still primary), **Undo**
+      (`undo-2`), **Export** (`download`), **Restore**
+      (`archive-restore`): icon on the left, label without "…".
+    - In-row Undo: icon only (`undo-2`), xsmall ghost, with a hover
+      tooltip "Undo this import". When armed it shows the text "Click
+      again to undo" in `danger` (with the icon), so the two-click
+      confirm still says what it does.
+    - Change `ui-conventions.md` to match: the *Imports* row, and the copy
+      rule at *Copy* (line ~139): on the Imports page buttons carry an
+      icon and no "…". Leave "…" elsewhere (Rename…, Delete…, New
+      category…) unless the user asks.
   - Record the rule in `ui-conventions.md` (*Tables*): buttons inside table
     rows are `xsmall` ghost buttons, never the default size.
   - Tests: the in-row Undo button's bounds lie inside its row with ≥ 4 px
-    above and below, in both the "Undo…" and "Click again to undo"
-    states; the newest row is the same height as the other rows; both
-    labels fit the column without clipping.
+    above and below, in both the idle and "Click again to undo" states;
+    the newest row is the same height as the other rows; the armed label
+    fits the column without clipping; the header buttons' labels contain
+    no "…" and each paints an icon; hovering the in-row Undo shows its
+    tooltip.
+
+- [ ] **3.33 Say "category" and "subcategory", never "parent" and "child".**
+  The UI copy uses the data model's words. Users think in categories and
+  subcategories. Change every user-visible string; keep code, schema and
+  identifiers (`parent_id`, `create_child`, element ids such as
+  `add-child`, which tests use) as they are.
+  - Categories page (`ui.rs`): "New parent name" → "New category name";
+    "Add parent" → "Add category"; "N parents" → "N categories" (and 3.23's
+    "N parents · M categories" → "N categories · M subcategories"); "New
+    child name" → "New subcategory name"; "Add child" → "Add subcategory";
+    "Move to parent" → "Move to category"; "Give the parent a name." →
+    "Give the category a name."; "Give the child a name." → "Give the
+    subcategory a name."; "Choose the parent to move it under." → "Choose
+    the category to move it under."
+  - Error messages that reach the UI from `financi_db::Error`
+    (`crates/financi-db/src/lib.rs`: "only child categories can hold
+    transactions and rules", "category … is a parent", "children cannot
+    have children", "still has children", "under the same parent", …):
+    reword to category / subcategory and use names, not ids, where the
+    caller has them. Update tests that assert on the text.
+  - Sweep every page, not only Categories: dashboard (chart tooltip
+    "of Food" is fine), To categorize, import preview, pickers'
+    placeholders and empty states. `grep -n -i -E '"[^"]*(parent|child)'
+    crates/financi/src/ui.rs` must show only ids, debug selectors and
+    comments afterwards.
+  - Docs: `ui-conventions.md` user-facing copy (the *Categories* row, the
+    `Parent › Child` table label becomes `Category › Subcategory`, the
+    mockup's "parents × months"); add a *Copy* rule: say category and
+    subcategory in the UI. Pending tasks written with the old words (3.23,
+    3.28) follow this rule when they're implemented.
+  - Tests: the Categories page renders none of the words parent, child
+    or children in any label, placeholder, button or error (scan the
+    rendered text with a long-named tree, a subcategory selected, and each
+    validation error triggered); the renamed buttons still work.
+
 
 **Done when:** on the demo data the dashboard totals match
-`expected.json`, filters compose, tests cover 3.1–3.32.
+`expected.json`, filters compose, tests cover 3.1–3.33.
 
 ---
 
