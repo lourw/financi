@@ -5018,6 +5018,11 @@ impl Shell {
         let color = colors.get(&id).copied().unwrap_or(muted);
         div()
             .id(SharedString::from(format!("cat-row-{id}")))
+            // Fill the list's width, or the row stays at its natural width:
+            // the counts would not line up at the right edge, the selection
+            // background would cover only the text, and a long name would
+            // never truncate (the queue rows, 3.16).
+            .w_full()
             .h_8()
             .px_2()
             .pl(px(8. + 16. * depth as f32))
@@ -5119,6 +5124,7 @@ impl Shell {
                     .flex_shrink_0()
                     .text_xs()
                     .text_color(muted)
+                    .debug_selector(move || format!("rule:type-col:{id}"))
                     .child(if rule.is_regex { "regex" } else { "substring" }),
             )
             .child(
@@ -5129,6 +5135,7 @@ impl Shell {
                     .overflow_hidden()
                     .text_ellipsis()
                     .text_color(muted)
+                    .debug_selector(move || format!("rule:category-col:{id}"))
                     .child(target),
             )
             .child(
@@ -5582,6 +5589,7 @@ impl Shell {
                                 h_flex()
                                     .gap_2()
                                     .items_end()
+                                    .debug_selector(|| "cat:add-rule-row".into())
                                     .child(
                                         v_flex()
                                             .flex_1()
@@ -5644,47 +5652,64 @@ impl Shell {
                             })
                             .when(!visible.is_empty(), |section| {
                                 // The headings mirror `rule_row`'s columns
-                                // (the queue's pattern, 3.16); Actions sits
-                                // over the buttons through invisible
-                                // copies of them.
+                                // (the queue's pattern, 3.16). Actions sits
+                                // on the same line as the other labels,
+                                // right-aligned over the buttons: invisible
+                                // copies of the row's Edit and Delete… give
+                                // the column the cluster's exact width, and
+                                // their box is clipped to 0 height so the
+                                // heading stays a single line.
                                 let heading = h_flex()
                                     .gap_2()
                                     .items_end()
+                                    .debug_selector(|| "rule:heading-row".into())
                                     .child(
-                                        div()
-                                            .flex_1()
-                                            .min_w_0()
-                                            .child(field_label(muted, "Pattern")),
+                                        div().flex_1().min_w_0().child(
+                                            field_label(muted, "Pattern")
+                                                .debug_selector(|| "rule:heading-pattern".into()),
+                                        ),
                                     )
                                     .child(
-                                        div()
-                                            .w(px(RULE_TYPE_W))
-                                            .flex_shrink_0()
-                                            .child(field_label(muted, "Type")),
+                                        div().w(px(RULE_TYPE_W)).flex_shrink_0().child(
+                                            field_label(muted, "Type")
+                                                .debug_selector(|| "rule:heading-type".into()),
+                                        ),
                                     )
                                     .child(
-                                        div()
-                                            .w(px(RULE_CATEGORY_W))
-                                            .flex_shrink_0()
-                                            .child(field_label(muted, "Category")),
+                                        div().w(px(RULE_CATEGORY_W)).flex_shrink_0().child(
+                                            field_label(muted, "Category")
+                                                .debug_selector(|| "rule:heading-category".into()),
+                                        ),
                                     )
                                     .child(
                                         v_flex()
-                                            .items_end()
-                                            .child(field_label(muted, "Actions"))
+                                            .flex_shrink_0()
                                             .child(
-                                                Button::new("rule-heading-edit-spacer")
-                                                    .label("Edit")
-                                                    .ghost()
-                                                    .text_xs()
-                                                    .opacity(0.0),
+                                                field_label(muted, "Actions")
+                                                    .text_right()
+                                                    .debug_selector(|| {
+                                                        "rule:heading-actions".into()
+                                                    }),
                                             )
                                             .child(
-                                                Button::new("rule-heading-delete-spacer")
-                                                    .label("Delete…")
-                                                    .ghost()
-                                                    .text_xs()
-                                                    .opacity(0.0),
+                                                h_flex()
+                                                    .gap_2()
+                                                    .h_0()
+                                                    .overflow_hidden()
+                                                    .child(
+                                                        Button::new("rule-heading-edit-spacer")
+                                                            .label("Edit")
+                                                            .ghost()
+                                                            .text_xs()
+                                                            .opacity(0.0),
+                                                    )
+                                                    .child(
+                                                        Button::new("rule-heading-delete-spacer")
+                                                            .label("Delete…")
+                                                            .ghost()
+                                                            .text_xs()
+                                                            .opacity(0.0),
+                                                    ),
                                             ),
                                     );
                                 section.child(heading).child(

@@ -4235,6 +4235,122 @@ fn the_categories_page_fits_the_minimum_window(cx: &mut TestAppContext) {
         title.size.width,
         panel.size.width,
     );
+
+    // A tree row fills its panel: a content-width row would leave the
+    // counts floating mid-panel and a long name would never truncate, so
+    // the row's right edge is the tree panel's content edge (border 1 px
+    // + `p_2`).
+    let tree = window
+        .debug_bounds("cat:tree-panel")
+        .expect("the tree panel");
+    let row = window
+        .debug_bounds(leaked(format!("cat-tree-row-{child}")))
+        .expect("the tree paints the selected row");
+    let tree_content_right = tree.origin.x + tree.size.width - px(9.);
+    assert!(
+        (row.origin.x + row.size.width - tree_content_right).abs() < px(1.),
+        "the tree row fills the panel to its content edge: row right {:?}, \
+         content edge {tree_content_right:?}",
+        row.origin.x + row.size.width,
+    );
+    // A fixed control pinned to the detail panel: the add-rule row's last
+    // child is the primary button, so the row must end exactly at the
+    // panel's content edge (border 1 px + `p_4`).
+    let add_row = window
+        .debug_bounds("cat:add-rule-row")
+        .expect("the detail panel paints the add-rule row");
+    let detail_content_right = panel.origin.x + panel.size.width - px(17.);
+    assert!(
+        (add_row.origin.x + add_row.size.width - detail_content_right).abs() < px(1.),
+        "the add-rule row fills the panel to its content edge: row right \
+         {:?}, content edge {detail_content_right:?}",
+        add_row.origin.x + add_row.size.width,
+    );
+}
+
+/// 3.23: the rule-list headings use the rows' widths, and the Actions
+/// label sits on the same line as the others, right-aligned over the
+/// rows' buttons (3.24 MUST-KEEP). A stacked label-plus-buttons column
+/// measured 83.5 px tall, slid the Actions label 64 px up, and pushed
+/// the Type/Category headings 62 px right of their columns.
+#[gpui::test]
+fn the_rule_list_headings_sit_over_their_columns(cx: &mut TestAppContext) {
+    let (handle, _shell, rule, _first, _second) = open_rule_fixture(cx);
+    with_window(cx, handle, |window, cx| {
+        window.resize(size(px(1200.), px(720.)));
+        window.bounds_changed(cx);
+    });
+    cx.run_until_parked();
+    let mut window = VisualTestContext::from_window(handle, cx);
+    draw_frame(cx, handle);
+    for (label, heading_sel, column_sel) in [
+        (
+            "Pattern",
+            "rule:heading-pattern",
+            format!("rule:pattern-col:{rule}"),
+        ),
+        ("Type", "rule:heading-type", format!("rule:type-col:{rule}")),
+        (
+            "Category",
+            "rule:heading-category",
+            format!("rule:category-col:{rule}"),
+        ),
+    ] {
+        let heading = window
+            .debug_bounds(heading_sel)
+            .unwrap_or_else(|| panic!("the rules list paints the {label:?} heading"));
+        let column = window
+            .debug_bounds(leaked(column_sel))
+            .unwrap_or_else(|| panic!("the rule row paints the {label:?} column"));
+        assert!(
+            (heading.origin.x - column.origin.x).abs() < px(1.),
+            "the {label:?} heading starts where its column starts: \
+             heading x {:?}, column x {:?}",
+            heading.origin.x,
+            column.origin.x,
+        );
+    }
+    // The Actions label is right-aligned over the buttons: its right
+    // edge is the row's right edge (the Delete… button ends there).
+    let actions = window
+        .debug_bounds("rule:heading-actions")
+        .expect("the rules list paints the Actions heading");
+    let row = window
+        .debug_bounds(leaked(format!("rule-row-{rule}")))
+        .expect("the rules list paints the fixture's row");
+    assert!(
+        (actions.origin.x + actions.size.width - (row.origin.x + row.size.width)).abs() < px(1.),
+        "the Actions heading ends where the row's buttons end: \
+         heading right {:?}, row right {:?}",
+        actions.origin.x + actions.size.width,
+        row.origin.x + row.size.width,
+    );
+    // A single line: every heading label shares one line, and the whole
+    // heading is no taller than a line of labels.
+    let type_heading = window
+        .debug_bounds("rule:heading-type")
+        .expect("the rules list paints the Type heading");
+    assert!(
+        (actions.origin.y - type_heading.origin.y).abs() < px(1.),
+        "the Actions heading sits on the same line as the others: \
+         Actions y {:?}, Type y {:?}",
+        actions.origin.y,
+        type_heading.origin.y,
+    );
+    let heading = window
+        .debug_bounds("rule:heading-row")
+        .expect("the rules list paints its heading row");
+    assert!(
+        heading.size.height < px(24.),
+        "the heading is a single line tall: it measures {:?}",
+        heading.size.height,
+    );
+    assert!(
+        heading.origin.y < row.origin.y,
+        "the heading sits above the rows: heading y {:?}, row y {:?}",
+        heading.origin.y,
+        row.origin.y,
+    );
 }
 
 // -- row context menu (2.9) -------------------------------------------------
