@@ -5,7 +5,9 @@
 //! rules over the unlocked transactions ([`reapply_rules`]) in the same SQL
 //! transaction as the rule change.
 
-use financi_core::rules::{Rule, pick_category, validate_regex};
+use std::collections::HashMap;
+
+use financi_core::rules::{Rule, pick_category, validate_regex, winning_rule};
 use rusqlite::{Connection, OptionalExtension};
 
 use crate::categories::ensure_assignable;
@@ -115,6 +117,28 @@ pub fn delete_rule(conn: &Connection, id: i64) -> Result<()> {
     Ok(())
 }
 
+/// Move every rule in `ids` to the child category `category_id` — the
+/// Rules page bulk move (3.28) — in one SQL transaction, then re-run the
+/// rules once so the rows they decide follow. Rejects a target that isn't
+/// an existing child (as [`add_rule`] does) or an unknown rule id, and on
+/// any error nothing moves. Single-rule moves go through [`update_rule`].
+pub fn move_rules(conn: &Connection, ids: &[i64], category_id: i64) -> Result<()> {
+    let tx = conn.unchecked_transaction()?;
+    ensure_assignable(&tx, category_id)?;
+    for id in ids {
+        let updated = tx.execute(
+            "UPDATE category_rules SET category_id = ?1 WHERE id = ?2",
+            (category_id, id),
+        )?;
+        if updated == 0 {
+            return Err(DbError::UnknownRule(*id));
+        }
+    }
+    reapply_rules(&tx)?;
+    tx.commit()?;
+    Ok(())
+}
+
 /// Re-run every rule over all unlocked transactions: each row gets the
 /// winning rule's category, or `NULL` (Uncategorized) when nothing matches.
 /// Locked rows (`category_locked = 1`) are never touched — manual overrides
@@ -138,6 +162,40 @@ pub fn reapply_rules(conn: &Connection) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// How many transactions each rule currently decides (the Rules page
+/// "Uses" column, 3.28), over unlocked rows that aren't card payments
+/// (those are locked at import; the category filter is belt-and-braces).
+/// A row counts for *the winning rule* only — same [`winning_rule`] logic
+/// [`reapply_rules`] applies — so the counts agree with the stored
+/// categories after a re-run. Rules that decide nothing are absent from
+/// the map; callers treat a miss as zero.
+pub fn rule_use_counts(conn: &Connection) -> Result<HashMap<i64, usize>> {
+    let rules = list_rules(conn)?;
+    let mut stmt = conn.prepare(
+        "SELECT description_raw
+           FROM transactions t
+          WHERE t.category_locked = 0
+            AND (
+              t.category_id IS NULL
+              OR t.category_id NOT IN (
+                SELECT c.id
+                  FROM categories c
+                  JOIN categories p ON p.id = c.parent_id
+                 WHERE c.name = 'Card Payment' AND p.name = 'Transfers'
+                   AND p.parent_id IS NULL
+              )
+            )",
+    )?;
+    let descriptions = stmt.query_map([], |r| r.get::<_, String>(0))?;
+    let mut counts: HashMap<i64, usize> = HashMap::new();
+    for row in descriptions {
+        if let Some(rule_id) = winning_rule(&rules, &row?) {
+            *counts.entry(rule_id).or_insert(0) += 1;
+        }
+    }
+    Ok(counts)
 }
 
 /// How many unlocked transactions the pattern matches, for the live
@@ -497,5 +555,132 @@ mod tests {
             edited, 1,
             "the row the old pattern already matched is left out"
         );
+    }
+
+    /// Counted for *the winning rule* only, and the counts agree with the
+    /// categories `reapply_rules` stored.
+    #[test]
+    fn rule_use_counts_the_winning_rule_only() {
+        let conn = open_in_memory().unwrap();
+        let coffee_cat = child_category(&conn);
+        let home = create_parent(&conn, "Home", CategoryKind::Expense).unwrap();
+        let cafe_cat = create_child(&conn, home, "Cafes").unwrap();
+
+        let both = add_transaction(&conn, "CORNER COFFEE SHOP", false, None);
+        let cafe = add_transaction(&conn, "CAFE O VANCOUVER", false, None);
+        let grocery = add_transaction(&conn, "GROCERY STORE", false, None);
+
+        let loose = add_rule(&conn, "COFFEE", false, coffee_cat).unwrap();
+        let specific = add_rule(&conn, "COFFEE SHOP", false, cafe_cat).unwrap();
+        let cafe_rule = add_rule(&conn, "CAFE", false, cafe_cat).unwrap();
+
+        let counts = rule_use_counts(&conn).unwrap();
+        assert_eq!(
+            counts.get(&loose),
+            None,
+            "the losing rule decides no transaction"
+        );
+        assert_eq!(counts.get(&specific), Some(&1));
+        assert_eq!(counts.get(&cafe_rule), Some(&1));
+        assert_eq!(
+            category_of(&conn, both),
+            Some(cafe_cat),
+            "the longest pattern won the shared row"
+        );
+        assert_eq!(category_of(&conn, cafe), Some(cafe_cat));
+        assert_eq!(category_of(&conn, grocery), None);
+
+        reapply_rules(&conn).unwrap();
+        assert_eq!(
+            counts,
+            rule_use_counts(&conn).unwrap(),
+            "re-running rules changes nothing, so neither do the counts"
+        );
+    }
+
+    #[test]
+    fn rule_use_counts_skips_locked_rows_and_card_payments() {
+        let conn = open_in_memory().unwrap();
+        let cat = child_category(&conn);
+        let card = crate::categories::card_payment_category(&conn).unwrap();
+
+        add_transaction(&conn, "COFFEE VANCOUVER", false, None);
+        add_transaction(&conn, "COFFEE LOCKED", true, Some(cat));
+        let card_row = add_transaction(&conn, "COFFEE PAYMENT RECEIVED", false, None);
+
+        let rule = add_rule(&conn, "COFFEE", false, cat).unwrap();
+        assert_eq!(rule_use_counts(&conn).unwrap().get(&rule), Some(&2));
+
+        // A row sitting in Card Payment (where import locks card payments)
+        // is not a use, even when a rule matches its description.
+        conn.execute(
+            "UPDATE transactions SET category_id = ?1 WHERE id = ?2",
+            (card, card_row),
+        )
+        .unwrap();
+        assert_eq!(rule_use_counts(&conn).unwrap().get(&rule), Some(&1));
+    }
+
+    #[test]
+    fn move_rules_moves_every_id_and_recategorizes_rows() {
+        let conn = open_in_memory().unwrap();
+        let groceries = child_category(&conn);
+        let home = create_parent(&conn, "Home", CategoryKind::Expense).unwrap();
+        let dining = create_child(&conn, home, "Restaurants").unwrap();
+
+        let coffee = add_transaction(&conn, "COFFEE VANCOUVER", false, None);
+        let burrito = add_transaction(&conn, "BEAN BURRITO", false, None);
+        let locked = add_transaction(&conn, "COFFEE EXPRESS", true, Some(groceries));
+
+        let r1 = add_rule(&conn, "COFFEE", false, groceries).unwrap();
+        let r2 = add_rule(&conn, "BEAN", false, groceries).unwrap();
+        let r3 = add_rule(&conn, "TEA", false, groceries).unwrap();
+
+        move_rules(&conn, &[r1, r2, r3], dining).unwrap();
+
+        for id in [r1, r2, r3] {
+            assert_eq!(
+                fetch_rule(&conn, id).unwrap().category_id,
+                dining,
+                "rule {id} moved"
+            );
+        }
+        assert_eq!(
+            category_of(&conn, coffee),
+            Some(dining),
+            "unlocked rows follow the rule"
+        );
+        assert_eq!(category_of(&conn, burrito), Some(dining));
+        assert_eq!(
+            category_of(&conn, locked),
+            Some(groceries),
+            "locked rows are left alone"
+        );
+    }
+
+    #[test]
+    fn move_rules_refuses_bad_targets_and_ids_atomically() {
+        let conn = open_in_memory().unwrap();
+        let cat = child_category(&conn);
+        let parent = create_parent(&conn, "Home", CategoryKind::Expense).unwrap();
+        let r1 = add_rule(&conn, "COFFEE", false, cat).unwrap();
+        let before = fetch_rule(&conn, r1).unwrap();
+
+        assert!(matches!(
+            move_rules(&conn, &[r1], parent).unwrap_err(),
+            DbError::ParentCategoryNotAssignable(name) if name == "Home"
+        ));
+        assert!(matches!(
+            move_rules(&conn, &[r1], 999).unwrap_err(),
+            DbError::UnknownCategory(999)
+        ));
+        // An unknown id mid-list rolls the whole move back: r1 stays put
+        // even though its own update succeeded inside the transaction.
+        let other = create_child(&conn, parent, "Dining").unwrap();
+        assert!(matches!(
+            move_rules(&conn, &[r1, 999], other).unwrap_err(),
+            DbError::UnknownRule(999)
+        ));
+        assert_eq!(fetch_rule(&conn, r1).unwrap(), before);
     }
 }
