@@ -779,8 +779,8 @@ out.
     rendered text with a long-named tree, a subcategory selected, and each
     validation error triggered); the renamed buttons still work.
 
-**Bugs reported by the user on 2026-11-11** (3.34–3.43, plus a fix folded
-into 3.23). Order: **3.40 → 3.23 → 3.41/3.42 → 3.43 → 3.35 → 3.36 → 3.37 → 3.38/3.39 → 3.34**, then the rest of
+**Bugs reported by the user on 2026-11-11** (3.34–3.44, plus a fix folded
+into 3.23). Order: **3.40 → 3.23 → 3.41/3.42 → 3.43 → 3.44 → 3.35 → 3.36 → 3.37 → 3.38/3.39 → 3.34**, then the rest of
 the order above (3.28 → 3.29 → 3.26).
 
 - 3.23 also fixes: **the rule list overflows the page.** Today each rule
@@ -899,6 +899,33 @@ the order above (3.28 → 3.29 → 3.26).
     picker" with "Buttons never end in "…"; actions carry a Lucide icon
     left of the label (menus keep "…")", and update the *Categories* row.
 
+- [ ] **3.44 Every transactions-table column sorts.** On the dashboard
+  only Date and Amount sort (3.4); Account, Description and Category
+  don't (user request, 2026-11-11).
+  - **DB** (`financi-db/src/views.rs`): add `Account`, `Description` and
+    `Category` to `TxSortColumn`. Order by what the cell shows,
+    case-insensitively (`COLLATE NOCASE`):
+    - Account: `i.name || ' · ' || a.name`.
+    - Description: `trim(t.description_raw)`.
+    - Category: `COALESCE(c.name, 'Uncategorized')`, so Uncategorized
+      sorts by its label rather than first or last.
+    - Ties: `t.posted_date DESC, t.import_id DESC, t.source_line ASC`
+      (as Amount does), so the order is stable.
+    Turn the `match` into a per-column key plus direction instead of one
+    arm per pair.
+  - **UI** (`TxTable::column` / `perform_sort`): wrap columns 1–3 in the
+    same `sort(...)` helper so all five show the sort icon, and map
+    `col_ix` 1–3 in `perform_sort`. First click on a text column sorts
+    A→Z; Date and Amount keep their current first direction (descending).
+  - The sort survives refreshes and filter changes as it does now; the
+    column widths don't change (the sort icon fits in the existing
+    headers; check at 1200 × 720 that the Account header isn't clipped).
+  - Tests: a DB test per new column in both directions (including an
+    Uncategorized row and mixed-case names, and a tie falling back to
+    date); a UI test that clicking each header re-sorts the rows and the
+    header shows the direction; the 3.4 sort tests still pass. Update
+    the *Dashboard* row of `ui-conventions.md` ("every column sorts").
+
 - [ ] **3.34 To categorize looks cleaner.** The queue is loose rows on the
   page background: no panel, no row separators, a semibold merchant, and a
   bright primary Categorize button on every row, so the page is a column
@@ -1016,7 +1043,7 @@ the order above (3.28 → 3.29 → 3.26).
 
 
 **Done when:** on the demo data the dashboard totals match
-`expected.json`, filters compose, tests cover 3.1–3.43.
+`expected.json`, filters compose, tests cover 3.1–3.44.
 
 ---
 
