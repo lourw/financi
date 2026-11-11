@@ -27,12 +27,14 @@ use gpui_kit::{
 };
 
 use super::{
-    BUTTON_PAD_X, CELL_PAD_X, CHART_CHAR_PX, CHART_LABEL_GAP, CHART_LABEL_MAX_CHARS,
-    CHART_LABEL_MIN_CHARS, DashboardBody, ExportData, HISTORY_DATES_W, HISTORY_FLEX_MIN_W,
-    HISTORY_ROWS_W, HISTORY_TIME_W, ImportPanel, LegendSelection, NAV_ROW_INSET, NEW_ACCOUNT,
-    PAGE_PAD, Page, PlanState, RestoreBackup, RowMenuItem, SIDEBAR_W, Shell, SummaryRowKind,
-    TABLE_BORDER_X, TEXT_SM_CHAR_PX, TX_FIXED_W, UNDO_LABEL_MAX, UndoLastImport, band_label_budget,
-    history_flex_widths, history_undo_col_w, row_menu_items, short_chart_labels, tx_flex_widths,
+    BAR_LABEL_MAX_CHARS, BUTTON_PAD_X, CELL_PAD_X, CHART_CHAR_PX, CHART_LABEL_GAP,
+    CHART_LABEL_MAX_CHARS, CHART_LABEL_MIN_CHARS, DashboardBody, ExportData, HISTORY_DATES_W,
+    HISTORY_FLEX_MIN_W, HISTORY_ROWS_W, HISTORY_TIME_W, ImportPanel, LEGEND_W, LegendSelection,
+    NAV_ROW_INSET, NEW_ACCOUNT, PAGE_PAD, Page, PlanState, RestoreBackup, RowMenuItem, SIDEBAR_W,
+    Shell, SummaryRowKind, TABLE_BORDER_X, TEXT_SM_CHAR_PX, TX_FIXED_W, UNDO_LABEL_MAX,
+    UndoLastImport, band_label_budget, bar_label_plan, bar_label_slots, bar_share_label,
+    chart_tooltip_value, history_flex_widths, history_undo_col_w, row_menu_items,
+    short_chart_labels, tx_flex_widths,
 };
 
 fn demo(name: &str) -> PathBuf {
@@ -4688,8 +4690,11 @@ fn top_category_id(shell: &Entity<Shell>, cx: &App, name: &str) -> i64 {
         .expect("a real category")
 }
 
+/// The legend draws no numbers since 3.31, but the model rows still
+/// carry each parent's amount and share — that is what the bar and
+/// legend-row tooltips show.
 #[gpui::test]
-fn legend_shows_parents_with_amounts_and_shares(cx: &mut TestAppContext) {
+fn chart_rows_carry_amounts_and_shares_for_the_tooltips(cx: &mut TestAppContext) {
     let (_handle, shell) = open_shell(cx, seed_chart_rows);
     wait_until(cx, "three chart rows", |cx| {
         shell.read(cx).chart_rows.len() == 3
@@ -4920,6 +4925,104 @@ fn band_label_budget_keeps_labels_inside_their_spacing() {
     assert_eq!(band_label_budget(779., 0), (0, 0));
 }
 
+// -- Bar share labels and the slim legend (3.31) ------------------------
+
+#[test]
+fn bar_share_labels_read_as_whole_percents() {
+    assert_eq!(bar_share_label(0.75), "75%");
+    assert_eq!(bar_share_label(0.182), "18%");
+    assert_eq!(bar_share_label(1.0), "100%");
+    assert_eq!(
+        bar_share_label(0.999),
+        "100%",
+        "rounds up to a whole percent"
+    );
+    assert_eq!(
+        bar_share_label(0.01),
+        "1%",
+        "one percent is a whole percent"
+    );
+    assert_eq!(
+        bar_share_label(0.009),
+        "0.9%",
+        "below one percent, one decimal"
+    );
+    assert_eq!(bar_share_label(0.004), "0.4%");
+    assert_eq!(bar_share_label(0.0), "0%");
+    assert_eq!(
+        bar_share_label(0.0095),
+        "0.9%",
+        "0.95–1% still reads with its one decimal"
+    );
+    assert_eq!(bar_share_label(0.0094), "0.9%");
+    assert_eq!(
+        bar_share_label(0.0099),
+        "1.0%",
+        "0.99% rounds to one percent with its decimal, not a bare 1%"
+    );
+    assert_eq!(
+        bar_share_label(0.0004),
+        "0.1%",
+        "a sliver below 0.05% ($1 of $2,500) rounds up, never to 0.0%"
+    );
+    assert_eq!(bar_share_label(0.00004), "0.1%");
+
+    // The tooltip body is the bar's and the legend row's one string.
+    assert_eq!(
+        chart_tooltip_value(123456, 0.182, " of Food"),
+        "$1,234.56 · 18.2% of Food"
+    );
+    assert_eq!(chart_tooltip_value(1500, 0.75, ""), "$15.00 · 75.0%");
+}
+
+#[test]
+fn bar_label_plan_thins_share_labels_without_collisions() {
+    // A wide plot with few bands: every bar keeps its share label.
+    assert_eq!(bar_label_plan(779., 7), 7);
+    // The 1200 × 720 plot (~247 px) with 15 bars: too narrow for all
+    // fifteen, so the labels are thinned out.
+    let labels = bar_label_plan(247., 15);
+    assert!((1..15).contains(&labels), "{labels} labels at 247px");
+    assert_eq!(bar_label_plan(0., 5), 1, "a degenerate plot labels one bar");
+    assert_eq!(bar_label_plan(100., 0), 0);
+    assert_eq!(bar_label_plan(100., 1), 1);
+
+    // The invariant for every window size and category count: drawn
+    // labels are spread first-to-last and their band centres sit at
+    // least a full label apart, so centred labels cannot overlap.
+    let need = BAR_LABEL_MAX_CHARS as f32 * CHART_CHAR_PX;
+    for width in [100., 247., 400., 779., 1600., 3000.] {
+        for count in 1..=30usize {
+            let labels = bar_label_plan(width, count);
+            assert!(
+                (1..=count).contains(&labels),
+                "width {width}, count {count}: {labels} labels"
+            );
+            let slots = bar_label_slots(count, labels);
+            let drawn: Vec<usize> = slots
+                .iter()
+                .enumerate()
+                .filter(|(_, on)| **on)
+                .map(|(ix, _)| ix)
+                .collect();
+            assert_eq!(drawn.len(), labels, "width {width}, count {count}");
+            assert_eq!(drawn.first(), Some(&0), "the first bar is labelled");
+            assert_eq!(drawn.last(), Some(&(count - 1)), "the last bar is labelled");
+            let band_w = width / count as f32;
+            for pair in drawn.windows(2) {
+                let spacing = (pair[1] - pair[0]) as f32 * band_w;
+                assert!(
+                    spacing >= need - 0.001,
+                    "width {width}, count {count}: labels on bars {} and {} \
+                     are {spacing:.1}px apart, need {need:.1}",
+                    pair[0],
+                    pair[1],
+                );
+            }
+        }
+    }
+}
+
 #[gpui::test]
 fn chart_labels_adapt_to_the_window_size(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, seed_chart_rows);
@@ -4988,6 +5091,208 @@ fn the_chart_renders_long_names_and_many_categories(cx: &mut TestAppContext) {
     assert!((1..25).contains(&labels), "{labels} labels for 25 bands");
     assert!((1..=CHART_LABEL_MAX_CHARS).contains(&chars));
     draw_frame(cx, _handle);
+}
+
+/// The legend column is just the key (3.31), so it must fit 140 px.
+const _: () = assert!(LEGEND_W <= 140.);
+
+/// 3.31: the legend is just swatch and name. The amount (76 px) and share
+/// (52 px) columns are gone, the column is 140 px wide, and the plot gets
+/// the width back — at 1200 × 720 it is far wider than the ~167 px the
+/// 220 px legend left it.
+#[gpui::test]
+fn the_legend_is_just_a_key(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_chart_rows);
+    wait_until(cx, "three chart rows", |cx| {
+        shell.read(cx).chart_rows.len() == 3
+    });
+    resize_and_draw(cx, handle, 1200., 720.);
+    let mut window = VisualTestContext::from_window(handle, cx);
+    let rows: Vec<(String, i64, f64)> = cx.update(|cx| {
+        shell
+            .read(cx)
+            .chart_rows
+            .iter()
+            .map(|r| (r.name.to_string(), r.spend_cents, r.share))
+            .collect()
+    });
+    assert_eq!(rows.len(), 3);
+
+    let legend = window
+        .debug_bounds("chart:legend")
+        .expect("the legend paints");
+    assert!(
+        f32::from(legend.size.width) <= LEGEND_W + 0.5,
+        "the legend column is {:?} wide, expected ≤ {LEGEND_W}",
+        legend.size.width,
+    );
+    let plot = window.debug_bounds("chart:plot").expect("the plot paints");
+    assert!(
+        f32::from(plot.size.width) >= 230.,
+        "the plot is {:?} wide at 1200 × 720 — the 220 px legend left it ~167 px",
+        plot.size.width,
+    );
+
+    // Each row draws its name and nothing else: no amount, no percentage.
+    for (ix, (name, cents, share)) in rows.iter().enumerate() {
+        assert!(
+            window
+                .debug_bounds(leaked(format!("chart:legend-text:{ix}={name}")))
+                .is_some(),
+            "legend row {ix} draws its name"
+        );
+        for gone in [crate::flow::money(*cents), format!("{:.1}%", share * 100.)] {
+            assert!(
+                window
+                    .debug_bounds(leaked(format!("chart:legend-text:{ix}={gone}")))
+                    .is_none(),
+                "legend row {ix} no longer draws {gone:?}"
+            );
+        }
+    }
+}
+
+/// 3.31: hovering a legend row shows the bar's own tooltip text — full
+/// name, exact amount and share.
+#[gpui::test]
+fn hovering_a_legend_row_shows_amount_and_share(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_chart_rows);
+    wait_until(cx, "three chart rows", |cx| {
+        shell.read(cx).chart_rows.len() == 3
+    });
+    resize_and_draw(cx, handle, 1200., 720.);
+    let mut window = VisualTestContext::from_window(handle, cx);
+    let value = cx.update(|cx| {
+        let r = &shell.read(cx).chart_rows[0];
+        assert_eq!(r.name.as_str(), "Food");
+        chart_tooltip_value(r.spend_cents, r.share, "")
+    });
+    assert_eq!(value, "$15.00 · 75.0%");
+    let tip_sel = leaked(format!("chart:legend-tooltip:Food={value}"));
+    assert!(
+        window.debug_bounds(tip_sel).is_none(),
+        "nothing hovers a row, so no tooltip is drawn yet"
+    );
+
+    let row = window
+        .debug_bounds("chart:legend-row:0")
+        .expect("the first legend row paints");
+    let centre = point(
+        row.origin.x + row.size.width / 2.,
+        row.origin.y + row.size.height / 2.,
+    );
+    window.simulate_mouse_move(centre, None, Modifiers::default());
+    // The tooltip appears after a 500 ms hover; the test clock is fake.
+    cx.executor().advance_clock(Duration::from_millis(600));
+    cx.run_until_parked();
+    draw_frame(cx, handle);
+    assert!(
+        window.debug_bounds(tip_sel).is_some(),
+        "hovering the legend row shows a tooltip with the amount and share",
+    );
+}
+
+/// 3.31: at the minimum window with 15 categories the bars are too narrow
+/// for every share label, so the plan thins them the way band labels are
+/// thinned (3.15) — and every drawn label, centred over its bar, stays
+/// inside the chart panel and clear of its neighbours.
+#[gpui::test]
+fn fifteen_category_bars_keep_their_share_labels_clear(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_chart_rows);
+    wait_until(cx, "three chart rows", |cx| {
+        shell.read(cx).chart_rows.len() == 3
+    });
+    shell.update(cx, |s, cx| {
+        s.chart_rows = (0..15)
+            .map(|i| CategorySpend {
+                id: Some(i),
+                name: format!("Cat {i:02}"),
+                spend_cents: (i + 1) * 10_000,
+                // The share of the total this row's spend represents, so
+                // every bar's share label is a different string.
+                share: (i + 1) as f64 / 120.,
+            })
+            .collect();
+        cx.notify();
+    });
+    resize_and_draw(cx, handle, 1200., 720.);
+    let mut window = VisualTestContext::from_window(handle, cx);
+
+    let plot = window.debug_bounds("chart:plot").expect("the plot paints");
+    let panel = window
+        .debug_bounds("panel:chart")
+        .expect("the chart panel paints");
+    let plan_w = cx.update(|cx| shell.read(cx).chart_plot_width());
+    assert!(
+        (f32::from(plot.size.width) - plan_w).abs() <= 3.,
+        "the plan measured the plot at {plan_w:.1}px, it painted {:?} \
+         (the panel's 1 px borders are the only expected slack)",
+        plot.size.width,
+    );
+
+    // The bars are too narrow for fifteen labels: the plan thins them.
+    let plot_w = f32::from(plot.size.width);
+    let labels = bar_label_plan(plot_w, 15);
+    assert!((1..15).contains(&labels), "{labels} labels for 15 bars");
+
+    // Drawn labels: first-to-last, centres at least a whole label apart,
+    // and the first and last ones inside the panel's borders even when
+    // centred over the edge bars.
+    let slots = bar_label_slots(15, labels);
+    let drawn: Vec<usize> = slots
+        .iter()
+        .enumerate()
+        .filter(|(_, on)| **on)
+        .map(|(ix, _)| ix)
+        .collect();
+    assert_eq!(drawn.first(), Some(&0));
+    assert_eq!(drawn.last(), Some(&14));
+
+    // The wiring (3.31): the rows `chart_panel` hands the chart carry
+    // their own share's label on the planned bars and nothing on the
+    // thinned-out ones — drop the label call in `chart_bars` or misalign
+    // it and this fails.
+    let bars = cx.update(|cx| {
+        shell
+            .read(cx)
+            .chart_bars(plan_w, &Default::default(), gpui::black())
+    });
+    assert_eq!(bars.len(), 15);
+    let wired_slots = bar_label_slots(15, bar_label_plan(plan_w, 15));
+    for (ix, bar) in bars.iter().enumerate() {
+        let want = if wired_slots[ix] {
+            bar_share_label(bar.share)
+        } else {
+            String::new()
+        };
+        assert_eq!(bar.bar_label.to_string(), want, "bar {ix}");
+    }
+    assert!(
+        !bars[0].bar_label.is_empty() && !bars[14].bar_label.is_empty(),
+        "the first and last bars carry their share"
+    );
+
+    let band_w = plot_w / 15.;
+    let half = BAR_LABEL_MAX_CHARS as f32 * CHART_CHAR_PX / 2.;
+    for pair in drawn.windows(2) {
+        assert!(
+            (pair[1] - pair[0]) as f32 * band_w >= 2. * half,
+            "the labels on bars {} and {} overlap: {:.1}px apart",
+            pair[0],
+            pair[1],
+            (pair[1] - pair[0]) as f32 * band_w,
+        );
+    }
+    let first_left = plot.origin.x + px(0.5 * band_w - half);
+    let last_right = plot.origin.x + px(14.5 * band_w + half);
+    assert!(
+        f32::from(first_left) >= f32::from(panel.origin.x),
+        "the first bar's label spills past the panel's left border",
+    );
+    assert!(
+        f32::from(last_right) <= f32::from(panel.origin.x + panel.size.width),
+        "the last bar's label spills past the panel's right border",
+    );
 }
 
 /// `seed_chart_rows` plus a childless Gifts parent whose only transaction

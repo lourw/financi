@@ -73,7 +73,7 @@ header row is the filters.
 
 | Page | Contents |
 |---|---|
-| **Dashboard** | Filters (date range, accounts, include transfers); chart + legend beside the monthly summary; filter chips, search, toggles; transaction table. |
+| **Dashboard** | Filters (date range, accounts, include transfers); chart + legend beside the monthly summary; filter chips, search, toggles; transaction table. The legend (3.31) is just the key — a 10px swatch and the category name (ellipsis) in a ~140 px column — and each bar carries its share above it; amounts and exact shares live in the hover tooltips. |
 | **To categorize** | The Uncategorized queue (2.7) as a table: merchant (`flex_1`, truncates with a tooltip showing the full name), transactions (bare number, right-aligned ~96 px), total (right-aligned ~110 px), dates (~190 px, `text_sm` muted), category picker (~220 px), Categorize button at natural width — fits the 1200 px minimum window, headings share the row widths. Choosing a category adds a rule. |
 | **Categories** | Category tree on the left (~300px panel); the selected category on the right: name, Rename…/Delete…, its rules table, and an add-rule row with a live "matches N transactions" count. Each rule row carries Edit and Delete… at its right end (small ghost buttons, visible on every row): Edit swaps the row in place for an editor in the add-rule row's shape (Pattern, regex switch, Category picker, pre-filled; Save primary, Cancel; Enter saves, Escape cancels; the same live match count), and Delete… is the two-click "Click again to delete" confirm armed per row. One rule edits at a time; selecting a category or leaving the page closes the editor and disarms the delete. Rules live here; there's no Rules page. Header action: New category…. |
 | **Transfers** | Open transfer reviews (4.2): each row with its candidates and "Not a transfer". |
@@ -143,11 +143,15 @@ Use gpui's spacing helpers only, in these steps:
   fixed widths. Filter selects get a width that fits their longest
   label on one line. The first mockups broke exactly here: legend amounts
   spilled into the summary, and the date range label wrapped.
-- **Chart labels fit the space (3.15).** The category chart's band labels
-  shorten to a character budget and thin out when bands get narrow, so two
-  neighbouring labels never overlap or spill past the panel at the minimum
-  window size or above; the budget follows the live window width. Full
-  names always stay in the legend and the tooltip.
+- **Chart labels fit the space (3.15, 3.31).** The category chart's band
+  labels shorten to a character budget and thin out when bands get
+  narrow, so two neighbouring labels never overlap or spill past the
+  panel at the minimum window size or above; the budget follows the live
+  window width. Full names always stay in the legend and the tooltip.
+  Each bar carries its share above it (3.31) — whole percent (`18%`),
+  one decimal only below one percent (`0.4%`), `muted_foreground` — and
+  when the bars are too narrow for the text those labels thin out the
+  same way, first-to-last, rather than colliding.
 
 ## Typography
 
@@ -219,9 +223,10 @@ case, and a table full of red reads as an alarm.
   unlabelled boxes. Labels sit above controls, so they never add width at
   the 1200 × 720 minimum.
 - **Money:** `$1,234.56`. In the table, amounts are signed: `-$86.42` out,
-  `$2,105.00` in (green). In the chart, legend and summary, amounts are
-  positive spend. Net is the one signed summary row.
-- **Shares:** one decimal, `22.4%`.
+  `$2,105.00` in (green). In the chart, its tooltips and the summary,
+  amounts are positive spend. Net is the one signed summary row.
+- **Shares:** one decimal, `22.4%`. Over the chart bars (3.31) whole
+  percents — `18%`, one decimal only below one percent (`0.4%`).
 - **Dates:** `2026-11-06` in the table (sorts by eye, no locale guessing).
   Month headers in the summary: `Sep 2026`. Ranges: `Sep 1 – Nov 30, 2026`.
 - **Accounts:** the account's own name ("Amex Gold", "Simplii Chequing").
@@ -244,7 +249,9 @@ case, and a table full of red reads as an alarm.
   element (it needs an `id`). Summary cell: `Shopping · Oct 2026 · 14
   transactions`, with "Click to show them in the table" under it. Chart bar
   (BarChart's own `tooltip_title`/`tooltip_value`): name, exact amount and
-  share (`Restaurants · $642.15 · 31.4% of Food`).
+  share (`Restaurants · $642.15 · 31.4% of Food`). Legend rows (3.31) carry
+  the same text — full name over `amount · share%` — so the row itself can
+  stay just swatch and name.
 - **Filter chips.** Each active narrowing filter (category, month, search,
   "Uncategorized only") shows as a chip with a × above the table. The
   header filters (date, accounts, transfers) aren't chips, because the
