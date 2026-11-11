@@ -116,7 +116,41 @@ On start:
 2. Check `git status` and `git log --oneline -10`. The first unticked
    `- [ ]` box in the current milestone is the next task.
 
-Loop for each task, with up to two tasks in flight:
+### Keep the pool full
+
+The orchestrator doesn't work one task at a time. It runs a pool of two
+slots and refills a slot as soon as it frees. Each feature goes through the
+steps below, but two features move through them at the same time, each at
+its own pace.
+
+- **Never block on a sub-agent.** Start every sub-agent with
+  `background: true` on the subagent/task tool call. The tool blocks by
+  default: without that flag the orchestrator's turn stays inside the call
+  until that agent returns, so it can't start or answer anything else, and
+  only one slot is busy. With it, the call returns at once and the report
+  arrives later as a notification.
+- **Fill both slots in one turn.** At the start, and whenever both slots
+  are free, choose two parallel-safe tasks and start both sub-agents in the
+  same message. Don't start one and then wait for its report before
+  starting the second.
+- **Refill as soon as a slot frees.** When a sub-agent's report arrives,
+  act on it right away and start the next sub-agent in the same turn: the
+  review for that feature, a fix round, or the next parallel-safe task.
+  Then go back to waiting. Don't wait for the other slot's agent first.
+- **Wait for notifications, don't poll.** With both slots busy and nothing
+  to merge, end the turn and wait for the next completion notice. Don't
+  check on a running agent's progress in a loop or start a blocking wait
+  on one agent.
+- **If a background call fails** (the option is rejected or unavailable),
+  start both sub-agents in a single message (two blocking calls in the same
+  reply) so they still run together. That turn returns only when both
+  finish, so pair tasks of similar size where you can.
+
+A slot may sit empty only while the orchestrator is merging, waiting on the
+user, or when no remaining task in the milestone can run alongside the one
+in flight (see below).
+
+Steps for each feature:
 
 1. **Delegate** the task to the implementer with the *Task brief*
    template, after syncing `main` and creating the task's worktree (see
