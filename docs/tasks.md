@@ -779,8 +779,8 @@ out.
     rendered text with a long-named tree, a subcategory selected, and each
     validation error triggered); the renamed buttons still work.
 
-**Bugs reported by the user on 2026-11-11** (3.34–3.41, plus a fix folded
-into 3.23). Order: **3.40 → 3.23 → 3.41 → 3.35 → 3.36 → 3.37 → 3.38/3.39 → 3.34**, then the rest of
+**Bugs reported by the user on 2026-11-11** (3.34–3.42, plus a fix folded
+into 3.23). Order: **3.40 → 3.23 → 3.41/3.42 → 3.35 → 3.36 → 3.37 → 3.38/3.39 → 3.34**, then the rest of
 the order above (3.28 → 3.29 → 3.26).
 
 - 3.23 also fixes: **the rule list overflows the page.** Today each rule
@@ -847,6 +847,25 @@ the order above (3.28 → 3.29 → 3.26).
     pickers; typing in the search narrows the list; the trigger is 200 px
     and shows the tooltip; 3.23's fit tests pass. Update the *Categories*
     row of `ui-conventions.md`.
+
+- [ ] **3.42 The regex switch lines up with the rule fields.** In the
+  add-rule row (`cat:add-rule-row`) and the rule editor row, the
+  **regex** `Switch` sits lower than the Pattern input, the Category
+  picker and the buttons (user report, 2026-11-11). Cause: both rows are
+  `h_flex().items_end()`, the labelled fields are a label line over a
+  32 px control, and the Switch (no label line, shorter than 32 px) is a
+  bare child, so its bottom edge, not its centre, lines up with the
+  controls.
+  - Wrap the Switch in a box the height of a control: `h_flex().h(px(32.))
+    .items_center().flex_shrink_0()`, in both rows, so its centre matches
+    the controls' centre while the row stays `items_end`. Better: factor
+    a small `control_slot(el)` helper used by both rows, so they can't
+    drift apart.
+  - Do it in the same branch as 3.41 (same two rows).
+  - Tests: in both rows the Switch's vertical centre equals the Pattern
+    input's centre within 1 px, and the Save / Add rule button's centre
+    too. Note the rule in `ui-conventions.md` (*Forms*: an unlabelled
+    control in a labelled row sits in a 32 px slot, centred).
 
 - [ ] **3.34 To categorize looks cleaner.** The queue is loose rows on the
   page background: no panel, no row separators, a semibold merchant, and a
@@ -965,7 +984,7 @@ the order above (3.28 → 3.29 → 3.26).
 
 
 **Done when:** on the demo data the dashboard totals match
-`expected.json`, filters compose, tests cover 3.1–3.41.
+`expected.json`, filters compose, tests cover 3.1–3.42.
 
 ---
 
