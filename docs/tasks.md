@@ -357,10 +357,10 @@ beside the monthly summary (right); then the transaction table.
 
 **Order for the open M3 tasks** (added 2026-11-10; the numbers record when
 a task was written, not when to do it): **3.24 → 3.25 → 3.27 → 3.30 →
-3.23 → 3.28 → 3.29 → 3.26** (3.22 is done). 3.24 comes first because it is
-the only one that blocks the user: a wrong rule can't be corrected today.
-3.25, 3.27 and 3.30 fix the dashboard and give back vertical space on every
-page. 3.28 builds on 3.24's row editor, and 3.29 on 3.28's page. 3.26 goes
+3.31 → 3.23 → 3.28 → 3.29 → 3.26** (3.22 is done). 3.24 comes first
+because it is the only one that blocks the user: a wrong rule can't be
+corrected today. 3.25, 3.27, 3.30 and 3.31 fix the dashboard and give back
+space on every page. 3.28 builds on 3.24's row editor, and 3.29 on 3.28's page. 3.26 goes
 last because it attaches scrollbars to lists that 3.23, 3.28 and 3.30 lay
 out.
 
@@ -676,8 +676,36 @@ out.
     last month; a 3-month range shows no horizontal scrollbar. Update the
     dashboard row of `ui-conventions.md`.
 
+- [ ] **3.31 A slimmer chart legend.** The legend beside *Spending by
+  category* is 220 px (`LEGEND_W`) because every row repeats the amount
+  (76 px) and share (52 px) that the chart already shows, which leaves
+  the plot narrow and the band labels short. Make the legend just the key.
+  - **Legend rows:** the 10×10 swatch and the category name (ellipsis),
+    nothing else. Shrink `LEGEND_W` to about 140 px; `chart_label_plan`
+    reads the constant, so the plot and its band labels widen with it.
+    Clicking a row still selects or drills into the category, the
+    selected row keeps `list_active`, and "← All categories" stays.
+  - **Hover tooltip on each legend row** (gpui-base `Tooltip`, the row
+    already has an `id`): full name, amount (`flow::money`) and share,
+    the same text as the bar's own tooltip ("$1,234.56 · 18.2% of Food").
+    Pull that string into one helper used by both.
+  - **Share over each bar:** use `BarChart::label` to draw the share
+    ("18%", whole percent; one decimal only below 1%, "0.4%") above each
+    bar, `label_color` muted. Leave the bar tooltip as it is. Check the
+    label stays inside the panel for the tallest bar (add headroom on
+    the value axis if gpui-component doesn't) and doesn't collide with
+    its neighbours at 1200 × 720 with many bars; if bars are too narrow
+    for their text, thin the labels the way band labels are thinned
+    (3.15) rather than overlapping them.
+  - Tests: legend rows contain no amount or percentage text; the legend
+    is ≤ 140 px wide and the plot is wider than before at 1200 × 720;
+    hovering a legend row shows the tooltip with amount and share;
+    each bar's label is its share, and all labels paint inside the chart
+    panel without overlapping at 1200 × 720 with 15 categories. Update
+    the dashboard row of `ui-conventions.md`.
+
 **Done when:** on the demo data the dashboard totals match
-`expected.json`, filters compose, tests cover 3.1–3.30.
+`expected.json`, filters compose, tests cover 3.1–3.31.
 
 ---
 
