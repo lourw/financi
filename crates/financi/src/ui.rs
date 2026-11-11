@@ -8,6 +8,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use chrono::NaiveDate;
 use financi_core::CategoryKind;
@@ -32,6 +33,7 @@ use financi_db::{
     unpair_transaction,
 };
 use gpui_kit::assets::IconName;
+use gpui_kit::base::{Toast, ToastManager, ToastMotion, ToastOptions, ToastStack, ToastStackState};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::calendar::Date as CalendarDate;
 use gpui_kit::component::chart::BarChart;
@@ -1409,6 +1411,25 @@ fn category_palette(theme: &gpui_kit::component::theme::Theme) -> [Hsla; 12] {
     ]
 }
 
+/// 3.27: how long a success/info toast stays up before dismissing itself.
+/// Errors have no timeout; they stay until the user closes them
+/// (`docs/ui-conventions.md`, *Feedback*).
+const TOAST_TIMEOUT: Duration = Duration::from_secs(4);
+/// How often the toast ticker advances the manager's lifecycle clock while
+/// any toast is mounted. Coarser than a frame on purpose: the stack's
+/// motion is spring-driven, and the clock only gates enter/timeout/exit.
+const TOAST_TICK: Duration = Duration::from_millis(100);
+/// Width of one toast card; wide enough for the longest message the app
+/// writes on one or two lines.
+const TOAST_W: f32 = 360.;
+
+/// 3.27: one toast in the manager — its text and whether it is an error
+/// (error text uses `danger` and the toast persists until dismissed).
+struct ToastMessage {
+    message: SharedString,
+    is_error: bool,
+}
+
 pub struct Shell {
     db: DbWorker,
     db_path: PathBuf,
@@ -1472,7 +1493,16 @@ pub struct Shell {
     import_history: Vec<ImportEntry>,
     history_table: Entity<TableState<ImportHistoryTable>>,
     confirm_undo_import: Option<i64>,
-    status: Option<(String, bool)>,
+    // -- Feedback (3.27): toasts, never inline status lines
+    // (`docs/ui-conventions.md`, *Feedback*). The manager owns the mounted
+    // toasts, their per-toast timeouts and their lifecycle; it is advanced
+    // by a ticker task that runs only while something is mounted, against
+    // `toast_clock` — a virtual clock the ticker owns (see `tick_toasts`).
+    toasts: ToastManager<u64, ToastMessage>,
+    toast_stack: ToastStackState,
+    toast_next_id: u64,
+    toast_clock: Instant,
+    toast_task: Option<Task<()>>,
     refresh_task: Option<Task<()>>,
     task: Option<Task<()>>,
     // -- Categories page
@@ -1898,7 +1928,11 @@ impl Shell {
             import_history: Vec::new(),
             history_table,
             confirm_undo_import: None,
-            status: None,
+            toasts: ToastManager::new(ToastMotion::sonner()),
+            toast_stack: ToastStackState::default(),
+            toast_next_id: 0,
+            toast_clock: Instant::now(),
+            toast_task: None,
             refresh_task: None,
             task: None,
             categories: Vec::new(),
@@ -2174,7 +2208,7 @@ impl Shell {
                             t.refresh(cx);
                         });
                     }
-                    Err(e) => this.status = Some((format!("Database error: {e}"), true)),
+                    Err(e) => this.notify_err(format!("Database error: {e}"), cx),
                 }
                 cx.notify();
             });
@@ -2636,7 +2670,11 @@ impl Shell {
                     cx.subscribe_in(&panel, window, |this, _, ev: &ImportEvent, window, cx| {
                         match ev {
                             ImportEvent::Imported { message, is_error } => {
-                                this.status = Some((message.clone(), *is_error));
+                                if *is_error {
+                                    this.notify_err(message.clone(), cx);
+                                } else {
+                                    this.notify_ok(message.clone(), cx);
+                                }
                                 this.import = None;
                             }
                             ImportEvent::Cancelled => this.import = None,
@@ -2646,12 +2684,11 @@ impl Shell {
                     });
                 self._subs.push(sub);
                 self.import = Some(panel);
-                self.status = None;
                 // Opening a file switches to the Imports page with the
                 // preview open (ui-conventions, *Pages*).
                 self.page = Page::Imports;
             }
-            Err(e) => self.status = Some((e.to_string(), true)),
+            Err(e) => self.notify_err(e.to_string(), cx),
         }
         cx.notify();
     }
@@ -2714,14 +2751,12 @@ impl Shell {
     /// Export… (⌘E): wired in M5. Until then the menu item, the ⌘E
     /// shortcut and the Imports header button all say so plainly.
     fn export_data(&mut self, cx: &mut Context<Self>) {
-        self.status = Some(("Export is not available yet.".into(), false));
-        cx.notify();
+        self.notify_ok("Export is not available yet.", cx);
     }
 
     /// Restore…: wired in M5, like [`Shell::export_data`].
     fn restore_backup(&mut self, cx: &mut Context<Self>) {
-        self.status = Some(("Restore is not available yet.".into(), false));
-        cx.notify();
+        self.notify_ok("Restore is not available yet.", cx);
     }
 
     /// Undo an import from the history: the first click arms the button,
@@ -2762,25 +2797,29 @@ impl Shell {
                 Ok::<_, financi_db::DbError>((undone, csv_error))
             })
             .await;
-            let _ = this.update_in(cx, |this, window, cx| {
-                this.status = Some(match result {
-                    Ok((Some(u), csv_error)) => {
-                        let mut message = format!(
-                            "Undid import of {}: removed {} rows",
+            let _ =
+                this.update_in(cx, |this, window, cx| {
+                    match result {
+                    Ok((Some(u), None)) => this.notify_ok(
+                        format!("Undid import of {}: removed {} rows", u.file_name, u.removed),
+                        cx,
+                    ),
+                    // The undo landed but the master CSV did not: the
+                    // message is the same, flagged as an error.
+                    Ok((Some(u), Some(e))) => this.notify_err(
+                        format!(
+                            "Undid import of {}: removed {} rows (master CSV update failed: {e})",
                             u.file_name, u.removed
-                        );
-                        let mut is_error = false;
-                        if let Some(e) = csv_error {
-                            message.push_str(&format!(" (master CSV update failed: {e})"));
-                            is_error = true;
-                        }
-                        (message, is_error)
+                        ),
+                        cx,
+                    ),
+                    Ok((None, _)) => {
+                        this.notify_ok("This account has no imports to undo.", cx);
                     }
-                    Ok((None, _)) => ("This account has no imports to undo.".into(), false),
-                    Err(e) => (e, true),
+                    Err(e) => this.notify_err(e, cx),
+                }
+                    this.refresh(window, cx);
                 });
-                this.refresh(window, cx);
-            });
         }));
         cx.notify();
     }
@@ -3354,7 +3393,7 @@ impl Shell {
             let _ = this.update_in(cx, |this, window, cx| {
                 match result {
                     Ok(_rule_id) => {
-                        this.status = Some((format!("Categorized {merchant}"), false));
+                        this.notify_ok(format!("Categorized {merchant}"), cx);
                         this.queue_error = None;
                     }
                     Err(e) => this.queue_error = Some(e),
@@ -3383,10 +3422,11 @@ impl Shell {
             let _ = this.update_in(cx, |this, window, cx| {
                 match result {
                     Ok(()) => {
+                        // The row itself starts offering the rule (2.6); no
+                        // separate feedback.
                         this.rule_offer = Some((transaction_id, category_id));
-                        this.status = None;
                     }
-                    Err(e) => this.status = Some((e, true)),
+                    Err(e) => this.notify_err(e, cx),
                 }
                 this.refresh(window, cx);
             });
@@ -3411,7 +3451,7 @@ impl Shell {
             let result = on_db(&db, move |c| set_hidden(c, transaction_id, hidden)).await;
             let _ = this.update_in(cx, |this, window, cx| {
                 if let Err(e) = result {
-                    this.status = Some((e, true));
+                    this.notify_err(e, cx);
                 }
                 this.refresh(window, cx);
             });
@@ -3436,8 +3476,8 @@ impl Shell {
             .await;
             let _ = this.update_in(cx, |this, window, cx| {
                 match result {
-                    Ok(_) => this.status = Some(("Paired transfer.".into(), false)),
-                    Err(e) => this.status = Some((format!("Could not pair: {e}"), true)),
+                    Ok(_) => this.notify_ok("Paired transfer.", cx),
+                    Err(e) => this.notify_err(format!("Could not pair: {e}"), cx),
                 }
                 this.refresh(window, cx);
             });
@@ -3460,8 +3500,8 @@ impl Shell {
             .await;
             let _ = this.update_in(cx, |this, window, cx| {
                 match result {
-                    Ok(_) => this.status = Some(("Marked as not a transfer.".into(), false)),
-                    Err(e) => this.status = Some((format!("Could not update: {e}"), true)),
+                    Ok(_) => this.notify_ok("Marked as not a transfer.", cx),
+                    Err(e) => this.notify_err(format!("Could not update: {e}"), cx),
                 }
                 this.refresh(window, cx);
             });
@@ -3476,8 +3516,8 @@ impl Shell {
             let result = on_db(&db, move |c| unpair_transaction(c, transaction_id)).await;
             let _ = this.update_in(cx, |this, window, cx| {
                 match result {
-                    Ok(_) => this.status = Some(("Unpaired transaction.".into(), false)),
-                    Err(e) => this.status = Some((format!("Could not unpair: {e}"), true)),
+                    Ok(_) => this.notify_ok("Unpaired transaction.", cx),
+                    Err(e) => this.notify_err(format!("Could not unpair: {e}"), cx),
                 }
                 this.refresh(window, cx);
             });
@@ -3501,15 +3541,160 @@ impl Shell {
             let _ = this.update_in(cx, |this, window, cx| {
                 match result {
                     Ok(_) => {
-                        this.status =
-                            Some(("Applied the category to all matching rows".into(), false));
+                        this.notify_ok("Applied the category to all matching rows", cx);
                     }
-                    Err(e) => this.status = Some((e, true)),
+                    Err(e) => this.notify_err(e, cx),
                 }
                 this.refresh(window, cx);
             });
         }));
         cx.notify();
+    }
+
+    // -- toasts (3.27) ------------------------------------------------------
+
+    /// Success/info feedback: a toast in the bottom-right corner that
+    /// dismisses itself after [`TOAST_TIMEOUT`]. Every former
+    /// `self.status = Some((msg, false))` call site goes through here.
+    fn notify_ok(&mut self, message: impl Into<SharedString>, cx: &mut Context<Self>) {
+        self.push_toast(message.into(), false, cx);
+    }
+
+    /// Failure feedback: a toast that stays until the user closes it.
+    fn notify_err(&mut self, message: impl Into<SharedString>, cx: &mut Context<Self>) {
+        self.push_toast(message.into(), true, cx);
+    }
+
+    fn push_toast(&mut self, message: SharedString, is_error: bool, cx: &mut Context<Self>) {
+        let id = self.toast_next_id;
+        self.toast_next_id += 1;
+        self.toasts.push(
+            id,
+            ToastMessage { message, is_error },
+            ToastOptions {
+                timeout: if is_error { None } else { Some(TOAST_TIMEOUT) },
+            },
+            self.toast_clock,
+        );
+        self.tick_toasts(cx);
+        cx.notify();
+    }
+
+    /// The user closed a toast — gpui-base toasts dismiss on click.
+    fn dismiss_toast(&mut self, id: u64, cx: &mut Context<Self>) {
+        if self.toasts.dismiss(&id, self.toast_clock) {
+            self.tick_toasts(cx);
+            cx.notify();
+        }
+    }
+
+    /// Drive the toast lifecycle while anything is mounted.
+    ///
+    /// `ToastManager` is a pure function of the clock it is handed, so the
+    /// ticker advances a *virtual* clock by the timer's interval rather than
+    /// calling `Instant::now()`: the test executor's `advance_clock` moves
+    /// its timers without moving real time, and the auto-dismiss tests need
+    /// both to agree. The clock only matters relatively — between toasts it
+    /// stands still, and every entry's deadlines are deltas from its push.
+    ///
+    /// A hovered or focused stack pauses the auto-hide timers (gpui-base's
+    /// semantics), so a toast the user is reaching for never vanishes under
+    /// the pointer.
+    fn tick_toasts(&mut self, cx: &mut Context<Self>) {
+        if self.toast_task.is_some() || self.toasts.is_empty() {
+            return;
+        }
+        self.toast_task = Some(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(TOAST_TICK).await;
+                let running = this.update(cx, |this, cx| {
+                    this.toast_clock += TOAST_TICK;
+                    let advanced = this
+                        .toasts
+                        .advance(this.toast_clock, this.toast_stack.is_expanded());
+                    let running = !this.toasts.is_empty();
+                    if !running {
+                        this.toast_task = None;
+                    } else if advanced.changed {
+                        cx.notify();
+                    }
+                    running
+                });
+                if !running.unwrap_or(false) {
+                    return;
+                }
+            }
+        }));
+    }
+
+    /// The toast overlay (`docs/ui-conventions.md`, *Feedback*): anchored
+    /// bottom-right, stacked, newest in front. It is absolutely positioned,
+    /// so it overlays the window and takes no layout space — the page area
+    /// starts at the top of the content padding whether or not a toast
+    /// shows. Card styling follows the panel rule (border, radius) on the
+    /// `popover` surface, `text_sm`; error text is `danger`.
+    fn render_toasts(&self, cx: &mut Context<Self>) -> AnyElement {
+        if self.toasts.is_empty() {
+            return div().into_any_element();
+        }
+        let (popover, foreground, border, danger, radius) = {
+            let theme = cx.theme();
+            (
+                theme.popover,
+                theme.foreground,
+                theme.border,
+                theme.danger,
+                theme.radius,
+            )
+        };
+        let mut stack = ToastStack::new("toasts", self.toast_stack.clone())
+            .placement(Anchor::BottomRight)
+            .absolute()
+            .bottom_4()
+            .right_4()
+            .w(px(TOAST_W));
+        for (id, toast, status) in self.toasts.iter() {
+            let id = *id;
+            stack = stack.item(
+                id,
+                Toast::new(format!("toast-{id}"))
+                    .transition_status(status)
+                    .w_full()
+                    .child(
+                        div()
+                            .id(("toast-dismiss", id))
+                            .w_full()
+                            .rounded(radius)
+                            .border_1()
+                            .border_color(border)
+                            .bg(popover)
+                            .text_color(if toast.is_error { danger } else { foreground })
+                            .px_3()
+                            .py_2()
+                            .debug_selector({
+                                let message = toast.message.clone();
+                                move || format!("toast:{message}")
+                            })
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.dismiss_toast(id, cx);
+                            }))
+                            .child(
+                                h_flex()
+                                    .gap_2()
+                                    .items_start()
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .text_sm()
+                                            .child(toast.message.clone()),
+                                    )
+                                    .child(div().flex_none().child("×")),
+                            ),
+                    ),
+            );
+        }
+        stack.into_any_element()
     }
 
     // -- rendering ---------------------------------------------------------
@@ -5526,14 +5711,9 @@ impl Shell {
 
 impl Render for Shell {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (danger, muted, background, foreground) = {
+        let (background, foreground) = {
             let theme = cx.theme();
-            (
-                theme.danger,
-                theme.muted_foreground,
-                theme.background,
-                theme.foreground,
-            )
+            (theme.background, theme.foreground)
         };
 
         let page_area: AnyElement = match self.page {
@@ -5560,6 +5740,7 @@ impl Render for Shell {
 
         h_flex()
             .size_full()
+            .relative()
             .bg(background)
             .text_color(foreground)
             // Esc clears the dashboard category selection (3.5); the binding
@@ -5582,14 +5763,11 @@ impl Render for Shell {
                     .size_full()
                     .gap_3()
                     .p_4()
-                    .children(self.status.clone().map(|(msg, is_error)| {
-                        div()
-                            .text_sm()
-                            .text_color(if is_error { danger } else { muted })
-                            .child(msg)
-                    }))
                     .child(page_area),
             )
+            // 3.27: feedback toasts overlay the window (absolute, so no
+            // layout space) instead of a status line pushing the page down.
+            .child(self.render_toasts(cx))
     }
 }
 

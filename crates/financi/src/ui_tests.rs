@@ -143,6 +143,35 @@ fn click_import(cx: &mut TestAppContext, handle: AnyWindowHandle, shell: &Entity
     });
 }
 
+/// 3.27: the toasts mounted in the bottom-right overlay, oldest first, as
+/// `(text, is_error)` — including any mid-exit. The feedback assertion of
+/// choice now that `Shell::status` is gone. Toast timers only run when the
+/// test advances the executor clock, so a toast pushed earlier in a test
+/// stays mounted until then.
+fn toasts(shell: &Entity<Shell>, cx: &App) -> Vec<(String, bool)> {
+    shell
+        .read(cx)
+        .toasts
+        .iter()
+        .map(|(_, toast, _)| (toast.message.to_string(), toast.is_error))
+        .collect()
+}
+
+/// The newest mounted toast, if any.
+fn last_toast(shell: &Entity<Shell>, cx: &App) -> Option<(String, bool)> {
+    toasts(shell, cx).pop()
+}
+
+/// Advance the toast ticker by `ticks` intervals of 100 ms. `advance_clock`
+/// readies a self-re-arming timer once per call, so tests drive the ticker
+/// tick by tick instead of advancing seconds at once.
+fn tick_toasts(cx: &mut TestAppContext, ticks: u32) {
+    for _ in 0..ticks {
+        cx.executor().advance_clock(Duration::from_millis(100));
+        cx.run_until_parked();
+    }
+}
+
 #[gpui::test]
 fn drop_create_account_inline_and_import(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, |_| {});
@@ -191,7 +220,7 @@ fn drop_create_account_inline_and_import(cx: &mut TestAppContext) {
             "type follows the detected format"
         );
         assert_eq!(
-            s.status.clone(),
+            last_toast(&shell, cx),
             Some((
                 "Imported simplii-chequing.csv: 11 new, 0 already imported".into(),
                 false
@@ -374,11 +403,11 @@ fn near_match_is_offered_and_a_confirmed_same_charge_replaces(cx: &mut TestAppCo
         let s = shell.read(cx);
         assert_eq!(s.row_count, 1, "the existing row was replaced, not added");
         assert_eq!(
-            s.status.clone().unwrap(),
-            (
+            last_toast(&shell, cx),
+            Some((
                 "Imported tip.csv: 0 new, 1 replaced, 0 already imported".into(),
                 false
-            )
+            ))
         );
     });
     std::fs::remove_dir_all(dir).unwrap();
@@ -424,7 +453,7 @@ fn undo_needs_a_second_click_and_removes_the_latest_import(cx: &mut TestAppConte
     });
     cx.update(|cx| {
         assert_eq!(
-            shell.read(cx).status.clone(),
+            last_toast(&shell, cx),
             Some((
                 "Undid import of amex-sep-oct.csv: removed 68 rows".into(),
                 false
@@ -714,7 +743,7 @@ fn the_undo_action_is_a_no_op_without_history(cx: &mut TestAppContext) {
     cx.run_until_parked();
     cx.update(|cx| {
         assert_eq!(shell.read(cx).confirm_undo_import, None);
-        assert_eq!(shell.read(cx).status, None);
+        assert!(toasts(&shell, cx).is_empty());
     });
 }
 
@@ -732,8 +761,8 @@ fn export_and_restore_say_not_available_yet(cx: &mut TestAppContext) {
     cx.run_until_parked();
     cx.update(|cx| {
         assert_eq!(
-            shell.read(cx).status.clone(),
-            Some(("Export is not available yet.".into(), false))
+            toasts(&shell, cx),
+            vec![("Export is not available yet.".into(), false)]
         );
     });
     with_window(cx, handle, |window, cx| {
@@ -742,8 +771,12 @@ fn export_and_restore_say_not_available_yet(cx: &mut TestAppContext) {
     cx.run_until_parked();
     cx.update(|cx| {
         assert_eq!(
-            shell.read(cx).status.clone(),
-            Some(("Restore is not available yet.".into(), false))
+            toasts(&shell, cx),
+            vec![
+                ("Export is not available yet.".into(), false),
+                ("Restore is not available yet.".into(), false),
+            ],
+            "a burst of messages stacks, it does not replace"
         );
     });
 }
@@ -763,7 +796,7 @@ fn cmd_e_dispatches_export(cx: &mut TestAppContext) {
     cx.run_until_parked();
     cx.update(|cx| {
         assert_eq!(
-            shell.read(cx).status.clone(),
+            last_toast(&shell, cx),
             Some(("Export is not available yet.".into(), false))
         );
     });
@@ -783,8 +816,80 @@ fn unrecognized_file_shows_an_error_and_no_panel(cx: &mut TestAppContext) {
     cx.update(|cx| {
         let s = shell.read(cx);
         assert!(s.import.is_none());
-        let (msg, is_error) = s.status.clone().unwrap();
+        let (msg, is_error) = last_toast(&shell, cx).expect("error toast");
         assert!(is_error && msg.contains("not a recognized export"), "{msg}");
+    });
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// 3.27: success and info toasts dismiss themselves after ~4 s. The manager
+/// runs on a 100 ms ticker, so the whole life of a toast is entrance (400 ms)
+/// + timeout (4 s) + exit (200 ms) of virtual time.
+#[gpui::test]
+fn info_toasts_dismiss_themselves_after_a_few_seconds(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |_| {});
+    wait_until(cx, "initial load", |cx| {
+        shell.read(cx).refresh_task.is_some()
+    });
+    with_window(cx, handle, |window, cx| {
+        window.dispatch_action(Box::new(ExportData), cx)
+    });
+    cx.run_until_parked();
+    cx.update(|cx| {
+        assert_eq!(toasts(&shell, cx).len(), 1, "the toast is up");
+    });
+    // 3 s in: still mounted, the timeout is 4 s.
+    tick_toasts(cx, 30);
+    cx.update(|cx| {
+        assert_eq!(
+            toasts(&shell, cx).len(),
+            1,
+            "3 s in the toast is still mounted"
+        );
+    });
+    // 2.5 s more: the timeout fires and the exit animation runs out.
+    tick_toasts(cx, 25);
+    cx.update(|cx| {
+        assert!(toasts(&shell, cx).is_empty(), "the toast went away");
+    });
+}
+
+/// 3.27: an error toast outlives the auto-dismiss and closes when clicked.
+#[gpui::test]
+fn an_error_toast_stays_until_the_user_closes_it(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |_| {});
+    let dir = std::env::temp_dir().join(format!("financi-ui-err-toast-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let odd = dir.join("odd.csv");
+    std::fs::write(&odd, "Posted,Payee,Debit\n2026-11-01,X,1.00\n").unwrap();
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| s.open_file(odd.clone(), window, cx));
+    });
+    cx.run_until_parked();
+    let msg = cx.update(|cx| {
+        let toasts = toasts(&shell, cx);
+        assert_eq!(toasts.len(), 1);
+        assert!(toasts[0].1, "the toast is an error");
+        toasts[0].0.clone()
+    });
+    // Ten seconds of ticker: well past the 4 s auto-dismiss, and still there.
+    tick_toasts(cx, 100);
+    cx.update(|cx| {
+        let toasts = toasts(&shell, cx);
+        assert_eq!(toasts.len(), 1, "the error toast outlived the timeout");
+        assert!(toasts[0].1);
+    });
+    // A click on the card closes it, once the exit animation runs out.
+    draw_frame(cx, handle);
+    let mut vtc = VisualTestContext::from_window(handle, cx);
+    let card = vtc
+        .debug_bounds(leaked(format!("toast:{msg}")))
+        .expect("the toast card is painted");
+    vtc.simulate_click(card.center(), Modifiers::default());
+    cx.run_until_parked();
+    tick_toasts(cx, 5);
+    cx.update(|cx| {
+        assert!(toasts(&shell, cx).is_empty(), "the click dismissed it");
     });
     std::fs::remove_dir_all(dir).unwrap();
 }
@@ -839,7 +944,7 @@ fn import_end_to_end_shows_expected_values_on_every_page(cx: &mut TestAppContext
     import_demo_file(cx, handle, &shell, "simplii-chequing.csv", "Chequing");
     cx.update(|cx| {
         assert_eq!(
-            shell.read(cx).status,
+            last_toast(&shell, cx),
             Some((
                 "Imported simplii-chequing.csv: 11 new, 0 already imported".into(),
                 false
@@ -2322,6 +2427,62 @@ fn the_queue_keeps_its_scroll_offset(cx: &mut TestAppContext) {
     });
 }
 
+/// 3.27: categorizing a queue group answers with a toast, and the toast is an
+/// overlay — the top of the page paints in exactly the same place with a card
+/// showing, where the old inline status line used to shift everything down.
+#[gpui::test]
+fn categorizing_a_queue_group_toasts_without_moving_the_page(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |conn| seed_queue_thousands(conn, 4));
+    wait_until(cx, "4 queue groups", |cx| shell.read(cx).queue.len() == 4);
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::ToCategorize, cx)));
+    draw_frame(cx, handle);
+    let mut vtc = VisualTestContext::from_window(handle, cx);
+    let top = vtc
+        .debug_bounds(leaked("queue:merchant-col:QUEUE MERCHANT 0000".to_string()))
+        .expect("the first queue row is painted");
+    let child = cx.update(|cx| find_child(&shell, cx, "Groceries").unwrap());
+
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            let merchant = "QUEUE MERCHANT 0001".to_string();
+            let picker = s.queue_picker(&merchant, window, cx);
+            let ix = s
+                .child_choices
+                .iter()
+                .position(|(id, _)| *id == child)
+                .unwrap();
+            picker.update(cx, |sel, cx| {
+                sel.set_selected_index(Some(gpui_kit::component::IndexPath::new(ix)), window, cx);
+            });
+            s.categorize_merchant(merchant, window, cx);
+        });
+    });
+    wait_until(cx, "toast up and queue shrinks", |cx| {
+        !shell.read(cx).toasts.is_empty() && shell.read(cx).queue.len() == 3
+    });
+    cx.update(|cx| {
+        assert_eq!(
+            last_toast(&shell, cx),
+            Some(("Categorized QUEUE MERCHANT 0001".into(), false))
+        );
+    });
+    draw_frame(cx, handle);
+    let after = vtc
+        .debug_bounds(leaked("queue:merchant-col:QUEUE MERCHANT 0000".to_string()))
+        .expect("the first queue row is still painted");
+    assert_eq!(
+        after.origin, top.origin,
+        "the page did not move while the toast shows"
+    );
+    let card = vtc
+        .debug_bounds(leaked("toast:Categorized QUEUE MERCHANT 0001".to_string()))
+        .expect("the toast card is painted");
+    assert!(
+        card.center().x > px(550.) && card.center().y > px(360.),
+        "the toast sits in the bottom-right of the 1100 × 720 window, at {card:?}"
+    );
+}
+
 /// 3.16: every queue column, the category picker included, has a visible
 /// heading above the rows — the picker's placeholder alone is not a label.
 #[gpui::test]
@@ -3302,7 +3463,7 @@ fn the_transfers_page_offers_every_candidate_for_a_tie_and_pairs_the_chosen_one(
     });
     cx.update(|cx| {
         assert_eq!(
-            shell.read(cx).status,
+            last_toast(&shell, cx),
             Some(("Paired transfer.".into(), false))
         );
         let rows = table_rows(&shell, cx);
@@ -3342,7 +3503,7 @@ fn marking_a_review_not_a_transfer_clears_it_and_blocks_re_pairing(cx: &mut Test
     });
     cx.update(|cx| {
         assert_eq!(
-            shell.read(cx).status,
+            last_toast(&shell, cx),
             Some(("Marked as not a transfer.".into(), false))
         );
         let rows = table_rows(&shell, cx);
@@ -3381,7 +3542,7 @@ fn unpairing_a_row_clears_both_sides_and_they_stay_apart(cx: &mut TestAppContext
     });
     cx.update(|cx| {
         assert_eq!(
-            shell.read(cx).status,
+            last_toast(&shell, cx),
             Some(("Unpaired transaction.".into(), false))
         );
         assert!(shell.read(cx).transfer_reviews.is_empty());

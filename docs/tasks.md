@@ -570,7 +570,7 @@ out.
     no scrollbar paints; dragging the thumb (or `set_offset` on the handle)
     moves the content, and the offset survives an unrelated `cx.notify()`.
 
-- [ ] **3.27 Status messages become toasts.** Today `Shell::status` renders
+- [x] **3.27 Status messages become toasts.** Today `Shell::status` renders
   as a line of text at the top of the content area ("Categorized
   MERCHANT", "Export is not available yet.", errors). It stays until
   something clears it, and while it's there it pushes every page down by

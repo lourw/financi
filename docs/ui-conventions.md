@@ -248,6 +248,20 @@ case, and a table full of red reads as an alarm.
 - **Keyboard:** Esc clears the innermost selection first (chip, then
   drill-down). ⌘O import, ⌘E export (3.7).
 
+## Feedback
+
+- **Toasts, never inline status lines.** Action feedback ("Categorized
+  MERCHANT", "Export is not available yet.", errors) shows as a gpui-base
+  toast overlaying the window's bottom-right corner. No page ever renders
+  a status line in its content column: the page area starts at the top of
+  the content padding whether or not a toast shows.
+- **Timers.** Success and info toasts dismiss themselves after ~4 s;
+  errors stay until the user closes them. A burst of messages stacks
+  (newest in front), it does not replace.
+- **Card.** One line of `text_sm` message on the `popover` surface with a
+  `border` and `radius` (the panel rule); error text is `danger`,
+  otherwise `foreground`. Click anywhere on the card to dismiss it.
+
 ## States
 
 | Region | Empty | Loading | Error |
