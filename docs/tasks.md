@@ -356,11 +356,13 @@ beside the monthly summary (right); then the transaction table.
   survives an unrelated `cx.notify()` / refresh.
 
 **Order for the open M3 tasks** (added 2026-11-10; the numbers record when
-a task was written, not when to do it): **3.24 → 3.25 → 3.22 → 3.23 →
-3.26**. They are listed below in that order. 3.24 comes first because it is
+a task was written, not when to do it): **3.24 → 3.25 → 3.27 → 3.30 →
+3.23 → 3.28 → 3.29 → 3.26** (3.22 is done). 3.24 comes first because it is
 the only one that blocks the user: a wrong rule can't be corrected today.
-3.25 is a small fix to a regression on the main page. 3.26 goes last because
-it attaches scrollbars to lists that 3.22 and 3.23 re-lay out.
+3.25, 3.27 and 3.30 fix the dashboard and give back vertical space on every
+page. 3.28 builds on 3.24's row editor, and 3.29 on 3.28's page. 3.26 goes
+last because it attaches scrollbars to lists that 3.23, 3.28 and 3.30 lay
+out.
 
 - [ ] **3.24 Edit and delete rules.** The Categories page can add a rule but
   can't change or remove one, so a wrong pattern keeps miscategorizing
@@ -430,7 +432,10 @@ it attaches scrollbars to lists that 3.22 and 3.23 re-lay out.
   - Spacing stays on the 4/8/12/16 scale.
   - Tests: at 1200 × 720 and 1600 × 1000, the vertical centers of every
     control and checkbox in a filter row are within 1 px of each other;
-    the left edges of the filter region, chart panel and table are equal,
+    the *Spending by category* chart panel and the *Monthly summary* panel
+    have the same top and the same height (within 1 px), whatever the
+    number of months or legend entries; the left edges of the filter
+    region, chart panel and table are equal,
     and so are the right edges of the filter region, summary panel and
     table; the *Spending by category* and *Monthly summary* titles have
     the same top; with the Custom date range open (From / To visible) the
@@ -563,8 +568,116 @@ it attaches scrollbars to lists that 3.22 and 3.23 re-lay out.
     no scrollbar paints; dragging the thumb (or `set_offset` on the handle)
     moves the content, and the offset survives an unrelated `cx.notify()`.
 
+- [ ] **3.27 Status messages become toasts.** Today `Shell::status` renders
+  as a line of text at the top of the content area ("Categorized
+  MERCHANT", "Export is not available yet.", errors). It stays until
+  something clears it, and while it's there it pushes every page down by
+  a line plus a `gap_3`. Replace it with gpui-base toasts
+  (`gpui-base-0.9.0/src/toast.rs`), which overlay the window and take no
+  layout space.
+  - Remove the status line from the content column in `render`; the page
+    area starts at the top of the content padding on every page, always.
+  - Keep one call site shape (for example `self.notify_ok(msg, cx)` /
+    `self.notify_err(msg, cx)`) and route every current
+    `self.status = Some(..)` through it.
+  - Success and info toasts dismiss themselves after about 4 s. Errors stay
+    until the user closes them. Bottom-right corner, stacked, newest on
+    top; a burst (categorizing several queue groups quickly) stacks
+    instead of replacing.
+  - Follow `ui-conventions.md` colors (`danger` for errors) and record the
+    toast rule there (*Feedback*: no inline status lines).
+  - Tests: categorizing a queue group shows a toast and leaves the page's
+    first row at the same y as before the action; an error toast survives
+    past the auto-dismiss time and closes on click; nothing in the content
+    column renders the old status text.
+
+- [ ] **3.28 A Rules page to find and organize rules.** Rules live only in
+  each category's detail panel (3.23), so finding "which rule catches
+  AMZN?" means guessing the category first, and with hundreds of rules
+  there is no overview. Add a **Rules** page to the sidebar, after
+  Categories. Editing, deleting and live match counts reuse 3.24's row
+  editor; this task adds finding and organizing.
+  - **Header row:** "Rules" (`text_lg`) and a muted "N rules" on the left;
+    **New rule…** at the right end, opening the same add-rule row as the
+    Categories page in place.
+  - **Search** (`flex_1`, focused when the page opens): filters as you
+    type, case-insensitive, on the pattern **and** on the target
+    category's child and parent names. A second mode, **Test a
+    description**, takes a pasted bank description and shows only the
+    rules that match it, the winner first and marked "wins" (same order as
+    `pick_category`: substring before regex, longest first, lowest id).
+  - **Filters:** a Type picker (All / Substring / Regex) and an **Unused**
+    checkbox (rules that currently decide no transactions).
+  - **List:** grouped by parent, then child category, each group with a
+    header row ("Food › Coffee · 4 rules") that collapses and expands.
+    Columns: Pattern (`flex_1`, ellipsis + tooltip), Type (~80 px),
+    **Uses** (right-aligned, ~80 px: transactions this rule currently
+    decides), and the 3.24 Edit / Delete… actions. Virtualized, headers
+    included, with its own `ScrollHandle` on `Shell` (3.21 rule). Sort
+    within a group by pattern (default) or by Uses, via the column
+    headings.
+  - **Move rules:** each row gets a checkbox; with one or more checked, a
+    bar above the list shows "N selected", a Category picker and **Move**,
+    which sets every checked rule's category in one DB call and re-runs
+    rules once. Single-rule moves still work through Edit.
+  - **Backend** (`financi-core` + `financi-db`, with unit tests first):
+    `winning_rule(rules, description) -> Option<rule_id>` alongside
+    `pick_category` (make `pick_category` call it so the two can't
+    drift); `rules::rule_use_counts(conn) -> HashMap<rule_id, usize>` over
+    unlocked rows that aren't card payments; `rules::move_rules(conn,
+    ids, category_id)` validating the target is a child, in one
+    transaction, then `reapply_rules`.
+  - The Categories page keeps its per-category rule list; each row there
+    gets nothing new.
+  - Tests: search matches by pattern and by category name; Test a
+    description lists the matching rules with the right winner; Unused
+    shows only zero-use rules; collapsing a group hides its rows; moving
+    three checked rules recategorizes their unlocked rows and leaves
+    locked rows alone; with thousands of rules only visible rows build;
+    everything fits at 1200 × 720. Add a *Rules* row to
+    `ui-conventions.md`.
+
+- [ ] **3.29 "Which rule did this?" from a transaction.** On the dashboard
+  table's row context menu, add **Show rule**: it opens the Rules page
+  with that rule found, scrolled into view and highlighted
+  (`list_active`). The item is disabled with a reason when no rule
+  decided the row: "Set by hand" (locked), "Card payment (built in)", or
+  "No rule matches". Uses 3.28's `winning_rule`; no stored rule id.
+  - Tests: Show rule on a rule-categorized row lands on that rule and it
+    is visible in the list; locked and card-payment rows show the disabled
+    item with the right reason.
+
+- [ ] **3.30 Monthly summary scrolls sideways.** The summary's month
+  columns are fixed at 88 px each plus a 96 px Total, so a range longer
+  than a few months is wider than the panel (≈ 470 px at 1200 × 720): the
+  category names shrink to nothing and the right-hand months and Total
+  are cut off. Keep the columns at their widths and let the grid scroll
+  horizontally instead.
+  - **Pinned columns:** the category name column (fixed ~160 px, swatch +
+    name with ellipsis and a hover tooltip, child indent unchanged) stays
+    on the left, and Total stays on the right; only the month columns
+    between them scroll.
+  - The header row and the body rows share one horizontal offset (one
+    `ScrollHandle` on `Shell`, never created in `render`), so month
+    headings stay over their cells. Vertical scrolling of the body
+    (`summary-rows`) keeps working and moves the name column with it.
+  - Shift + wheel and trackpad horizontal swipes scroll it; a horizontal
+    scrollbar shows while the months overflow (3.26 adds the vertical
+    one; use the same gpui-base `Scrollbar` and app-wide mode).
+  - When the range changes, scroll to the most recent month (right end),
+    since that is the month usually wanted. When everything fits, no
+    scrolling and no scrollbar, and the months spread as today.
+  - Click-to-filter on a cell, the selected-cell highlight and
+    expand/collapse keep working while scrolled.
+  - Tests: with a 24-month range at 1200 × 720, the name and Total columns
+    paint inside the panel and every visible month cell lies between
+    them; scrolling moves header and body months by the same amount and
+    leaves names and Total in place; a new range lands scrolled to the
+    last month; a 3-month range shows no horizontal scrollbar. Update the
+    dashboard row of `ui-conventions.md`.
+
 **Done when:** on the demo data the dashboard totals match
-`expected.json`, filters compose, tests cover 3.1–3.26.
+`expected.json`, filters compose, tests cover 3.1–3.30.
 
 ---
 
