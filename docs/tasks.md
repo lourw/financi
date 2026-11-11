@@ -334,7 +334,7 @@ beside the monthly summary (right); then the transaction table.
   button labels show in full. Check it at the minimum size and a large
   window, with long file and account names.
 
-- [ ] **3.21 Virtualized lists don't scroll.** Since 3.12 / 3.19 the
+- [x] **3.21 Virtualized lists don't scroll.** Since 3.12 / 3.19 the
   category tree, the rule list and the To categorize queue show only their
   first screen of rows. Wheel and trackpad scrolling do nothing, so rows
   past the fold can't be reached. Cause: gpui-base's `virtual_list()`
