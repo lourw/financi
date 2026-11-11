@@ -357,10 +357,10 @@ beside the monthly summary (right); then the transaction table.
 
 **Order for the open M3 tasks** (added 2026-11-10; the numbers record when
 a task was written, not when to do it): **3.24 → 3.25 → 3.27 → 3.30 →
-3.31 → 3.23 → 3.28 → 3.29 → 3.26** (3.22 is done). 3.24 comes first
-because it is the only one that blocks the user: a wrong rule can't be
-corrected today. 3.25, 3.27, 3.30 and 3.31 fix the dashboard and give back
-space on every page. 3.28 builds on 3.24's row editor, and 3.29 on 3.28's page. 3.26 goes
+3.31 → 3.32 → 3.23 → 3.28 → 3.29 → 3.26** (3.22 is done). 3.24 comes
+first because it is the only one that blocks the user: a wrong rule can't
+be corrected today. 3.25, 3.27, 3.30, 3.31 and 3.32 are small layout fixes
+that give back space on the dashboard and other pages. 3.28 builds on 3.24's row editor, and 3.29 on 3.28's page. 3.26 goes
 last because it attaches scrollbars to lists that 3.23, 3.28 and 3.30 lay
 out.
 
@@ -704,8 +704,30 @@ out.
     panel without overlapping at 1200 × 720 with 15 categories. Update
     the dashboard row of `ui-conventions.md`.
 
+- [ ] **3.32 Undo fits its row in the import history.** The Undo… button in
+  the newest row of the Imports history table (`HistoryDelegate`,
+  `Button::new("undo-import")`) is a default medium `Button` (32 px tall)
+  inside a 32 px table row (`Size::table_row_height`), so it fills the row
+  edge to edge, touches the stripes, and makes that row look taller than
+  the others.
+  - Make it `.xsmall()` and `.ghost()` (the in-row style that 3.24 uses for
+    rule actions), vertically centered in the cell, with at least 4 px of
+    space above and below. The armed state ("Click again to undo") keeps
+    `danger` text so the confirm still stands out.
+  - Recompute the Undo column width (`history_undo_col_w`,
+    `BUTTON_PAD_X`) for the small button's padding so both labels still
+    show in full and the column isn't wider than it needs to be.
+  - The header's **Undo…** next to Import CSV… stays; the two share the
+    same confirm state as today.
+  - Record the rule in `ui-conventions.md` (*Tables*): buttons inside table
+    rows are `xsmall` ghost buttons, never the default size.
+  - Tests: the in-row Undo button's bounds lie inside its row with ≥ 4 px
+    above and below, in both the "Undo…" and "Click again to undo"
+    states; the newest row is the same height as the other rows; both
+    labels fit the column without clipping.
+
 **Done when:** on the demo data the dashboard totals match
-`expected.json`, filters compose, tests cover 3.1–3.31.
+`expected.json`, filters compose, tests cover 3.1–3.32.
 
 ---
 
