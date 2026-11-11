@@ -3563,9 +3563,9 @@ fn the_categories_page_labels_its_controls(cx: &mut TestAppContext) {
     draw_frame(cx, handle);
     for sel in [
         "label:Category tree",
-        "label:New parent name",
+        "label:New category name",
         "label:Kind",
-        "label:New child name",
+        "label:New subcategory name",
         "label:Move its transactions to",
         "label:Pattern",
         "label:Category",
@@ -3575,7 +3575,7 @@ fn the_categories_page_labels_its_controls(cx: &mut TestAppContext) {
             "the Categories page paints the visible label {sel:?}"
         );
     }
-    // A selected child adds the move-to-parent picker's label.
+    // A selected child adds the move-to-category picker's label.
     add_child(cx, handle, &shell, "Restaurants");
     let child_id = cx.update(|cx| find_child(&shell, cx, "Restaurants").unwrap());
     with_window(cx, handle, |window, cx| {
@@ -3584,9 +3584,256 @@ fn the_categories_page_labels_its_controls(cx: &mut TestAppContext) {
     cx.run_until_parked();
     draw_frame(cx, handle);
     assert!(
-        window.debug_bounds("label:Move to parent").is_some(),
+        window.debug_bounds("label:Move to category").is_some(),
         "the child detail paints the move picker's label"
     );
+}
+
+/// 3.33: nothing the Categories page shows says parent, child or children.
+/// With a long-named tree and a subcategory selected, the page paints the
+/// new labels and none of the old ones (debug selectors), the placeholders
+/// it renders are clean, and every validation error — the typed ones and
+/// the ones the database refuses with — reaches the page in the new words.
+/// The renamed buttons still add a category and a subcategory.
+#[gpui::test]
+fn the_categories_page_never_says_parent_or_child(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |conn| {
+        let food = financi_db::categories::create_parent(
+            conn,
+            "Food, Groceries & Dining Out",
+            CategoryKind::Expense,
+        )
+        .unwrap();
+        financi_db::categories::create_child(conn, food, "Restaurants, Cafés & Takeaway").unwrap();
+        financi_db::categories::create_parent(
+            conn,
+            "Home & Garden Supplies",
+            CategoryKind::Expense,
+        )
+        .unwrap();
+    });
+    wait_until(cx, "the tree loads", |cx| {
+        shell.read(cx).categories.len() == 3
+    });
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Categories, cx)));
+    cx.run_until_parked();
+
+    fn retired_word(s: &str) -> String {
+        const FORBIDDEN: [&str; 3] = ["parent", "child", "children"];
+        let low = s.to_lowercase();
+        FORBIDDEN
+            .into_iter()
+            .find(|w| low.contains(*w))
+            .unwrap_or("")
+            .to_string()
+    }
+
+    // Trigger one validation error the way its button does, and check the
+    // message the page then renders: exact new copy, no retired word.
+    fn trigger_error(
+        cx: &mut TestAppContext,
+        handle: AnyWindowHandle,
+        shell: &Entity<Shell>,
+        what: &str,
+        trigger: impl Fn(&mut Window, &mut App),
+        want: &str,
+    ) {
+        with_window(cx, handle, |window, cx| {
+            shell.update(cx, |s, _| s.cat_error = None);
+            trigger(window, cx);
+        });
+        wait_until(cx, &format!("the {what:?} error"), |cx| {
+            shell.read(cx).cat_error.is_some()
+        });
+        let e = cx.update(|cx| shell.read(cx).cat_error.clone()).unwrap();
+        assert_eq!(e, want, "the {what:?} error reads");
+        assert!(
+            retired_word(&e).is_empty(),
+            "{e:?} still says something retired"
+        );
+        draw_frame(cx, handle);
+    }
+
+    let food_id = cx.update(|cx| {
+        shell
+            .read(cx)
+            .categories
+            .iter()
+            .find(|p| p.name == "Food, Groceries & Dining Out")
+            .unwrap()
+            .id
+    });
+    let child = cx.update(|cx| find_child(&shell, cx, "Restaurants, Cafés & Takeaway").unwrap());
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| s.select_category(food_id, window, cx));
+    });
+    cx.run_until_parked();
+    let mut window = VisualTestContext::from_window(handle, cx);
+    draw_frame(cx, handle);
+
+    // The painted labels carry the new words…
+    for sel in [
+        "label:Category tree",
+        "label:New category name",
+        "label:Kind",
+        "label:New subcategory name",
+    ] {
+        assert!(
+            window.debug_bounds(sel).is_some(),
+            "the Categories page paints {sel:?}"
+        );
+    }
+    // …and none of the retired ones.
+    for sel in ["label:New parent name", "label:New child name"] {
+        assert!(
+            window.debug_bounds(sel).is_none(),
+            "the Categories page never paints {sel:?}"
+        );
+    }
+
+    // A selected subcategory adds the move picker, again in the new words.
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| s.select_category(child, window, cx));
+    });
+    cx.run_until_parked();
+    draw_frame(cx, handle);
+    assert!(
+        window.debug_bounds("label:Move to category").is_some(),
+        "the Categories page paints the move picker's label"
+    );
+    assert!(
+        window.debug_bounds("label:Move to parent").is_none(),
+        "the Categories page never paints the retired move label"
+    );
+
+    // The placeholders are the exact strings the inputs render.
+    cx.update(|cx| {
+        let s = shell.read(cx);
+        for (what, input) in [
+            ("add-category", &s.new_parent_name),
+            ("add-subcategory", &s.new_child_name),
+            ("rename", &s.rename_input),
+        ] {
+            let p = input.read(cx).presentation().placeholder().to_string();
+            assert!(
+                retired_word(&p).is_empty(),
+                "the {what} input's placeholder {p:?} still says {:?}",
+                retired_word(&p)
+            );
+        }
+    });
+
+    trigger_error(
+        cx,
+        handle,
+        &shell,
+        "add category",
+        |window, cx| shell.update(cx, |s, cx| s.add_parent(window, cx)),
+        "Give the category a name.",
+    );
+    trigger_error(
+        cx,
+        handle,
+        &shell,
+        "add subcategory",
+        |window, cx| {
+            shell.update(cx, |s, cx| {
+                s.select_category(food_id, window, cx);
+                s.add_child(window, cx);
+            });
+        },
+        "Give the subcategory a name.",
+    );
+    trigger_error(
+        cx,
+        handle,
+        &shell,
+        "move",
+        |window, cx| {
+            shell.update(cx, |s, cx| {
+                s.select_category(child, window, cx);
+                s.move_child_to_selected_parent(window, cx);
+            });
+        },
+        "Choose the category to move it under.",
+    );
+    trigger_error(
+        cx,
+        handle,
+        &shell,
+        "delete",
+        |window, cx| {
+            shell.update(cx, |s, cx| {
+                s.select_category(child, window, cx);
+                s.arm_delete_category(window, cx); // first click arms
+                s.arm_delete_category(window, cx);
+            });
+        },
+        "Choose where its transactions should go.",
+    );
+
+    // A duplicate subcategory name: the database's own refusal.
+    let duplicate = {
+        with_window(cx, handle, |window, cx| {
+            shell.update(cx, |s, cx| {
+                s.cat_error = None;
+                s.select_category(food_id, window, cx);
+                s.new_child_name.update(cx, |i, cx| {
+                    i.set_value("Restaurants, Cafés & Takeaway", window, cx);
+                });
+                s.add_child(window, cx);
+            });
+        });
+        wait_until(cx, "the duplicate refusal", |cx| {
+            shell.read(cx).cat_error.is_some()
+        });
+        let e = cx.update(|cx| shell.read(cx).cat_error.clone()).unwrap();
+        assert_eq!(
+            e,
+            "a category named \"Restaurants, Cafés & Takeaway\" already exists under the same category"
+        );
+        e
+    };
+    assert!(retired_word(&duplicate).is_empty());
+
+    // Deleting the category that still has subcategories: refused, in the
+    // new words.
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.cat_error = None;
+            s.select_category(food_id, window, cx);
+        });
+        shell.update(cx, |s, cx| s.arm_delete_category(window, cx));
+        let ix = s_ix(&shell, cx, child);
+        s_select(&shell, cx, ix, window);
+        shell.update(cx, |s, cx| s.arm_delete_category(window, cx));
+    });
+    wait_until(cx, "the has-subcategories refusal", |cx| {
+        shell.read(cx).cat_error.is_some()
+    });
+    let has_sub = cx.update(|cx| shell.read(cx).cat_error.clone()).unwrap();
+    assert_eq!(
+        has_sub,
+        "Food, Groceries & Dining Out still has subcategories; delete or move them first"
+    );
+    assert!(retired_word(&has_sub).is_empty());
+
+    // The renamed buttons still work: a new category and, under it, a new
+    // subcategory.
+    add_parent(cx, handle, &shell, "Travel & Commuting");
+    add_child(cx, handle, &shell, "Airfare");
+    cx.update(|cx| {
+        assert!(
+            shell
+                .read(cx)
+                .categories
+                .iter()
+                .any(|p| p.name == "Travel & Commuting"
+                    && p.children.iter().any(|c| c.name == "Airfare")),
+            "the renamed buttons added the category and its subcategory"
+        );
+    });
+    draw_frame(cx, handle);
 }
 
 // -- row context menu (2.9) -------------------------------------------------

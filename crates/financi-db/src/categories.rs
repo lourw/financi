@@ -81,6 +81,7 @@ pub fn transaction_counts(conn: &Connection) -> Result<HashMap<i64, i64>> {
 }
 
 struct CategoryRow {
+    name: String,
     kind: CategoryKind,
     parent_id: Option<i64>,
     is_system: bool,
@@ -88,20 +89,21 @@ struct CategoryRow {
 
 fn fetch_category(conn: &Connection, id: i64) -> Result<CategoryRow> {
     conn.query_row(
-        "SELECT kind, parent_id, is_system FROM categories WHERE id = ?1",
+        "SELECT name, kind, parent_id, is_system FROM categories WHERE id = ?1",
         [id],
         |r| {
-            let kind_text: String = r.get(0)?;
+            let kind_text: String = r.get(1)?;
             Ok(CategoryRow {
+                name: r.get(0)?,
                 kind: kind_from_str(&kind_text).ok_or_else(|| {
                     rusqlite::Error::FromSqlConversionFailure(
-                        0,
+                        1,
                         rusqlite::types::Type::Text,
                         kind_text.clone().into(),
                     )
                 })?,
-                parent_id: r.get(1)?,
-                is_system: r.get(2)?,
+                parent_id: r.get(2)?,
+                is_system: r.get(3)?,
             })
         },
     )
@@ -146,7 +148,7 @@ pub fn create_parent(conn: &Connection, name: &str, kind: CategoryKind) -> Resul
 pub fn create_child(conn: &Connection, parent_id: i64, name: &str) -> Result<i64> {
     let parent = fetch_category(conn, parent_id)?;
     if parent.parent_id.is_some() {
-        return Err(DbError::CategoryHasParent(parent_id));
+        return Err(DbError::CategoryHasParent(parent.name));
     }
     insert_category(conn, name.trim(), Some(parent_id), parent.kind)
 }
@@ -177,7 +179,7 @@ pub fn rename(conn: &Connection, id: i64, name: &str) -> Result<()> {
 pub fn move_child(conn: &Connection, child_id: i64, new_parent_id: i64) -> Result<()> {
     let child = fetch_category(conn, child_id)?;
     if child.parent_id.is_none() {
-        return Err(DbError::CannotMoveParent(child_id));
+        return Err(DbError::CannotMoveParent(child.name));
     }
     if child.is_system {
         return Err(DbError::SystemCategory {
@@ -187,12 +189,12 @@ pub fn move_child(conn: &Connection, child_id: i64, new_parent_id: i64) -> Resul
     }
     let new_parent = fetch_category(conn, new_parent_id)?;
     if new_parent.parent_id.is_some() {
-        return Err(DbError::CategoryHasParent(new_parent_id));
+        return Err(DbError::CategoryHasParent(new_parent.name));
     }
     if new_parent.kind != child.kind {
         return Err(DbError::CategoryKindMismatch {
-            child: child_id,
-            parent: new_parent_id,
+            child: child.name,
+            parent: new_parent.name,
         });
     }
     conn.execute(
@@ -220,7 +222,7 @@ pub fn delete_category(conn: &Connection, id: i64, reassign_to: i64) -> Result<(
     }
     let target = fetch_category(&tx, reassign_to)?;
     if target.parent_id.is_none() {
-        return Err(DbError::ParentCategoryNotAssignable(reassign_to));
+        return Err(DbError::ParentCategoryNotAssignable(target.name));
     }
     let children: i64 = tx.query_row(
         "SELECT COUNT(*) FROM categories WHERE parent_id = ?1",
@@ -228,7 +230,7 @@ pub fn delete_category(conn: &Connection, id: i64, reassign_to: i64) -> Result<(
         |r| r.get(0),
     )?;
     if children > 0 {
-        return Err(DbError::CategoryHasChildren(id));
+        return Err(DbError::CategoryHasChildren(category.name));
     }
     tx.execute(
         "UPDATE transactions SET category_id = ?1 WHERE category_id = ?2",
@@ -249,7 +251,7 @@ pub fn delete_category(conn: &Connection, id: i64, reassign_to: i64) -> Result<(
 pub fn ensure_assignable(conn: &Connection, category_id: i64) -> Result<()> {
     let category = fetch_category(conn, category_id)?;
     if category.parent_id.is_none() {
-        return Err(DbError::ParentCategoryNotAssignable(category_id));
+        return Err(DbError::ParentCategoryNotAssignable(category.name));
     }
     Ok(())
 }
@@ -424,7 +426,7 @@ mod tests {
         let food = create_parent(&conn, "Food", CategoryKind::Expense).unwrap();
         let groceries = create_child(&conn, food, "Groceries").unwrap();
         let err = create_child(&conn, groceries, "Beans").unwrap_err();
-        assert!(matches!(err, DbError::CategoryHasParent(id) if id == groceries));
+        assert!(matches!(err, DbError::CategoryHasParent(name) if name == "Groceries"));
     }
 
     #[test]
@@ -495,14 +497,14 @@ mod tests {
         let err = move_child(&conn, groceries, income).unwrap_err();
         assert!(
             matches!(err, DbError::CategoryKindMismatch { child, parent }
-                if child == groceries && parent == income)
+                if child == "Groceries" && parent == "Income")
         );
         let err = move_child(&conn, food, transfers).unwrap_err();
-        assert!(matches!(err, DbError::CannotMoveParent(id) if id == food));
+        assert!(matches!(err, DbError::CannotMoveParent(name) if name == "Food"));
         let err = move_child(&conn, card_payment, transfers).unwrap_err();
         assert!(matches!(err, DbError::SystemCategory { id, .. } if id == card_payment));
         let err = move_child(&conn, groceries, groceries).unwrap_err();
-        assert!(matches!(err, DbError::CategoryHasParent(id) if id == groceries));
+        assert!(matches!(err, DbError::CategoryHasParent(name) if name == "Groceries"));
         assert!(matches!(
             move_child(&conn, 999, food).unwrap_err(),
             DbError::UnknownCategory(999)
@@ -571,7 +573,7 @@ mod tests {
         let target = create_child(&conn, home, "Utilities").unwrap();
 
         let err = delete_category(&conn, food, target).unwrap_err();
-        assert!(matches!(err, DbError::CategoryHasChildren(id) if id == food));
+        assert!(matches!(err, DbError::CategoryHasChildren(name) if name == "Food"));
 
         delete_category(&conn, groceries, target).unwrap();
         delete_category(&conn, food, target).expect("empty parent deletes");
@@ -595,7 +597,7 @@ mod tests {
         let card_payment = category_id_of(&conn, "Card Payment");
 
         let err = delete_category(&conn, coffee, food).unwrap_err();
-        assert!(matches!(err, DbError::ParentCategoryNotAssignable(id) if id == food));
+        assert!(matches!(err, DbError::ParentCategoryNotAssignable(name) if name == "Food"));
         let err = delete_category(&conn, coffee, coffee).unwrap_err();
         assert!(matches!(err, DbError::CategoryReassignToSelf(id) if id == coffee));
         assert!(matches!(
@@ -641,11 +643,57 @@ mod tests {
         let groceries = create_child(&conn, food, "Groceries").unwrap();
         ensure_assignable(&conn, groceries).unwrap();
         let err = ensure_assignable(&conn, food).unwrap_err();
-        assert!(matches!(err, DbError::ParentCategoryNotAssignable(id) if id == food));
+        assert!(matches!(err, DbError::ParentCategoryNotAssignable(name) if name == "Food"));
         assert!(matches!(
             ensure_assignable(&conn, 999).unwrap_err(),
             DbError::UnknownCategory(999)
         ));
+    }
+
+    /// 3.33: these refusals surface verbatim in the UI, so they name the
+    /// category, say "category" and "subcategory", and never the retired
+    /// words parent, child or children or a bare id.
+    #[test]
+    fn refusal_messages_say_category_and_subcategory() {
+        let conn = open_in_memory().unwrap();
+        let food = create_parent(&conn, "Food", CategoryKind::Expense).unwrap();
+        let groceries = create_child(&conn, food, "Groceries").unwrap();
+        let income = create_parent(&conn, "Income", CategoryKind::Income).unwrap();
+
+        let cases = [
+            (
+                create_child(&conn, groceries, "Beans").unwrap_err(),
+                "Groceries is a subcategory; subcategories cannot have subcategories",
+            ),
+            (
+                create_child(&conn, food, "Groceries").unwrap_err(),
+                "a category named \"Groceries\" already exists under the same category",
+            ),
+            (
+                move_child(&conn, food, income).unwrap_err(),
+                "only subcategories can be moved; Food is a category",
+            ),
+            (
+                move_child(&conn, groceries, income).unwrap_err(),
+                "cannot move subcategory \"Groceries\" under category \"Income\": the kinds differ",
+            ),
+            (
+                delete_category(&conn, food, groceries).unwrap_err(),
+                "Food still has subcategories; delete or move them first",
+            ),
+            (
+                ensure_assignable(&conn, food).unwrap_err(),
+                "Food is a category; only subcategories can hold transactions and rules",
+            ),
+        ];
+        for (err, want) in cases {
+            let got = err.to_string();
+            assert_eq!(got, want);
+            let low = got.to_lowercase();
+            for word in ["parent", "child", "children"] {
+                assert!(!low.contains(word), "{got:?} still says {word:?}");
+            }
+        }
     }
 
     #[test]

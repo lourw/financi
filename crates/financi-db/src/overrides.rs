@@ -276,7 +276,7 @@ mod tests {
         ));
         assert!(matches!(
             set_category(&conn, id, parent).unwrap_err(),
-            DbError::ParentCategoryNotAssignable(id_) if id_ == parent
+            DbError::ParentCategoryNotAssignable(name) if name == "Home"
         ));
         assert!(matches!(
             set_category(&conn, id, 999).unwrap_err(),
@@ -430,7 +430,7 @@ mod tests {
         ));
         assert!(matches!(
             apply_rule_from_merchant(&conn, id, parent).unwrap_err(),
-            DbError::ParentCategoryNotAssignable(id_) if id_ == parent
+            DbError::ParentCategoryNotAssignable(name) if name == "Home"
         ));
         assert!(matches!(
             apply_rule_from_merchant(&conn, blank, cat).unwrap_err(),

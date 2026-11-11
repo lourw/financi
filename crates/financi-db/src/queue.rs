@@ -297,7 +297,7 @@ mod tests {
 
         assert!(matches!(
             categorize_group(&conn, "COFFEE", parent).unwrap_err(),
-            DbError::ParentCategoryNotAssignable(id) if id == parent
+            DbError::ParentCategoryNotAssignable(name) if name == "Home"
         ));
         assert!(matches!(
             categorize_group(&conn, "COFFEE", 999).unwrap_err(),
