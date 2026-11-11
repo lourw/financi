@@ -154,7 +154,10 @@ fn drop_create_account_inline_and_import(cx: &mut TestAppContext) {
         let p = panel(&shell, cx);
         assert!(p.read(cx).creating_new, "new-account form shown");
         assert!(!p.read(cx).can_import(), "no account yet");
-        assert_eq!(p.read(cx).format, "Simplii Financial chequing");
+        assert_eq!(
+            p.read(cx).format,
+            "Simplii Financial chequing / credit card"
+        );
         p.update(cx, |p, cx| {
             p.new_name.update(cx, |input, cx| {
                 input.set_value("No Fee Chequing", window, cx)

@@ -11,7 +11,7 @@ This file holds requirements and settled decisions. `docs/tasks.md` is the task 
 | M0: Skeleton + GPUI spike | Done |
 | M1: Amex import, end to end | Done |
 | M2: Master CSVs + categorize | Done |
-| M3: Core views | In progress: 3.1–3.2 done, 3.3 next |
+| M3: Core views | In progress: 3.1–3.20 done; next 3.21 (lists don't scroll), then 3.22 (queue fits the window), then 3.23 (Categories page layout) |
 | M4: Simplii Visa, transfer pairing, near-match | Not started |
 | M5: Export / restore | Not started |
 
@@ -100,7 +100,7 @@ Re-importing overlapping exports must never create duplicates or drop real repea
 - Exactly one of Funds Out or Funds In is filled per row, both unsigned.
 - Identity fields: all four columns as exported. There is no balance column.
 
-**Simplii Visa.** Built on the assumption that it uses the chequing format, with one `simplii` parser for both account kinds (task 4.1). No real sample is needed to finish v1. When one arrives, add a synthetic fixture modelled on it and adjust the parser if the format differs.
+**Simplii Visa.** Implemented on the assumption that it uses the chequing format (task 4.1): one `simplii` parser with `account_kinds()` `[Chequing, CreditCard]`, the account chosen at import deciding which; the retired id `simplii-chequing` still resolves in `by_id()`. Funds Out is money out and Funds In money in for both; a Funds In row whose description contains `PAYMENT` is a card payment. Synthetic fixture: `crates/financi-parsers/tests/fixtures/simplii/visa.csv`. **Revisit when a real Visa sample arrives:** add a fixture modelled on it and adjust the parser if the format differs.
 
 **Classifying Simplii rows**
 
@@ -245,9 +245,9 @@ Decisions recorded in the sections above are not repeated. These are the remaini
 - [ ] **Ship default categories and merchant rules**, as specified under **Categorization**.
 - [ ] **Keep the app responsive with thousands of rows.** Profile the slowdown after large imports, then render only the rows on screen in every long list, starting with the To categorize queue. Create its per-row category dropdowns only when needed.
 - [ ] **Make category dropdowns usable with thousands of categories.** Scrolling a flat list won't work at that size, so every dropdown that picks a category (rules, the To categorize queue, the move and delete targets on the Categories page) becomes searchable: type to filter, match on both parent and child names, and show each result with its parent so same-named children can be told apart. Works from the keyboard and renders only the visible options.
-- [ ] **Give each section of the Categories page real boundaries and its own scrolling.** As rules accumulate they crowd the page and push the new category section past the window edge. Each section (new category controls, category tree, selected category details, rules list) gets a defined boundary, and long content scrolls inside its own section. At the minimum window size and above, no section overflows the page or pushes another out of view.
+- [ ] **Give each section of the Categories page real boundaries and its own scrolling.** *(Tracked as tasks 3.21 and 3.23 in `docs/tasks.md`.)* As rules accumulate they crowd the page and push the new category section past the window edge. Each section (new category controls, category tree, selected category details, rules list) gets a defined boundary, and long content scrolls inside its own section. At the minimum window size and above, no section overflows the page or pushes another out of view.
 - [ ] **Make the charts scale cleanly with the window.** Chart lines currently overlap the labels, pieces are cut off, and the layout doesn't adapt to the space available. At the minimum window size and above, every chart stays inside its panel, nothing is clipped, and lines and labels don't overlap, with labels shortened or thinned out when space is tight.
-- [ ] **Align the columns in the To categorize table.** Every column lines up from row to row. Text beyond a column's limit is cut with an ellipsis (…) and shown in full on hover.
+- [ ] **Align the columns in the To categorize table.** *(Tracked as tasks 3.21 and 3.22 in `docs/tasks.md`.)* Every column lines up from row to row. Text beyond a column's limit is cut with an ellipsis (…) and shown in full on hover.
 - [x] **Rename the "Spend" category type to "Expense".** The kind is `expense` in code, database and UI. `0001_init.sql` was edited in place because no data existed.
 - [ ] **Label the category type dropdown** with a visible "Category type" label.
 - [ ] **Make account selection on import clearer.** Show the detected institution prominently next to the account selection. Account names exclude the institution, so the picker shows "Amex · Cobalt" from institution and name.
