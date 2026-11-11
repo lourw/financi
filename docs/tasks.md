@@ -779,8 +779,8 @@ out.
     rendered text with a long-named tree, a subcategory selected, and each
     validation error triggered); the renamed buttons still work.
 
-**Bugs reported by the user on 2026-11-11** (3.34–3.37, plus a fix folded
-into 3.23). Order: **3.23 → 3.35 → 3.36 → 3.37 → 3.34**, then the rest of
+**Bugs reported by the user on 2026-11-11** (3.34–3.38, plus a fix folded
+into 3.23). Order: **3.23 → 3.35 → 3.36 → 3.37 → 3.38 → 3.34**, then the rest of
 the order above (3.28 → 3.29 → 3.26).
 
 - 3.23 also fixes: **the rule list overflows the page.** Today each rule
@@ -881,9 +881,19 @@ the order above (3.28 → 3.29 → 3.26).
   "Undo" and it paints an icon; 3.32's bounds and fit tests still pass
   in both states. Update the *Imports* row of `ui-conventions.md`.
 
+- [ ] **3.38 Tooltip on the sidebar's database path.** The sidebar footer
+  (`Shell::sidebar`, `.footer(...)`) shows the DB path in `text_xs` muted
+  with an ellipsis, so on a normal path most of it is cut off by the
+  sidebar's width (user request, 2026-11-11). Give the path element an `id`
+  and a hover `.tooltip(...)` (gpui-base `Tooltip`, as the queue's merchant
+  cell does) showing the full path, prefixed "Database: ". Leave the
+  footer's look unchanged otherwise. Tests: hovering the path shows a
+  tooltip whose text is the full `db_path`, with a path longer than the
+  sidebar. Note it in the *Sidebar* section of `ui-conventions.md`.
+
 
 **Done when:** on the demo data the dashboard totals match
-`expected.json`, filters compose, tests cover 3.1–3.37.
+`expected.json`, filters compose, tests cover 3.1–3.38.
 
 ---
 
