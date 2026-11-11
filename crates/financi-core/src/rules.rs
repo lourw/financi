@@ -3,7 +3,8 @@
 //! A [`Rule`] maps a `pattern` (plain substring or regex, matched
 //! case-insensitively) to a child category. Matching is description only —
 //! no account or sign filters — and lives here as the pure
-//! [`pick_category`]; storage and validation-on-save live in `financi-db`.
+//! [`winning_rule`] and [`pick_category`]; storage and validation-on-save
+//! live in `financi-db`.
 //!
 //! Winner when several rules match: substring rules first, longest pattern
 //! wins; only if no substring rule matches, regex rules, longest pattern
@@ -54,11 +55,11 @@ fn more_specific(a: &Rule, b: &Rule) -> std::cmp::Ordering {
     pattern_len(a).cmp(&pattern_len(b)).then(b.id.cmp(&a.id))
 }
 
-/// The category a description belongs to, or `None` when no rule matches.
-///
-/// Substring rules beat regex rules even when a regex pattern is longer;
-/// within each kind the longest pattern wins, ties go to the lowest id.
-pub fn pick_category(rules: &[Rule], description: &str) -> Option<i64> {
+/// The id of the rule that decides `description`, or `None` when no rule
+/// matches. Substring rules beat regex rules even when a regex pattern is
+/// longer; within each kind the longest pattern wins, ties go to the lowest
+/// id. [`pick_category`] delegates here, so the two can't drift.
+pub fn winning_rule(rules: &[Rule], description: &str) -> Option<i64> {
     let description_lower = description.to_ascii_lowercase();
     for is_regex in [false, true] {
         let winner = rules
@@ -67,10 +68,22 @@ pub fn pick_category(rules: &[Rule], description: &str) -> Option<i64> {
             .filter(|rule| rule_matches(rule, description, &description_lower))
             .max_by(|a, b| more_specific(a, b));
         if let Some(rule) = winner {
-            return Some(rule.category_id);
+            return Some(rule.id);
         }
     }
     None
+}
+
+/// The category a description belongs to, or `None` when no rule matches.
+///
+/// Substring rules beat regex rules even when a regex pattern is longer;
+/// within each kind the longest pattern wins, ties go to the lowest id.
+pub fn pick_category(rules: &[Rule], description: &str) -> Option<i64> {
+    let id = winning_rule(rules, description)?;
+    rules
+        .iter()
+        .find(|rule| rule.id == id)
+        .map(|rule| rule.category_id)
 }
 
 /// Does `pattern` match `description` under [`pick_category`] semantics:
@@ -201,6 +214,76 @@ mod tests {
     fn empty_patterns_never_match() {
         let rules = [rule(1, "", false, 10), rule(2, "", true, 20)];
         assert_eq!(pick_category(&rules, "ANY DESCRIPTION"), None);
+    }
+
+    #[test]
+    fn winning_rule_returns_the_deciding_rule_id() {
+        let rules = [rule(1, "COFFEE", false, 10), rule(2, "TEA", false, 20)];
+        assert_eq!(winning_rule(&rules, "BEST COFFEE IN TOWN"), Some(1));
+        assert_eq!(winning_rule(&rules, "LOOSE LEAF TEA"), Some(2));
+    }
+
+    #[test]
+    fn winning_rule_none_when_nothing_matches() {
+        let rules = [rule(1, "COFFEE", false, 10)];
+        assert_eq!(winning_rule(&rules, "HARDWARE STORE"), None);
+        assert_eq!(winning_rule(&[], "ANYTHING"), None);
+    }
+
+    #[test]
+    fn winning_rule_substring_beats_longer_regex() {
+        let rules = [
+            rule(1, "CO.*SHOP", true, 10),
+            rule(2, "COFFEE SHOP", false, 20),
+        ];
+        assert_eq!(winning_rule(&rules, "COFFEE SHOP"), Some(2));
+    }
+
+    #[test]
+    fn winning_rule_longest_pattern_wins_within_its_kind() {
+        let substrings = [
+            rule(1, "COFFEE", false, 10),
+            rule(2, "COFFEE SHOP", false, 20),
+        ];
+        assert_eq!(winning_rule(&substrings, "CORNER COFFEE SHOP"), Some(2));
+        let regexes = [
+            rule(3, "CAFE.*", true, 10),
+            rule(4, "CAFE.*VANCOUVER", true, 20),
+        ];
+        assert_eq!(winning_rule(&regexes, "CAFE O VANCOUVER BC"), Some(4));
+    }
+
+    #[test]
+    fn winning_rule_lowest_id_breaks_equal_length_ties() {
+        let rules = [rule(5, "COFFEE", false, 10), rule(3, "MUFFIN", false, 20)];
+        assert_eq!(winning_rule(&rules, "COFFEE AND MUFFIN"), Some(3));
+    }
+
+    #[test]
+    fn winning_rule_skips_invalid_regexes_and_empty_patterns() {
+        let rules = [
+            rule(1, "(unclosed", true, 10),
+            rule(2, "CAFE", true, 20),
+            rule(3, "", false, 30),
+        ];
+        assert_eq!(winning_rule(&rules, "CAFE O"), Some(2));
+        assert_eq!(winning_rule(&rules, "UNCLOSED"), None);
+    }
+
+    #[test]
+    fn pick_category_uses_winning_rule() {
+        let rules = [
+            rule(7, "CAFE.*", true, 10),
+            rule(8, "COFFEE SHOP", false, 20),
+        ];
+        assert_eq!(
+            pick_category(&rules, "CORNER COFFEE SHOP"),
+            Some(rules[1].category_id)
+        );
+        assert_eq!(
+            pick_category(&rules, "CAFE NOIR"),
+            Some(rules[0].category_id)
+        );
     }
 
     #[test]

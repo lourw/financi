@@ -593,7 +593,7 @@ out.
     past the auto-dismiss time and closes on click; nothing in the content
     column renders the old status text.
 
-- [ ] **3.28 A Rules page to find and organize rules.** Rules live only in
+- [x] **3.28 A Rules page to find and organize rules.** Rules live only in
   each category's detail panel (3.23), so finding "which rule catches
   AMZN?" means guessing the category first, and with hundreds of rules
   there is no overview. Add a **Rules** page to the sidebar, after
