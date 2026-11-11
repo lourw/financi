@@ -1534,6 +1534,113 @@ fn an_invalid_regex_shows_the_error_and_saves_nothing(cx: &mut TestAppContext) {
     });
 }
 
+/// 3.24 review: a validation error open under the editor must stay inside
+/// its row — the virtual list does not clip per item, so an error taller
+/// than the reserved slot would paint over the next rule row. The error is
+/// clamped to one ellipsized line and the slot grows while it is shown.
+#[gpui::test]
+fn the_editor_error_stays_inside_its_row(cx: &mut TestAppContext) {
+    let (handle, shell, rule, _first, second) = open_rule_fixture(cx);
+    // A second rule below the one being edited: its row is what an
+    // overflowing error would overlap.
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.rule_pattern
+                .update(cx, |i, cx| i.set_value("TOAST".to_string(), window, cx));
+            let ix = s
+                .child_choices
+                .iter()
+                .position(|(id, _)| *id == second)
+                .unwrap();
+            s.rule_target.update(cx, |sel, cx| {
+                sel.set_selected_index(Some(gpui_kit::component::IndexPath::new(ix)), window, cx);
+            });
+            s.add_rule(window, cx);
+        });
+    });
+    wait_until(cx, "the second rule", |cx| shell.read(cx).rules.len() == 2);
+    let toast = cx.update(|cx| {
+        shell
+            .read(cx)
+            .rules
+            .iter()
+            .find(|r| r.pattern == "TOAST")
+            .unwrap()
+            .id
+    });
+
+    // Edit the first rule and leave an invalid regex open — the multi-line
+    // regex-crate message is the one that used to break the layout.
+    start_rule_edit(cx, handle, &shell, rule);
+    set_edit_pattern(cx, handle, &shell, "[");
+    cx.update(|cx| {
+        shell.update(cx, |s, _cx| s.rule_edit_regex = true);
+    });
+    save_rule_edit(cx, handle, &shell);
+    wait_until(cx, "the editor error", |cx| {
+        shell.read(cx).rule_error.is_some()
+    });
+    draw_frame(cx, handle);
+    let mut window = VisualTestContext::from_window(handle, cx);
+    let err = window
+        .debug_bounds("rule-edit-error")
+        .expect("the error paints under the editor");
+    let next = window
+        .debug_bounds(format!("rule-row-{toast}").leak())
+        .expect("the row below still paints");
+    assert!(
+        err.bottom() <= next.top(),
+        "the error (bottom {:?}) must not overlap the next rule row (top {:?})",
+        err.bottom(),
+        next.top()
+    );
+    assert!(
+        err.size.height <= px(24.),
+        "the error is one line (text_sm measures 22.5 px), not {:?}",
+        err.size.height
+    );
+}
+
+/// 3.24 review: while a row's editor is open the live count belongs to the
+/// editor — the add-rule row must not show the editor's count (the same
+/// filter `rule_error` has).
+#[gpui::test]
+fn the_add_rule_preview_stays_hidden_while_editing(cx: &mut TestAppContext) {
+    let (handle, shell, rule, _first, _second) = open_rule_fixture(cx);
+    start_rule_edit(cx, handle, &shell, rule);
+    wait_until(cx, "the editor preview", |cx| {
+        shell.read(cx).rule_match_count.is_some()
+    });
+    draw_frame(cx, handle);
+    let mut window = VisualTestContext::from_window(handle, cx);
+    assert!(
+        window.debug_bounds("rule-edit-preview").is_some(),
+        "the editor shows the live count"
+    );
+    assert!(
+        window.debug_bounds("add-rule-preview").is_none(),
+        "the add-rule row shows none of it"
+    );
+    // Not merely never painted: with the editor closed and the add-rule
+    // row's own pattern, the row shows its own count.
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.cancel_edit_rule(cx);
+            s.rule_pattern
+                .update(cx, |i, cx| i.set_value("COFFEE".to_string(), window, cx));
+            s.preview_rule_match(cx);
+        });
+    });
+    wait_until(cx, "the add-rule preview", |cx| {
+        shell.read(cx).rule_match_count.is_some()
+    });
+    draw_frame(cx, handle);
+    assert!(
+        window.debug_bounds("add-rule-preview").is_some(),
+        "the add-rule row shows its own count once not editing"
+    );
+}
+
 /// 3.24: Cancel and Escape both close the editor without touching the
 /// rule.
 #[gpui::test]
@@ -1572,12 +1679,16 @@ fn cancel_and_escape_leave_the_rule_unchanged(cx: &mut TestAppContext) {
     });
 }
 
-/// 3.24: Escape first cancels the editor — the same keystroke only clears
-/// the dashboard selection once no editor is open.
+/// 3.24: selecting another category cancels the open editor — and clears
+/// the shared preview count with it, so the add-rule row never inherits a
+/// stale editor count.
 #[gpui::test]
 fn selecting_another_category_cancels_the_rule_editor(cx: &mut TestAppContext) {
     let (handle, shell, rule, first, _second) = open_rule_fixture(cx);
     start_rule_edit(cx, handle, &shell, rule);
+    wait_until(cx, "the editor preview", |cx| {
+        shell.read(cx).rule_match_count.is_some()
+    });
     with_window(cx, handle, |window, cx| {
         shell.update(cx, |s, cx| s.select_category(first, window, cx));
     });
@@ -1587,6 +1698,10 @@ fn selecting_another_category_cancels_the_rule_editor(cx: &mut TestAppContext) {
         assert_eq!(
             s.editing_rule, None,
             "selecting a category cancels the edit"
+        );
+        assert!(
+            s.rule_match_count.is_none(),
+            "closing the editor clears the shared preview count"
         );
         assert_eq!(s.rules[0].pattern, "COFFEE");
     });
@@ -1649,8 +1764,12 @@ fn the_armed_rule_delete_is_transient(cx: &mut TestAppContext) {
         );
     });
 
-    // A page switch closes the editor and disarms in one go.
+    // A page switch closes the editor (and its preview count) and disarms
+    // in one go.
     start_rule_edit(cx, handle, &shell, rule);
+    wait_until(cx, "the editor preview", |cx| {
+        shell.read(cx).rule_match_count.is_some()
+    });
     with_window(cx, handle, |window, cx| {
         shell.update(cx, |s, cx| s.arm_delete_rule(rule, window, cx));
     });
@@ -1658,6 +1777,10 @@ fn the_armed_rule_delete_is_transient(cx: &mut TestAppContext) {
     cx.update(|cx| {
         let s = shell.read(cx);
         assert_eq!(s.editing_rule, None, "the page switch closed the editor");
+        assert!(
+            s.rule_match_count.is_none(),
+            "and cleared the shared preview count"
+        );
         assert_eq!(s.armed_delete_rule, None, "and disarmed the delete");
     });
 }

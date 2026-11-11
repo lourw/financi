@@ -1450,9 +1450,11 @@ pub struct Shell {
     armed_delete_rule: Option<i64>,
     /// 3.24: the editor's own controls, separate entities from the add-rule
     /// row's so the two never share an `InputState`/`SelectState` on screen
-    /// at once. The shared `rule_match_count` preview serves whichever row
-    /// is being edited and excludes that rule (2.5 re-run semantics), and
-    /// `sync_category_choices` closes the editor when its rule is gone.
+    /// at once. While the editor is open the shared `rule_match_count`
+    /// preview belongs to it (the add-rule row hides it, like `rule_error`)
+    /// and excludes that rule (2.5 re-run semantics); every close path
+    /// clears it, and `sync_category_choices` closes the editor when its
+    /// rule is gone.
     rule_edit_pattern: Entity<InputState>,
     rule_edit_target: Entity<SelectState<Names>>,
     rule_edit_regex: bool,
@@ -2551,7 +2553,7 @@ impl Shell {
         self.rule_offer = None;
         self.renaming = false;
         self.confirm_delete_category = None;
-        self.editing_rule = None;
+        self.close_rule_editor();
         self.armed_delete_rule = None;
         cx.notify();
     }
@@ -2756,7 +2758,7 @@ impl Shell {
         if let Some(id) = self.editing_rule
             && !self.rules.iter().any(|r| r.id == id)
         {
-            self.editing_rule = None;
+            self.close_rule_editor();
         }
         if let Some(id) = self.armed_delete_rule
             && !self.rules.iter().any(|r| r.id == id)
@@ -2797,10 +2799,11 @@ impl Shell {
         self.renaming = false;
         self.confirm_delete_category = None;
         self.cat_error = None;
-        // 3.24: selecting another category closes the rule editor and
-        // disarms any armed rule delete — the same "transient UI belongs to
-        // what it was opened on" rule as the page switch.
-        self.editing_rule = None;
+        // 3.24: selecting another category closes the rule editor (with its
+        // preview count) and disarms any armed rule delete — the same
+        // "transient UI belongs to what it was opened on" rule as the page
+        // switch.
+        self.close_rule_editor();
         self.armed_delete_rule = None;
         // 3.21: the rule list keeps its scroll offset here — its content
         // (all rules) doesn't change when the selection does. When 3.23
@@ -3073,13 +3076,27 @@ impl Shell {
         cx.notify();
     }
 
+    /// 3.24: close the rule editor and drop everything it owns — the
+    /// error line and the live preview count, including its in-flight task
+    /// (dropping a `Task` cancels it, so a late result can't repopulate
+    /// the count after the editor is gone). Returns whether an editor was
+    /// open. Every editor-close path goes through here.
+    fn close_rule_editor(&mut self) -> bool {
+        if self.editing_rule.take().is_some() {
+            self.rule_error = None;
+            self.rule_task = None;
+            self.rule_match_count = None;
+            true
+        } else {
+            false
+        }
+    }
+
     /// 3.24: close the rule editor without saving. The editor's controls
     /// keep their values (invisible while closed); `start_edit_rule`
     /// re-fills them from the next rule.
     fn cancel_edit_rule(&mut self, cx: &mut Context<Self>) {
-        if self.editing_rule.take().is_some() {
-            self.rule_error = None;
-            self.rule_match_count = None;
+        if self.close_rule_editor() {
             cx.notify();
         }
     }
@@ -3153,9 +3170,7 @@ impl Shell {
             let _ = this.update_in(cx, |this, window, cx| {
                 match result {
                     Ok(()) => {
-                        this.editing_rule = None;
-                        this.rule_error = None;
-                        this.rule_match_count = None;
+                        this.close_rule_editor();
                     }
                     Err(e) => this.rule_error = Some(e),
                 }
@@ -3180,7 +3195,7 @@ impl Shell {
                         Ok(()) => {
                             this.armed_delete_rule = None;
                             if this.editing_rule == Some(id) {
-                                this.editing_rule = None;
+                                this.close_rule_editor();
                             }
                         }
                         Err(e) => this.rule_error = Some(e),
@@ -4372,6 +4387,7 @@ impl Shell {
             .h_6()
             .gap_2()
             .items_center()
+            .debug_selector(move || format!("rule-row-{id}"))
             .child(
                 div()
                     .w(px(320.))
@@ -4421,8 +4437,11 @@ impl Shell {
     /// add-rule row's shape (labelled Pattern input, regex switch, labelled
     /// Category picker, primary Save, Cancel) pre-filled from the rule,
     /// with the same live "matches N transactions" count. A validation
-    /// error shows in `danger` under the editor and keeps it open. The row
-    /// reserves 68 px in `rule_sizes` instead of 24.
+    /// error shows in `danger` under the editor and keeps it open — clamped
+    /// to one ellipsized line, because the virtual list doesn't clip per
+    /// item and a taller row would paint over the rows below. The row
+    /// reserves 68 px in `rule_sizes` instead of 24, 92 px while an error
+    /// is open (measured: 55.5 px without, 82 px with one line).
     fn rule_editor_row(
         &self,
         rule: &Rule,
@@ -4434,6 +4453,7 @@ impl Shell {
             Some(n) => div()
                 .text_sm()
                 .text_color(muted)
+                .debug_selector(|| "rule-edit-preview".into())
                 .child(format!("matches {} transactions", flow::count(n)))
                 .into_any_element(),
             None => div().into_any_element(),
@@ -4487,7 +4507,18 @@ impl Shell {
             .children(
                 self.rule_error
                     .clone()
-                    .map(|e| div().text_sm().text_color(danger).child(e)),
+                    // One line, ellipsized (newlines flattened): the slot
+                    // reserves room for exactly one error line, and the
+                    // regex crate's messages are multi-line.
+                    .map(|e| e.replace('\n', " "))
+                    .map(|e| {
+                        div()
+                            .text_sm()
+                            .text_color(danger)
+                            .text_ellipsis()
+                            .debug_selector(|| "rule-edit-error".into())
+                            .child(e)
+                    }),
             )
             .into_any_element()
     }
@@ -4746,14 +4777,16 @@ impl Shell {
         // Rules: list + add row with the live match preview. The list is
         // virtualized like the tree (3.12); rows are fixed height (24 px),
         // except the one row 3.24's editor swapped in for, which reserves
-        // 68 px (labelled fields plus a possible error line).
+        // 68 px (labelled fields) — 92 px while a validation error is open
+        // under it, one ellipsized line (`rule_editor_row`).
         let editing = self.editing_rule;
+        let edit_error = self.rule_error.is_some();
         let rule_sizes = Rc::new(
             self.rules
                 .iter()
                 .map(|r| {
                     if Some(r.id) == editing {
-                        size(px(0.), px(68.))
+                        size(px(0.), if edit_error { px(92.) } else { px(68.) })
                     } else {
                         size(px(0.), px(24.))
                     }
@@ -4761,10 +4794,14 @@ impl Shell {
                 .collect::<Vec<_>>(),
         );
 
-        let preview = match self.rule_match_count {
+        let preview = match self
+            .rule_match_count
+            .filter(|_| self.editing_rule.is_none())
+        {
             Some(n) => div()
                 .text_sm()
                 .text_color(muted)
+                .debug_selector(|| "add-rule-preview".into())
                 .child(format!("matches {} transactions", flow::count(n)))
                 .into_any_element(),
             None => div().into_any_element(),
