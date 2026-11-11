@@ -401,7 +401,7 @@ out.
     rows build buttons. Update the *Categories* row of
     `docs/ui-conventions.md` in the same commit.
 
-- [ ] **3.25 Dashboard alignment.** Since the labelling pass (3.16) the
+- [x] **3.25 Dashboard alignment.** Since the labelling pass (3.16) the
   dashboard's controls sit at uneven heights and the regions don't share
   edges. Start by taking a screenshot (see *GPUI pitfalls* → Screenshots)
   at 1200 × 720 and at a large window, and list what is off before
