@@ -955,6 +955,40 @@ the UI; tests cover 2.1–2.9.
     still is; the repair unlocks and recategorizes an affected row and
     leaves a paired or negative one alone.
 
+- [x] **3.67 The CSV reader survives real-world files.** (Code review,
+  2026-11-11.) All in `financi-core/src/raw.rs`, `lib.rs` and
+  `financi/src/flow.rs`.
+  - **Quotes only open at a field's start.** `split_records` and
+    `split_fields` flip the quote state on every `"`, so an Amex
+    description like `BEST BUY 55" TV    TORONTO` swallows the following
+    lines until the next `"` and the whole file fails to import. Open a
+    quote only at the start of a field; inside an unquoted field `"` is a
+    literal; a quoted field closes at `"` followed by `,`, end of line or
+    end of input; `""` stays an escaped quote. Hashing must not change
+    for files that parse today (they contain no such quotes): add a test
+    that every existing fixture hashes the same before and after.
+  - **Line numbers users can find.** `source_line` is a 0-based record
+    index (it skips blank lines), but errors print it as "record 0". Keep
+    `source_line` (it's stored and orders rows) and add
+    `RawRecord.file_line`, the 1-based physical line where the record
+    starts; errors say "line 2: bad Date …".
+  - **Non-CSV files fail fast.** Reject files over 50 MB or containing a
+    NUL byte with "This isn't a CSV export.". Cut the header shown in the
+    unknown-format message to ~120 characters. An unclosed quote in a
+    file with no recognized header reports the unknown-format message.
+    Run `flow::load_file` on the background executor, not the UI thread.
+  - **Fixtures end to end:** an Amex file with CRLF and a BOM, a Simplii
+    file in Windows-1252 with an accented description, a quoted amount
+    `"1,234.56"`, a blank line mid-file, and the stray-quote row; plus a
+    test that the same rows hash identically across the LF / CRLF / BOM
+    variants.
+  - `parse::cents` accepts commas only as thousands groups (`1,234.56`);
+    `"1,2,3"` and `"12,34"` are rejected.
+  - Merged at `6f4c830` (`v0.23.4`) with everything except the "background
+    executor" bullet, which was split out to 3.91 (its fix site is
+    `ui/imports.rs`, owned by in-flight 3.74). The review's note that the
+    50 MB check runs after `std::fs::read` went to 3.91 too.
+
 - [x] **3.73 Imports and undo stay fast as data grows.** (Code review,
   2026-11-11; cheap fixes now, timed budgets in 3.55.)
   - **Compile rules once per import.** `categorize_new_rows`

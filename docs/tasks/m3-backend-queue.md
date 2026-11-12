@@ -6,36 +6,6 @@ Runs beside the UI queue, in the order listed. Backend only: don't read the UI d
 
 Runs beside the UI queue. 5.1 and 5.2 (in M5) follow 3.90.
 
-- [ ] **3.67 The CSV reader survives real-world files.** (Code review,
-  2026-11-11.) All in `financi-core/src/raw.rs`, `lib.rs` and
-  `financi/src/flow.rs`.
-  - **Quotes only open at a field's start.** `split_records` and
-    `split_fields` flip the quote state on every `"`, so an Amex
-    description like `BEST BUY 55" TV    TORONTO` swallows the following
-    lines until the next `"` and the whole file fails to import. Open a
-    quote only at the start of a field; inside an unquoted field `"` is a
-    literal; a quoted field closes at `"` followed by `,`, end of line or
-    end of input; `""` stays an escaped quote. Hashing must not change
-    for files that parse today (they contain no such quotes): add a test
-    that every existing fixture hashes the same before and after.
-  - **Line numbers users can find.** `source_line` is a 0-based record
-    index (it skips blank lines), but errors print it as "record 0". Keep
-    `source_line` (it's stored and orders rows) and add
-    `RawRecord.file_line`, the 1-based physical line where the record
-    starts; errors say "line 2: bad Date …".
-  - **Non-CSV files fail fast.** Reject files over 50 MB or containing a
-    NUL byte with "This isn't a CSV export.". Cut the header shown in the
-    unknown-format message to ~120 characters. An unclosed quote in a
-    file with no recognized header reports the unknown-format message.
-    Run `flow::load_file` on the background executor, not the UI thread.
-  - **Fixtures end to end:** an Amex file with CRLF and a BOM, a Simplii
-    file in Windows-1252 with an accented description, a quoted amount
-    `"1,234.56"`, a blank line mid-file, and the stray-quote row; plus a
-    test that the same rows hash identically across the LF / CRLF / BOM
-    variants.
-  - `parse::cents` accepts commas only as thousands groups (`1,234.56`);
-    `"1,2,3"` and `"12,34"` are rejected.
-
 - [ ] **3.68 Near-match review asks only about changed charges.** (Code
   review, 2026-11-11.) In `financi-db/src/import.rs`:
   - **Repeat purchases aren't "changed charges."** `find_near_matches`
@@ -156,3 +126,14 @@ Runs beside the UI queue. 5.1 and 5.2 (in M5) follow 3.90.
     add a parser-registry test: unique ids, at least one account kind
     each, and every parser's institution exists in the `institutions`
     table.
+
+- [ ] **3.91 CSV loading runs off the UI thread.** (Follow-up split from
+  3.67, 2026-11-12; run after 3.74 has merged — it touches
+  `ui/imports.rs`.) `Shell::open_file` calls `flow::load_file` on the UI
+  thread, so a large or pathological file freezes the window while it
+  parses. Run it on the background executor with an update hop back to
+  the entity (the pattern the other DbWorker call sites in
+  `ui/imports.rs` use), keeping the toast and error reporting as they
+  are. While there, check the file's size against the 50 MB limit via
+  `path.metadata()` *before* `std::fs::read`, so a huge drop is
+  rejected without loading it into memory (3.67 review note).
