@@ -262,7 +262,7 @@ Decisions recorded in the sections above are not repeated. These are the remaini
 - [ ] **Label the category type dropdown** with a visible "Category type" label.
 - [ ] **Make account selection on import clearer.** Show the detected institution prominently next to the account selection. Account names exclude the institution, so the picker shows "Amex · Cobalt" from institution and name.
 - [x] **Tag every commit with a semver version.** `.githooks/post-commit` creates an annotated tag on `main`: breaking change = major, `feat` = minor, anything else = patch. Enable per clone with `git config core.hooksPath .githooks`; publish with `git push --follow-tags`.
-- [ ] **Show the version subtly in the UI.** Embed `git describe --tags --always` in a `build.rs`, falling back to `CARGO_PKG_VERSION`. Show it in small muted text at the bottom of the sidebar, and use the same value in the export manifest.
+- [x] **Show the version subtly in the UI.** Embed `git describe --tags --always` in a `build.rs`, falling back to `CARGO_PKG_VERSION`. Show it in small muted text at the bottom of the sidebar, and use the same value in the export manifest.
 
 **After v1**
 

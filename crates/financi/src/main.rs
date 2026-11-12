@@ -9,6 +9,7 @@
 
 mod flow;
 mod ui;
+mod version;
 
 use std::path::PathBuf;
 

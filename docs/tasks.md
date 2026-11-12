@@ -1113,7 +1113,7 @@ the order above (3.28 → 3.29 → 3.26).
   "Undo" and it paints an icon; 3.32's bounds and fit tests still pass
   in both states. Update the *Imports* row of `ui-conventions.md`.
 
-- [ ] **3.38 Tooltip on the sidebar's database path.** The sidebar footer
+- [x] **3.38 Tooltip on the sidebar's database path.** The sidebar footer
   (`Shell::sidebar`, `.footer(...)`) shows the DB path in `text_xs` muted
   with an ellipsis, so on a normal path most of it is cut off by the
   sidebar's width (user request, 2026-11-11). Give the path element an `id`
@@ -1123,7 +1123,7 @@ the order above (3.28 → 3.29 → 3.26).
   tooltip whose text is the full `db_path`, with a path longer than the
   sidebar. Note it in the *Sidebar* section of `ui-conventions.md`.
 
-- [ ] **3.39 Show the version in the sidebar.** From `plan.md` → *Show the
+- [x] **3.39 Show the version in the sidebar.** From `plan.md` → *Show the
   version subtly in the UI* (planned with the semver tags but never made a
   task; user asked again 2026-11-11). Add a `crates/financi/build.rs` that
   sets `FINANCI_VERSION` from `git describe --tags --always --dirty`,
