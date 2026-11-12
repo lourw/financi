@@ -780,7 +780,7 @@ out.
     validation error triggered); the renamed buttons still work.
 
 **Bugs reported by the user on 2026-11-11** (3.34–3.55, plus a fix folded
-into 3.23). Order: **3.40 → 3.23 → 3.53/3.42/3.48/3.49/3.50/3.51 → 3.43 → 3.44 → 3.55 → 3.47/3.54 → 3.35 → 3.36 → 3.45 → 3.46 → 3.37 → 3.38/3.39 → 3.34 → 3.52**, then the rest of
+into 3.23). Order (user re-prioritized the dashboard, 2026-11-11): **3.40 → 3.23 → 3.35 → 3.36 → 3.45 → 3.46 → 3.53/3.42/3.48/3.49/3.50/3.51 → 3.43 → 3.44 → 3.55 → 3.47/3.54 → 3.37 → 3.38/3.39 → 3.34 → 3.52**, then the rest of
 the order above (3.28 → 3.29 → 3.26).
 
 - 3.23 also fixes: **the rule list overflows the page.** Today each rule
