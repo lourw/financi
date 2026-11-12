@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 
-use financi_core::rules::{CompiledPattern, CompiledRules, Rule, validate_regex, winning_rule};
+use financi_core::rules::{CompiledPattern, CompiledRules, Rule, validate_regex};
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::categories::ensure_assignable;
@@ -167,19 +167,31 @@ pub fn reapply_rules(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// How many transactions each rule currently decides (the Rules page
-/// "Uses" column, 3.28), over unlocked rows that aren't card payments
-/// (those are locked at import; the category filter is belt-and-braces).
-/// A row counts for *the winning rule* only — same [`winning_rule`] logic
-/// [`reapply_rules`] applies — so the counts agree with the stored
-/// categories after a re-run. Rules that decide nothing are absent from
-/// the map; callers treat a miss as zero.
-pub fn rule_use_counts(conn: &Connection) -> Result<HashMap<i64, usize>> {
-    let rules = list_rules(conn)?;
+/// What [`rule_use_stats`] reports for one rule: how many transactions it
+/// currently decides and their signed total in cents (negative = money out).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RuleUse {
+    pub count: usize,
+    pub total_cents: i64,
+}
+
+/// How each rule is currently used (the Rules page "Uses" column, 3.28,
+/// plus the 3.87 totals), over unlocked rows that aren't card payments
+/// (those are locked at import; the category filter is belt-and-braces)
+/// and aren't hidden — the same `hidden = 0` exclusion every other listing
+/// and count applies, so Uses agrees with the category counts. One pass
+/// over the rows; a row counts for *the winning rule* only — same
+/// [`financi_core::rules::winning_rule`] logic [`reapply_rules`] applies —
+/// so the counts agree with the stored categories after a re-run. Rules
+/// that decide nothing are absent from the map; callers treat a miss as
+/// zero.
+pub fn rule_use_stats(conn: &Connection) -> Result<HashMap<i64, RuleUse>> {
+    let rules = CompiledRules::new(&list_rules(conn)?);
     let mut stmt = conn.prepare(
-        "SELECT description_raw
+        "SELECT t.description_raw, t.amount_cents
            FROM transactions t
           WHERE t.category_locked = 0
+            AND t.hidden = 0
             AND (
               t.category_id IS NULL
               OR t.category_id NOT IN (
@@ -191,18 +203,26 @@ pub fn rule_use_counts(conn: &Connection) -> Result<HashMap<i64, usize>> {
               )
             )",
     )?;
-    let descriptions = stmt.query_map([], |r| r.get::<_, String>(0))?;
-    let mut counts: HashMap<i64, usize> = HashMap::new();
-    for row in descriptions {
-        if let Some(rule_id) = winning_rule(&rules, &row?) {
-            *counts.entry(rule_id).or_insert(0) += 1;
+    let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
+    let mut stats: HashMap<i64, RuleUse> = HashMap::new();
+    for row in rows {
+        let (description, amount_cents) = row?;
+        if let Some(rule_id) = rules.winning(&description) {
+            let entry = stats.entry(rule_id).or_insert(RuleUse {
+                count: 0,
+                total_cents: 0,
+            });
+            entry.count += 1;
+            entry.total_cents += amount_cents;
         }
     }
-    Ok(counts)
+    Ok(stats)
 }
 
-/// How many unlocked transactions the pattern matches, for the live
-/// preview in the rule form ("matches 14 transactions"). Matching follows
+/// How many unlocked, non-hidden transactions the pattern matches, for the
+/// live preview in the rule form ("matches 14 transactions"). Hidden rows
+/// are excluded like every other count, so a hidden row never inflates the
+/// preview. Matching follows
 /// [`financi_core::rules::pattern_matches`]: case-insensitive substring or
 /// case-insensitive regex; an empty or invalid-regex pattern matches
 /// nothing. When `exclude_rule_id` is set (editing an existing rule), rows
@@ -224,8 +244,10 @@ pub fn count_rule_matches(
         }
         None => None,
     };
-    let mut stmt =
-        conn.prepare("SELECT description_raw FROM transactions WHERE category_locked = 0")?;
+    let mut stmt = conn.prepare(
+        "SELECT description_raw FROM transactions
+              WHERE category_locked = 0 AND hidden = 0",
+    )?;
     let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
     let mut count = 0;
     for row in rows {
@@ -248,6 +270,7 @@ mod tests {
     use super::*;
     use crate::categories::{create_child, create_parent};
     use crate::open_in_memory;
+    use crate::overrides::set_hidden;
     use financi_core::CategoryKind;
 
     fn child_category(conn: &Connection) -> i64 {
@@ -303,6 +326,15 @@ mod tests {
             |r| r.get(0),
         )
         .unwrap()
+    }
+
+    /// Give a stored row a specific signed amount, for total checks.
+    fn set_amount(conn: &Connection, id: i64, amount_cents: i64) {
+        conn.execute(
+            "UPDATE transactions SET amount_cents = ?1 WHERE id = ?2",
+            (amount_cents, id),
+        )
+        .unwrap();
     }
 
     #[test]
@@ -651,7 +683,7 @@ mod tests {
     /// Counted for *the winning rule* only, and the counts agree with the
     /// categories `reapply_rules` stored.
     #[test]
-    fn rule_use_counts_the_winning_rule_only() {
+    fn rule_use_stats_the_winning_rule_only() {
         let conn = open_in_memory().unwrap();
         let coffee_cat = child_category(&conn);
         let home = create_parent(&conn, "Home", CategoryKind::Expense).unwrap();
@@ -665,14 +697,26 @@ mod tests {
         let specific = add_rule(&conn, "COFFEE SHOP", false, cafe_cat).unwrap();
         let cafe_rule = add_rule(&conn, "CAFE", false, cafe_cat).unwrap();
 
-        let counts = rule_use_counts(&conn).unwrap();
+        let stats = rule_use_stats(&conn).unwrap();
         assert_eq!(
-            counts.get(&loose),
+            stats.get(&loose),
             None,
             "the losing rule decides no transaction"
         );
-        assert_eq!(counts.get(&specific), Some(&1));
-        assert_eq!(counts.get(&cafe_rule), Some(&1));
+        assert_eq!(
+            stats.get(&specific),
+            Some(&RuleUse {
+                count: 1,
+                total_cents: -450
+            })
+        );
+        assert_eq!(
+            stats.get(&cafe_rule),
+            Some(&RuleUse {
+                count: 1,
+                total_cents: -450
+            })
+        );
         assert_eq!(
             category_of(&conn, both),
             Some(cafe_cat),
@@ -683,14 +727,14 @@ mod tests {
 
         reapply_rules(&conn).unwrap();
         assert_eq!(
-            counts,
-            rule_use_counts(&conn).unwrap(),
-            "re-running rules changes nothing, so neither do the counts"
+            stats,
+            rule_use_stats(&conn).unwrap(),
+            "re-running rules changes nothing, so neither do the stats"
         );
     }
 
     #[test]
-    fn rule_use_counts_skips_locked_rows_and_card_payments() {
+    fn rule_use_stats_skips_locked_rows_and_card_payments() {
         let conn = open_in_memory().unwrap();
         let cat = child_category(&conn);
         let card = crate::categories::card_payment_category(&conn).unwrap();
@@ -700,7 +744,13 @@ mod tests {
         let card_row = add_transaction(&conn, "COFFEE PAYMENT RECEIVED", false, None);
 
         let rule = add_rule(&conn, "COFFEE", false, cat).unwrap();
-        assert_eq!(rule_use_counts(&conn).unwrap().get(&rule), Some(&2));
+        assert_eq!(
+            rule_use_stats(&conn).unwrap().get(&rule),
+            Some(&RuleUse {
+                count: 2,
+                total_cents: -900
+            })
+        );
 
         // A row sitting in Card Payment (where import locks card payments)
         // is not a use, even when a rule matches its description.
@@ -709,7 +759,119 @@ mod tests {
             (card, card_row),
         )
         .unwrap();
-        assert_eq!(rule_use_counts(&conn).unwrap().get(&rule), Some(&1));
+        assert_eq!(
+            rule_use_stats(&conn).unwrap().get(&rule),
+            Some(&RuleUse {
+                count: 1,
+                total_cents: -450
+            })
+        );
+    }
+
+    /// Per rule, the count and the signed total equal a direct SQL sum
+    /// over the rows that rule decides (3.87).
+    #[test]
+    fn rule_use_stats_totals_match_direct_sql() {
+        let conn = open_in_memory().unwrap();
+        let groceries = child_category(&conn);
+        let home = create_parent(&conn, "Home", CategoryKind::Expense).unwrap();
+        let cafes = create_child(&conn, home, "Cafes").unwrap();
+
+        // The loose COFFEE rule decides the first two rows — mixed signs,
+        // so the total must stay signed — COFFEE SHOP wins the third, and
+        // CAFE the fourth.
+        let coffee = add_transaction(&conn, "COFFEE VANCOUVER", false, None);
+        let refund = add_transaction(&conn, "COFFEE REFUND", false, None);
+        let shop = add_transaction(&conn, "CORNER COFFEE SHOP", false, None);
+        let cafe = add_transaction(&conn, "CAFE MILANO", false, None);
+        set_amount(&conn, coffee, -100);
+        set_amount(&conn, refund, 250);
+        set_amount(&conn, shop, -450);
+        set_amount(&conn, cafe, -2000);
+
+        let loose = add_rule(&conn, "COFFEE", false, groceries).unwrap();
+        let shop_rule = add_rule(&conn, "COFFEE SHOP", false, cafes).unwrap();
+        let cafe_rule = add_rule(&conn, "CAFE", false, cafes).unwrap();
+
+        let stats = rule_use_stats(&conn).unwrap();
+        for (rule, decided) in [
+            (loose, vec![coffee, refund]),
+            (shop_rule, vec![shop]),
+            (cafe_rule, vec![cafe]),
+        ] {
+            let marks = vec!["?"; decided.len()].join(", ");
+            let (count, total): (i64, i64) = conn
+                .query_row(
+                    &format!(
+                        "SELECT COUNT(*), COALESCE(SUM(amount_cents), 0)
+                           FROM transactions WHERE id IN ({marks})"
+                    ),
+                    rusqlite::params_from_iter(decided.iter()),
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(
+                stats.get(&rule),
+                Some(&RuleUse {
+                    count: count as usize,
+                    total_cents: total
+                }),
+                "rule {rule}: stats match the SQL sum over its rows"
+            );
+        }
+    }
+
+    #[test]
+    fn rule_use_stats_excludes_hidden_rows() {
+        let conn = open_in_memory().unwrap();
+        let cat = child_category(&conn);
+        add_transaction(&conn, "COFFEE VANCOUVER", false, None);
+        let hidden = add_transaction(&conn, "COFFEE MARKET", false, None);
+        set_amount(&conn, hidden, -2000);
+
+        let rule = add_rule(&conn, "COFFEE", false, cat).unwrap();
+        assert_eq!(
+            rule_use_stats(&conn).unwrap().get(&rule),
+            Some(&RuleUse {
+                count: 2,
+                total_cents: -2450
+            })
+        );
+
+        set_hidden(&conn, hidden, true).unwrap();
+        assert_eq!(
+            rule_use_stats(&conn).unwrap().get(&rule),
+            Some(&RuleUse {
+                count: 1,
+                total_cents: -450
+            }),
+            "the hidden row leaves the count and the total"
+        );
+
+        set_hidden(&conn, hidden, false).unwrap();
+        assert_eq!(
+            rule_use_stats(&conn).unwrap().get(&rule),
+            Some(&RuleUse {
+                count: 2,
+                total_cents: -2450
+            }),
+            "and un-hiding brings it back"
+        );
+    }
+
+    #[test]
+    fn count_rule_matches_excludes_hidden_rows() {
+        let conn = open_in_memory().unwrap();
+        add_transaction(&conn, "COFFEE VANCOUVER", false, None);
+        let hidden = add_transaction(&conn, "COFFEE MARKET", false, None);
+
+        assert_eq!(count_rule_matches(&conn, "COFFEE", false, None).unwrap(), 2);
+        set_hidden(&conn, hidden, true).unwrap();
+        assert_eq!(
+            count_rule_matches(&conn, "COFFEE", false, None).unwrap(),
+            1,
+            "the live preview ignores hidden rows"
+        );
     }
 
     #[test]

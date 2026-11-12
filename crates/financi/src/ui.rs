@@ -24,7 +24,7 @@ use financi_db::import::{
 };
 use financi_db::queue::{UncategorizedGroup, categorize_group, uncategorized_by_merchant};
 use financi_db::rules::{
-    add_rule, count_rule_matches, delete_rule, list_rules, move_rules, rule_use_counts, update_rule,
+    add_rule, count_rule_matches, delete_rule, list_rules, move_rules, rule_use_stats, update_rule,
 };
 use financi_db::settings::{self, DateRange};
 use financi_db::{
@@ -2720,8 +2720,12 @@ impl Shell {
                 let counts = transaction_counts(c)?;
                 let rules = list_rules(c)?;
                 // 3.28: the Rules page Uses column (how many unlocked rows
-                // each rule's match decides).
-                let uses = rule_use_counts(c)?;
+                // each rule's match decides). 3.87 adds per-rule totals;
+                // the page still shows counts only, so keep just those.
+                let uses: HashMap<i64, usize> = rule_use_stats(c)?
+                    .into_iter()
+                    .map(|(id, stats)| (id, stats.count))
+                    .collect();
                 let queue = uncategorized_by_merchant(c)?;
                 // Open transfer reviews (4.2) for the sidebar pill and the
                 // Transfers page.
