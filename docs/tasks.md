@@ -779,8 +779,8 @@ out.
     rendered text with a long-named tree, a subcategory selected, and each
     validation error triggered); the renamed buttons still work.
 
-**Bugs reported by the user on 2026-11-11** (3.34–3.55, plus a fix folded
-into 3.23). Order (user re-prioritized the dashboard, 2026-11-11): **3.40 → 3.23 → 3.35 → 3.36 → 3.45 → 3.46 → 3.53/3.42/3.48/3.49/3.50/3.51 → 3.43 → 3.44 → 3.55 → 3.47/3.54 → 3.37 → 3.38/3.39 → 3.34 → 3.52**, then the rest of
+**Bugs reported by the user on 2026-11-11** (3.34–3.56, plus a fix folded
+into 3.23). Order (user re-prioritized the dashboard, 2026-11-11): **3.40 → 3.23 → 3.35 → 3.56 → 3.36 → 3.45 → 3.46 → 3.53/3.42/3.48/3.49/3.50/3.51 → 3.43 → 3.44 → 3.55 → 3.47/3.54 → 3.37 → 3.38/3.39 → 3.34 → 3.52**, then the rest of
 the order above (3.28 → 3.29 → 3.26).
 
 - 3.23 also fixes: **the rule list overflows the page.** Today each rule
@@ -1325,6 +1325,61 @@ the order above (3.28 → 3.29 → 3.26).
 
     Update the *Categories* row of `ui-conventions.md`.
 
+- [ ] **3.56 Dashboard filters apply at once.** Changing a dashboard
+  filter (date range, accounts, search, the Options toggles, a legend /
+  summary click) takes effect "really, really slowly" (user report,
+  2026-11-11). Cause, from the code:
+  - Every filter setter calls `Shell::refresh`, which runs **every
+    page's** queries in one `on_db` job: transactions, chart, summary,
+    sidebar counts, import history, category tree, transaction counts,
+    rules, `rule_use_counts` (a full rule pass over every row), the
+    queue, and transfer reviews.
+  - `DbWorker` is one FIFO thread with no cancellation. Replacing
+    `refresh_task` drops the UI continuation, but the queued DB job
+    still runs.
+  - Search calls `apply_search` → `refresh` on **every keystroke**, so
+    typing six letters queues six full refreshes back to back, and the
+    last one, the one that matters, waits behind the rest.
+  - The main thread then applies each result: table refresh, history
+    table, queue sync, pickers.
+
+  The fix:
+  - **Measure first** with 3.47's `FINANCI_TIMINGS=1` logging (introduce
+    it here if 3.47 hasn't landed): per-query times inside `refresh`,
+    queue wait, and main-thread apply time, on the dev seed and on the
+    user-sized seed (3.55's one-year 10 000-row / 300-rule seed if it
+    exists, otherwise a quick local one). Numbers go in the commit message.
+  - **Split the refresh.** Add `refresh_dashboard`, which runs only what
+    the dashboard filters change: the filtered transactions, chart rows,
+    monthly summary and the count. Every dashboard filter, selection and
+    sort change calls it. `refresh` (everything) stays for data changes:
+    import, undo, rule and category edits, restore. 3.47 / 3.54 later add
+    their own narrow refreshes on the same pattern; build it so they can,
+    e.g. a `RefreshScope` bitset passed to one function.
+  - **Latest wins.** Give the shell a refresh generation counter (an
+    `Arc<AtomicU64>`). Each refresh captures its number, and the DB
+    closure returns early without querying if a newer one has been
+    requested by the time it starts. A stale result that still arrives is
+    dropped on the UI side. A burst of changes thus runs at most the
+    in-flight job plus the newest.
+  - **Debounce search** by 200 ms (a `Timer` task replaced on each
+    keystroke); Enter applies at once. The other controls apply at once.
+  - **Don't re-sync untouched views:** a dashboard-scope result only
+    updates the transactions table, chart and summary. It does not touch
+    the history table, queue pickers, rule lists or category pickers.
+  - Budget: on the one-year seed, a filter change shows its result
+    within 100 ms (DB + apply) in a release build. Add an `#[ignore]` perf
+    test for it next to 3.55's.
+  - Tests:
+    - a dashboard filter change runs only the dashboard queries (a test
+      hook counts the queries per scope);
+    - five rapid search keystrokes run one dashboard query, after the
+      debounce;
+    - a burst of three filter changes ends with the last filter's rows,
+      and a stale result arriving late doesn't overwrite them;
+    - an import still refreshes every page;
+    - the existing filter, sort and selection tests pass.
+
 - [ ] **3.36 Chart legend under the chart.** The legend column beside the
   bars (`LEGEND_W`, 140 px) still takes width the plot needs. Move it
   below the chart and condense it (user request, 2026-11-11; changes
@@ -1481,7 +1536,7 @@ the order above (3.28 → 3.29 → 3.26).
 
 
 **Done when:** on the demo data the dashboard totals match
-`expected.json`, filters compose, tests cover 3.1–3.55.
+`expected.json`, filters compose, tests cover 3.1–3.56.
 
 ---
 
