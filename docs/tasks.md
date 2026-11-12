@@ -848,7 +848,7 @@ the order above (3.28 → 3.29 → 3.26).
     and shows the tooltip; 3.23's fit tests pass. Update the *Categories*
     row of `ui-conventions.md`.
 
-- [ ] **3.42 The regex switch lines up with the rule fields.** In the
+- [x] **3.42 The regex switch lines up with the rule fields.** In the
   add-rule row (`cat:add-rule-row`) and the rule editor row, the
   **regex** `Switch` sits lower than the Pattern input, the Category
   picker and the buttons (user report, 2026-11-11). Cause: both rows are

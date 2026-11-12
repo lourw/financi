@@ -141,6 +141,11 @@ Use gpui's spacing helpers only, in these steps:
   looked heavy in the mockups and was rejected.
 - **Button order in a row of actions:** Cancel first, then the primary
   action last, at the right end (the macOS order).
+- **Forms (3.42):** a labelled field is a label line over a 32 px control,
+  and an action row of such fields is `items_end`; an *unlabelled* control
+  in that row (the rule rows' regex switch) goes into a 32 px slot
+  (`h_flex().h(px(32.)).items_center()`) so its centre matches the controls'
+  centres instead of dropping to its bottom edge.
 - **Tables:** default gpui-kit row height, striped (`.stripe(true)`).
   Buttons *inside* DataTable rows are `xsmall` `ghost()` buttons, never the
   default size (3.32) — a medium button fills the 32 px row edge to edge

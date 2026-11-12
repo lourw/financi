@@ -146,6 +146,22 @@ fn field_label(muted: Hsla, text: &'static str) -> Div {
         .child(text)
 }
 
+/// 3.42 (ui-conventions *Forms*): an unlabelled control in a labelled
+/// `items_end` row — the regex switch beside Pattern and Category — goes
+/// in a slot the height of one control (32 px), centred, so its centre
+/// matches the controls beside it while the row's bottoms stay aligned.
+/// The debug selector (`<selector>`) records the slot, whose centre is
+/// the control's.
+fn control_slot(selector: String, control: impl IntoElement) -> Div {
+    div()
+        .h(px(32.))
+        .flex()
+        .items_center()
+        .flex_shrink_0()
+        .debug_selector(move || selector.clone())
+        .child(control)
+}
+
 /// 3.41: the rule rows' Category picker (`Select::new` over the child
 /// categories) — `RULE_CATEGORY_W` wide, the rule list's Category column
 /// width, so the picker and the list read as one column; the open menu
@@ -5675,17 +5691,28 @@ impl Shell {
                             .min_w_0()
                             .gap_1()
                             .child(field_label(muted, "Pattern"))
-                            .child(Input::new(&self.rule_edit_pattern)),
+                            .child(
+                                div()
+                                    .w_full()
+                                    .debug_selector(|| "rule:edit-pattern-input".into())
+                                    .child(Input::new(&self.rule_edit_pattern)),
+                            ),
                     )
                     .child(
-                        Switch::new(SharedString::from(format!("rule-edit-regex-{}", rule.id)))
-                            .label("regex")
-                            .checked(self.rule_edit_regex)
-                            .on_click(cx.listener(move |this, checked: &bool, _, cx| {
-                                this.rule_edit_regex = *checked;
-                                this.preview_rule_match(cx);
-                                cx.notify();
-                            })),
+                        // 3.42: the unlabelled switch sits in a control-height
+                        // slot so its centre matches the input, picker and
+                        // buttons.
+                        control_slot(
+                            "rule:regex-slot:edit".into(),
+                            Switch::new(SharedString::from(format!("rule-edit-regex-{}", rule.id)))
+                                .label("regex")
+                                .checked(self.rule_edit_regex)
+                                .on_click(cx.listener(move |this, checked: &bool, _, cx| {
+                                    this.rule_edit_regex = *checked;
+                                    this.preview_rule_match(cx);
+                                    cx.notify();
+                                })),
+                        ),
                     )
                     .child(
                         v_flex()
@@ -5699,6 +5726,8 @@ impl Shell {
                             .label("Save")
                             .primary()
                             .flex_shrink_0()
+                            // 3.42: the alignment test measures its centre.
+                            .debug_selector(|| "rule:edit-save-btn".into())
                             // 3.40: loading + disabled while the save runs.
                             .loading(self.rule_action_pending(PendingRuleAction::Save(rule.id)))
                             .disabled(self.rule_action_pending(PendingRuleAction::Save(rule.id)))
@@ -6254,17 +6283,28 @@ impl Shell {
                                         .min_w_0()
                                         .gap_1()
                                         .child(field_label(muted, "Pattern"))
-                                        .child(Input::new(&self.rule_pattern)),
+                                        .child(
+                                            div()
+                                                .w_full()
+                                                .debug_selector(|| "rule:pattern-input:add".into())
+                                                .child(Input::new(&self.rule_pattern)),
+                                        ),
                                 )
                                 .child(
-                                    Switch::new("rule-regex")
-                                        .label("regex")
-                                        .checked(self.rule_regex)
-                                        .on_click(cx.listener(|this, checked: &bool, _, cx| {
-                                            this.rule_regex = *checked;
-                                            this.preview_rule_match(cx);
-                                            cx.notify();
-                                        })),
+                                    // 3.42: control-height slot, centred.
+                                    control_slot(
+                                        "rule:regex-slot:add".into(),
+                                        Switch::new("rule-regex")
+                                            .label("regex")
+                                            .checked(self.rule_regex)
+                                            .on_click(cx.listener(
+                                                |this, checked: &bool, _, cx| {
+                                                    this.rule_regex = *checked;
+                                                    this.preview_rule_match(cx);
+                                                    cx.notify();
+                                                },
+                                            )),
+                                    ),
                                 )
                                 .child(
                                     v_flex()
@@ -6278,6 +6318,8 @@ impl Shell {
                                         .label("Add rule")
                                         .primary()
                                         .flex_shrink_0()
+                                        // 3.42: the alignment test measures its centre.
+                                        .debug_selector(|| "rule:add-rule-btn:add".into())
                                         // 3.40: loading + disabled while the add runs.
                                         .loading(self.rule_action_pending(PendingRuleAction::Add))
                                         .disabled(self.rule_action_pending(PendingRuleAction::Add))
@@ -6773,19 +6815,30 @@ impl Shell {
                                             .min_w_0()
                                             .gap_1()
                                             .child(field_label(muted, "Pattern"))
-                                            .child(Input::new(&self.rule_pattern)),
+                                            .child(
+                                                div()
+                                                    .w_full()
+                                                    .debug_selector(|| {
+                                                        "rule:pattern-input:cat-add".into()
+                                                    })
+                                                    .child(Input::new(&self.rule_pattern)),
+                                            ),
                                     )
                                     .child(
-                                        Switch::new("rule-regex")
-                                            .label("regex")
-                                            .checked(self.rule_regex)
-                                            .on_click(cx.listener(
-                                                |this, checked: &bool, _, cx| {
-                                                    this.rule_regex = *checked;
-                                                    this.preview_rule_match(cx);
-                                                    cx.notify();
-                                                },
-                                            )),
+                                        // 3.42: control-height slot, centred.
+                                        control_slot(
+                                            "rule:regex-slot:cat-add".into(),
+                                            Switch::new("rule-regex")
+                                                .label("regex")
+                                                .checked(self.rule_regex)
+                                                .on_click(cx.listener(
+                                                    |this, checked: &bool, _, cx| {
+                                                        this.rule_regex = *checked;
+                                                        this.preview_rule_match(cx);
+                                                        cx.notify();
+                                                    },
+                                                )),
+                                        ),
                                     )
                                     .child(
                                         v_flex()
@@ -6803,6 +6856,8 @@ impl Shell {
                                             .label("Add rule")
                                             .primary()
                                             .flex_shrink_0()
+                                            // 3.42: the alignment test measures its centre.
+                                            .debug_selector(|| "rule:add-rule-btn:cat-add".into())
                                             // 3.40: loading + disabled while the add runs.
                                             .loading(
                                                 self.rule_action_pending(PendingRuleAction::Add),

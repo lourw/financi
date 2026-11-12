@@ -5277,6 +5277,72 @@ fn the_rule_editor_picker_shows_the_full_name(cx: &mut TestAppContext) {
     );
 }
 
+/// 3.42: in every rule row — the add-rule row on each page and the rule
+/// editor — the regex switch sits on the controls' centre line: its
+/// vertical centre equals the Pattern input's and the primary button's
+/// within 1 px.
+#[gpui::test]
+fn the_regex_switch_lines_up_with_the_rule_fields(cx: &mut TestAppContext) {
+    let (handle, shell, rule, _long, _short) = open_long_name_rule_fixture(cx);
+    resize_and_draw(cx, handle, 1200., 720.);
+    let mut window = VisualTestContext::from_window(handle, cx);
+
+    let centre = |window: &mut VisualTestContext, sel: &'static str, where_: &str| -> f32 {
+        let b = window
+            .debug_bounds(sel)
+            .unwrap_or_else(|| panic!("{sel} paints in the {where_} row"));
+        f32::from(b.origin.y) + f32::from(b.size.height) / 2.
+    };
+    let aligned = |window: &mut VisualTestContext,
+                   where_: &str,
+                   switch: &'static str,
+                   input: &'static str,
+                   button: &'static str| {
+        let sw = centre(window, switch, where_);
+        for (what, sel) in [("the Pattern input", input), ("the primary button", button)] {
+            let c = centre(window, sel, where_);
+            assert!(
+                (c - sw).abs() <= 1.,
+                "in the {where_} row {what} centres at y {c}, the regex switch at {sw}",
+            );
+        }
+    };
+
+    // The Categories page's add-rule row.
+    aligned(
+        &mut window,
+        "add-rule",
+        "rule:regex-slot:cat-add",
+        "rule:pattern-input:cat-add",
+        "rule:add-rule-btn:cat-add",
+    );
+
+    // The rule editor row.
+    start_rule_edit(cx, handle, &shell, rule);
+    draw_frame(cx, handle);
+    aligned(
+        &mut window,
+        "rule editor",
+        "rule:regex-slot:edit",
+        "rule:edit-pattern-input",
+        "rule:edit-save-btn",
+    );
+
+    // The Rules page's add-rule row.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Rules, cx)));
+    cx.update(|cx| {
+        shell.update(cx, |s, _cx| s.new_rule_open = true);
+    });
+    draw_frame(cx, handle);
+    aligned(
+        &mut window,
+        "Rules page add-rule",
+        "rule:regex-slot:add",
+        "rule:pattern-input:add",
+        "rule:add-rule-btn:add",
+    );
+}
+
 /// 3.23: the rule-list headings use the rows' widths, and the Actions
 /// label sits on the same line as the others, right-aligned over the
 /// rows' buttons (3.24 MUST-KEEP). A stacked label-plus-buttons column
