@@ -6,7 +6,7 @@ Runs beside the UI queue, in the order listed. Backend only: don't read the UI d
 
 Runs beside the UI queue. 5.1 and 5.2 (in M5) follow 3.90.
 
-- [ ] **3.87 Rule use stats.** (Split out of 3.58, 2026-11-11.) Backend
+- [x] **3.87 Rule use stats.** (Split out of 3.58, 2026-11-11.) Backend
   only (`financi-db/src/rules.rs`); runs in a free slot before 3.58.
   Replace `rule_use_counts` with `rule_use_stats(conn) ->
   HashMap<i64, RuleUse { count, total_cents }>`, one pass over unlocked,
