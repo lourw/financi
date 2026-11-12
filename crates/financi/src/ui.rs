@@ -47,6 +47,7 @@ use gpui_kit::component::date_picker::{DatePicker, DatePickerEvent, DatePickerSt
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
 use gpui_kit::component::popover::Popover;
+use gpui_kit::component::searchable_list::{SearchableListItem, SearchableVec};
 use gpui_kit::component::select::{Select, SelectEvent, SelectState};
 use gpui_kit::component::sidebar::{Sidebar, SidebarItem, SidebarMenuItem};
 use gpui_kit::component::switch::Switch;
@@ -62,6 +63,65 @@ use gpui_kit::*;
 use crate::flow::{self, LoadedFile, PlanSummary};
 
 type Names = Vec<SharedString>;
+
+/// 3.53: one subcategory entry of the Categories page's parent-scoped
+/// add-rule picker. Plain text as shown, plus debug selectors on the open
+/// menu's row so headless tests can measure the drawn text against the
+/// menu's width: the visible box fills the row, and an absolutely
+/// positioned invisible copy keeps its natural (unclipped) text width —
+/// the two bound each other exactly when the name fits.
+#[derive(Clone, PartialEq)]
+struct RuleChoice(SharedString);
+
+impl SearchableListItem for RuleChoice {
+    type Value = SharedString;
+
+    fn title(&self) -> SharedString {
+        self.0.clone()
+    }
+
+    fn value(&self) -> &Self::Value {
+        &self.0
+    }
+
+    fn render(&self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+        let full = self.0.clone();
+        let probe = self.0.clone();
+        div()
+            .id("rule-choice")
+            .debug_selector(move || format!("rule-choice:{full}"))
+            .w_full()
+            .min_w_0()
+            .relative()
+            .child(self.0.clone())
+            .child(
+                div()
+                    .id("rule-choice-natural")
+                    .debug_selector({
+                        let probe = probe.clone();
+                        move || format!("rule-choice-natural:{probe}")
+                    })
+                    .absolute()
+                    .whitespace_nowrap()
+                    .opacity(0.)
+                    .child(probe),
+            )
+    }
+}
+
+/// 3.53: the parent-scoped picker's delegate. `SearchableVec` (not a
+/// plain `Vec`) so the menu's search box actually narrows the list as you
+/// type, like every other picker that can hold long names (3.59).
+type RuleChoices = SearchableVec<RuleChoice>;
+
+fn rule_choices(names: &[(i64, String)]) -> RuleChoices {
+    SearchableVec::new(
+        names
+            .iter()
+            .map(|(_, n)| RuleChoice(SharedString::from(n.clone())))
+            .collect::<Vec<_>>(),
+    )
+}
 
 /// Every checkbox in the app is built through here (3.14) so they are all
 /// constructed alike: the check mark itself arrives with the icon assets
@@ -98,6 +158,102 @@ fn heading_label(muted: Hsla, text: &'static str) -> Div {
         .child(text)
 }
 
+/// 3.53: the Categories page's parent-scoped add-rule picker (the chosen
+/// parent's subcategories by their own names). `trigger_w` fits the
+/// longest child name up to 200 px — longer names ellipsize, and the
+/// trigger carries a hover tooltip with the full name (ui-conventions
+/// *Interaction*) — and the open menu is `menu_w` wide (at least the
+/// longest name, max [`RULE_CATEGORY_MENU_W`]), so no item is cut off.
+/// `id` tells the rows apart (`rule:subcategory-select:<id>`).
+fn subcategory_select(
+    target: &Entity<SelectState<RuleChoices>>,
+    id: &'static str,
+    trigger_w: f32,
+    menu_w: f32,
+    cx: &App,
+) -> Stateful<Div> {
+    let state = target.clone();
+    let wrapper = div()
+        .id(SharedString::from(id))
+        .w(px(trigger_w))
+        .flex_shrink_0()
+        .debug_selector(move || format!("rule:subcategory-select:{id}"));
+    let tip = target.read(cx).selected_value().cloned();
+    let wrapper = match tip {
+        Some(fallback) => wrapper.tooltip(move |window, cx| {
+            let shown = state
+                .read(cx)
+                .selected_value()
+                .cloned()
+                .unwrap_or_else(|| fallback.clone());
+            let for_text = shown.clone();
+            Tooltip::element(move |_, _| {
+                div()
+                    .debug_selector({
+                        let for_sel = shown.clone();
+                        move || format!("rule:category-tooltip:{for_sel}")
+                    })
+                    .child(for_text.clone())
+            })
+            .build(window, cx)
+        }),
+        None => wrapper,
+    };
+    wrapper.child(
+        div()
+            .debug_selector(move || format!("label:{SUBCATEGORY_PH}"))
+            .child(
+                Select::new(target)
+                    .menu_width(px(menu_w))
+                    .placeholder(SUBCATEGORY_PH),
+            ),
+    )
+}
+
+/// 3.53: the Select chrome beside the label text — horizontal padding
+/// plus the chevron — generous so the width estimates below err towards
+/// controls that are too wide rather than names that clip (same spirit
+/// as [`TEXT_SM_CHAR_PX`]).
+const SELECT_CHROME_W: f32 = 40.;
+/// 3.53: floor for the parent-scoped picker: its placeholder
+/// ("Subcategory…") must fit whatever the child names are.
+const SUBCATEGORY_MIN_W: f32 = 130.;
+
+/// 3.53: widths for the parent-scoped picker from the longest child
+/// name's character count — the trigger up to [`RULE_CATEGORY_W`] (names
+/// past that ellipsize with a tooltip), the menu up to
+/// [`RULE_CATEGORY_MENU_W`] and never narrower than the trigger.
+/// Estimated, never measured: the app has no text-measurement path here
+/// (the Undo column does the same, see [`TEXT_SM_CHAR_PX`]).
+fn subcategory_widths(longest_chars: usize) -> (f32, f32) {
+    let est = longest_chars as f32 * TEXT_SM_CHAR_PX + SELECT_CHROME_W;
+    let trigger = est.clamp(SUBCATEGORY_MIN_W, RULE_CATEGORY_W);
+    (trigger, est.max(trigger).min(RULE_CATEGORY_MENU_W))
+}
+
+/// 3.42 (ui-conventions *Forms*): an unlabelled control in a labelled
+/// `items_end` row — the regex switch beside Pattern and Category — goes
+/// in a slot the height of one control (32 px), centred, so its centre
+/// matches the controls beside it while the row's bottoms stay aligned.
+/// The debug selectors record the slot (`<selector>`) and, in a
+/// shrink-wrap probe div (the pattern `RuleChoice::render` uses), the
+/// control itself (`<probe>`) — the Switch widget carries no selector,
+/// so without the probe a test could only ever measure the slot.
+fn control_slot(selector: String, probe: String, control: impl IntoElement) -> Div {
+    div()
+        .h(px(32.))
+        .flex()
+        .items_center()
+        .flex_shrink_0()
+        .debug_selector(move || selector.clone())
+        .child(
+            div()
+                .flex_shrink_0()
+                .debug_selector(move || probe.clone())
+                .child(control),
+        )
+}
+
 /// Words for Categories page controls whose painted text is reachable by
 /// tests only through debug selectors (3.33): each const feeds both the
 /// label/placeholder and its `label:<text>` selector, so the two can't
@@ -106,6 +262,10 @@ const ADD_CATEGORY: &str = "Add category";
 const ADD_SUBCATEGORY: &str = "Add subcategory";
 const MOVE_TO_CATEGORY_PH: &str = "Move to category…";
 const MOVE_TXNS_TO_PH: &str = "Move its transactions to…";
+/// 3.53: the parent-scoped add-rule picker's placeholder; like the Move
+/// pickers, its text is pinned by a `label:<text>` selector on the
+/// control's wrapper.
+const SUBCATEGORY_PH: &str = "Subcategory…";
 /// 3.23: the Categories page's header action; it opens the new-category
 /// form in place under the header (ui-conventions, *Pages*).
 const NEW_CATEGORY: &str = "New category…";
@@ -122,6 +282,10 @@ const MOVE_RULES_TO_PH: &str = "Move rules to…";
 /// width (`flex_1`) and truncates with a tooltip.
 const RULE_TYPE_W: f32 = 80.;
 const RULE_CATEGORY_W: f32 = 200.;
+/// 3.53: the parent-scoped add-rule picker's open-menu ceiling — wide
+/// enough for a long subcategory name where the trigger has to ellipsize
+/// (a 40-character name fits, per the menu test).
+const RULE_CATEGORY_MENU_W: f32 = 320.;
 /// 3.28: the Rules page list's fixed columns beside the flexed Pattern: a
 /// checkbox column, and Uses (right-aligned). Same sharing rule as
 /// [`RULE_TYPE_W`]: row and column headings use these.
@@ -1861,6 +2025,13 @@ pub struct Shell {
     rule_pattern: Entity<InputState>,
     rule_regex: bool,
     rule_target: Entity<SelectState<Names>>,
+    /// 3.53: the Categories page's add-rule picker, shown only when the
+    /// selection is a parent: its own child categories by their own names
+    /// (no "Parent › Child"), searchable, the wide menu and the
+    /// full-name tooltip. `cat_rule_child_ids` maps the picker's rows to
+    /// category ids (the items carry names only).
+    cat_rule_target: Entity<SelectState<RuleChoices>>,
+    cat_rule_child_ids: Vec<i64>,
     rule_match_count: Option<i64>,
     rule_task: Option<Task<()>>,
     rule_error: Option<String>,
@@ -1877,14 +2048,15 @@ pub struct Shell {
     /// [`PendingRuleAction`]); rendered loading + disabled while set.
     pending_rule_action: Option<PendingRuleAction>,
     /// 3.24: the editor's own controls, separate entities from the add-rule
-    /// row's so the two never share an `InputState`/`SelectState` on screen
-    /// at once. While the editor is open the shared `rule_match_count`
+    /// row's so the two never share an `InputState` on screen at once.
+    /// While the editor is open the shared `rule_match_count`
     /// preview belongs to it (the add-rule row hides it, like `rule_error`)
     /// and excludes that rule (2.5 re-run semantics); every close path
     /// clears it, and `sync_category_choices` closes the editor when its
     /// rule is gone.
+    /// 3.53: no picker — Edit changes pattern and kind only, and keeps the
+    /// rule's category; moving is the Rules page Move bar's job (3.28).
     rule_edit_pattern: Entity<InputState>,
-    rule_edit_target: Entity<SelectState<Names>>,
     rule_edit_regex: bool,
     /// 3.28: the Rules page search box; live filter over the list (pattern
     /// and target category name, case-insensitive), focused when the page
@@ -2232,6 +2404,10 @@ impl Shell {
             InputState::new(window, cx).placeholder("Text or regex a description must contain")
         });
         let rule_target = cx.new(|cx| SelectState::new(Names::new(), None, window, cx));
+        // 3.53: the Categories page's parent-scoped subcategory picker —
+        // searchable, wide menu, full-name tooltip (see `subcategory_select`).
+        let cat_rule_target =
+            cx.new(|cx| SelectState::new(rule_choices(&[]), None, window, cx).searchable(true));
         // The live "matches N transactions" preview runs on every pattern
         // keystroke (ui-conventions, Categories page).
         let preview_sub = cx.subscribe(&rule_pattern, |this, _, ev: &InputEvent, cx| {
@@ -2246,7 +2422,6 @@ impl Shell {
         let rule_edit_pattern = cx.new(|cx| {
             InputState::new(window, cx).placeholder("Text or regex a description must contain")
         });
-        let rule_edit_target = cx.new(|cx| SelectState::new(Names::new(), None, window, cx));
         let rule_edit_sub = cx.subscribe_in(
             &rule_edit_pattern,
             window,
@@ -2397,6 +2572,8 @@ impl Shell {
             rule_pattern,
             rule_regex: false,
             rule_target,
+            cat_rule_target,
+            cat_rule_child_ids: Vec::new(),
             rule_match_count: None,
             rule_task: None,
             rule_error: None,
@@ -2404,7 +2581,6 @@ impl Shell {
             armed_delete_rule: None,
             pending_rule_action: None,
             rule_edit_pattern,
-            rule_edit_target,
             rule_edit_regex: false,
             rules_search,
             rules_test_mode: false,
@@ -3391,6 +3567,52 @@ impl Shell {
         {
             self.armed_delete_rule = None;
         }
+        // 3.53: the Categories add-rule picker follows the selection and
+        // the (possibly renamed) child list; the pick survives while its
+        // id is one of the parent's children.
+        self.sync_cat_rule_picker(false, window, cx);
+    }
+
+    /// 3.53: the selected parent's subcategories by their own names (no
+    /// "Parent › Child"), empty when the selection is a subcategory or
+    /// none. Order matches the tree.
+    fn parent_child_choices(&self) -> Vec<(i64, String)> {
+        let Some(parent_id) = self.selected_category else {
+            return Vec::new();
+        };
+        // Only a parent selection has children to offer the picker; a
+        // subcategory targets itself, so the picker is not shown.
+        self.categories
+            .iter()
+            .find(|p| p.id == parent_id)
+            .map(|p| p.children.iter().map(|c| (c.id, c.name.clone())).collect())
+            .unwrap_or_default()
+    }
+
+    /// 3.53: repoint the Categories add-rule picker at the selected
+    /// parent's subcategories. `reset` clears the pick (a fresh selection
+    /// never pre-picks); a refresh keeps the pick when its id is still one
+    /// of the parent's children.
+    fn sync_cat_rule_picker(&mut self, reset: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let choices = self.parent_child_choices();
+        let keep = if reset {
+            None
+        } else {
+            self.cat_rule_target
+                .read(cx)
+                .selected_index(cx)
+                .and_then(|ix| self.cat_rule_child_ids.get(ix.row).copied())
+        };
+        self.cat_rule_child_ids = choices.iter().map(|(id, _)| *id).collect();
+        let selected = keep.and_then(|id| self.cat_rule_child_ids.iter().position(|c| *c == id));
+        self.cat_rule_target.update(cx, |s, cx| {
+            s.set_items(rule_choices(&choices), window, cx);
+            s.set_selected_index(
+                selected.map(gpui_kit::component::IndexPath::new),
+                window,
+                cx,
+            );
+        });
     }
 
     /// The selected node as (node, parent), parents having `None`.
@@ -3456,12 +3678,10 @@ impl Shell {
         // resets (the reset point 3.21 documented).
         if changed {
             self.rule_scroll.set_offset(Point::default());
-            // The add-rule picker lists subcategories; when the selected
-            // category is one of them, default the pick to it.
-            let ix = self.child_choices.iter().position(|(cid, _)| *cid == id);
-            self.rule_target.update(cx, |s, cx| {
-                s.set_selected_index(ix.map(gpui_kit::component::IndexPath::new), window, cx);
-            });
+            // 3.53: the add-rule picker belongs to the selection: a
+            // subcategory needs none, a parent picks among its own
+            // children — never a default pick.
+            self.sync_cat_rule_picker(true, window, cx);
         }
         self.rebuild_move_target(window, cx);
         cx.notify();
@@ -3705,8 +3925,6 @@ impl Shell {
     }
 
     fn add_rule(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let pattern = self.rule_pattern.read(cx).value().trim().to_string();
-        let is_regex = self.rule_regex;
         let Some(ix) = self.rule_target.read(cx).selected_index(cx) else {
             self.rule_error = Some("Choose the category the rule assigns.".into());
             cx.notify();
@@ -3715,6 +3933,39 @@ impl Shell {
         let Some((category_id, _)) = self.child_choices.get(ix.row).cloned() else {
             return;
         };
+        self.commit_new_rule(category_id, window, cx);
+    }
+
+    /// 3.53: Add rule on the Categories page. A selected subcategory is
+    /// the target — nothing to pick. A parent needs the row's picker:
+    /// rules must target a child (`ensure_assignable`), so no pick is an
+    /// error. No selection (nothing selected) can't render the row at all.
+    fn add_rule_to_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let category_id = match self.selected_node() {
+            Some((_, None)) => {
+                let Some(ix) = self.cat_rule_target.read(cx).selected_index(cx) else {
+                    self.rule_error = Some("Choose the subcategory the rule assigns.".into());
+                    cx.notify();
+                    return;
+                };
+                let Some(cid) = self.cat_rule_child_ids.get(ix.row).copied() else {
+                    return;
+                };
+                cid
+            }
+            Some((node, Some(_))) => node.id,
+            None => return,
+        };
+        self.commit_new_rule(category_id, window, cx);
+    }
+
+    /// The shared tail of both add-rule paths: validate the pattern, run
+    /// [`financi_db::rules::add_rule`], clear the row and refresh (3.40:
+    /// the button shows loading, disabled, while the DB is busy — a save
+    /// that re-runs the rules can take seconds).
+    fn commit_new_rule(&mut self, category_id: i64, window: &mut Window, cx: &mut Context<Self>) {
+        let pattern = self.rule_pattern.read(cx).value().trim().to_string();
+        let is_regex = self.rule_regex;
         if pattern.is_empty() {
             self.rule_error = Some("Give the rule a pattern.".into());
             cx.notify();
@@ -3782,23 +4033,7 @@ impl Shell {
         self.rule_edit_pattern.update(cx, |i, cx| {
             i.set_value(rule.pattern.clone(), window, cx);
         });
-        let names: Names = self
-            .child_choices
-            .iter()
-            .map(|(_, n)| SharedString::from(n.clone()))
-            .collect();
-        let selected = self
-            .child_choices
-            .iter()
-            .position(|(cid, _)| *cid == rule.category_id);
-        self.rule_edit_target.update(cx, |s, cx| {
-            s.set_items(names, window, cx);
-            s.set_selected_index(
-                selected.map(gpui_kit::component::IndexPath::new),
-                window,
-                cx,
-            );
-        });
+        // 3.53: no category picker — Edit changes pattern and kind only.
         self.preview_rule_match(cx);
         cx.notify();
     }
@@ -3814,12 +4049,14 @@ impl Shell {
         };
         let pattern = self.rule_edit_pattern.read(cx).value().trim().to_string();
         let is_regex = self.rule_edit_regex;
-        let Some(ix) = self.rule_edit_target.read(cx).selected_index(cx) else {
-            self.rule_error = Some("Choose the category the rule assigns.".into());
-            cx.notify();
-            return;
-        };
-        let Some((category_id, _)) = self.child_choices.get(ix.row).cloned() else {
+        // 3.53: the editor has no picker, so the rule keeps its category;
+        // `update_rule` is still handed the rule's own `category_id`.
+        let Some(category_id) = self
+            .rules
+            .iter()
+            .find(|r| r.id == id)
+            .map(|r| r.category_id)
+        else {
             return;
         };
         if pattern.is_empty() {
@@ -5667,32 +5904,40 @@ impl Shell {
                             .min_w_0()
                             .gap_1()
                             .child(field_label(muted, "Pattern"))
-                            .child(Input::new(&self.rule_edit_pattern)),
+                            .child(
+                                div()
+                                    .w_full()
+                                    .debug_selector(|| "rule:edit-pattern-input".into())
+                                    .child(Input::new(&self.rule_edit_pattern)),
+                            ),
                     )
                     .child(
-                        Switch::new(SharedString::from(format!("rule-edit-regex-{}", rule.id)))
-                            .label("regex")
-                            .checked(self.rule_edit_regex)
-                            .on_click(cx.listener(move |this, checked: &bool, _, cx| {
-                                this.rule_edit_regex = *checked;
-                                this.preview_rule_match(cx);
-                                cx.notify();
-                            })),
+                        // 3.42: the unlabelled switch sits in a control-height
+                        // slot so its centre matches the input, picker and
+                        // buttons.
+                        control_slot(
+                            "rule:regex-slot:edit".into(),
+                            "rule:switch:edit".into(),
+                            Switch::new(SharedString::from(format!("rule-edit-regex-{}", rule.id)))
+                                .label("regex")
+                                .checked(self.rule_edit_regex)
+                                .on_click(cx.listener(move |this, checked: &bool, _, cx| {
+                                    this.rule_edit_regex = *checked;
+                                    this.preview_rule_match(cx);
+                                    cx.notify();
+                                })),
+                        ),
                     )
-                    .child(
-                        v_flex()
-                            .flex_shrink_0()
-                            .gap_1()
-                            .child(field_label(muted, "Category"))
-                            .child(div().w(px(160.)).child(
-                                Select::new(&self.rule_edit_target).placeholder("Category…"),
-                            )),
-                    )
+                    // 3.53: no Category picker — the editor changes
+                    // pattern and kind only, and the rule keeps its
+                    // category (moving is the Rules page Move bar's job).
                     .child(
                         Button::new(SharedString::from(format!("rule-edit-save-{}", rule.id)))
                             .label("Save")
                             .primary()
                             .flex_shrink_0()
+                            // 3.42: the alignment test measures its centre.
+                            .debug_selector(|| "rule:edit-save-btn".into())
                             // 3.40: loading + disabled while the save runs.
                             .loading(self.rule_action_pending(PendingRuleAction::Save(rule.id)))
                             .disabled(self.rule_action_pending(PendingRuleAction::Save(rule.id)))
@@ -6248,17 +6493,29 @@ impl Shell {
                                         .min_w_0()
                                         .gap_1()
                                         .child(field_label(muted, "Pattern"))
-                                        .child(Input::new(&self.rule_pattern)),
+                                        .child(
+                                            div()
+                                                .w_full()
+                                                .debug_selector(|| "rule:pattern-input:add".into())
+                                                .child(Input::new(&self.rule_pattern)),
+                                        ),
                                 )
                                 .child(
-                                    Switch::new("rule-regex")
-                                        .label("regex")
-                                        .checked(self.rule_regex)
-                                        .on_click(cx.listener(|this, checked: &bool, _, cx| {
-                                            this.rule_regex = *checked;
-                                            this.preview_rule_match(cx);
-                                            cx.notify();
-                                        })),
+                                    // 3.42: control-height slot, centred.
+                                    control_slot(
+                                        "rule:regex-slot:add".into(),
+                                        "rule:switch:add".into(),
+                                        Switch::new("rule-regex")
+                                            .label("regex")
+                                            .checked(self.rule_regex)
+                                            .on_click(cx.listener(
+                                                |this, checked: &bool, _, cx| {
+                                                    this.rule_regex = *checked;
+                                                    this.preview_rule_match(cx);
+                                                    cx.notify();
+                                                },
+                                            )),
+                                    ),
                                 )
                                 .child(
                                     v_flex()
@@ -6274,6 +6531,8 @@ impl Shell {
                                         .label("Add rule")
                                         .primary()
                                         .flex_shrink_0()
+                                        // 3.42: the alignment test measures its centre.
+                                        .debug_selector(|| "rule:add-rule-btn:add".into())
                                         // 3.40: loading + disabled while the add runs.
                                         .loading(self.rule_action_pending(PendingRuleAction::Add))
                                         .disabled(self.rule_action_pending(PendingRuleAction::Add))
@@ -6606,6 +6865,38 @@ impl Shell {
                 let kind = node.kind;
                 let is_system = node.is_system;
                 let is_child = parent.is_some();
+                // 3.53: the add-rule row's Category control follows the
+                // selection: a subcategory names the target itself (no
+                // picker); a parent picks among its own children by their
+                // own names; a childless parent gets a hint, not a row.
+                let childless_parent = !is_child && node.children.is_empty();
+                let sub_picker = if is_child || childless_parent {
+                    None
+                } else {
+                    // Trigger and menu fit the longest child name, up to
+                    // 200 px / 320 px (see `subcategory_widths`).
+                    let longest = node
+                        .children
+                        .iter()
+                        .map(|c| c.name.chars().count())
+                        .max()
+                        .unwrap_or(0);
+                    let (trigger_w, menu_w) = subcategory_widths(longest);
+                    Some(
+                        v_flex()
+                            .flex_shrink_0()
+                            .gap_1()
+                            .child(field_label(muted, "Subcategory"))
+                            .child(subcategory_select(
+                                &self.cat_rule_target,
+                                "cat-add",
+                                trigger_w,
+                                menu_w,
+                                cx,
+                            ))
+                            .into_any_element(),
+                    )
+                };
                 let renaming = self.renaming;
                 let confirm_label = if self.confirm_delete_category == Some(node.id) {
                     "Click again to delete"
@@ -6746,8 +7037,10 @@ impl Shell {
                             }),
                     )
                     // Rules for this category (3.23): the list below holds
-                    // only these, and the add-rule picker defaults to the
-                    // selection where it can list it.
+                    // only these. 3.53: the add-rule row carries no
+                    // category picker when the selection names the target
+                    // (a subcategory); a parent picks among its own
+                    // children instead.
                     .child(div().w_full().border_t_1().border_color(border))
                     .child(
                         v_flex()
@@ -6755,64 +7048,90 @@ impl Shell {
                             .min_h_0()
                             .gap_2()
                             .child(region_title("Rules"))
+                            // 3.53: a parent with no subcategories can have
+                            // no rule at all (rules target a child), so the
+                            // hint stands in for the add-rule row.
+                            .when(childless_parent, |section| {
+                                section.child(
+                                    div()
+                                        .text_sm()
+                                        .text_color(muted)
+                                        .debug_selector(|| "cat:add-rule-need-child".into())
+                                        .child("Add a subcategory first"),
+                                )
+                            })
                             // Add-rule group (3.16): labelled fields; the
                             // pattern column is the flex one, so the row
                             // fits the panel's width.
-                            .child(
-                                h_flex()
-                                    .gap_2()
-                                    .items_end()
-                                    .debug_selector(|| "cat:add-rule-row".into())
+                            .when(!childless_parent, |section| {
+                                section
                                     .child(
-                                        v_flex()
-                                            .flex_1()
-                                            .min_w_0()
-                                            .gap_1()
-                                            .child(field_label(muted, "Pattern"))
-                                            .child(Input::new(&self.rule_pattern)),
-                                    )
-                                    .child(
-                                        Switch::new("rule-regex")
-                                            .label("regex")
-                                            .checked(self.rule_regex)
-                                            .on_click(cx.listener(
-                                                |this, checked: &bool, _, cx| {
-                                                    this.rule_regex = *checked;
-                                                    this.preview_rule_match(cx);
-                                                    cx.notify();
-                                                },
-                                            )),
-                                    )
-                                    .child(
-                                        v_flex()
-                                            .flex_shrink_0()
-                                            .gap_1()
-                                            .child(field_label(muted, "Category"))
+                                        h_flex()
+                                            .gap_2()
+                                            .items_end()
+                                            .debug_selector(|| "cat:add-rule-row".into())
                                             .child(
-                                                div().w(px(160.)).child(
-                                                    Select::new(&self.rule_target)
-                                                        .placeholder("Category…"),
+                                                v_flex()
+                                                    .flex_1()
+                                                    .min_w_0()
+                                                    .gap_1()
+                                                    .child(field_label(muted, "Pattern"))
+                                                    .child(
+                                                        div().w_full().debug_selector(|| {
+                                                            "rule:pattern-input:cat-add".into()
+                                                        }).child(Input::new(&self.rule_pattern)),
+                                                    ),
+                                            )
+                                            .child(
+                                                // 3.42: control-height slot, centred.
+                                                control_slot(
+                                                    "rule:regex-slot:cat-add".into(),
+                                                    "rule:switch:cat-add".into(),
+                                                    Switch::new("rule-regex")
+                                                        .label("regex")
+                                                        .checked(self.rule_regex)
+                                                        .on_click(cx.listener(
+                                                            |this, checked: &bool, _, cx| {
+                                                                this.rule_regex = *checked;
+                                                                this.preview_rule_match(cx);
+                                                                cx.notify();
+                                                            },
+                                                        )),
                                                 ),
+                                            )
+                                            // 3.53: a parent selection adds
+                                            // the picker over its own children
+                                            // (`sub_picker`, built above); a
+                                            // subcategory selection adds no
+                                            // picker — the row targets it.
+                                            .children(sub_picker)
+                                            .child(
+                                                Button::new("add-rule")
+                                                    .label("Add rule")
+                                                    .primary()
+                                                    .flex_shrink_0()
+                                                    // 3.42: the alignment test measures its centre.
+                                                    .debug_selector(|| {
+                                                        "rule:add-rule-btn:cat-add".into()
+                                                    })
+                                                    // 3.40: loading + disabled while the add runs.
+                                                    .loading(
+                                                        self.rule_action_pending(
+                                                            PendingRuleAction::Add,
+                                                        ),
+                                                    )
+                                                    .disabled(
+                                                        self.rule_action_pending(
+                                                            PendingRuleAction::Add,
+                                                        ),
+                                                    )
+                                                    .on_click(cx.listener(|this, _, window, cx| {
+                                                        this.add_rule_to_selected(window, cx)
+                                                    })),
                                             ),
                                     )
-                                    .child(
-                                        Button::new("add-rule")
-                                            .label("Add rule")
-                                            .primary()
-                                            .flex_shrink_0()
-                                            // 3.40: loading + disabled while the add runs.
-                                            .loading(
-                                                self.rule_action_pending(PendingRuleAction::Add),
-                                            )
-                                            .disabled(
-                                                self.rule_action_pending(PendingRuleAction::Add),
-                                            )
-                                            .on_click(cx.listener(|this, _, window, cx| {
-                                                this.add_rule(window, cx)
-                                            })),
-                                    ),
-                            )
-                            .child(preview)
+                                    .child(preview)
+                            })
                             .children(
                                 self.rule_error
                                     .clone()
@@ -6922,6 +7241,18 @@ impl Shell {
                                     .gap_1()
                                     .flex_1()
                                     .min_h_0(),
+                                )
+                                // 3.53: the editor changes pattern and kind
+                                // only — moving a rule to another category
+                                // is the Rules page Move bar's job (3.28).
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .text_color(muted)
+                                        .debug_selector(|| "cat:rules-move-hint".into())
+                                        .child(
+                                            "To move rules to another category, use the Rules page.",
+                                        ),
                                 )
                             }),
                     )

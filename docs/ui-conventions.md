@@ -331,11 +331,20 @@ Delete each opening an `InlineForm` under it, 3.51); sections are split by
 rules (a category's include its subcategories'; "No rules for this
 category yet" when empty) with an add-rule row (Pattern, regex switch in a
 `control_slot`, Add rule) showing a live "matches N transactions" count.
-Edit swaps a row for a two-line editor (Pattern labelled at full width,
-then the switch and Cancel / Save; 3.48), one at a time; Delete is a
-two-click confirm. Selecting a category or leaving the page closes the
-editor and disarms. Planned: no category picker in rule rows (3.53), a
-Uses column (3.49), a focused rule's transactions under the list (3.52).
+Where a rule goes follows the selection (3.53): a selected subcategory is
+the target and the row carries no picker; a selected parent picks among
+its own subcategories in a "Subcategory…" `Select` — their own names, no
+default pick; the trigger fits the longest name up to 200 px, ellipsizing
+with a hover tooltip, and the open menu grows to 320 px so names are
+never cut off; a parent without subcategories shows a muted "Add a
+subcategory first" in place of the row. Edit swaps a row for a two-line
+editor (Pattern labelled at full width, then the switch and Cancel /
+Save; 3.48), one at a time; the editor has no category picker — Save
+keeps the rule's category, and a muted "To move rules to another
+category, use the Rules page." sits under a non-empty rule list. Delete
+is a two-click confirm. Selecting a category or leaving the page closes
+the editor and disarms. Planned: a Uses column (3.49), a focused rule's
+transactions under the list (3.52).
 
 **Rules.** `PageHeader` ("N rules · M unused", **New rule** opening the
 add-rule row in place). `FilterRow`: Search ("Search rules or

@@ -9,7 +9,6 @@ the task you're doing.
 |---|---|---|
 | `docs/tasks.md` | this index: how to work, the order, where things are | always |
 | `docs/tasks/gpui.md` | GPUI target architecture (step by step), coding practices, pitfalls | before any UI task |
-| `docs/tasks/m3-now.md` | in-flight features (3.34, 3.53, 3.42) | when doing one of them |
 | `docs/tasks/m3-ui-queue.md` | the architecture refactor, in order | when doing one of them |
 | `docs/tasks/m3-backend-queue.md` | backend scale and correctness fixes, in order | when doing one of them |
 | `docs/tasks/m3-features.md` | feature lanes A / B / C, then 3.26 | when doing one of them |
@@ -56,10 +55,7 @@ architecture and scalability work comes first** (user decision,
 side, one task from each, so both slots stay busy. Start every task's
 worktree from the current `main`.
 
-1. **Now** (`docs/tasks/m3-now.md`): finish the two features the paused run left in flight, each in
-   its existing worktree: **3.34** (uncommitted work) and **3.53 + 3.42**
-   (see 3.53).
-2. **Then two queues, in order:**
+1. **Two queues, in order:**
    - **UI queue** (`docs/tasks/m3-ui-queue.md`; architecture and GPUI best
      practices): 3.62 → 3.74 →
      3.75 → 3.64 → 3.65 → 3.76 → 3.78 → 3.56 → 3.89 → 3.79 → 3.80 → 3.81
@@ -74,16 +70,16 @@ worktree from the current `main`.
    - **Dependencies:** 3.78 needs 3.77 merged; 3.56 needs 3.77, 3.78 and
      3.88; 3.84 needs 3.64. If the next UI task is blocked, the slot takes
      the next backend task.
-3. **Then the feature lanes** (`docs/tasks/m3-features.md`), one task from each of two lanes at a time:
+2. **Then the feature lanes** (`docs/tasks/m3-features.md`), one task from each of two lanes at a time:
    - **Lane A, dashboard:** 3.36 → 3.45 → 3.46.
    - **Lane B, Categories and Rules:** 3.58 → 3.48 → 3.50 + 3.51 (one
      branch) → 3.49 → 3.43 → 3.60 → 3.52 → 3.47 + 3.54 (one branch).
    - **Lane C, small tasks:** 3.63 → 3.37 → 3.61 → 3.59 (after 3.51 and
      3.58).
-   - Backend tasks left over from step 2 fill any idle slot.
-4. **Last in M3: 3.26** (scrollbars, in `docs/tasks/m3-features.md`), once
+   - Backend tasks left over from step 1 fill any idle slot.
+3. **Last in M3: 3.26** (scrollbars, in `docs/tasks/m3-features.md`), once
    the lanes are empty.
-5. **Then M5** (`docs/tasks/m5.md`: 5.3, 5.4 and whatever of 5.1 / 5.2 is left), **then the
+4. **Then M5** (`docs/tasks/m5.md`: 5.3, 5.4 and whatever of 5.1 / 5.2 is left), **then the
    Final task** (`docs/tasks/final.md`: 3.55, performance at scale).
 
 ## Where things are
