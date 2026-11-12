@@ -10,7 +10,7 @@ pub mod dates;
 pub mod parse;
 mod raw;
 pub mod rules;
-pub use raw::{ReadError, read_raw_file};
+pub use raw::{ReadError, read_raw_file, sniff_header};
 
 /// Money in integer cents. Negative = money out.
 pub type Cents = i64;
@@ -91,7 +91,12 @@ pub struct RawFile {
 pub struct RawRecord {
     pub bytes: Vec<u8>,
     /// Record index within its file, starting at 0 for the first data row.
+    /// Stored in the database and used to order rows.
     pub source_line: usize,
+    /// The 1-based physical line in the source file where the record starts
+    /// (3.67). Unlike `source_line` this counts blank lines and multi-line
+    /// quoted fields, so error messages can point the user at their file.
+    pub file_line: usize,
     /// Fields exactly as exported, decoded to text but not trimmed or parsed.
     pub fields: Vec<String>,
 }
@@ -166,14 +171,16 @@ pub struct RawTransaction {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ParseError {
-    #[error("record {line}: expected {expected} fields, found {found}")]
+    #[error("line {line}: expected {expected} fields, found {found}")]
     FieldCount {
+        /// The record's 1-based `file_line`, so users can find it.
         line: usize,
         expected: usize,
         found: usize,
     },
-    #[error("record {line}: bad {field} {value:?}")]
+    #[error("line {line}: bad {field} {value:?}")]
     BadValue {
+        /// The record's 1-based `file_line`, so users can find it.
         line: usize,
         field: &'static str,
         value: String,

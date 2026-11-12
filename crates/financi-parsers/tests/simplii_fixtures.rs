@@ -134,6 +134,29 @@ fn row_with_both_amounts_is_rejected() {
 }
 
 #[test]
+fn windows1252_fixture_decodes_accented_description() {
+    let file = read_raw_file(&fixture("windows1252.csv")).unwrap();
+    assert_eq!(file.encoding, financi_core::Encoding::Windows1252);
+    assert_eq!(file.line_ending, financi_core::LineEnding::CrLf);
+
+    let parser = financi_parsers::detect(&file.header).expect("detected");
+    let txns: Vec<_> = file
+        .records
+        .iter()
+        .map(|r| parser.map(r).unwrap())
+        .collect();
+    assert_eq!(txns.len(), 2);
+    assert_eq!(
+        txns[0].description_raw, " FROM CAFÉ DÉJEUNER    MONTRÉAL",
+        "Windows-1252 accents decode"
+    );
+    assert_eq!(txns[0].amount_cents, -1234);
+    assert_eq!(txns[1].amount_cents, 10_119);
+    // raw bytes stay the undecoded Windows-1252 bytes
+    assert_eq!(file.records[0].bytes[20], 0xC9, "`É` stays its raw byte");
+}
+
+#[test]
 fn each_format_is_detected_as_its_own_parser() {
     let ids: Vec<_> = financi_parsers::all().iter().map(|p| p.id()).collect();
     assert_eq!(ids, ["amex", "simplii"]);

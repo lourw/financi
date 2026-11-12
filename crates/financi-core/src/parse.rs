@@ -5,6 +5,8 @@ use crate::Cents;
 
 /// Parse a money string into cents: `"15.74"`, `"-2042.40"`, `"1,234.5"`,
 /// `"$12"`, `" 101.19 "`. At most two decimal places. Empty -> `None`.
+/// Commas are accepted only as thousands groups: `"1,234.56"` parses,
+/// `"1,2,3"` and `"12,34"` do not (3.67).
 pub fn cents(s: &str) -> Option<Cents> {
     let s = s.trim();
     if s.is_empty() {
@@ -14,11 +16,11 @@ pub fn cents(s: &str) -> Option<Cents> {
         Some(rest) => (true, rest),
         None => (false, s),
     };
-    let s = s.strip_prefix('$').unwrap_or(s).replace(',', "");
-    let (whole, frac) = s.split_once('.').unwrap_or((&s, ""));
-    if whole.is_empty() && frac.is_empty()
+    let s = s.strip_prefix('$').unwrap_or(s);
+    let (whole, frac) = s.split_once('.').unwrap_or((s, ""));
+    if (whole.is_empty() && frac.is_empty())
+        || !thousands_grouped(whole)
         || frac.len() > 2
-        || !whole.bytes().all(|b| b.is_ascii_digit())
         || !frac.bytes().all(|b| b.is_ascii_digit())
     {
         return None;
@@ -26,11 +28,30 @@ pub fn cents(s: &str) -> Option<Cents> {
     let whole: Cents = if whole.is_empty() {
         0
     } else {
-        whole.parse().ok()?
+        whole.replace(',', "").parse().ok()?
     };
     let frac: Cents = format!("{frac:0<2}").parse().ok()?;
     let value = whole.checked_mul(100)?.checked_add(frac)?;
     Some(if negative { -value } else { value })
+}
+
+/// True for digits with optional thousands separators: `1`, `1234`,
+/// `12,345`, `1,234,567`. Empty is allowed (a bare `.99` has no whole
+/// part). With commas, the first group holds 1..=3 digits and every
+/// later group exactly 3.
+fn thousands_grouped(s: &str) -> bool {
+    if s.is_empty() {
+        return true;
+    }
+    if !s.contains(',') {
+        return s.bytes().all(|b| b.is_ascii_digit());
+    }
+    let mut groups = s.split(',');
+    let first = groups.next().unwrap_or_default();
+    if first.is_empty() || first.len() > 3 || !first.bytes().all(|b| b.is_ascii_digit()) {
+        return false;
+    }
+    groups.all(|g| g.len() == 3 && g.bytes().all(|b| b.is_ascii_digit()))
 }
 
 /// A calendar date as ISO `yyyy-mm-dd`, validated.
@@ -98,6 +119,9 @@ mod tests {
         assert_eq!(cents(" 101.19 "), Some(10_119));
         assert_eq!(cents(".99"), Some(99));
         assert_eq!(cents("-0.50"), Some(-50));
+        assert_eq!(cents("1,234,567.89"), Some(123_456_789));
+        assert_eq!(cents("-$1,234.56"), Some(-123_456), "quoted amount");
+        assert_eq!(cents("1234"), Some(123_400), "ungrouped is fine");
     }
 
     #[test]
@@ -105,6 +129,23 @@ mod tests {
         for bad in ["", "  ", "abc", "1.234", "1.2.3", "--1", "1e5", "-", "."] {
             assert_eq!(cents(bad), None, "{bad:?}");
         }
+    }
+
+    #[test]
+    fn commas_must_be_thousands_groups() {
+        for bad in [
+            "1,2,3",
+            "12,34",
+            "1234,5678",
+            "1,23",
+            ",123",
+            "1,",
+            "1,,234",
+        ] {
+            assert_eq!(cents(bad), None, "{bad:?}");
+        }
+        assert_eq!(cents("1,234"), Some(123_400));
+        assert_eq!(cents("12,345,678"), Some(1_234_567_800));
     }
 
     #[test]

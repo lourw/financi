@@ -60,7 +60,7 @@ impl StatementParser for Simplii {
     }
 
     fn map(&self, record: &RawRecord) -> Result<RawTransaction, ParseError> {
-        let line = record.source_line;
+        let line = record.file_line;
         let f = &record.fields;
         if f.len() != HEADER.len() {
             return Err(ParseError::FieldCount {

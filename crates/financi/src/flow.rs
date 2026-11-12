@@ -37,19 +37,44 @@ pub fn load_file(path: &Path) -> Result<LoadedFile, LoadError> {
         name: name.clone(),
         message: e.to_string(),
     })?;
-    let raw = read_raw_file(&bytes).map_err(|source| LoadError::Read {
-        name: name.clone(),
-        source,
-    })?;
+    let raw = match read_raw_file(&bytes) {
+        Ok(raw) => raw,
+        // A file with an unclosed quote that isn't one of our exports
+        // (3.67): the useful message is "unknown format", not the quote.
+        Err(source @ ReadError::UnclosedQuote { .. }) => {
+            let header = financi_core::sniff_header(&bytes);
+            if financi_parsers::detect(&header).is_none() {
+                return Err(LoadError::UnknownFormat {
+                    name,
+                    header: truncate_header(&header.join(",")),
+                });
+            }
+            return Err(LoadError::Read { name, source });
+        }
+        Err(source) => return Err(LoadError::Read { name, source }),
+    };
     let parser = financi_parsers::detect(&raw.header).ok_or_else(|| LoadError::UnknownFormat {
         name: name.clone(),
-        header: raw.header.join(","),
+        header: truncate_header(&raw.header.join(",")),
     })?;
     Ok(LoadedFile {
         file_name: name,
         parser_id: parser.id(),
         raw,
     })
+}
+
+/// The header shown in the unknown-format message, cut to ~120 characters
+/// so a binary or pathological first line can't flood the error toast.
+fn truncate_header(header: &str) -> String {
+    const MAX_CHARS: usize = 120;
+    let mut chars = header.chars();
+    let cut: String = chars.by_ref().take(MAX_CHARS).collect();
+    if chars.next().is_some() {
+        format!("{cut}…")
+    } else {
+        cut
+    }
 }
 
 pub fn parser(id: &str) -> Parser {
@@ -276,6 +301,54 @@ mod tests {
         let err = load_file(&odd).unwrap_err();
         assert!(matches!(err, LoadError::UnknownFormat { .. }), "{err}");
         assert!(err.to_string().contains("Posted,Payee,Debit"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn non_csv_files_fail_fast() {
+        let dir = std::env::temp_dir().join(format!("financi-flow-367-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let binary = dir.join("binary.csv");
+        std::fs::write(&binary, b"Date,Amount\n1,\x002\n").unwrap();
+        let err = load_file(&binary).unwrap_err();
+        assert!(
+            err.to_string().contains("This isn't a CSV export."),
+            "{err}"
+        );
+
+        // A big header is cut to ~120 characters in the unknown-format message.
+        let long = dir.join("long.csv");
+        std::fs::write(&long, format!("{}\n1\n", "A".repeat(300))).unwrap();
+        let err = load_file(&long).unwrap_err();
+        let msg = err.to_string();
+        assert!(matches!(err, LoadError::UnknownFormat { .. }), "{err}");
+        assert!(msg.contains(&"A".repeat(120)), "{msg}");
+        assert!(!msg.contains(&"A".repeat(121)), "header must be truncated");
+        assert!(msg.contains("…)"), "{msg}");
+
+        // Unclosed quote in a file that is not one of our exports: report
+        // the unknown-format message, not the quote error.
+        let junk = dir.join("junk.csv");
+        std::fs::write(&junk, b"Posted,Payee\n\"unclosed thing,1\n").unwrap();
+        let err = load_file(&junk).unwrap_err();
+        assert!(matches!(err, LoadError::UnknownFormat { .. }), "{err}");
+
+        // Unclosed quote in a recognized Amex export: keep the quote error,
+        // with a physical line number.
+        let amex = dir.join("amex-broken.csv");
+        std::fs::write(
+            &amex,
+            b"Date,Date Processed,Description,Amount\n05 Nov 2026,05 Nov 2026,X,1.00\n\"oops,2,3,4\n",
+        )
+        .unwrap();
+        let err = load_file(&amex).unwrap_err();
+        assert!(
+            matches!(err, LoadError::Read { .. }),
+            "recognized header keeps the read error: {err}"
+        );
+        assert!(err.to_string().contains("line 3: unclosed quote"), "{err}");
+
         std::fs::remove_dir_all(dir).unwrap();
     }
 
