@@ -197,8 +197,8 @@ Before delegating, choose tasks that can safely run in parallel, so the two
 branches don't conflict at merge. The queues and lanes in `docs/tasks.md` say
 which tasks may pair; the rules below are for anything else. Two features may run together only if
 neither depends on the other and they don't change the same functions or
-regions. Sharing a file is fine: UI work lands in `crates/financi/src/ui.rs` and
-`ui_tests.rs` (per-page modules under `ui/` once 3.62 lands), and git merges
+regions. Sharing a file is fine: UI work lands in the per-page modules under
+`crates/financi/src/ui/` and their tests under `ui/tests/`, and git merges
 separate parts of a file cleanly. Name the regions in each brief, and have implementers add
 new tests next to related tests, not at the end of the file. If you can't
 tell which regions a task will change, don't run it alongside another.
@@ -247,7 +247,7 @@ Does exactly one task (or one fix list) and returns.
 2. Implement with tests and synthetic data (`CLAUDE.md` rules: integer
    cents, raw strings in hashes, new numbered migrations only, DB access
    from UI through `DbWorker`, UI tests in the style of
-   `crates/financi/src/ui_tests.rs`).
+   `crates/financi/src/ui/tests/`).
 3. Before committing: `cargo fmt --all`, then build, clippy and tests (with
    the trimmed commands above). All must pass with no new warnings.
 4. Tick the task's box in its `docs/tasks/` file in the same commit. Commit with

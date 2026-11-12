@@ -90,8 +90,8 @@ worktree from the current `main`.
 | `crates/financi-parsers` | `amex`, `simplii` (old id `simplii-chequing` still resolves); `all()`, `detect()`, `by_id()` |
 | `crates/financi-db` | `migrations/0001`–`0004` (0001 frozen), `accounts`, `import`, `master_csv`, `categories`, `rules`, `overrides`, `queue`, `views`, `transfers`, `settings`, `worker::DbWorker`, `seed` (feature `dev-seed`) |
 | `crates/financi/src/flow.rs` | GPUI-free helpers (formatting, import flow), unit-tested |
-| `crates/financi/src/ui.rs` | every view: `Shell` and all pages (per-page `ui/` modules after 3.62; `ui/widgets.rs` components after 3.89) |
-| `crates/financi/src/ui_tests.rs` | headless UI tests (`ui/tests/` after 3.62) |
+| `crates/financi/src/ui/` | every view: `mod.rs` holds `Shell`, one module per page plus `widgets.rs` (shared components after 3.89) |
+| `crates/financi/src/ui/tests/` | headless UI tests, one module per page plus shared helpers in `mod.rs` |
 | `crates/financi/src/version.rs`, `build.rs` | build version from `git describe` (3.39) |
 | `assets/icon/` | app icon source (3.63) |
 | `fixtures/demo/` | synthetic exports + `expected.json` reference totals |

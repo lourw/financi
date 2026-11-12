@@ -6,7 +6,7 @@ Do these in the order listed (`docs/tasks.md` → *Picking the next task*). Each
 
 Steps 1–15 of `docs/tasks/gpui.md` → *GPUI best practices*, task by task.
 
-- [ ] **3.62 Split `ui.rs` and `ui_tests.rs` by page.** Pure refactor,
+- [x] **3.62 Split `ui.rs` and `ui_tests.rs` by page.** Pure refactor,
   no behaviour change (planned 2026-11-11 in a docs review). `ui.rs` is
   ~7 500 lines, one `impl Shell` block of ~5 500 of them, and
   `ui_tests.rs` is ~8 500 lines. Every UI task edits both, so two UI
