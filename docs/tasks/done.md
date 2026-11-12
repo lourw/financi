@@ -881,6 +881,36 @@ the UI; tests cover 2.1–2.9.
 
     Update the *Categories* row of `ui-conventions.md`.
 
+- [x] **3.73 Imports and undo stay fast as data grows.** (Code review,
+  2026-11-11; cheap fixes now, timed budgets in 3.55.)
+  - **Compile rules once per import.** `categorize_new_rows`
+    (`import.rs`) and `overrides.rs` call `pick_category` per row, which
+    builds a new `CompiledRules` each time: every regex rule is compiled
+    once per imported row, twice per import (preview and commit). Build
+    `CompiledRules` once per call. Mark `pick_category` and
+    `pattern_matches` as one-off helpers in their doc comments.
+  - **Pairing compares only plausible pairs.** `run_transfer_pairing`
+    loads nearly every unpaired row and `adjacency` tests every pair
+    (billions of checks at 100 000 rows), on every import, unpair and
+    review. Select only rows that can pair (unlocked chequing / savings
+    rows; card rows in Card Payment), bucket them by `abs(amount_cents)`,
+    compare within a bucket inside the date window, and lowercase each
+    description once.
+  - **Indexes,** in one new migration: `transactions(transfer_pair_id)
+    WHERE transfer_pair_id IS NOT NULL` (deleting a row scans the whole
+    table for rows pointing at it, once per deleted row, so undo is
+    quadratic); `transactions(category_id)` (category reassign, counts
+    and the category filter; 3.54 no longer needs to add it);
+    `transactions(posted_date, import_id, source_line)` (the table's
+    default order). Migration test checks all three.
+  - **Rewrite only the touched years.** `rewrite_years` loads the
+    account's rows for every year; filter `account_rows` to the years
+    being written.
+  - Tests: results unchanged (existing pairing, import and master-CSV
+    tests pass); a pairing test with 20 000 unrelated unpaired rows plus
+    one matching pair still pairs it and finishes in well under a second
+    in a debug build.
+
 - [x] **3.77 A DbWorker that keeps reads fast.** (Architecture, code
   review 2026-11-11.) Backend only (`financi-db/src/worker.rs`, `lib.rs`);
   runs in a free slot any time after the Fixes lane. Today it is one FIFO
