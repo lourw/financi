@@ -309,6 +309,8 @@ type SetCategoryFn = Rc<dyn Fn(i64, i64, &mut Window, &mut App)>;
 type SetHiddenFn = Rc<dyn Fn(i64, bool, &mut Window, &mut App)>;
 type ApplyRuleFn = Rc<dyn Fn(i64, &mut Window, &mut App)>;
 type UnpairFn = Rc<dyn Fn(i64, &mut Window, &mut App)>;
+/// Called with the deciding rule's id from the *Show rule* menu item (3.29).
+type ShowRuleFn = Rc<dyn Fn(i64, &mut Window, &mut App)>;
 
 /// One entry of a transaction row's right-click menu (2.9).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -340,6 +342,65 @@ pub fn row_menu_items(row: &TransactionRow) -> Vec<RowMenuItem> {
     items
 }
 
+/// What the *Show rule* item (3.29) of a row's context menu can do: find
+/// the rule that decided the row, or the reason the item is disabled.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum RowShowRule {
+    /// The rule that decides the row; *Show rule* opens the Rules page on it.
+    Found(i64),
+    /// The category was set by hand (the row is locked).
+    SetByHand,
+    /// Built-in card-payment detection decided the row (locked at import).
+    CardPayment,
+    /// No rule matches the description.
+    NoRule,
+}
+
+impl RowShowRule {
+    /// The reason a disabled *Show rule* item shows next to its label.
+    pub fn disabled_reason(&self) -> Option<&'static str> {
+        match self {
+            RowShowRule::Found(_) => None,
+            RowShowRule::SetByHand => Some("Set by hand"),
+            RowShowRule::CardPayment => Some("Card payment (built in)"),
+            RowShowRule::NoRule => Some("No rule matches"),
+        }
+    }
+
+    /// The menu item's label: when disabled, the reason rides along
+    /// (`Show rule — Set by hand`), since a greyed item has nowhere else
+    /// to say why.
+    pub fn menu_label(&self) -> String {
+        match self.disabled_reason() {
+            Some(reason) => format!("Show rule — {reason}"),
+            None => "Show rule".into(),
+        }
+    }
+}
+
+/// The *Show rule* state (3.29) for a row, as a pure function so the gating
+/// rule is testable without a window. Card payments are locked at import
+/// (2.5), so the card-payment check comes before *Set by hand* (both are
+/// locked rows); an unlocked row asks [`winning_rule`] — the same matcher
+/// import runs — so no rule id is ever stored on the transaction.
+pub fn row_show_rule(
+    row: &TransactionRow,
+    rules: &[Rule],
+    card_payment_category: Option<i64>,
+) -> RowShowRule {
+    if row.category_locked {
+        if row.category_id.is_some() && row.category_id == card_payment_category {
+            RowShowRule::CardPayment
+        } else {
+            RowShowRule::SetByHand
+        }
+    } else if let Some(id) = winning_rule(rules, &row.description) {
+        RowShowRule::Found(id)
+    } else {
+        RowShowRule::NoRule
+    }
+}
+
 pub struct TxTable {
     rows: Vec<TransactionRow>,
     /// Child categories as `(id, "Parent › Child")` for the *Change category…*
@@ -348,6 +409,12 @@ pub struct TxTable {
     /// The row that just got a manual category and now offers to apply it to
     /// every matching row (2.6's rule offer, 2.9). Its transaction id.
     rule_offer: Option<i64>,
+    /// The shell's rules, kept in sync on every refresh: the *Show rule*
+    /// item (3.29) runs [`winning_rule`] over them when the menu opens.
+    rules: Vec<Rule>,
+    /// The id of the system `Transfers > Card Payment` category (3.29), the
+    /// same lookup `financi-db` uses; `None` only before the first refresh.
+    card_payment_category: Option<i64>,
     /// The table's current ordering, kept in sync with the shell so the
     /// header's sort icon reflects it after every refresh (3.4).
     sort: TxSort,
@@ -356,6 +423,8 @@ pub struct TxTable {
     on_apply_rule: ApplyRuleFn,
     /// Called with a paired row's id from the *Unpair* menu item (4.2).
     on_unpair: UnpairFn,
+    /// Called with the deciding rule's id from the *Show rule* menu item (3.29).
+    on_show_rule: ShowRuleFn,
     /// Called with the new ordering when a header's sort icon is clicked;
     /// the shell re-queries and refreshes.
     on_sort: SortFn,
@@ -458,7 +527,23 @@ impl TableDelegate for TxTable {
             .into_iter()
             .fold(menu, |menu, item| match item {
                 RowMenuItem::ChangeCategory => {
-                    menu.item(PopupMenuItem::submenu("Change category…", submenu.clone()))
+                    // *Show rule* (3.29) follows the category actions: it is
+                    // about how the row got its category. Disabled with the
+                    // reason when no rule decided the row.
+                    let menu =
+                        menu.item(PopupMenuItem::submenu("Change category…", submenu.clone()));
+                    match row_show_rule(row, &self.rules, self.card_payment_category) {
+                        RowShowRule::Found(rule_id) => {
+                            let on_show = self.on_show_rule.clone();
+                            menu.item(
+                                PopupMenuItem::new("Show rule")
+                                    .on_click(move |_, window, cx| on_show(rule_id, window, cx)),
+                            )
+                        }
+                        disabled => {
+                            menu.item(PopupMenuItem::new(disabled.menu_label()).disabled(true))
+                        }
+                    }
                 }
                 RowMenuItem::Hide => {
                     let on_hide = self.on_set_hidden.clone();
@@ -1788,6 +1873,15 @@ pub struct Shell {
     /// 3.28: set when the Rules page opens; focuses the search box on the
     /// next render (D5).
     rules_focus_pending: std::cell::Cell<bool>,
+    /// 3.29: the rule the dashboard's *Show rule* item just landed on; its
+    /// row carries the `list_active` background until the user searches or
+    /// leaves the page (transient, like the page's other one-shot state).
+    rules_reveal: Option<i64>,
+    /// 3.29: the id of the system `Transfers > Card Payment` category, read
+    /// off the category tree on every refresh (same name lookup the DB uses
+    /// in [`financi_db::categories::card_payment_category`]). `None` only
+    /// before the first refresh.
+    card_payment_category: Option<i64>,
     /// 3.21: one scroll handle per virtualized list. gpui-kit's
     /// `v_virtual_list` creates a fresh `VirtualListScrollHandle` on every
     /// render and `track_scroll`s it, and GPUI reads the scroll offset from
@@ -1916,17 +2010,26 @@ impl Shell {
                 shell.update(cx, |this, cx| this.unpair_row(txn, window, cx));
             }) as UnpairFn
         };
+        let on_show_rule = {
+            let shell = cx.entity();
+            Rc::new(move |rule: i64, window: &mut Window, cx: &mut App| {
+                shell.update(cx, |this, cx| this.show_rule(rule, window, cx));
+            }) as ShowRuleFn
+        };
         let table = cx.new(|cx| {
             TableState::new(
                 TxTable {
                     rows: Vec::new(),
                     child_choices: Vec::new(),
                     rule_offer: None,
+                    rules: Vec::new(),
+                    card_payment_category: None,
                     sort: TxSort::default(),
                     on_set_category,
                     on_set_hidden,
                     on_apply_rule,
                     on_unpair,
+                    on_show_rule,
                     on_sort,
                     // 3.25: start at the widths the current window allows.
                     flex_widths: tx_flex_widths(
@@ -2115,6 +2218,9 @@ impl Shell {
             cx.subscribe(&rules_search, |this: &mut Self, _, ev: &InputEvent, cx| {
                 if matches!(ev, InputEvent::Change) {
                     this.rules_scroll.set_offset(Point::default());
+                    // 3.29: the reveal highlight is one-shot; anything typed
+                    // after it is the user's own search.
+                    this.rules_reveal = None;
                     cx.notify();
                 }
             });
@@ -2261,6 +2367,8 @@ impl Shell {
             rule_uses: HashMap::default(),
             new_rule_open: false,
             rules_focus_pending: std::cell::Cell::new(false),
+            rules_reveal: None,
+            card_payment_category: None,
             tree_scroll: VirtualListScrollHandle::new(),
             rule_scroll: VirtualListScrollHandle::new(),
             queue_scroll: VirtualListScrollHandle::new(),
@@ -2514,11 +2622,15 @@ impl Shell {
                         let child_choices = this.child_choices.clone();
                         let rule_offer = this.rule_offer.map(|(id, _)| id);
                         let sort = this.tx_sort;
+                        let rules = this.rules.clone();
+                        let card_payment = this.card_payment_category;
                         this.table.update(cx, |t, cx| {
                             let delegate = t.delegate_mut();
                             delegate.rows = rows;
                             delegate.child_choices = child_choices;
                             delegate.rule_offer = rule_offer;
+                            delegate.rules = rules;
+                            delegate.card_payment_category = card_payment;
                             delegate.sort = sort;
                             t.refresh(cx);
                         });
@@ -2983,9 +3095,12 @@ impl Shell {
         self.armed_delete_rule = None;
         // 3.28: the Rules page's add row, ticked rows and move error belong
         // to that page too; entering it focuses the search box (D5).
+        // 3.29: so does the *Show rule* highlight — it belongs to the row
+        // the menu was opened on.
         self.new_rule_open = false;
         self.selected_rules.clear();
         self.rules_move_error = None;
+        self.rules_reveal = None;
         self.rules_focus_pending.set(page == Page::Rules);
         cx.notify();
     }
@@ -3171,6 +3286,20 @@ impl Shell {
         if self.confirm_delete_category.is_some_and(|id| !known(id)) {
             self.confirm_delete_category = None;
         }
+        // 3.29: the system `Transfers > Card Payment` category, so the
+        // dashboard menu can tell a built-in card payment from a hand-set
+        // locked row. Same name-and-parent lookup `financi-db` uses; ids are
+        // never hardcoded.
+        self.card_payment_category = self
+            .categories
+            .iter()
+            .find(|p| p.name == "Transfers")
+            .and_then(|p| {
+                p.children
+                    .iter()
+                    .find(|c| c.is_system && c.name == "Card Payment")
+                    .map(|c| c.id)
+            });
         self.child_choices = self
             .categories
             .iter()
@@ -5621,6 +5750,43 @@ impl Shell {
         cx.notify();
     }
 
+    /// The *Show rule* item (3.29): open the Rules page on the given rule.
+    /// The page's filters are cleared so the rule is certainly in the list
+    /// (test mode, the Type picker and Unused could all hide it), its group
+    /// is expanded, and the search box takes the rule's pattern — the list
+    /// narrows to it find-in-page style, and a rule always matches its own
+    /// pattern. The row is scrolled into view and carries the `list_active`
+    /// background until the user searches or leaves the page.
+    fn show_rule(&mut self, rule_id: i64, window: &mut Window, cx: &mut Context<Self>) {
+        // Navigate first: `go_page` clears the page's transient state, and
+        // the reveal must survive that reset.
+        self.go_page(Page::Rules, cx);
+        let Some(rule) = self.rules.iter().find(|r| r.id == rule_id).cloned() else {
+            return; // a refresh dropped the rule between menu and click
+        };
+        self.rules_test_mode = false;
+        self.rules_unused_only = false;
+        self.collapsed_rule_groups.remove(&rule.category_id);
+        self.rules_type_select.update(cx, |s, cx| {
+            s.set_selected_index(Some(gpui_kit::component::IndexPath::new(0)), window, cx)
+        });
+        // `set_value` scrolls the list back to the top, so the reveal's
+        // `scroll_to_item` must come after it. Any later keystroke fires
+        // the search subscription, which drops the reveal.
+        let pattern = rule.pattern.clone();
+        self.rules_search
+            .update(cx, |i, cx| i.set_value(pattern, window, cx));
+        let items = self.rules_page_items(cx);
+        if let Some(ix) = items
+            .iter()
+            .position(|it| matches!(it, RulesItem::Rule { id } if *id == rule_id))
+        {
+            self.rules_reveal = Some(rule_id);
+            self.rules_scroll.scroll_to_item(ix, ScrollStrategy::Center);
+        }
+        cx.notify();
+    }
+
     /// The Rules page group header row: "Food › Coffee · 4 rules", clicking
     /// it collapses or expands the group's rows (D5).
     fn rules_group_header(
@@ -5657,23 +5823,35 @@ impl Shell {
     /// ellipsized with a tooltip like the Categories row), a "wins" marker
     /// in test mode, Type, Uses (right-aligned) and Edit / Delete…. The
     /// row the editor is open on swaps for [`rule_editor_row`], which is
-    /// the same editor the Categories page uses.
+    /// the same editor the Categories page uses. The row *Show rule* (3.29)
+    /// landed on paints with the `list_active` background; its debug
+    /// selector grows an `:active` suffix so tests can tell the highlight
+    /// apart from a plain row.
     fn rules_page_row(
         &self,
         rule: &Rule,
         winner: bool,
+        revealed: bool,
         muted: Hsla,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let id = rule.id;
         let armed = self.armed_delete_rule == Some(id);
         let uses = self.rule_uses.get(&id).copied().unwrap_or(0);
+        let reveal_bg = revealed.then(|| cx.theme().list_active);
         h_flex()
             .h_6()
             .w_full()
             .gap_2()
             .items_center()
-            .debug_selector(move || format!("rules:row-{id}"))
+            .debug_selector(move || {
+                if revealed {
+                    format!("rules:row-{id}:active")
+                } else {
+                    format!("rules:row-{id}")
+                }
+            })
+            .when_some(reveal_bg, |row, bg| row.bg(bg))
             .child(
                 div().w(px(RULE_SEL_W)).flex_shrink_0().child(
                     checkbox(SharedString::from(format!("rule-sel-{id}")))
@@ -5835,7 +6013,8 @@ impl Shell {
                                 if this.editing_rule == Some(*id) {
                                     this.rule_editor_row(r, muted, danger, cx)
                                 } else {
-                                    this.rules_page_row(r, winner == Some(*id), muted, cx)
+                                    let revealed = this.rules_reveal == Some(*id);
+                                    this.rules_page_row(r, winner == Some(*id), revealed, muted, cx)
                                 }
                             })
                         }
