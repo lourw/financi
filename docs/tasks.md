@@ -839,7 +839,7 @@ the order above (3.28 → 3.29 → 3.26).
     the controls' centre while the row stays `items_end`. Better: factor
     a small `control_slot(el)` helper used by both rows, so they can't
     drift apart.
-  - Do it in the same branch as 3.41 (same two rows).
+  - Do it in the same branch as 3.53 (same two rows).
   - Tests: in both rows the Switch's vertical centre equals the Pattern
     input's centre within 1 px, and the Save / Add rule button's centre
     too. Note the rule in `ui-conventions.md` (*Forms*: an unlabelled
