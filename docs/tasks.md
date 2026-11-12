@@ -1,36 +1,116 @@
-# financi — implementation tasks (M2 → M5)
+# financi — implementation tasks
 
-This is the working checklist for the remaining v1 milestones. It turns
-`plan.md` (the requirements, copied from the plan doc) into concrete tasks.
-Where the two disagree, **this file wins** for M2–M5 detail.
+This is the working checklist for the rest of v1. It turns `plan.md` (the
+requirements) into concrete tasks. Where the two disagree, **this file
+wins** for M2–M5 detail.
+
+Finished tasks are archived in `docs/tasks-done.md`. Don't read it at the
+start of a session; grep it for a task number only when an open task
+refers to one (e.g. "3.24's row editor").
 
 ## How to work
 
-1. Do **one milestone at a time**. When every box in it is ticked, continue
-   to the next milestone without waiting for a go-ahead. Stop and report to
-   the user when v1 is complete.
-2. Work the tasks in order, running two at once only when `AGENTS.md` allows
-   it. Tick a box (`- [x]`) in the same commit that completes it.
+1. Do **one milestone at a time**, picking tasks as *Picking the next task*
+   says. When every box in it is ticked, continue to the next milestone
+   without waiting for a go-ahead. Stop and report to the user when v1 is
+   complete (the *Final* task done).
+2. Keep **two sub-agents in flight** whenever two tasks can run in parallel
+   (`AGENTS.md` → *Keep the pool full*). Tick a box (`- [x]`) in the same
+   commit that completes it.
 3. **Ask before deviating.** If a task is unclear, an API doesn't fit, or you
    would have to guess at behaviour, stop and ask. Don't improvise.
 4. Every task lands with tests and synthetic data (see `CLAUDE.md`). Never
    put real bank data in the repo.
 5. Commit after each logical piece (usually one task), Conventional Commits,
    then verify that commit in a clean checkout (see `CLAUDE.md`).
+6. When a task is merged, move its text from this file to
+   `docs/tasks-done.md` (under its milestone, in number order) in the same
+   merge commit or a `docs:` commit right after. Only open tasks stay here.
+7. New user requests and bug reports become numbered tasks here (next free
+   number), placed in a lane below.
 
-## Where things are (state after M1, commit 215c87d)
+## Picking the next task
+
+Task numbers record when a task was written, not when to do it. Open M3
+tasks are grouped in **lanes** that touch different code, so a task from
+one lane can run alongside a task from another. Within a lane, go top to
+bottom: that order is the user's priority (dashboard first, then
+responsiveness, set 2026-11-11). Start every task's worktree from the
+current `main`.
+
+1. **Now:** finish the two features the paused run left in flight, each
+   in its existing worktree: **3.34** (uncommitted work) and **3.53 +
+   3.42** (see 3.53).
+2. **Then 3.62** (split `ui.rs`): the only UI branch in flight, with
+   **5.1 / 5.2** (M5 backend) in the other slot. No other UI branch
+   starts until 3.62 is merged.
+3. **Then lanes A, B and C**, one task from each of two lanes at a time:
+   - **Lane A, dashboard and refresh (first priority):** 3.56 → 3.57 →
+     3.36 → 3.45 → 3.46.
+   - **Lane B, Categories and Rules pages:** 3.58 → 3.48 → 3.50 + 3.51
+     (one branch) → 3.49 → 3.43 → 3.60 → 3.52 → 3.47 + 3.54 (one branch,
+     only after 3.57 has merged).
+   - **Lane C, small tasks on other pages (fillers):** 3.63 → 3.37 → 3.61 → 3.59 (only after 3.51, 3.53 and 3.58 have merged).
+   - **3.57 touches every refresh call site:** while it runs, the other
+     slot takes a Lane C task or M5 backend work, never Lane B.
+   - If no lane task can start (all blocked), take the next M5 backend
+     task (5.1, 5.2). This is the one exception to "one milestone at a
+     time": backend-only M5 work may fill an idle slot.
+4. **Last in M3: 3.26** (scrollbars), once lanes A–C are empty.
+5. **Then M5** (5.3, 5.4 and whatever of 5.1 / 5.2 is left), **then the
+   Final task** (3.55, performance at scale).
+
+## Where things are
 
 | Path | What |
 |---|---|
-| `crates/financi-core` | `RawFile`/`RawRecord`, `read_raw_file`, `parse::{cents, date_*, merchant}`, `AccountKind`, `CategoryKind`, `StatementParser` trait, `row_hash` |
-| `crates/financi-parsers` | `amex`, `simplii_chequing`; `all()`, `detect()`, `by_id()` |
-| `crates/financi-db` | `migrations/0001_init.sql`, `accounts`, `import` (plan/commit/undo/list), `worker::DbWorker`, `seed` (feature `dev-seed`) |
-| `crates/financi/src/flow.rs` | GPUI-free import-flow helpers (tested) |
-| `crates/financi/src/ui.rs` | `Shell`, `ImportPanel`, `TxTable` |
-| `crates/financi/src/ui_tests.rs` | headless UI tests (pattern to copy) |
+| `crates/financi-core` | `raw` (`RawFile`/`RawRecord`, `read_raw_file`), `parse` (cents, dates, merchant), `dates`, `rules` (`CompiledRules`, `pick_category`, `winning_rule`), `StatementParser` trait, `row_hash` |
+| `crates/financi-parsers` | `amex`, `simplii` (old id `simplii-chequing` still resolves); `all()`, `detect()`, `by_id()` |
+| `crates/financi-db` | `migrations/0001`–`0004` (0001 frozen), `accounts`, `import`, `master_csv`, `categories`, `rules`, `overrides`, `queue`, `views`, `transfers`, `settings`, `worker::DbWorker`, `seed` (feature `dev-seed`) |
+| `crates/financi/src/flow.rs` | GPUI-free helpers (formatting, import flow), unit-tested |
+| `crates/financi/src/ui.rs` | every view: `Shell` and all pages (split into `ui/` modules by 3.62) |
+| `crates/financi/src/ui_tests.rs` | headless UI tests (pattern to copy; moves to `ui/tests/` in 3.62) |
+| `crates/financi/src/version.rs`, `build.rs` | build version from `git describe` (3.39) |
+| `assets/icon/` | app icon source (3.63) |
 | `fixtures/demo/` | synthetic exports + `expected.json` reference totals |
 | `spikes/gpui-spike` | sandbox for UI experiments; keep, don't ship |
 | `docs/ui-conventions.md` | layout, spacing, colors, formats; read before any UI task |
+
+## Coding practices (all UI tasks)
+
+These come from earlier tasks and reviews. Follow them without being told.
+
+- **State lives on `Shell`, created once.** Scroll handles, `SelectState`s,
+  inputs and caches are `Shell` fields made in `new`, never in `render`
+  (a handle made in `render` resets every frame; see 3.21).
+- **No data-sized work in `render`.** Build derived lists, labels and
+  formatted strings when their inputs change and cache them on `Shell`.
+  Render reads the cache.
+- **Refresh only what changed.** Once 3.56 / 3.57 land, every action calls
+  the narrowest `RefreshScope` (the table is on `RefreshScope`'s doc
+  comment). Never add a full `refresh` call for a local action.
+- **Feedback within a frame:** a click either changes the screen
+  optimistically (with rollback on error) or shows `.loading(true)` and
+  disables the control until the DB returns.
+- **One width const per column**, used by both the heading and the rows;
+  tests compare the heading's and the column's left edges.
+- **Text never pushes its container wider:** flex children holding text get
+  `min_w_0()` plus ellipsis, and a tooltip with the full text when it can
+  be cut.
+- **Virtual lists:** when a row's height changes (an editor opens, an error
+  line shows), update the list's item sizes in the same change.
+- **Test hooks:** give elements tests need a `debug_selector` named
+  `page:thing[:id]` (e.g. `cat:new-form`, `history:undo-btn`). Put new
+  tests next to related ones. When a layout changes, update the old tests;
+  don't delete them.
+- **Pure logic goes in pure functions** (`flow.rs`, or a free fn next to the
+  view) so it can be unit-tested without a window: labels, width math,
+  sort keys.
+- **Format through the helpers** (`flow::money`, `flow::count`, ISO dates)
+  and color through theme tokens only.
+- **Dependencies:** don't bump pinned versions. A crate already in
+  `Cargo.lock` may be added as a direct dependency at its locked version
+  (say so in the handoff); anything new, ask first.
 
 ## GPUI / gpui-kit pitfalls (already hit — don't rediscover)
 
@@ -49,1014 +129,76 @@ Where the two disagree, **this file wins** for M2–M5 detail.
   `set_selected_index` need a `&mut Window`, so async updates use
   `cx.spawn_in(window, …)` + `this.update_in(cx, |this, window, cx| …)`.
 - All DB work goes through `DbWorker` via the `on_db` helper in `ui.rs`.
-- Screenshots: `FINANCI_DB=/tmp/x.sqlite FINANCI_DEV_SEED=1
+- gpui-base's `virtual_list()` makes a new scroll handle on every call;
+  pass the list's own `VirtualListScrollHandle` from `Shell` with
+  `.track_scroll(&handle)` or it won't scroll (3.21).
+- A scroll container (`overflow_y_scroll`) gives its children no height to
+  fill: `flex_1` children collapse. Give every panel inside one an
+  explicit height (3.45).
+- Screenshots (macOS): `FINANCI_DB=/tmp/x.sqlite FINANCI_DEV_SEED=1
   FINANCI_DEV_OPEN=fixtures/demo/amex-sep-nov.csv cargo run -p financi`,
   then capture the window by id (`screencapture -o -l<id>`; find the id with
   CoreGraphics `CGWindowListCopyWindowInfo`). Window capture may need the
-  user to grant Screen Recording permission.
-
----
-
-## M2 — Master CSVs, categorize
-
-Schema changes go in a **new** migration `0002_categorize.sql` (0001 is
-frozen from here on; real databases may exist).
-
-- [x] **2.1 Migration 0002.**
-  - `category_rules`: add `is_regex INTEGER NOT NULL DEFAULT 0`.
-  - `categories`: add `is_system INTEGER NOT NULL DEFAULT 0`.
-  - Insert the system categories: parent `Transfers` (kind `transfer`,
-    `is_system = 1`) with children `Card Payment` and `Between Accounts`
-    (kind `transfer`, `is_system = 1`). No other categories by default.
-  - Tests: fresh DB has exactly these 3 categories; migrating a DB at
-    version 1 that already has transactions keeps them.
-  - Update `seed.rs` so its own categories don't collide with the system
-    ones (reuse the system Transfers/Card Payment instead of creating them).
-
-- [x] **2.2 Master CSVs** (`financi-db/src/master_csv.rs`).
-  - Design: `plan.md` → *Master CSVs*. Rows are only ever added or
-    removed; a row's bytes are never edited.
-  - Existing databases: the startup self-check builds the files for data
-    imported before this task.
-  - Layout: `<db dir>/csv/<institution-key>/<account_key>/<YYYY>.csv`, plus
-    `account.json` (name, institution, kind) per account folder, rewritten on
-    account rename. The directory follows `FINANCI_DB`.
-  - Year = calendar year of the row's parsed transaction date. Rows are the
-    stored `raw_bytes`, **including hidden rows**, written with the earliest
-    import's header, encoding, BOM, line ending and trailing-newline settings
-    for that year. Rows whose import has a different header/encoding/BOM go
-    to `<YYYY>-v2.csv`, `-v3`…
-  - Order: by posted date (newest first for Amex, oldest first for Simplii —
-    add `fn newest_first(&self) -> bool` to the parser trait), then import
-    order, then `source_line`.
-  - `rewrite_years(conn, root, account_id, years)` regenerates the given year
-    files from the database. Called on the `DbWorker` thread after the commit
-    of: import and undo import (near-match confirm hooks in at 4.3).
-    Atomic write: temp file in the same dir, fsync, rename. Empty year →
-    delete the file.
-  - Startup self-check: any year file missing, extra, or with a row count
-    that doesn't match the database is rewritten; log a notice.
-  - Tests: overlapping imports (Sep–Nov then Oct–Dec) give one file whose
-    rows equal the DB rows, byte-exact; a Dec–Jan file splits into two year
-    files; real identical repeats appear twice; undo removes exactly the
-    import's rows (and deletes a now-empty year file); hidden rows stay; a
-    header change produces `-v2`; every row in every file equals some
-    import's original record bytes; a deleted year file is restored by the
-    startup check.
-
-- [x] **2.3 Category model** (`financi-db/src/categories.rs`).
-  - `list_categories(conn) -> Vec<CategoryNode>` (parents with children,
-    sorted by name), `create_parent(name, kind)`, `create_child(parent_id,
-    name)` (child inherits the parent's kind), `rename(id, name)`,
-    `move_child(child_id, new_parent_id)` (only between parents of the same
-    kind).
-  - `delete_category(id, reassign_to: i64)`: moves that category's
-    transactions and rules to `reassign_to` (must be a child), then deletes.
-    Deleting a parent requires it to have no children. System categories
-    can't be renamed, moved or deleted.
-  - Transactions may only be assigned to **children**, never parents.
-  - Tests for every rule above, including the refusals.
-
-- [x] **2.4 Rule engine** (`financi-core` for matching, `financi-db` for
-  storage).
-  - A rule is `pattern` + `is_regex` + `category_id` (a child).
-  - Substring rules: case-insensitive, matched against `description_raw`.
-  - Regex rules: Rust `regex` crate, case-insensitive, against
-    `description_raw`. Validate on save; reject invalid patterns with a
-    readable error.
-  - Winner when several match: **substring rules first, longest pattern
-    wins**; only if no substring rule matches, regex rules, longest pattern
-    wins; ties broken by lowest rule id.
-  - Description only. No account or sign filters.
-  - Pure function `pick_category(rules, description) -> Option<category_id>`
-    with unit tests for each ordering case.
-
-- [x] **2.5 Applying rules.**
-  - At import (`commit_import`): after inserting, categorize the new rows.
-  - When a rule is created, edited or deleted: re-run all rules over every
-    transaction with `category_locked = 0` (rows matching nothing become
-    Uncategorized, i.e. `category_id NULL`).
-  - Locked rows (`category_locked = 1`) are never touched by rules.
-  - **Built-in card-payment detection runs first** and beats user rules:
-    add `fn is_card_payment(&self, t: &RawTransaction) -> bool` to
-    `StatementParser` (default `false`). Amex: description starts with
-    `PAYMENT RECEIVED`. Matching rows get `Transfers > Card Payment`.
-  - Tests: import categorizes; new rule recategorizes unlocked rows only;
-    deleting a rule uncategorizes its rows; card payments ignore user rules.
-
-- [x] **2.6 Manual edits.**
-  - `set_category(transaction_id, category_id)` sets the category and
-    `category_locked = 1`. `clear_override(id)` unlocks and re-applies rules.
-  - After a manual edit the UI offers *"Apply to all matching \"MERCHANT\""*,
-    which creates a substring rule from the cleaned merchant.
-  - Tests for lock/unlock behaviour.
-
-- [x] **2.7 Uncategorized queue query.** `uncategorized_by_merchant(conn) ->
-  Vec<{merchant, count, total_cents, first_date, last_date}>`, sorted by
-  count descending. Choosing a category for a group creates a substring rule
-  on that merchant (which categorizes the whole group via 2.5).
-
-- [x] **2.8 Sidebar shell + category pages.** Layout and look:
-  `docs/ui-conventions.md` (*Window layout*). Replace the M1 top bar with a
-  gpui-kit `Sidebar` (Dashboard, To categorize, Categories,
-  Transfers, Imports; counts in item suffixes) and one page area. Move the
-  import preview and Undo to the Imports page (with import history). Then
-  the category pages, which together cover:
-  - a parent/child tree: add parent (name + kind), add child, rename, move
-    child, delete (with a "move its transactions to…" picker);
-  - a rules list: pattern, substring/regex toggle, target category, and a
-    live match preview ("matches 14 transactions") before saving;
-  - the Uncategorized queue (2.7) grouped by merchant, each with a category
-    picker.
-  - UI tests in `ui_tests.rs` style for: create parent+child, create a rule
-    and see rows categorized, categorize a queue group, delete with reassign.
-
-- [x] **2.9 Table context menu.** Right-click a transaction row (use
-  `TableDelegate::context_menu`): *Change category…* (then offer the rule as
-  in 2.6), *Hide*, and *Unhide* (only when hidden rows are shown, see 3.4).
-
-**Done when:** the demo files import and every row can be categorized from
-the UI; tests cover 2.1–2.9.
+  user to grant Screen Recording permission. On this Linux machine no
+  screenshot tool is installed: rely on the UI tests' bounds checks, and
+  ask the user for a screenshot if a task needs one.
 
 ---
 
 ## M3 — Core views (one dashboard)
 
-Layout, top to bottom: filter bar; then the category chart + legend (left)
-beside the monthly summary (right); then the transaction table.
+Layout, top to bottom: filter row; then the category chart and the monthly
+summary; then the transaction table. Done tasks 3.1–3.25, 3.27–3.33, 3.35,
+3.38–3.41 and 3.44 are in `docs/tasks-done.md`.
 
-- [x] **3.1 Filter model + queries** (`financi-db/src/views.rs`), all taking
-  one `ViewFilter { from: NaiveDate, to: NaiveDate, account_ids: Vec<i64>
-  (empty = all), include_transfers: bool }`.
-  - Spend/income rules: a row counts as **spend** if its category's kind is
-    `expense` *or it is uncategorized*; **income** if kind `income`;
-    transfers only when `include_transfers`. Spend is shown positive:
-    `spend = -(sum of amount_cents)` over spend rows, so refunds net
-    against their category. Hidden rows are excluded.
-  - `spend_by_category(filter, parent: Option<i64>)`: with `None`, one row
-    per parent (plus an "Uncategorized" row); with `Some(parent)`, one row
-    per child of that parent. Each row: id, name, spend_cents, share of total.
-    Sorted by spend descending.
-  - `monthly_summary(filter)`: months in range (`YYYY-MM`), one row per
-    parent with per-month spend and its children's rows, plus Income, Spend
-    and Net rows (Net = Income − Spend).
-  - Tests: compare against `fixtures/demo/expected.json`. Import the demo
-    files with **no categories** (so every row is uncategorized spend, card
-    payments aside) and check each month's money out/in per account matches
-    the file. Add focused tests for refunds netting, transfer exclusion and
-    hidden rows.
+### Now: 3.34 and 3.53 + 3.42, then 3.62
 
-- [x] **3.2 Date range control.**
-  - Presets: This month, Last month, Last 3 months, Last 6 months, Last 12
-    months, Year to date, All time, Custom….
-  - "Last N months" = whole calendar months: the current month plus the N−1
-    before it (on 2026-11-07, Last 3 months = 2026-09-01 … 2026-11-30).
-  - Custom: two gpui-kit `DatePicker`s (start, end).
-  - Default **Last 3 months**. Persist the chosen preset (and custom dates)
-    in the `settings` table under `ui.date_range`; restore at launch.
-  - Unit-test the preset → date range function, including year boundaries.
+Finish the two in-flight features, then split the UI code before the lanes
+start.
 
-- [x] **3.3 Accounts filter + transfers toggle.** Multi-select of accounts
-  (default all) and an "Include transfers" checkbox (default off, persisted
-  as `ui.include_transfers`). gpui-kit has no multi-select: build the
-  accounts filter as a dropdown popover of gpui-kit checkboxes, one per
-  account.
-
-- [x] **3.4 Transaction table upgrade.**
-  - Filtered by the `ViewFilter`, the selected category (parent or child)
-    and an optional month (set from the summary).
-  - Text search box: case-insensitive match on description or merchant.
-  - Sortable columns: Date (default, newest first) and Amount.
-  - Toggles: "Uncategorized only" and "Show hidden" (hidden rows greyed,
-    with Unhide in the context menu).
-  - Amounts: signed, `$1,234.56`, money in shown in green.
-
-- [x] **3.5 Category chart + legend.**
-  - gpui-kit `BarChart` (spend per category, values positive) for the
-    picture; beside it a **clickable legend list** (name, `$1,234.56`, %)
-    because `BarChart` can't take clicks.
-  - Clicking a parent in the legend filters the table to that parent and
-    switches chart + legend to its children, with "← All categories" to go
-    back. Clicking a child filters further; clicking it again or pressing
-    Esc clears.
-
-- [x] **3.6 Monthly summary table.** Rows = parent categories (expandable to
-  children) then Income, Spend, Net; columns = months in range plus Total.
-  Clicking a cell filters the table to that category and month. Summary
-  amounts are positive `$1,234.56`.
-
-- [x] **3.7 Native menus + shortcuts.** macOS menu bar via GPUI menus:
-  File → Import CSV… (⌘O), Undo last import, Export… (⌘E, wired in M5),
-  Restore… (wired in M5), Quit (⌘Q). Import CSV… is the Imports page's
-  header action (not in the sidebar); Undo lives on the Imports page and in the File menu
-  (`docs/ui-conventions.md`, D4). No action may depend on the native menu,
-  which may not appear on Linux: the Imports page exposes Import, Undo,
-  Export and Restore on both platforms.
-
-- [x] **3.8 UI tests** for: preset change updates totals, legend drill-down
-  and back, summary cell click filters the table, search, hidden toggle.
-
-- [x] **3.9 Import end-to-end UI test.** Import a synthetic fixture through
-  the real import flow, then visit every page and check the values shown:
-  Dashboard rows and amounts, To categorize, Categories counts, Imports
-  history and sidebar counts, against `fixtures/demo/expected.json` where
-  possible. Must not depend on today's date.
-
-- [x] **3.10 Blank Dashboard after import.** The Dashboard shows nothing even
-  though transactions were imported. Find the cause and fix it. If the cause
-  is only that the data falls outside the default Last 3 months, ask the user
-  how the default or the empty state should change.
-
-- [x] **3.11 Stale page content.** Content from the previous page stays on
-  screen after switching pages. Find the cause and fix it.
-
-- [x] **3.12 Virtualize long lists.** The category tree and the rule list
-  build every row, so the Categories page gets slow with many categories or
-  rules. Render only the visible rows, keeping selection, clicks and
-  scrolling. Test with thousands of rows.
-
-- [x] **3.13 Sidebar indent.** Remove the indent on sidebar items so they
-  line up with the section labels.
-
-- [x] **3.14 Checkbox check mark.** A checked box changes background but
-  shows no check. Find the cause and fix it for every checkbox.
-
-- [x] **3.15 Responsive charts.** Chart lines overlap the labels, pieces are
-  cut off, and the layout doesn't adapt to the space available. At the
-  minimum window size (1200 × 720) and above, every chart stays inside its
-  panel, nothing is clipped, and lines and labels don't overlap. Shorten or
-  thin out labels when space is tight. Check it at the minimum size and a
-  large window, with long category names and many categories.
-
-- [x] **3.16 Labelling and layout pass.** Every input, dropdown, date picker
-  and filter group has a visible label or section heading (a placeholder
-  alone doesn't count). Group related controls deliberately instead of
-  stacking rows of unlabelled boxes. Record the rule in
-  `docs/ui-conventions.md`. Labels and layout only, no new features. Do this
-  last: it also needs to cover the views from 3.5 and 3.6.
-
-- [x] **3.17 Stale account filter on import.** `Shell::refresh` computes
-  `none_selected` from the accounts list of the previous refresh, so
-  importing while every account checkbox is unchecked leaves every view
-  blank until some other filter changes. Recompute it from the accounts
-  loaded in the same refresh, and test it.
-
-- [x] **3.18 Blank Categories page after virtualization.** Since 3.12
-  (commit b2739d0) the Categories page opens blank: the tree shows no rows
-  and the rule list shows nothing, even though categories and rules exist
-  (the counts and other pages show them). Rows only appear after adding a
-  category or a rule. Find the cause and fix it. The 3.12 tests seed data
-  before the page first renders, so they miss this path. Add tests that
-  open the page first and load categories and rules afterwards, the way a
-  normal launch does (async `DbWorker` refresh), and that check rows show
-  up on that first open without any other action. Cover both the tree and
-  the rule list, and switching to the page from another page.
-
-- [x] **3.19 Virtualize the To categorize queue.** `render_queue` builds
-  every merchant group as a row inside a plain scrolling div, and
-  `sync_queue` keeps a `SelectState` entity per merchant and calls
-  `set_items` on every one of them on each refresh. With a large queue the
-  page is very slow to render and laggy to scroll. Render only the visible
-  rows (as in 3.12), and stop building or updating a picker for every
-  group up front: create pickers only for rows that are shown, or share
-  one. Keep categorizing a group, the error message and the empty state
-  working. Test with thousands of groups: the page renders, builds only
-  the visible rows, and a group at the very bottom can still be
-  categorized.
-
-- [x] **3.20 Imports history table overflows.** The history table's fixed
-  column widths add up to 1,110 px (150 + 240 + 240 + 110 + 220 + 150),
-  wider than the content area beside the sidebar at the minimum window size
-  (1200 × 720). The table overflows and the Undo… button is cut off in its
-  column, worse once it reads "Click again to undo". Make the table fit the
-  space available from the minimum window size up: let File and Account
-  shrink and truncate with an ellipsis, and size the Undo column so both
-  button labels show in full. Check it at the minimum size and a large
-  window, with long file and account names.
-
-- [x] **3.21 Virtualized lists don't scroll.** Since 3.12 / 3.19 the
-  category tree, the rule list and the To categorize queue show only their
-  first screen of rows. Wheel and trackpad scrolling do nothing, so rows
-  past the fold can't be reached. Cause: gpui-base's `virtual_list()`
-  (`gpui-base-0.9.0/src/virtual_list.rs`, ~line 186) creates a new
-  `VirtualListScrollHandle` on every call, and the list's div
-  `track_scroll`s it. GPUI reads the scroll offset from a tracked handle in
-  preference to the element state (`gpui-pre-0.3.11/src/elements/div.rs`,
-  ~line 2323), and `Shell` re-renders on every frame, so the offset goes
-  back to 0 each time. Fix: keep one `VirtualListScrollHandle` per list as
-  a `Shell` field (`tree_scroll`, `rule_scroll`, `queue_scroll`) and pass
-  it with `.track_scroll(&handle)` on each `v_virtual_list(...)` in
-  `ui.rs`. Reset a handle's offset only when its content is actually
-  replaced (for example the rule list when the selected category changes in
-  3.23), not on every refresh. Tests, for each of the three lists, seeded
-  with thousands of rows: scroll it (`simulate_event` with a
-  `ScrollWheelEvent` over the list's bounds, or `handle.set_offset`),
-  re-render, then check the offset is kept, the built range has moved
-  (rows near the end are built and the first rows aren't), and the offset
-  survives an unrelated `cx.notify()` / refresh.
-
-**Order for the open M3 tasks** (added 2026-11-10; the numbers record when
-a task was written, not when to do it): **3.24 → 3.25 → 3.27 → 3.30 →
-3.31 → 3.32 → 3.33 → 3.23 → 3.28 → 3.29 → 3.26** (3.22 is done).
-3.33 comes before 3.23 so the re-laid-out page is written with the new
-words. 3.24 comes
-first because it is the only one that blocks the user: a wrong rule can't
-be corrected today. 3.25, 3.27, 3.30, 3.31 and 3.32 are small layout fixes
-that give back space on the dashboard and other pages. 3.28 builds on 3.24's row editor, and 3.29 on 3.28's page. 3.26 goes
-last because it attaches scrollbars to lists that 3.23, 3.28 and 3.30 lay
-out.
-
-- [x] **3.24 Edit and delete rules.** The Categories page can add a rule but
-  can't change or remove one, so a wrong pattern keeps miscategorizing
-  every import. The storage side exists and is tested
-  (`financi_db::rules::update_rule` and `delete_rule`; both validate, then
-  re-run all rules over unlocked rows per 2.5). This task is UI only.
-  - **Row actions:** each rule row gets **Edit** and **Delete…** at its
-    right end (small ghost buttons, visible on every row; no hover-only
-    controls). Rows stay 24 px and virtualized; create the buttons only
-    for visible rows.
-  - **Edit** swaps that row, in place, for an editor in the same shape as
-    the add-rule row: Pattern input, regex switch, Category picker (all
-    pre-filled from the rule), then Save (primary) and Cancel. It shows
-    the same live "matches N transactions" count as add-rule
-    (`count_rule_matches`). One rule is edited at a time; opening another
-    row's editor, selecting another category or leaving the page cancels
-    it. Enter saves, Escape cancels. A validation error (empty pattern,
-    bad regex) shows in `danger` under the editor and keeps it open.
-  - **Delete…** uses the two-click confirm from `ui-conventions.md` ("Click
-    again to delete"), armed per row; clicking anywhere else disarms it.
-    No modal.
-  - After a save or delete, refresh every view (the rule list, the tree's
-    transaction counts, the To categorize count in the sidebar, the
-    dashboard), the same way `add_rule` does. Both calls go through
-    `on_db`.
-  - 3.23 re-lays out the rule list. It must keep these actions: add an
-    actions column to its heading row and widths.
-  - Tests (`ui_tests.rs`): editing a rule's pattern recategorizes the
-    matching unlocked rows and leaves locked rows alone; changing its
-    category moves them; an invalid regex shows the error and saves
-    nothing; Cancel and Escape leave the rule unchanged; Delete… needs two
-    clicks, and after it the rule is gone and its rows are Uncategorized
-    (or picked up by another rule); with thousands of rules only visible
-    rows build buttons. Update the *Categories* row of
-    `docs/ui-conventions.md` in the same commit.
-
-- [x] **3.25 Dashboard alignment.** Since the labelling pass (3.16) the
-  dashboard's controls sit at uneven heights and the regions don't share
-  edges. Start by taking a screenshot (see *GPUI pitfalls* → Screenshots)
-  at 1200 × 720 and at a large window, and list what is off before
-  changing code. Known causes in `render_dashboard`:
-  - Both filter rows are `h_flex().items_end()` mixing labelled controls
-    (label + 32 px control) with unlabelled checkboxes and the
-    "N transactions" text, so the checkboxes and the count hang at the
-    controls' bottom edge instead of centering on them.
-  - The two filter rows use unrelated widths (150 / auto / 240), so
-    nothing in row two sits under anything in row one.
-  - The transaction count floats mid-row after the last checkbox.
-
-  Fix, layout only (no new controls, no behaviour change):
-  - Every item in a filter row is a column of the same shape: a label
-    line (`field_label`, or an empty line of the same height for
-    checkboxes) over a 32 px control line in which the content is
-    vertically centered. Controls and checkboxes then share one center
-    line, and all labels share one baseline.
-  - Row two's first column (Search) has the same left edge and width as
-    row one's first column, or the two rows merge into one when they fit
-    at 1200 px. Pick whichever reads cleaner in the screenshot and record
-    it in `ui-conventions.md`.
-  - The transaction count moves to the right end of the first filter row
-    (`ml_auto`), vertically centered on the control line.
-  - The filter region, the chart panel, the monthly summary and the table
-    share the page's left and right edges exactly; the chart panel and
-    summary have equal heights, and their region titles sit at the same
-    y. Inside each panel, titles and content share one left edge
-    (`p_4`).
-  - Spacing stays on the 4/8/12/16 scale.
-  - Tests: at 1200 × 720 and 1600 × 1000, the vertical centers of every
-    control and checkbox in a filter row are within 1 px of each other;
-    the *Spending by category* chart panel and the *Monthly summary* panel
-    have the same top and the same height (within 1 px), whatever the
-    number of months or legend entries; the left edges of the filter
-    region, chart panel and table are equal,
-    and so are the right edges of the filter region, summary panel and
-    table; the *Spending by category* and *Monthly summary* titles have
-    the same top; with the Custom date range open (From / To visible) the
-    row still fits and stays aligned. Attach before/after screenshots to
-    the handoff.
-
-- [x] **3.22 To categorize queue fits the window.** At the minimum window
-  size the queue's fixed columns (280 + 140 + 120 + dates + 260 + button +
-  gaps ≈ 1,120 px) are wider than the ~958 px content area, so rows are cut
-  off on the right and the Dates cell has no width at all. Make it fit from
-  1200 × 720 up, with no horizontal scrolling:
-  - **Merchant:** `flex_1().min_w_0()` with ellipsis, so it takes the space
-    left over (≥ ~180 px at the minimum size). Each merchant cell gets an
-    `id` and a hover `.tooltip(...)` (gpui-base `Tooltip`) showing the
-    full merchant name.
-  - **Transactions:** the heading says "Transactions" and the cell shows
-    just the number (`flow::count`), right-aligned, ~96 px. Drop the
-    "N transactions" text.
-  - **Total:** ~110 px, right-aligned (unchanged apart from the width).
-  - **Dates:** fixed ~190 px, `min_w_0` with ellipsis, `text_sm` muted.
-  - **Category picker:** ~220 px. **Categorize** button: natural width.
-  - Remove the `flex_1` spacer. The heading row and the data rows share the
-    same widths (pull them into consts) so headings stay over their columns.
-  - Tests: at 1200 × 720 with a 120-character merchant name, the row's
-    right edge (the Categorize button's bounds) is inside the page's
-    bounds; each heading's left edge matches its column's left edge (extend
-    `the_queue_category_heading_sits_over_the_picker_column` to every
-    column); the Transactions cell text is a bare number. Update the
-    *To categorize* row of `docs/ui-conventions.md` if it changes.
-
-- [x] **3.23 Categories page layout.** The page reads as scattered
-  controls: the new-parent form floats above everything, the detail panel
-  is a wrapping row of unrelated pickers, the rules list under it shows
-  every rule in the database no matter which category is selected, and
-  spacing (`gap_6`, `gap_4`) is off the 4/8/12/16 scale. Lay it out as
-  follows. Layout only: no new features, and the existing actions (add
-  parent and child, rename, move, delete with its two-click confirm, add
-  rule with its live match count) keep working.
-  - **Header row:** "Categories" (`text_lg`) and a muted summary
-    ("N parents · M categories") on the left; **New category…** at the
-    right end (the header action in `ui-conventions.md`). Clicking it
-    shows the new-parent form (Name, Kind, Cancel, Add parent) as one
-    bordered row under the header, in place, the way the rename editor
-    works. Hide the form again after Add parent or Cancel.
-  - **Body:** two bordered panels side by side (`gap_3`) that fill the
-    remaining height, with their tops and bottoms aligned.
-  - **Left: Category tree panel** (300 px, `p_2`). The *Category tree*
-    title sits inside the panel, then the virtualized list, which scrolls
-    (3.21). Each 32 px row is full width: a 10×10 category color swatch
-    (`ui-conventions.md` → *Category colors*), the name (`min_w_0` +
-    ellipsis; parents semibold, children indented 16 px), a muted "system"
-    tag when relevant, and the transaction count right-aligned in a fixed
-    column at the right edge so counts line up down the tree. Selection
-    uses `list_active` and hover uses `list_hover`, per the color table,
-    instead of `accent`.
-  - **Right: detail panel** (`flex_1`, `p_4`). When nothing is selected,
-    show only centered muted text ("Select a category to see its rules and
-    settings"). When a category is selected, show sections stacked with
-    `gap_3`, separated by a `border` divider, each starting with a
-    `region_title`, all sharing one left edge:
-    1. **Title line:** name (`text_lg`) and muted "Kind · N transactions",
-       with Rename… at the right end. The rename editor replaces this line
-       while it's open.
-    2. **Organize:** for a parent, *New child name* plus Add child. For a
-       child, *Move to parent* plus Move. Labels sit above the controls
-       (3.16).
-    3. **Rules** (takes `flex_1` and scrolls inside itself): the
-       add-rule row (Pattern `flex_1`, regex switch, Category picker
-       defaulting to the selected category, Add rule as the primary
-       button), with "matches N transactions" muted under it; then column
-       headings (Pattern, Type, Category) over the virtualized rule list,
-       using the same widths as the rows (Pattern `flex_1` + ellipsis +
-       tooltip, Type ~80 px, Category ~200 px + ellipsis). List only the
-       rules that target the selected category (for a parent, its own
-       rules plus its children's). Empty state: "No rules for this
-       category yet" in muted text.
-    4. **Delete** (pinned at the bottom of the panel, hidden for system
-       categories): *Move its transactions to* picker plus Delete…, with
-       the two-click confirm unchanged.
-  - Everything fits at 1200 × 720 (right panel ≈ 646 px wide) with no
-    horizontal overflow; long names truncate instead of pushing widths.
-  - Tests: the tree, detail panel and rule list all paint inside the page
-    bounds at 1200 × 720 with long names and thousands of rules; selecting
-    a category limits the rule list to its rules (parent includes
-    children); the add-rule picker defaults to the selected category; New
-    category… shows the form, and Add parent / Cancel hide it; the
-    section headings paint (`label:` / title debug selectors). Update the
-    *Categories* row of `docs/ui-conventions.md` to describe this layout
-    in the same commit.
-
-- [ ] **3.26 A scrollbar on everything that scrolls.** Most scrolling
-  areas give no sign that there is more content or where you are in it.
-  Every scrollable region shows a vertical scrollbar whenever its content
-  is taller than its viewport, and none when it fits. Do this after 3.22
-  and 3.23, which re-lay out two of the lists.
-  - Use gpui-base's `Scrollbar` (`gpui-base-0.9.0/src/scrollbar.rs`:
-    `Scrollbar::vertical(&handle)`); it takes a `ScrollHandle`, and
-    `VirtualListScrollHandle` implements `ScrollbarHandle` too. Don't
-    hand-roll one.
-  - **Always visible while the content overflows:** set
-    `ScrollbarMode::Always` once, app-wide, on the theme's
-    `ScrollbarTheme` at startup. The default (`Scrolling`) only shows the
-    bar while scrolling, which is the behaviour being replaced.
-  - **Virtualized lists** (category tree, rule list, To categorize queue):
-    reuse the handle each list already keeps on `Shell` (`tree_scroll`,
-    `rule_scroll`, `queue_scroll`, from 3.21).
-  - **Plain scrolling divs** (`overflow_y_scroll` in `ui.rs`: the chart
-    legend `legend-list`, the monthly summary `summary-rows`, the Transfers
-    list `transfer-reviews`): give each a `ScrollHandle` kept as a `Shell`
-    field (one per region, never created in `render`; same trap as 3.21)
-    and `track_scroll` it.
-  - **Popovers and dropdowns** that can outgrow their height: the Accounts
-    filter popover gets a max height, scrolls, and shows a scrollbar; check
-    that `Select` menus already show one for long lists (category pickers)
-    and fix them if not.
-  - **`DataTable`s** (transactions, import history) draw their own
-    scrollbars (`scrollbar_visible`); confirm they follow the app-wide
-    mode and show both when the content overflows.
-  - **Placement:** the bar overlays the region's right edge inside its
-    border (wrap the region in a `relative()` container and add the
-    `Scrollbar` as an absolutely positioned sibling). Content reserves the
-    bar's width (16 px) on the right so the thumb never covers amounts,
-    counts or buttons.
-  - Add a rule to `docs/ui-conventions.md` (*Layout*): every scrollable
-    region has a visible scrollbar while it overflows, and new scrolling
-    regions must add one.
-  - Tests: for each region above, with enough rows to overflow, the
-    scrollbar paints inside the region's bounds and the right-most content
-    (amount, count or button) doesn't overlap it; with content that fits,
-    no scrollbar paints; dragging the thumb (or `set_offset` on the handle)
-    moves the content, and the offset survives an unrelated `cx.notify()`.
-
-- [x] **3.27 Status messages become toasts.** Today `Shell::status` renders
-  as a line of text at the top of the content area ("Categorized
-  MERCHANT", "Export is not available yet.", errors). It stays until
-  something clears it, and while it's there it pushes every page down by
-  a line plus a `gap_3`. Replace it with gpui-base toasts
-  (`gpui-base-0.9.0/src/toast.rs`), which overlay the window and take no
-  layout space.
-  - Remove the status line from the content column in `render`; the page
-    area starts at the top of the content padding on every page, always.
-  - Keep one call site shape (for example `self.notify_ok(msg, cx)` /
-    `self.notify_err(msg, cx)`) and route every current
-    `self.status = Some(..)` through it.
-  - Success and info toasts dismiss themselves after about 4 s. Errors stay
-    until the user closes them. Bottom-right corner, stacked, newest on
-    top; a burst (categorizing several queue groups quickly) stacks
-    instead of replacing.
-  - Follow `ui-conventions.md` colors (`danger` for errors) and record the
-    toast rule there (*Feedback*: no inline status lines).
-  - Tests: categorizing a queue group shows a toast and leaves the page's
-    first row at the same y as before the action; an error toast survives
-    past the auto-dismiss time and closes on click; nothing in the content
-    column renders the old status text.
-
-- [x] **3.28 A Rules page to find and organize rules.** Rules live only in
-  each category's detail panel (3.23), so finding "which rule catches
-  AMZN?" means guessing the category first, and with hundreds of rules
-  there is no overview. Add a **Rules** page to the sidebar, after
-  Categories. Editing, deleting and live match counts reuse 3.24's row
-  editor; this task adds finding and organizing.
-  - **Header row:** "Rules" (`text_lg`) and a muted "N rules" on the left;
-    **New rule…** at the right end, opening the same add-rule row as the
-    Categories page in place.
-  - **Search** (`flex_1`, focused when the page opens): filters as you
-    type, case-insensitive, on the pattern **and** on the target
-    category's child and parent names. A second mode, **Test a
-    description**, takes a pasted bank description and shows only the
-    rules that match it, the winner first and marked "wins" (same order as
-    `pick_category`: substring before regex, longest first, lowest id).
-  - **Filters:** a Type picker (All / Substring / Regex) and an **Unused**
-    checkbox (rules that currently decide no transactions).
-  - **List:** grouped by parent, then child category, each group with a
-    header row ("Food › Coffee · 4 rules") that collapses and expands.
-    Columns: Pattern (`flex_1`, ellipsis + tooltip), Type (~80 px),
-    **Uses** (right-aligned, ~80 px: transactions this rule currently
-    decides), and the 3.24 Edit / Delete… actions. Virtualized, headers
-    included, with its own `ScrollHandle` on `Shell` (3.21 rule). Sort
-    within a group by pattern (default) or by Uses, via the column
-    headings.
-  - **Move rules:** each row gets a checkbox; with one or more checked, a
-    bar above the list shows "N selected", a Category picker and **Move**,
-    which sets every checked rule's category in one DB call and re-runs
-    rules once. Single-rule moves still work through Edit.
-  - **Backend** (`financi-core` + `financi-db`, with unit tests first):
-    `winning_rule(rules, description) -> Option<rule_id>` alongside
-    `pick_category` (make `pick_category` call it so the two can't
-    drift); `rules::rule_use_counts(conn) -> HashMap<rule_id, usize>` over
-    unlocked rows that aren't card payments; `rules::move_rules(conn,
-    ids, category_id)` validating the target is a child, in one
-    transaction, then `reapply_rules`.
-  - The Categories page keeps its per-category rule list; each row there
-    gets nothing new.
-  - Tests: search matches by pattern and by category name; Test a
-    description lists the matching rules with the right winner; Unused
-    shows only zero-use rules; collapsing a group hides its rows; moving
-    three checked rules recategorizes their unlocked rows and leaves
-    locked rows alone; with thousands of rules only visible rows build;
-    everything fits at 1200 × 720. Add a *Rules* row to
-    `ui-conventions.md`, and drop "there's no Rules page" from its
-    *Categories* row.
-
-- [x] **3.29 "Which rule did this?" from a transaction.** On the dashboard
-  table's row context menu, add **Show rule**: it opens the Rules page
-  with that rule found, scrolled into view and highlighted
-  (`list_active`). The item is disabled with a reason when no rule
-  decided the row: "Set by hand" (locked), "Card payment (built in)", or
-  "No rule matches". Uses 3.28's `winning_rule`; no stored rule id.
-  - Tests: Show rule on a rule-categorized row lands on that rule and it
-    is visible in the list; locked and card-payment rows show the disabled
-    item with the right reason.
-
-- [x] **3.30 Monthly summary scrolls sideways.** The summary's month
-  columns are fixed at 88 px each plus a 96 px Total, so a range longer
-  than a few months is wider than the panel (≈ 470 px at 1200 × 720): the
-  category names shrink to nothing and the right-hand months and Total
-  are cut off. Keep the columns at their widths and let the grid scroll
-  horizontally instead.
-  - **Pinned columns:** the category name column (fixed ~160 px, swatch +
-    name with ellipsis and a hover tooltip, child indent unchanged) stays
-    on the left, and Total stays on the right; only the month columns
-    between them scroll.
-  - The header row and the body rows share one horizontal offset (one
-    `ScrollHandle` on `Shell`, never created in `render`), so month
-    headings stay over their cells. Vertical scrolling of the body
-    (`summary-rows`) keeps working and moves the name column with it.
-  - Shift + wheel and trackpad horizontal swipes scroll it; a horizontal
-    scrollbar shows while the months overflow (3.26 adds the vertical
-    one; use the same gpui-base `Scrollbar` and app-wide mode).
-  - When the range changes, scroll to the most recent month (right end),
-    since that is the month usually wanted. When everything fits, no
-    scrolling and no scrollbar, and the months spread as today.
-  - Click-to-filter on a cell, the selected-cell highlight and
-    expand/collapse keep working while scrolled.
-  - Tests: with a 24-month range at 1200 × 720, the name and Total columns
-    paint inside the panel and every visible month cell lies between
-    them; scrolling moves header and body months by the same amount and
-    leaves names and Total in place; a new range lands scrolled to the
-    last month; a 3-month range shows no horizontal scrollbar. Update the
-    dashboard row of `ui-conventions.md`.
-
-- [x] **3.31 A slimmer chart legend.** The legend beside *Spending by
-  category* is 220 px (`LEGEND_W`) because every row repeats the amount
-  (76 px) and share (52 px) that the chart already shows, which leaves
-  the plot narrow and the band labels short. Make the legend just the key.
-  - **Legend rows:** the 10×10 swatch and the category name (ellipsis),
-    nothing else. Shrink `LEGEND_W` to about 140 px; `chart_label_plan`
-    reads the constant, so the plot and its band labels widen with it.
-    Clicking a row still selects or drills into the category, the
-    selected row keeps `list_active`, and "← All categories" stays.
-  - **Hover tooltip on each legend row** (gpui-base `Tooltip`, the row
-    already has an `id`): full name, amount (`flow::money`) and share,
-    the same text as the bar's own tooltip ("$1,234.56 · 18.2% of Food").
-    Pull that string into one helper used by both.
-  - **Share over each bar:** use `BarChart::label` to draw the share
-    ("18%", whole percent; one decimal only below 1%, "0.4%") above each
-    bar, `label_color` muted. Leave the bar tooltip as it is. Check the
-    label stays inside the panel for the tallest bar (add headroom on
-    the value axis if gpui-component doesn't) and doesn't collide with
-    its neighbours at 1200 × 720 with many bars; if bars are too narrow
-    for their text, thin the labels the way band labels are thinned
-    (3.15) rather than overlapping them.
-  - Tests: legend rows contain no amount or percentage text; the legend
-    is ≤ 140 px wide and the plot is wider than before at 1200 × 720;
-    hovering a legend row shows the tooltip with amount and share;
-    each bar's label is its share, and all labels paint inside the chart
-    panel without overlapping at 1200 × 720 with 15 categories. Update
-    the dashboard row of `ui-conventions.md`.
-
-- [x] **3.32 Imports page buttons: row-sized Undo, icons instead of "…".** The Undo… button in
-  the newest row of the Imports history table (`HistoryDelegate`,
-  `Button::new("undo-import")`) is a default medium `Button` (32 px tall)
-  inside a 32 px table row (`Size::table_row_height`), so it fills the row
-  edge to edge, touches the stripes, and makes that row look taller than
-  the others.
-  - Make it `.xsmall()` and `.ghost()` (the in-row style that 3.24 uses for
-    rule actions), vertically centered in the cell, with at least 4 px of
-    space above and below. The armed state ("Click again to undo") keeps
-    `danger` text so the confirm still stands out.
-  - Recompute the Undo column width (`history_undo_col_w`,
-    `BUTTON_PAD_X`) for the small button's padding so both labels still
-    show in full and the column isn't wider than it needs to be.
-  - The header's **Undo…** next to Import CSV… stays; the two share the
-    same confirm state as today.
-  - **Icons instead of the trailing "…"** (user request, 2026-11-10). The
-    app already registers the full Lucide catalog (`icon_assets()` →
-    `AllAssets`), so use `IconName` with `Button::icon`:
-    - Header: **Import CSV** (`file-up`, still primary), **Undo**
-      (`undo-2`), **Export** (`download`), **Restore**
-      (`archive-restore`): icon on the left, label without "…".
-    - In-row Undo: icon only (`undo-2`), xsmall ghost, with a hover
-      tooltip "Undo this import". When armed it shows the text "Click
-      again to undo" in `danger` (with the icon), so the two-click
-      confirm still says what it does.
-    - Change `ui-conventions.md` to match: the *Imports* row, and the copy
-      rule at *Copy* (line ~139): on the Imports page buttons carry an
-      icon and no "…". Leave "…" elsewhere (Rename…, Delete…, New
-      category…) unless the user asks.
-  - Record the rule in `ui-conventions.md` (*Tables*): buttons inside table
-    rows are `xsmall` ghost buttons, never the default size.
-  - Tests: the in-row Undo button's bounds lie inside its row with ≥ 4 px
-    above and below, in both the idle and "Click again to undo" states;
-    the newest row is the same height as the other rows; the armed label
-    fits the column without clipping; the header buttons' labels contain
-    no "…" and each paints an icon; hovering the in-row Undo shows its
-    tooltip.
-
-- [x] **3.33 Say "category" and "subcategory", never "parent" and "child".**
-  The UI copy uses the data model's words. Users think in categories and
-  subcategories. Change every user-visible string; keep code, schema and
-  identifiers (`parent_id`, `create_child`, element ids such as
-  `add-child`, which tests use) as they are.
-  - Categories page (`ui.rs`): "New parent name" → "New category name";
-    "Add parent" → "Add category"; "N parents" → "N categories" (and 3.23's
-    "N parents · M categories" → "N categories · M subcategories"); "New
-    child name" → "New subcategory name"; "Add child" → "Add subcategory";
-    "Move to parent" → "Move to category"; "Give the parent a name." →
-    "Give the category a name."; "Give the child a name." → "Give the
-    subcategory a name."; "Choose the parent to move it under." → "Choose
-    the category to move it under."
-  - Error messages that reach the UI from `financi_db::Error`
-    (`crates/financi-db/src/lib.rs`: "only child categories can hold
-    transactions and rules", "category … is a parent", "children cannot
-    have children", "still has children", "under the same parent", …):
-    reword to category / subcategory and use names, not ids, where the
-    caller has them. Update tests that assert on the text.
-  - Sweep every page, not only Categories: dashboard (chart tooltip
-    "of Food" is fine), To categorize, import preview, pickers'
-    placeholders and empty states. `grep -n -i -E '"[^"]*(parent|child)'
-    crates/financi/src/ui.rs` must show only ids, debug selectors and
-    comments afterwards.
-  - Docs: `ui-conventions.md` user-facing copy (the *Categories* row, the
-    `Parent › Child` table label becomes `Category › Subcategory`, the
-    mockup's "parents × months"); add a *Copy* rule: say category and
-    subcategory in the UI. Pending tasks written with the old words (3.23,
-    3.28) follow this rule when they're implemented.
-  - Tests: the Categories page renders none of the words parent, child
-    or children in any label, placeholder, button or error (scan the
-    rendered text with a long-named tree, a subcategory selected, and each
-    validation error triggered); the renamed buttons still work.
-
-**Bugs reported by the user on 2026-11-11** (3.34–3.58, plus a fix folded
-into 3.23). Order (user re-prioritized the dashboard, then responsiveness, 2026-11-11): **3.40 → 3.23 → 3.35 → 3.56 → 3.57 → 3.36 → 3.45 → 3.46 → 3.58 → 3.53/3.42/3.48/3.49/3.50/3.51 → 3.43 → 3.44 → 3.55 → 3.47/3.54 → 3.37 → 3.38/3.39 → 3.34 → 3.52**, then the rest of
-the order above (3.28 → 3.29 → 3.26).
-
-- 3.23 also fixes: **the rule list overflows the page.** Today each rule
-  row has a fixed 320 px pattern column, a `flex_1` spacer and Edit /
-  Delete… after it, so at 1200 × 720 the buttons are cut off by the window
-  edge and can't be clicked. In 3.23's layout, the Edit and Delete…
-  buttons (and the editor row's Save / Cancel) must paint fully inside the
-  detail panel at 1200 × 720 and at 1600 × 900, with long patterns and
-  long category names. Test that at both sizes.
-
-- [x] **3.40 Saving a rule is instant.** Clicking Save on a rule edit (and
-  Add / Delete…) takes ~5 s to take effect, with no sign anything is
-  happening, so the button looks broken (user report, 2026-11-11). Cause:
-  `financi_core::rules::rule_matches` builds the regex with
-  `RegexBuilder` on **every call**, and `reapply_rules` calls
-  `pick_category` once per unlocked row, so each save compiles every
-  regex rule once per transaction (rules × rows compiles).
-  `count_rule_matches` does the same per row, so the live preview lags
-  too.
-  - **Core:** add a compiled matcher, e.g. `CompiledRules::new(&[Rule])`
-    (each regex built once, case-insensitive, invalid ones dropped;
-    substring patterns lowercased once) with `pick(&self, description)`.
-    Keep `pick_category` / `pattern_matches` as thin wrappers with the
-    same semantics, so the existing core tests pass unchanged. Add a
-    one-pattern compiled form for `count_rule_matches` (new pattern and
-    the excluded rule's, each compiled once).
-  - **DB:** `reapply_rules` and `count_rule_matches` compile once per
-    call. `reapply_rules` reuses one prepared `UPDATE` statement.
-  - **UI:** while the save/add/delete task runs, the clicked button shows
-    `.loading(true)` and is disabled (no double submit); it clears when the
-    task finishes, on success or error.
-  - Tests: core tests for `CompiledRules` matching the `pick_category`
-    cases (tie-breaks, substring beats regex, invalid regex skipped); a DB
-    test that `reapply_rules` over 5 000 unlocked rows with 50 regex rules
-    finishes in well under a second in a release-agnostic way (assert
-    < 2 s, so a debug build passes); a UI test that Save shows loading
-    until the task ends and the editor closes after. Measure the save time
-    on the dev-seed DB before and after and put both numbers in the
-    commit message.
-
-- **3.41 Rule category pickers show the full name** — folded into
-  **3.53** (user request, 2026-11-11): the pickers it widened go away on
-  subcategories, and the one that stays on a parent lists short child
-  names. Its menu-width and fit requirements moved there.
-
-- [ ] **3.42 The regex switch lines up with the rule fields.** In the
-  add-rule row (`cat:add-rule-row`) and the rule editor row, the
-  **regex** `Switch` sits lower than the Pattern input, the Category
-  picker and the buttons (user report, 2026-11-11). Cause: both rows are
-  `h_flex().items_end()`, the labelled fields are a label line over a
-  32 px control, and the Switch (no label line, shorter than 32 px) is a
-  bare child, so its bottom edge, not its centre, lines up with the
-  controls.
-  - Wrap the Switch in a box the height of a control: `h_flex().h(px(32.))
-    .items_center().flex_shrink_0()`, in both rows, so its centre matches
-    the controls' centre while the row stays `items_end`. Better: factor
-    a small `control_slot(el)` helper used by both rows, so they can't
-    drift apart.
-  - Do it in the same branch as 3.53 (same two rows).
-  - Tests: in both rows the Switch's vertical centre equals the Pattern
-    input's centre within 1 px, and the Save / Add rule button's centre
-    too. Note the rule in `ui-conventions.md` (*Forms*: an unlabelled
-    control in a labelled row sits in a 32 px slot, centred).
-
-- [ ] **3.48 The rule editor gives the pattern room.** Clicking Edit on
-  a rule swaps the row for an editor whose Pattern input shrinks so far
-  that the pattern can't really be edited (user report, 2026-11-11).
-  Cause: `rule_editor_row` is one `h_flex` with Pattern `flex_1` +
-  `min_w_0` and, after it, the regex switch, a 160 px Category picker,
-  Save and Cancel. In the detail panel (page minus the 210 px sidebar
-  and the 300 px tree panel) the fixed controls take ~400 px of ~600, and
-  3.53 removes the editor's picker, which frees most of that. The user also
-  saw the editor's regex switch sit off the row's line (3.42's cause).
-  - **Two lines:** line 1 is the "Pattern" label over the input at the
-    editor's **full width**. Line 2 is one `h_flex().items_center()` of
-    32 px controls, with no label line: the regex switch, then `ml_auto`
-    Save and Cancel (no Category picker, 3.53). Line 2 has no labels,
-    so the switch lines up without 3.42's slot (3.42 still applies to
-    the add-rule row). The preview count and error line stay under both
-    lines.
-  - Bump the editor's entry in `rule_sizes` (today 80 / 108 px) to the
-    new height (~two control lines + label + preview, ~120 / ~148 px with
-    an error) so the virtual list doesn't overlap the next row.
-  - Enter saves, Escape cancels, focus lands in the pattern input with
-    the caret at the end (check it does today; if not, add it).
-  - The add-rule row: if its Pattern input is < 240 px wide at
-    1200 × 720 after 3.53, give it the same two-line shape; otherwise
-    leave it on one line.
-  - Tests: at 1200 × 720 the editor's pattern input is at least 90 % of
-    the detail panel's inner width; the switch, Save and Cancel
-    share a vertical centre within 1 px; the row below the editor doesn't
-    overlap it (bounds); Save/Cancel/Enter/Escape tests from 3.24 pass.
-    Update the *Categories* row of `ui-conventions.md`.
-
-- [ ] **3.49 A Uses column instead of Category.** Since 3.23 the
-  Categories page's rule list only shows the selected category's rules, so
-  on a subcategory every Category cell says the same thing. The user
-  wants the count of transactions each rule matches there instead (user
-  requests, 2026-11-11).
-  - **Replace the Category column with Uses** (`RULE_USES_W`, 80 px,
-    right-aligned, `flow::count`), the same number and wording as the
-    Rules page's Uses column (3.28, `rule_use_counts`): the transactions
-    the rule *decides*, so it agrees with stored categories and with
-    3.52's "decided by this rule". A heading tooltip says "Transactions
-    this rule categorizes". 0 shows in `muted_foreground`. The counts are
-    loaded in the same refresh as the rules (one `rule_use_counts` call;
-    no per-row queries) and update after every rule change.
-  - **Parent selected:** its list mixes its subcategories' rules, so the
-    subcategory also shows: a muted `text_xs` tag with the child's name
-    (not "Parent › Child") after the pattern, inside the Pattern column,
-    ellipsized first. A subcategory selection shows no tag.
-  - Clicking the Uses heading sorts by it (descending), clicking Pattern
-    goes back, as on the Rules page. Reuse its sort state if it fits;
-    otherwise a separate `cat_rules_sort_by_uses`.
-  - Tests:
-    - no "Category" heading or cell paints;
-    - "Uses" paints with each rule's count, and matches the Rules page
-      for the same rule;
-    - a rule overlapped by a longer one shows only the rows it wins;
-    - the count updates after a rule edit or delete;
-    - on a parent, the subcategory tags paint, and on a subcategory they
-      don't;
-    - Uses sort works;
-    - 3.23's heading alignment and fit tests pass.
-
-    Update the *Categories* row of `ui-conventions.md`.
-
-- [ ] **3.50 No Organize heading or repeated labels.** In the category
-  detail panel, the **Organize** section title and the "Move to
-  category" field label just repeat what the picker's placeholder
-  ("Move to category…") already says (user request, 2026-11-11). The
-  parent side has the same problem: the "New subcategory name" label sits
-  over an input whose placeholder is "New subcategory name".
-  - Remove `region_title("Organize")` and both `field_label`s in that
-    section. Each side becomes one `h_flex().items_center().gap_2()` row:
-    - subcategory: `[Move to category… ▾] [Move]`;
-    - parent: `[New subcategory name] [Add subcategory]`.
-    Keep the `border_t_1` dividers above and below, so it still reads as
-    its own section.
-  - This overrides 3.16's visible-label rule for this section only; the
-    placeholder is the label. Give the input and the select an
-    `accessibility_label` with the same text.
-  - Tests: no "Organize" or "Move to category" / "New subcategory name"
-    label paints in the detail panel (the placeholders still do);
-    the control and its button share a vertical centre; move and add-
-    subcategory still work (existing tests). Update the *Categories* row
-    of `ui-conventions.md` (drop **Organize** from the section list) and
-    note the exception in the *Forms* labels rule.
-
-- [ ] **3.51 Organize and Delete hidden until asked for.** The category
-  detail panel spends vertical space on two sections that are rarely
-  used, **Organize** (add a subcategory / move a subcategory) and
-  **Delete** (move its transactions, then delete), so the rules list gets
-  less of the panel (user request, 2026-11-11). Hide both by default:
-  - **Title row actions:** next to Rename, at the right of the category
-    name, add small buttons, each with an icon and no "…" (3.43):
-    - **Add subcategory** (`folder-plus`), on a parent;
-    - **Move** (`folder-input`), on a subcategory;
-    - **Delete** (`trash-2`), not on system categories.
-    Rename stays where it is.
-  - Each opens an **inline bordered form** right under the title row,
-    the same pattern as the header's New category form (3.23):
-    - Add subcategory: `[New subcategory name] [Add subcategory]
-      [Cancel]`;
-    - Move: `[Move to category… ▾] [Move] [Cancel]`;
-    - Delete: `[Move its transactions to… ▾] [Delete] [Cancel]`. Its
-      Delete is still the two-click "Click again to delete" confirm in
-      `danger`.
-    The forms have no section titles or field labels (3.50: the
-    placeholder is the label; `accessibility_label`s set). One form at a
-    time: opening one closes another; Cancel, Escape, a successful
-    action, selecting another category or leaving the page closes it.
-    The title-row button of the open form shows `.selected(true)`.
-  - Remove the Organize and Delete sections and their `border_t_1`
-    dividers. With no form open the panel is the title row, a divider,
-    then **Rules**, which gets all the remaining height.
-  - Must fit the detail panel at 1200 × 720 with a long category name:
-    the name ellipsizes before the buttons do. If the buttons can't all
-    fit, make Add subcategory / Move / Delete icon-only with tooltips;
-    don't let them wrap or clip.
-  - 3.50's label removal applies inside the forms; do 3.50 and 3.51 in
-    one branch.
-  - Tests:
-    - with no form open, the Rules section's top sits right under the
-      title row's divider and the rule list is taller than before (bounds);
-    - each button opens its form and the others stay closed;
-    - opening a second form closes the first;
-    - Cancel, Escape and selecting another category each close it;
-    - add / move / delete still work through the forms (existing tests,
-      updated to open the form first);
-    - system categories have no Delete button;
-    - at 1200 × 720 the buttons paint inside the panel with a 60-character
-      name.
-
-    Update the *Categories* row of `ui-conventions.md`.
-
-- [ ] **3.58 A cleaner Rules page with totals.** The Rules page (3.28)
-  "is very very ugly". The user also wants each rule's **total amount**
-  next to its count, and the page must stay virtualized and responsive
-  (user request, 2026-11-11). Today it has 24 px rows on the page
-  background with no panel, a filter row of mixed controls, plain group
-  header rows, and a Move bar that pushes the list down. Keep every
-  behaviour of 3.28 / 3.29 (search, Test a description, Type, Unused,
-  grouping and collapse, sort, checkboxes and Move, Show rule landing);
-  change the look and add the totals:
-  - **Header:** "Rules" and a muted summary "N rules · M unused"
-    (`flow::count`), then **New rule** (`plus` icon, primary, no "…",
-    3.43) at the right.
-  - **Filter row:** one 32 px row like the dashboard's (3.35): Search
-    `flex_1` with a leading search icon and the placeholder "Search rules
-    or categories". Then a Type select (~140 px) and an **Options**
-    popover holding **Test a description** and **Unused only**, showing
-    "Options · N" when N are on. Each control without a visible label
-    gets a tooltip.
-  - **One bordered panel** (D7, `radius`, no fill) fills the rest of the
-    page and holds the list:
-    - a 32 px heading row inside it (`text_sm` muted, `px_3`, bottom
-      `border`), with the columns: checkbox (24 px), **Pattern**
-      (`flex_1`), **Type** (80 px), **Uses** (80 px, right), **Total**
-      (110 px, right), then actions;
-    - **group headers** are 36 px rows on `muted` background: chevron,
-      "Food › Coffee" semibold, then the muted "4 rules", and the group's
-      summed Uses and Total right-aligned under their columns;
-    - **rule rows** are 40 px, `px_3`, with a bottom `border` divider and
-      `list_hover`. The pattern is in `mono_font_family` (regexes are
-      easier to read), ellipsized with a tooltip. Type is a small
-      outline tag ("text" / "regex") instead of plain text. A 0 in Uses
-      is muted.
-    - Edit / Delete (icons, 3.43) show only on row hover or when the row
-      is focused or has the editor open. Their column keeps its width so
-      nothing shifts.
-  - **Total column:** the signed sum of the transactions the rule
-    *decides* (same set as Uses), formatted as the transactions table
-    does (`flow::money`, money in shown in `success`). The header's sort
-    buttons get **Total** too (by absolute amount, descending).
-  - **Move bar:** with rows checked it **replaces the heading row**
-    inside the panel (same 32 px), with no extra row pushing the list:
-    "N selected", the subcategory picker (searchable), **Move**, and
-    **Clear**.
-  - **DB:** replace `rule_use_counts` with `rule_use_stats(conn) ->
-    HashMap<i64, RuleUse { count, total_cents }>`, which also sums
-    `amount_cents`, in the same single pass. Callers (Uses on this page,
-    3.49 on the Categories page, 3.52) use it. If 3.55 has made `reapply_rules`
-    return the counts, extend that to stats too. Group sums are
-    computed in Rust from the per-rule stats.
-  - **Virtualized and responsive:** the list stays one `v_virtual_list`
-    (headers included). Build `rules_page_items` and the per-row display
-    data (formatted totals, labels) **only when** rules, stats, filters,
-    collapse state or sort change, cached on the shell (3.57's render
-    audit), not every frame. Search filtering is debounced by 150 ms.
-    Per-row widgets (checkbox, buttons) are built only for visible rows
-    (3.24's test pattern). Budget: with 1 000 rules (3.55's large seed)
-    scrolling and typing stay under 16 ms a frame in a release build.
-  - Must fit 1200 × 720: no horizontal overflow, nothing clipped, with
-    long patterns and category names.
-  - Tests:
-    - the panel and heading row paint inside the page;
-    - Total shows each rule's signed sum, matching a direct SQL sum for
-      the rows it decides;
-    - group headers show the summed Uses and Total;
-    - sorting by Total works;
-    - Edit / Delete paint only on hover / focus;
-    - the Move bar replaces the heading row, and the list's top doesn't
-      move when rows are checked;
-    - with 1 000 rules only the visible rows are built, and the item
-      cache rebuilds only on input changes (counter hook);
-    - every 3.28 / 3.29 behaviour test still passes (update their
-      selectors, don't delete them).
-
-    Update the *Rules* row of `ui-conventions.md`.
+- [ ] **3.34 To categorize looks cleaner.** The queue is loose rows on the
+  page background: no panel, no row separators, a semibold merchant, and a
+  bright primary Categorize button on every row, so the page is a column
+  of blue buttons. Keep the columns, widths and behavior of 3.22; change
+  the look:
+  - **Header:** "To categorize" and a muted summary "N transactions · M
+    merchants" (`flow::count`).
+  - **One bordered panel** (D7, `radius`, no fill) that fills the rest of
+    the page and holds the list. Column headings are a 32 px heading row
+    inside the panel (`text_sm` muted, `px_3`), with a bottom `border`.
+    Rows are 40 px, `px_3`, each with a bottom `border` divider (none
+    after the last), `list_hover` on hover. Headings keep sharing the row
+    widths.
+  - **Merchant** in normal weight `foreground`; Transactions and Total
+    right-aligned; Dates `text_sm` muted (as now).
+  - **Categorize button:** `.small()` and not primary (outline/ghost
+    style) and **disabled until the row's picker has a category**; it
+    becomes `primary` once one is chosen, so only rows ready to apply
+    stand out. The heading row's invisible spacer matches the new button
+    size.
+  - Empty state unchanged, centered inside the panel.
+  - Still fits 1200 × 720 with no horizontal overflow (3.22 tests stay).
+  - Tests: the panel paints inside the page; a row's Categorize is
+    disabled with no pick and enabled + primary after picking; the summary
+    text shows both counts; 3.22's heading-alignment and fit tests pass.
+    Update the *To categorize* row of `ui-conventions.md`.
+  - **In progress:** worktree `../worktrees/financi/3-34-to-categorize`
+    (branch `feat/3-34-to-categorize`) has ~170 uncommitted lines in
+    `ui.rs` from the paused run (panel, heading row, Categorize button
+    mirroring its picker). Continue from them; don't start over.
 
 - [ ] **3.53 No category picker where the page already says it.** The
   Categories page's add-rule row and rule editor each carry a Category
   picker, but the rule list sits inside a selected category, so the
   picker mostly repeats the selection (user request, 2026-11-11).
   Replaces 3.41.
+  - **In progress, with 3.42.** Branch `feat/3-41-42-rule-rows`
+    (worktree `../worktrees/financi/3-41-42-rule-rows`) holds 3.42's
+    commits 7d879e6 and 31dec49, plus cdeff74, a 3.41 commit (full
+    category names in the rule pickers). User decision 2026-11-11: keep
+    the branch for 3.53 + 3.42. First `git revert cdeff74` (keep any
+    menu-width code the parent-scoped picker below can reuse), then
+    implement 3.53, then review 3.42 and 3.53 together.
   - **Subcategory selected:** the add-rule row has no picker. `add_rule`
     targets the selected subcategory. The row is Pattern, regex switch,
     Add rule.
@@ -1091,314 +233,66 @@ the order above (3.28 → 3.29 → 3.26).
 
     Update the *Categories* row of `ui-conventions.md`.
 
-- [ ] **3.43 No buttons end in "…".** The user doesn't want "…" on
-  buttons; use an icon instead, or just drop it (user request,
-  2026-11-11). This applies 3.32's Imports-header rule to every button.
-  All of them are on the Categories page today:
-  - **New category…** (`NEW_CATEGORY`, header, primary): `plus` icon +
-    "New category".
-  - **Rename…** (detail panel title row): `pencil` icon + "Rename".
-  - **Delete…** in the detail panel's Delete section (`confirm_label`):
-    `trash-2` icon + "Delete"; armed, it still reads "Click again to
-    delete" in `danger`.
-  - Rule rows: **Edit** gets `pencil`, **Delete…** becomes `trash-2` +
-    "Delete" (armed text unchanged); both stay `.ghost()` `text_xs`. The
-    invisible heading spacers (`rule-heading-edit-spacer`,
-    `rule-heading-delete-spacer`) change the same way so the headings stay
-    aligned with the columns.
-  - **Not buttons, unchanged:** app-menu items ("Import CSV…", "Export…",
-    "Restore…"), the row context menu's "Change category…" submenu,
-    select placeholders ("Move to category…", "Category…") and the
-    "+ New account…" picker item. Menus keep the platform's "…" for items
-    that open a dialog.
-  - Check 3.23's fit rule still holds (Edit / Delete paint inside the
-    detail panel at 1200 × 720 and 1600 × 900): an icon adds ~20 px per
-    button.
-  - Tests: each of the buttons above paints an icon and its text has no
-    "…"; the armed labels are unchanged (existing two-click tests); a
-    guard test that scans `ui.rs` for `.label("…")` / `const … = "……"`
-    used as a button label and fails, so no new one creeps in; 3.23's
-    heading-alignment and fit tests pass. In `ui-conventions.md`, replace
-    the *Copy* bullet's "Use an ellipsis when the button opens a dialog or
-    picker" with "Buttons never end in "…"; actions carry a Lucide icon
-    left of the label (menus keep "…")", and update the *Categories* row.
+- [ ] **3.42 The regex switch lines up with the rule fields.** In the
+  add-rule row (`cat:add-rule-row`) and the rule editor row, the
+  **regex** `Switch` sits lower than the Pattern input, the Category
+  picker and the buttons (user report, 2026-11-11). Cause: both rows are
+  `h_flex().items_end()`, the labelled fields are a label line over a
+  32 px control, and the Switch (no label line, shorter than 32 px) is a
+  bare child, so its bottom edge, not its centre, lines up with the
+  controls.
+  - Wrap the Switch in a box the height of a control: `h_flex().h(px(32.))
+    .items_center().flex_shrink_0()`, in both rows, so its centre matches
+    the controls' centre while the row stays `items_end`. Better: factor
+    a small `control_slot(el)` helper used by both rows, so they can't
+    drift apart.
+  - Done on 3.53's branch; see 3.53.
+  - Tests: in both rows the Switch's vertical centre equals the Pattern
+    input's centre within 1 px, and the Save / Add rule button's centre
+    too. Note the rule in `ui-conventions.md` (*Forms*: an unlabelled
+    control in a labelled row sits in a 32 px slot, centred).
 
-- [x] **3.44 Every transactions-table column sorts.** On the dashboard
-  only Date and Amount sort (3.4); Account, Description and Category
-  don't (user request, 2026-11-11).
-  - **DB** (`financi-db/src/views.rs`): add `Account`, `Description` and
-    `Category` to `TxSortColumn`. Order by what the cell shows,
-    case-insensitively (`COLLATE NOCASE`):
-    - Account: `i.name || ' · ' || a.name`.
-    - Description: `trim(t.description_raw)`.
-    - Category: `COALESCE(c.name, 'Uncategorized')`, so Uncategorized
-      sorts by its label rather than first or last.
-    - Ties: `t.posted_date DESC, t.import_id DESC, t.source_line ASC`
-      (as Amount does), so the order is stable.
-    Turn the `match` into a per-column key plus direction instead of one
-    arm per pair.
-  - **UI** (`TxTable::column` / `perform_sort`): wrap columns 1–3 in the
-    same `sort(...)` helper so all five show the sort icon, and map
-    `col_ix` 1–3 in `perform_sort`. First click on a text column sorts
-    A→Z; Date and Amount keep their current first direction (descending).
-  - The sort survives refreshes and filter changes as it does now; the
-    column widths don't change (the sort icon fits in the existing
-    headers; check at 1200 × 720 that the Account header isn't clipped).
-  - Tests: a DB test per new column in both directions (including an
-    Uncategorized row and mixed-case names, and a tie falling back to
-    date); a UI test that clicking each header re-sorts the rows and the
-    header shows the direction; the 3.4 sort tests still pass. Update
-    the *Dashboard* row of `ui-conventions.md` ("every column sorts").
+- [ ] **3.62 Split `ui.rs` and `ui_tests.rs` by page.** Pure refactor,
+  no behaviour change (planned 2026-11-11 in a docs review). `ui.rs` is
+  ~7 500 lines, one `impl Shell` block of ~5 500 of them, and
+  `ui_tests.rs` is ~8 500 lines. Every UI task edits both, so two UI
+  branches in flight conflict at merge, and one file costs an agent most
+  of its 130k context to navigate.
+  - `git mv crates/financi/src/ui.rs crates/financi/src/ui/mod.rs` first,
+    in its own commit, so history follows the file. Then move code into
+    sibling modules under `crates/financi/src/ui/`:
+    - `mod.rs`: `Shell` (the struct and `new`), `Page`, `Render for
+      Shell`, the page switch, `refresh` and `on_db`;
+    - `widgets.rs`: shared helpers (`checkbox`, `field_label`,
+      `region_title`, `filter_tip`, `category_palette`, toasts, shared
+      width consts);
+    - `sidebar.rs`, `dashboard.rs` (filters, chart, summary,
+      `TxTable`, row menu), `queue.rs`, `categories.rs`, `rules.rs`,
+      `transfers.rs`, `imports.rs` (`ImportPanel`,
+      `ImportHistoryTable`).
+  - Each page module adds its own `impl Shell { … }` block. Child modules
+    can read the parent module's private fields, so `Shell`'s fields stay
+    private. Items moved out of `mod.rs` that siblings use become
+    `pub(super)`; nothing becomes `pub` that wasn't.
+  - Tests: `ui_tests.rs` → `ui/tests/mod.rs` (shared helpers:
+    `wait_until`, seeding, bounds helpers) plus one file per page, the
+    same split as the code. Every test keeps its name. The number of
+    tests listed by `cargo test --workspace --features
+    financi-db/dev-seed -- --list` is equal before and after (put both
+    counts in the commit message).
+  - Aim for no file over ~1 500 lines. Move code; don't rewrite it.
+    `git diff --stat` should show adds ≈ removes.
+  - Update the docs that name the files: `CLAUDE.md` (*UI docs are for UI
+    work only*: `crates/financi/src/ui/`), `AGENTS.md` (*Keep the pool
+    full*: UI work lands in per-page modules), `docs/tasks.md` (*Where
+    things are*), `docs/ui-conventions.md` (`ui_tests.rs` mentions). Open
+    task texts that say "`ui.rs`" mean the matching module from now on;
+    don't rewrite them.
+  - **Scheduling:** the only UI branch in flight while it runs (the
+    other slot does M5 backend work). Start it after 3.53's branch merges,
+    and merge it before any other UI branch starts.
 
-- [ ] **3.55 Fast at real scale: hundreds of rules, dozens of
-  categories.** The user has hundreds of rules and dozens of categories
-  and is worried about performance (2026-11-11). The dev seed (18 rules,
-  458 rows) hides scale problems. `CompiledRules::pick` loops over **every
-  rule for every row**, and a rule change runs that loop twice: once in
-  `reapply_rules`, and again in `rule_use_counts` inside `refresh`. At
-  1 000 rules × 100 000 rows (10 years at the user's ~10 000 a year)
-  that's ~100 M checks per pass, likely around a
-  second or more. The live preview (`count_rule_matches`) scans every row
-  on each keystroke. Do this before 3.47 / 3.54, so they measure against
-  realistic data.
-  - **Scale fixture:** a `seed_large` (dev-seed feature) and a
-    `FINANCI_DEV_SEED=large` switch. It builds **1 000 rules** (80 %
-    substring, 20 % regex, overlapping on purpose), **80 categories**
-    (15 parents), and **100 000 transactions** over 10 years (the user has ~1 800 today
-    and expects ~10 000 a year) with realistic
-    merchant strings, all deterministic. It uses only synthetic data.
-  - **Budgets** (release build, on the large seed), as `#[ignore]` perf
-    tests runnable with `cargo test --release -- --ignored perf_`, which
-    print their times:
-    - `reapply_rules` < 150 ms;
-    - `rule_use_counts` < 150 ms;
-    - `count_rule_matches` < 30 ms;
-    - the full `refresh` query set < 250 ms;
-    - main-thread apply of a refresh result < 16 ms;
-    - opening the Categories and Rules pages < 16 ms per frame.
-
-    Debug-build versions of the DB budgets (×10) run in the normal test
-    suite on a 10 000-row / 300-rule seed (one year) so regressions fail CI.
-  - **Matching in one pass per row:** in `CompiledRules`, replace the
-    per-rule loop with an **Aho-Corasick** automaton over the lowercased
-    substring patterns (`aho-corasick` crate, already in the tree via
-    `regex`; `MatchKind::Standard` with overlapping search to collect
-    every match) and one **`RegexSet`** for the regex rules (case-
-    insensitive). Each row is scanned once per kind; the winner is the
-    longest match, ties to the lowest id, substring before regex, exactly
-    as today. Invalid regexes stay excluded. The existing core tests are
-    the contract; add a property test that the new `pick` equals the old
-    per-rule loop on random rules and descriptions.
-  - **One pass per rule change:** have `reapply_rules` return the per-rule
-    use counts it computed, and cache them on the shell until the next
-    rule or import change, so `refresh` doesn't recompute them. If that
-    isn't enough, store the deciding rule: add a nullable
-    `transactions.category_rule_id` column in a new migration, set by
-    `reapply_rules` and at import. Uses then becomes a `GROUP BY`, and
-    3.52's "decides" set becomes a query. Only add the column if the
-    budgets need it.
-  - **Live preview:** debounce `preview_rule_match` by 150 ms, and keep
-    the in-flight task cancellable, as now.
-  - **UI at scale:** with 1 000 rules and 80 categories, check that the
-    rule lists, tree and pickers stay virtual or lazy (3.12, 3.19, 3.21).
-    Category pickers with 65 children should be `searchable`.
-  - Commit message: the before / after numbers for every budget.
-
-- [ ] **3.47 A deleted rule leaves the list at once.** After the second
-  click on a rule's Delete, the row stays in the list for a noticeable
-  moment before it disappears (user report, 2026-11-11, after 3.40
-  landed). 3.40 made `reapply_rules` fast (34 ms for 5 000 rows × 50
-  regex rules), so the wait is elsewhere. Today `arm_delete_rule` only
-  changes the list after **both** the `delete_rule` task **and** the
-  full `refresh` finish: `refresh` re-runs every page's queries
-  (transactions, chart, summary, imports, category tree and counts,
-  rules, queue, transfer reviews) in one `on_db` call before
-  `self.rules` is replaced. On top of that, every `DbWorker` job queues
-  behind any in-flight one (the live preview count, a previous refresh).
-  - **Measure first.** In a debug build, log (`log::debug!`, behind
-    `FINANCI_TIMINGS=1`) the time from the confirming click to (a)
-    `delete_rule` returning, (b) the refresh result arriving, and each
-    query inside `refresh`. Run it on the dev-seed DB and on a copy of the
-    real DB (`FINANCI_DB=.cache/real-copy.sqlite`, timings only; never
-    commit it). Put the numbers in the commit message, and fix whatever
-    dominates if it isn't covered below (e.g. a missing index for
-    `transaction_counts` or `uncategorized_by_merchant`).
-  - **Optimistic removal:** on the confirming click, drop the rule from
-    `self.rules` (and the visible list) right away and `cx.notify()`,
-    keeping a copy. On error, put it back at its position and show the
-    error in `rule_error`. The refresh still runs after and brings
-    counts and categories up to date.
-  - **Do the same for Save and Add**, so a rule edit shows its new
-    pattern/category in the row at once, and a new rule appears at once,
-    with the same rollback on error. Rollback on a failed Add means
-    removing the provisional row; it has no id until the DB returns one,
-    so give it a temporary negative id and swap it for the real one.
-  - **Narrower refresh after rule changes.** Add a `refresh_after_rules`
-    that runs only what a rule change can affect (rules, transactions,
-    chart, summary, category counts, queue, sidebar counts), not imports
-    history or transfer reviews. Only do this if the measurements show
-    the full refresh is a noticeable part of the wait.
-  - Tests: after the confirming click, the rule is gone from the list in
-    the same frame, before the DB task completes (run the UI without
-    advancing the executor); a failing delete (rule removed underneath)
-    restores the row and shows the error; an edit's new pattern shows
-    before the save completes; a new rule appears before its add
-    completes and then carries its real id. The 3.24 delete and edit
-    tests still pass.
-
-- [ ] **3.54 Category changes don't lag the page.** Deleting a category
-  and moving a subcategory (and likely add / rename) freeze or lag the
-  page noticeably (user report, 2026-11-11). The DB side is small:
-  `move_child` is one `UPDATE`, `delete_category` two `UPDATE`s and a
-  `DELETE`, with no rule re-run. That leaves two suspects:
-  - (a) As in 3.47, the change waits for the full `refresh`, which re-runs
-    every page's queries.
-  - (b) **UI-thread work on the result.** A changed category list
-    re-sets items on every category picker: `sync_queue` re-sets every
-    surviving queue picker, plus the rule / move / delete targets, the
-    Rules page's Move picker and the table delegate's `child_choices`.
-    The tree virtual list is also rebuilt.
-
-  There's also no index on `transactions(category_id)`, so the
-  reassign `UPDATE` and `transaction_counts` scan the table.
-  - **Measure first,** with 3.47's `FINANCI_TIMINGS=1` logging (do 3.47
-    and 3.54 in one branch), on the dev-seed DB and on a copy of the real
-    DB. Log for each of delete / move / add / rename: click to DB
-    returning, to refresh result, the refresh's per-query times, and the
-    **main-thread time spent applying the result** (from entering the
-    `update_in` closure to its return, broken down by picker re-sets and
-    table refresh). Numbers go in the commit message; fix what dominates.
-  - **Optimistic tree update:** delete removes the node (and its row
-    count moves to the reassign target) and move re-parents the node in
-    `self.categories` right away, with `cx.notify()`; roll back and show
-    the error on failure. The refresh then reconciles.
-  - **Cheaper picker refresh:** build the `Names` list once per refresh
-    and share it (`Rc`/`SharedString`s), and re-set items only on pickers
-    that are **built and visible** (queue pickers are already lazy per
-    3.19; do the same for the rest). Other pickers re-set lazily when
-    next opened or shown (a `categories_version` counter compared on
-    render).
-  - **Index:** if the measurements show the scans matter, add a numbered
-    migration `CREATE INDEX tx_category ON transactions(category_id)`
-    (0001 stays frozen).
-  - Reuse 3.47's `refresh_after_rules` idea if the full refresh
-    dominates: a `refresh_after_categories` that skips imports history
-    and transfer reviews.
-  - Tests:
-    - after a confirmed delete or a move, the tree shows the change in
-      the same frame, before the DB task completes;
-    - a failing move (e.g. target removed underneath) rolls back and
-      shows the error;
-    - after a category change, the hidden pickers are re-set on their
-      next render, not during the refresh (count re-sets with a test
-      hook);
-    - if the index is added, a migration test checks it exists;
-    - the existing category CRUD tests pass.
-
-- [ ] **3.34 To categorize looks cleaner.** The queue is loose rows on the
-  page background: no panel, no row separators, a semibold merchant, and a
-  bright primary Categorize button on every row, so the page is a column
-  of blue buttons. Keep the columns, widths and behavior of 3.22; change
-  the look:
-  - **Header:** "To categorize" and a muted summary "N transactions · M
-    merchants" (`flow::count`).
-  - **One bordered panel** (D7, `radius`, no fill) that fills the rest of
-    the page and holds the list. Column headings are a 32 px heading row
-    inside the panel (`text_sm` muted, `px_3`), with a bottom `border`.
-    Rows are 40 px, `px_3`, each with a bottom `border` divider (none
-    after the last), `list_hover` on hover. Headings keep sharing the row
-    widths.
-  - **Merchant** in normal weight `foreground`; Transactions and Total
-    right-aligned; Dates `text_sm` muted (as now).
-  - **Categorize button:** `.small()` and not primary (outline/ghost
-    style) and **disabled until the row's picker has a category**; it
-    becomes `primary` once one is chosen, so only rows ready to apply
-    stand out. The heading row's invisible spacer matches the new button
-    size.
-  - Empty state unchanged, centered inside the panel.
-  - Still fits 1200 × 720 with no horizontal overflow (3.22 tests stay).
-  - Tests: the panel paints inside the page; a row's Categorize is
-    disabled with no pick and enabled + primary after picking; the summary
-    text shows both counts; 3.22's heading-alignment and fit tests pass.
-    Update the *To categorize* row of `ui-conventions.md`.
-
-- [x] **3.35 Dashboard filters on one line.** The filter region (a
-  "Filters" title, then two rows each with a label line over a control
-  line) takes about a fifth of the window height. Make it one 32 px row
-  with no region title and no label lines (user request, 2026-11-11; this
-  replaces 3.16's visible-label rule and 3.25's two-row layout for the
-  dashboard filters only):
-  - Left to right, `gap_2`, all controls the default 32 px height and
-    vertically centered: **Date range** select (~170 px); the custom
-    **From** / **To** pickers when the range is Custom (140 px each,
-    shrinking first to a 110 px floor); **Accounts** popover trigger
-    (shows "All accounts" / "N accounts"); **Search** input `flex_1` with a
-    `min_w` of ~140 px, a leading search icon and the placeholder "Search
-    transactions"; an **Options** button (`list-filter` icon + "Options",
-    showing "Options · N" when N of its toggles are on) that opens a
-    popover with the three checkboxes **Include transfers**,
-    **Uncategorized only** and **Show hidden** (same state and handlers as
-    today); then the muted transaction count, `ml_auto`, ending at the
-    page's right edge.
-  - Each control without a visible label gets a hover tooltip naming it
-    (Date range, Accounts, Options).
-  - Must fit 1200 × 720 with the custom range open, nothing clipped and
-    no wrapping. If it can't, return BLOCKED with the measured widths
-    instead of dropping a control.
-  - Tests: the filter region is a single row ≤ 40 px tall; every control
-    and the count paint inside the page at 1200 × 720 with the custom
-    range open; the Options popover's checkboxes toggle the same filters
-    as before (reuse the existing toggle tests); "Options · 2" when two
-    are on; the chart panel's top is at least 80 px higher than before.
-    Update the *Dashboard* row and the *Dashboard filter rows* bullet of
-    `ui-conventions.md`.
-
-- [ ] **3.52 A rule's transactions under the rule list.** Nice-to-have
-  (user request, 2026-11-11): clicking a rule shows, in its own scrollable
-  area, the transactions that rule matches. Do it after 3.51 (which frees
-  the vertical space) and after 3.28 (whose row checkboxes are the
-  multi-select; this is a separate single **focus**).
-  - **Focus:** clicking a rule row (not its checkbox, Edit or Delete)
-    makes it the `focused_rule` (`list_active` row background); clicking
-    it again, Escape, selecting another category or leaving the page
-    clears it. Deleting the focused rule clears it; editing keeps it.
-  - **Layout:** with a rule focused, the Rules section splits vertically.
-    The rule list stays on top (`flex_1`, `min_h(120)`), then a
-    `border_t_1` divider. Below it is the **matches panel** (~45 % of the
-    section, `min_h(160)`): a header "Transactions matching `PATTERN`"
-    (pattern ellipsized, tooltip) with a muted "N · M decided by this
-    rule" summary, then a virtual list (`v_virtual_list`, scrollbar per
-    3.26) of rows. With nothing focused the list takes the whole section,
-    as now.
-  - **Rows:** Date (110 px), Description (`flex_1`, ellipsized with
-    tooltip), Account (`text_sm` muted, ~140 px), Amount (right-aligned,
-    `flow::money`). Rows the rule matches but doesn't decide carry a
-    muted trailing tag and `muted_foreground` text:
-    - "won by `OTHER`" when another rule wins (`winning_rule`);
-    - "locked" when the row's category is locked.
-    Rows the rule decides sort first, then by date descending.
-  - **DB:** `rule_matches(conn, rule_id) -> Vec<RuleMatchRow>` in
-    `financi-db/src/rules.rs`: every transaction (locked or not) whose
-    description the rule's pattern matches (`CompiledPattern`, compiled
-    once), with a `status` of `Decides`, `WonBy(rule_id)` or `Locked`.
-    Use one `CompiledRules` per call, as `rule_use_counts` does, so the
-    "decides" set agrees with Uses (3.28). Loaded through `DbWorker` when
-    focus changes and after every refresh while focused; a stale result
-    for a previous focus is dropped (keep the `Task`, drop on refocus).
-  - **While editing** the focused rule, the panel keeps showing the
-    saved rule's matches (the live count under the editor is the
-    preview); it reloads after Save.
-  - Empty state inside the panel: "This rule matches no transactions".
-  - Tests:
-    - DB: statuses for decides / won-by / locked rows, consistent with
-      `rule_use_counts`; an invalid regex returns empty.
-    - UI: clicking a row focuses it and the panel paints below the list
-      inside the section; the summary counts are right; a won-by row shows
-      its tag; Escape and re-click clear focus; focus changes drop a late
-      result; at 1200 × 720 both the list and the panel are at least their
-      minimum heights with 3.51's forms closed.
-
-    Update the *Categories* row of `ui-conventions.md`.
+### Lane A — dashboard and refresh (first priority)
 
 - [ ] **3.56 Dashboard filters apply at once.** Changing a dashboard
   filter (date range, accounts, search, the Options toggles, a legend /
@@ -1420,17 +314,17 @@ the order above (3.28 → 3.29 → 3.26).
 
   The fix:
   - **Measure first** with 3.47's `FINANCI_TIMINGS=1` logging (introduce
-    it here if 3.47 hasn't landed): per-query times inside `refresh`,
-    queue wait, and main-thread apply time, on the dev seed and on the
-    user-sized seed (3.55's one-year 10 000-row / 300-rule seed if it
-    exists, otherwise a quick local one). Numbers go in the commit message.
+    it here; 3.47, 3.54 and 3.57 reuse it): per-query times inside `refresh`,
+    queue wait, and main-thread apply time, on the dev seed and on a
+    throwaway local 10 000-row / 300-rule seed (don't commit it; 3.55
+    adds the real scale seed at the very end). Numbers go in the commit message.
   - **Split the refresh.** Add `refresh_dashboard`, which runs only what
     the dashboard filters change: the filtered transactions, chart rows,
     monthly summary and the count. Every dashboard filter, selection and
     sort change calls it. `refresh` (everything) stays for data changes:
-    import, undo, rule and category edits, restore. 3.47 / 3.54 later add
-    their own narrow refreshes on the same pattern; build it so they can,
-    e.g. a `RefreshScope` bitset passed to one function.
+    import, undo, rule and category edits, restore. 3.57 extends this to
+    every action; build it so it can, e.g. a `RefreshScope` bitset passed
+    to one function.
   - **Latest wins.** Give the shell a refresh generation counter (an
     `Arc<AtomicU64>`). Each refresh captures its number, and the DB
     closure returns early without querying if a newer one has been
@@ -1442,9 +336,8 @@ the order above (3.28 → 3.29 → 3.26).
   - **Don't re-sync untouched views:** a dashboard-scope result only
     updates the transactions table, chart and summary. It does not touch
     the history table, queue pickers, rule lists or category pickers.
-  - Budget: on the one-year seed, a filter change shows its result
-    within 100 ms (DB + apply) in a release build. Add an `#[ignore]` perf
-    test for it next to 3.55's.
+  - Target: a filter change shows its result within 100 ms (DB +
+    apply) on a year of data. The timed test for it is written in 3.55.
   - Tests:
     - a dashboard filter change runs only the dashboard queries (a test
       hook counts the queries per scope);
@@ -1461,7 +354,8 @@ the order above (3.28 → 3.29 → 3.26).
   root cause, app-wide: ~30 call sites run the full `Shell::refresh`
   after an action, all on one FIFO `DbWorker`, with nothing on screen
   until it returns. Do this right after 3.56 and build on its
-  `RefreshScope` and generation counter.
+  `RefreshScope` and generation counter. It touches every refresh call
+  site, so pair it only with a Lane C task or M5 backend work.
   - **Scope every action.** Give each `refresh(window, cx)` call site
     the narrowest `RefreshScope` that covers what the action can change,
     and write the mapping as a table in the code (doc comment on
@@ -1483,9 +377,10 @@ the order above (3.28 → 3.29 → 3.26).
     in-flight job plus the newest.
   - **Feedback within a frame.** Every button that starts DB work either
     updates the screen optimistically (row category change, hide /
-    unhide, queue Categorize, rule and category edits per 3.47 / 3.54) or
+    unhide, queue Categorize) or
     shows `.loading(true)` and is disabled until it finishes (as 3.40 did
-    for rule Save). No click may leave the screen unchanged for longer
+    for rule Save; rule and category edits get this here, and 3.47 / 3.54
+    make them optimistic later). No click may leave the screen unchanged for longer
     than one frame. Add this rule to `ui-conventions.md` (*Interaction*).
   - **Render-path audit.** Log frame times with `FINANCI_TIMINGS=1` and
     find per-frame work that scales with data. Candidates seen while
@@ -1496,12 +391,12 @@ the order above (3.28 → 3.29 → 3.26).
     - `category_colors` builds a map every render.
 
     Cache these on the shell, rebuilt only when their inputs change.
-    Budget: no frame over 16 ms on the one-year seed while hovering,
-    scrolling or typing (release build).
+    Target: no frame over 16 ms while hovering, scrolling or typing (the
+    timed test is written in 3.55).
   - **Measure before and after:** the click-to-result time for ten
     common actions (each filter kind, change category, hide, rule save,
     rule delete, category move, queue Categorize, page switch), on the
-    dev seed and the one-year seed. Put the table in the commit message.
+    dev seed and 3.56's throwaway 10 000-row seed. Put the table in the commit message.
   - Tests:
     - the per-action scope table above (one test per row);
     - a click on change-category / hide / Categorize updates the row in
@@ -1630,6 +525,431 @@ the order above (3.28 → 3.29 → 3.26).
     Update the *Dashboard* row and *Interaction* section of
     `ui-conventions.md` (filters are global; Clear all).
 
+### Lane B — Categories and Rules pages
+
+- [ ] **3.58 A cleaner Rules page with totals.** The Rules page (3.28)
+  "is very very ugly". The user also wants each rule's **total amount**
+  next to its count, and the page must stay virtualized and responsive
+  (user request, 2026-11-11). Today it has 24 px rows on the page
+  background with no panel, a filter row of mixed controls, plain group
+  header rows, and a Move bar that pushes the list down. Keep every
+  behaviour of 3.28 / 3.29 (search, Test a description, Type, Unused,
+  grouping and collapse, sort, checkboxes and Move, Show rule landing);
+  change the look and add the totals:
+  - **Header:** "Rules" and a muted summary "N rules · M unused"
+    (`flow::count`), then **New rule** (`plus` icon, primary, no "…",
+    3.43) at the right.
+  - **Filter row:** one 32 px row like the dashboard's (3.35): Search
+    `flex_1` with a leading search icon and the placeholder "Search rules
+    or categories". Then a Type select (~140 px) and an **Options**
+    popover holding **Test a description** and **Unused only**, showing
+    "Options · N" when N are on. Each control without a visible label
+    gets a tooltip.
+  - **One bordered panel** (D7, `radius`, no fill) fills the rest of the
+    page and holds the list:
+    - a 32 px heading row inside it (`text_sm` muted, `px_3`, bottom
+      `border`), with the columns: checkbox (24 px), **Pattern**
+      (`flex_1`), **Type** (80 px), **Uses** (80 px, right), **Total**
+      (110 px, right), then actions;
+    - **group headers** are 36 px rows on `muted` background: chevron,
+      "Food › Coffee" semibold, then the muted "4 rules", and the group's
+      summed Uses and Total right-aligned under their columns;
+    - **rule rows** are 40 px, `px_3`, with a bottom `border` divider and
+      `list_hover`. The pattern is in `mono_font_family` (regexes are
+      easier to read), ellipsized with a tooltip. Type is a small
+      outline tag ("text" / "regex") instead of plain text. A 0 in Uses
+      is muted.
+    - Edit / Delete (icon-only ghost buttons, `pencil` / `trash-2`,
+      with tooltips; see 3.43) show only on row hover or when the row
+      is focused or has the editor open. Their column keeps its width so
+      nothing shifts.
+  - **Total column:** the signed sum of the transactions the rule
+    *decides* (same set as Uses), formatted as the transactions table
+    does (`flow::money`, money in shown in `success`). The header's sort
+    buttons get **Total** too (by absolute amount, descending).
+  - **Move bar:** with rows checked it **replaces the heading row**
+    inside the panel (same 32 px), with no extra row pushing the list:
+    "N selected", the subcategory picker (searchable), **Move**, and
+    **Clear**.
+  - **DB:** replace `rule_use_counts` with `rule_use_stats(conn) ->
+    HashMap<i64, RuleUse { count, total_cents }>`, which also sums
+    `amount_cents`, in the same single pass. Callers (Uses on this page,
+    3.49 on the Categories page, 3.52) use it.  Group sums are
+    computed in Rust from the per-rule stats.
+  - **Virtualized and responsive:** the list stays one `v_virtual_list`
+    (headers included). Build `rules_page_items` and the per-row display
+    data (formatted totals, labels) **only when** rules, stats, filters,
+    collapse state or sort change, cached on the shell (3.57's render
+    audit), not every frame. Search filtering is debounced by 150 ms.
+    Per-row widgets (checkbox, buttons) are built only for visible rows
+    (3.24's test pattern). Test with 1 000 rules built inside the test; the timed
+    16 ms-a-frame budget is checked at the very end (3.55).
+  - Must fit 1200 × 720: no horizontal overflow, nothing clipped, with
+    long patterns and category names.
+  - Tests:
+    - the panel and heading row paint inside the page;
+    - Total shows each rule's signed sum, matching a direct SQL sum for
+      the rows it decides;
+    - group headers show the summed Uses and Total;
+    - sorting by Total works;
+    - Edit / Delete paint only on hover / focus;
+    - the Move bar replaces the heading row, and the list's top doesn't
+      move when rows are checked;
+    - with 1 000 rules only the visible rows are built, and the item
+      cache rebuilds only on input changes (counter hook);
+    - every 3.28 / 3.29 behaviour test still passes (update their
+      selectors, don't delete them).
+
+    Update the *Rules* row of `ui-conventions.md`.
+
+- [ ] **3.48 The rule editor gives the pattern room.** Clicking Edit on
+  a rule swaps the row for an editor whose Pattern input shrinks so far
+  that the pattern can't really be edited (user report, 2026-11-11).
+  Cause: `rule_editor_row` is one `h_flex` with Pattern `flex_1` +
+  `min_w_0` and, after it, the regex switch, a 160 px Category picker,
+  Save and Cancel. In the detail panel (page minus the 210 px sidebar
+  and the 300 px tree panel) the fixed controls take ~400 px of ~600, and
+  3.53 removes the editor's picker, which frees most of that. The user also
+  saw the editor's regex switch sit off the row's line (3.42's cause).
+  - **Two lines:** line 1 is the "Pattern" label over the input at the
+    editor's **full width**. Line 2 is one `h_flex().items_center()` of
+    32 px controls, with no label line: the regex switch, then `ml_auto`
+    Save and Cancel (no Category picker, 3.53). Line 2 has no labels,
+    so the switch lines up without 3.42's slot (3.42 still applies to
+    the add-rule row). The preview count and error line stay under both
+    lines.
+  - Bump the editor's entry in `rule_sizes` (today 80 / 108 px) to the
+    new height (~two control lines + label + preview, ~120 / ~148 px with
+    an error) so the virtual list doesn't overlap the next row.
+  - Enter saves, Escape cancels, focus lands in the pattern input with
+    the caret at the end (check it does today; if not, add it).
+  - The add-rule row: if its Pattern input is < 240 px wide at
+    1200 × 720 after 3.53, give it the same two-line shape; otherwise
+    leave it on one line.
+  - Tests: at 1200 × 720 the editor's pattern input is at least 90 % of
+    the detail panel's inner width; the switch, Save and Cancel
+    share a vertical centre within 1 px; the row below the editor doesn't
+    overlap it (bounds); Save/Cancel/Enter/Escape tests from 3.24 pass.
+    Update the *Categories* row of `ui-conventions.md`.
+
+- [ ] **3.50 No Organize heading or repeated labels.** In the category
+  detail panel, the **Organize** section title and the "Move to
+  category" field label just repeat what the picker's placeholder
+  ("Move to category…") already says (user request, 2026-11-11). The
+  parent side has the same problem: the "New subcategory name" label sits
+  over an input whose placeholder is "New subcategory name".
+  - Remove `region_title("Organize")` and both `field_label`s in that
+    section. Each side becomes one `h_flex().items_center().gap_2()` row:
+    - subcategory: `[Move to category… ▾] [Move]`;
+    - parent: `[New subcategory name] [Add subcategory]`.
+    Keep the `border_t_1` dividers above and below, so it still reads as
+    its own section.
+  - This overrides 3.16's visible-label rule for this section only; the
+    placeholder is the label. Give the input and the select an
+    `accessibility_label` with the same text.
+  - Tests: no "Organize" or "Move to category" / "New subcategory name"
+    label paints in the detail panel (the placeholders still do);
+    the control and its button share a vertical centre; move and add-
+    subcategory still work (existing tests). Update the *Categories* row
+    of `ui-conventions.md` (drop **Organize** from the section list) and
+    note the exception in the *Forms* labels rule.
+
+- [ ] **3.51 Organize and Delete hidden until asked for.** The category
+  detail panel spends vertical space on two sections that are rarely
+  used, **Organize** (add a subcategory / move a subcategory) and
+  **Delete** (move its transactions, then delete), so the rules list gets
+  less of the panel (user request, 2026-11-11). Hide both by default:
+  - **Title row actions:** next to Rename, at the right of the category
+    name, add small buttons, each with an icon and no "…" (3.43):
+    - **Add subcategory** (`folder-plus`), on a parent;
+    - **Move** (`folder-input`), on a subcategory;
+    - **Delete** (`trash-2`), not on system categories.
+    Rename stays where it is.
+  - Each opens an **inline bordered form** right under the title row,
+    the same pattern as the header's New category form (3.23):
+    - Add subcategory: `[New subcategory name] [Add subcategory]
+      [Cancel]`;
+    - Move: `[Move to category… ▾] [Move] [Cancel]`;
+    - Delete: `[Move its transactions to… ▾] [Delete] [Cancel]`. Its
+      Delete is still the two-click "Click again to delete" confirm in
+      `danger`.
+    The forms have no section titles or field labels (3.50: the
+    placeholder is the label; `accessibility_label`s set). One form at a
+    time: opening one closes another; Cancel, Escape, a successful
+    action, selecting another category or leaving the page closes it.
+    The title-row button of the open form shows `.selected(true)`.
+  - Remove the Organize and Delete sections and their `border_t_1`
+    dividers. With no form open the panel is the title row, a divider,
+    then **Rules**, which gets all the remaining height.
+  - Must fit the detail panel at 1200 × 720 with a long category name:
+    the name ellipsizes before the buttons do. If the buttons can't all
+    fit, make Add subcategory / Move / Delete icon-only with tooltips;
+    don't let them wrap or clip.
+  - 3.50's label removal applies inside the forms; do 3.50 and 3.51 in
+    one branch.
+  - Tests:
+    - with no form open, the Rules section's top sits right under the
+      title row's divider and the rule list is taller than before (bounds);
+    - each button opens its form and the others stay closed;
+    - opening a second form closes the first;
+    - Cancel, Escape and selecting another category each close it;
+    - add / move / delete still work through the forms (existing tests,
+      updated to open the form first);
+    - system categories have no Delete button;
+    - at 1200 × 720 the buttons paint inside the panel with a 60-character
+      name.
+
+    Update the *Categories* row of `ui-conventions.md`.
+
+- [ ] **3.49 A Uses column instead of Category.** Since 3.23 the
+  Categories page's rule list only shows the selected category's rules, so
+  on a subcategory every Category cell says the same thing. The user
+  wants the count of transactions each rule matches there instead (user
+  requests, 2026-11-11).
+  - **Replace the Category column with Uses** (`RULE_USES_W`, 80 px,
+    right-aligned, `flow::count`), the same number and wording as the
+    Rules page's Uses column (`rule_use_stats` from 3.58, its `count`): the transactions
+    the rule *decides*, so it agrees with stored categories and with
+    3.52's "decided by this rule". A heading tooltip says "Transactions
+    this rule categorizes". 0 shows in `muted_foreground`. The counts are
+    loaded in the same refresh as the rules (one `rule_use_stats` call; no
+    per-row queries) and update after every rule change.
+  - **Parent selected:** its list mixes its subcategories' rules, so the
+    subcategory also shows: a muted `text_xs` tag with the child's name
+    (not "Parent › Child") after the pattern, inside the Pattern column,
+    ellipsized first. A subcategory selection shows no tag.
+  - Clicking the Uses heading sorts by it (descending), clicking Pattern
+    goes back, as on the Rules page. Reuse its sort state if it fits;
+    otherwise a separate `cat_rules_sort_by_uses`.
+  - Tests:
+    - no "Category" heading or cell paints;
+    - "Uses" paints with each rule's count, and matches the Rules page
+      for the same rule;
+    - a rule overlapped by a longer one shows only the rows it wins;
+    - the count updates after a rule edit or delete;
+    - on a parent, the subcategory tags paint, and on a subcategory they
+      don't;
+    - Uses sort works;
+    - 3.23's heading alignment and fit tests pass.
+
+    Update the *Categories* row of `ui-conventions.md`.
+
+- [ ] **3.43 No buttons end in "…".** The user doesn't want "…" on
+  buttons; use an icon instead, or just drop it (user request,
+  2026-11-11). This applies 3.32's Imports-header rule to every button.
+  All of them are on the Categories page today:
+  - **New category…** (`NEW_CATEGORY`, header, primary): `plus` icon +
+    "New category".
+  - **Rename…** (detail panel title row): `pencil` icon + "Rename".
+  - **Delete…** in the Delete form (3.51 moved it there; `confirm_label`):
+    `trash-2` icon + "Delete"; armed, it still reads "Click again to
+    delete" in `danger`.
+  - Rule rows (on both the Categories and the Rules page; skip what
+    3.58 already changed): **Edit** gets `pencil`, **Delete…** becomes `trash-2` +
+    "Delete" (armed text unchanged); both stay `.ghost()` `text_xs`. The
+    invisible heading spacers (`rule-heading-edit-spacer`,
+    `rule-heading-delete-spacer`) change the same way so the headings stay
+    aligned with the columns.
+  - **Not buttons, unchanged:** app-menu items ("Import CSV…", "Export…",
+    "Restore…"), the row context menu's "Change category…" submenu,
+    select placeholders ("Move to category…", "Category…") and the
+    "+ New account…" picker item. Menus keep the platform's "…" for items
+    that open a dialog.
+  - Check 3.23's fit rule still holds (Edit / Delete paint inside the
+    detail panel at 1200 × 720 and 1600 × 900): an icon adds ~20 px per
+    button.
+  - Tests: each of the buttons above paints an icon and its text has no
+    "…"; the armed labels are unchanged (existing two-click tests); a
+    guard test that scans `ui.rs` for `.label("…")` / `const … = "……"`
+    used as a button label and fails, so no new one creeps in; 3.23's
+    heading-alignment and fit tests pass. In `ui-conventions.md`, replace
+    the *Copy* bullet's "Use an ellipsis when the button opens a dialog or
+    picker" with "Buttons never end in "…"; actions carry a Lucide icon
+    left of the label (menus keep "…")", and update the *Categories* row.
+
+- [ ] **3.60 "Category type" label.** From `plan.md` → *Label the
+  category type dropdown* (never made a task; user confirmed
+  2026-11-11). The New category form labels its kind picker "Kind". Make
+  the field label "Category type" (`ui.rs`, the `cat:new-form`). The
+  detail panel's muted "Expense · N transactions" line shows the value,
+  not the word, and stays. Check no other user-visible "Kind" remains.
+  Keep the form fitting the header row at 1200 × 720. Tests: the form
+  paints "Category type" and no "Kind" label. Tick the `plan.md` box and
+  update the *Categories* row of `ui-conventions.md`.
+
+- [ ] **3.52 A rule's transactions under the rule list.** Nice-to-have
+  (user request, 2026-11-11): clicking a rule shows, in its own scrollable
+  area, the transactions that rule matches. Do it after 3.51 (which frees
+  the vertical space) and after 3.28 (whose row checkboxes are the
+  multi-select; this is a separate single **focus**).
+  - **Focus:** clicking a rule row (not its checkbox, Edit or Delete)
+    makes it the `focused_rule` (`list_active` row background); clicking
+    it again, Escape, selecting another category or leaving the page
+    clears it. Deleting the focused rule clears it; editing keeps it.
+  - **Layout:** with a rule focused, the Rules section splits vertically.
+    The rule list stays on top (`flex_1`, `min_h(120)`), then a
+    `border_t_1` divider. Below it is the **matches panel** (~45 % of the
+    section, `min_h(160)`): a header "Transactions matching `PATTERN`"
+    (pattern ellipsized, tooltip) with a muted "N · M decided by this
+    rule" summary, then a virtual list (`v_virtual_list`, scrollbar per
+    3.26) of rows. With nothing focused the list takes the whole section,
+    as now.
+  - **Rows:** Date (110 px), Description (`flex_1`, ellipsized with
+    tooltip), Account (`text_sm` muted, ~140 px), Amount (right-aligned,
+    `flow::money`). Rows the rule matches but doesn't decide carry a
+    muted trailing tag and `muted_foreground` text:
+    - "won by `OTHER`" when another rule wins (`winning_rule`);
+    - "locked" when the row's category is locked.
+    Rows the rule decides sort first, then by date descending.
+  - **DB:** `rule_matches(conn, rule_id) -> Vec<RuleMatchRow>` in
+    `financi-db/src/rules.rs`: every transaction (locked or not) whose
+    description the rule's pattern matches (`CompiledPattern`, compiled
+    once), with a `status` of `Decides`, `WonBy(rule_id)` or `Locked`.
+    Use one `CompiledRules` per call, as `rule_use_stats` (3.58) does, so the
+    "decides" set agrees with Uses (3.28). Loaded through `DbWorker` when
+    focus changes and after every refresh while focused; a stale result
+    for a previous focus is dropped (keep the `Task`, drop on refocus).
+  - **While editing** the focused rule, the panel keeps showing the
+    saved rule's matches (the live count under the editor is the
+    preview); it reloads after Save.
+  - Empty state inside the panel: "This rule matches no transactions".
+  - Tests:
+    - DB: statuses for decides / won-by / locked rows, consistent with
+      `rule_use_stats`; an invalid regex returns empty.
+    - UI: clicking a row focuses it and the panel paints below the list
+      inside the section; the summary counts are right; a won-by row shows
+      its tag; Escape and re-click clear focus; focus changes drop a late
+      result; at 1200 × 720 both the list and the panel are at least their
+      minimum heights with 3.51's forms closed.
+
+    Update the *Categories* row of `ui-conventions.md`.
+
+- [ ] **3.47 A deleted rule leaves the list at once.** After the second
+  click on a rule's Delete, the row stays in the list for a noticeable
+  moment before it disappears (user report, 2026-11-11, after 3.40
+  landed). 3.40 made `reapply_rules` fast (34 ms for 5 000 rows × 50
+  regex rules), so the wait is elsewhere. Today `arm_delete_rule` only
+  changes the list after **both** the `delete_rule` task **and** the
+  full `refresh` finish: `refresh` re-runs every page's queries
+  (transactions, chart, summary, imports, category tree and counts,
+  rules, queue, transfer reviews) in one `on_db` call before
+  `self.rules` is replaced. On top of that, every `DbWorker` job queues
+  behind any in-flight one (the live preview count, a previous refresh).
+  - **After 3.57.** 3.56 / 3.57 scope the refresh and add the
+    `FINANCI_TIMINGS=1` log; this task adds optimistic list updates and
+    fixes whatever the measurements still show.
+  - **Measure first.** With 3.56's `FINANCI_TIMINGS=1` log, record the time from the confirming click to (a)
+    `delete_rule` returning, (b) the refresh result arriving, and each
+    query inside `refresh`. Run it on the dev-seed DB and on a copy of the
+    real DB (`FINANCI_DB=.cache/real-copy.sqlite`, timings only; never
+    commit it). Put the numbers in the commit message, and fix whatever
+    dominates if it isn't covered below (e.g. a missing index for
+    `transaction_counts` or `uncategorized_by_merchant`).
+  - **Optimistic removal:** on the confirming click, drop the rule from
+    `self.rules` (and the visible list) right away and `cx.notify()`,
+    keeping a copy. On error, put it back at its position and show the
+    error in `rule_error`. The refresh still runs after and brings
+    counts and categories up to date.
+  - **Do the same for Save and Add**, so a rule edit shows its new
+    pattern/category in the row at once, and a new rule appears at once,
+    with the same rollback on error. Rollback on a failed Add means
+    removing the provisional row; it has no id until the DB returns one,
+    so give it a temporary negative id and swap it for the real one.
+  - Tests: after the confirming click, the rule is gone from the list in
+    the same frame, before the DB task completes (run the UI without
+    advancing the executor); a failing delete (rule removed underneath)
+    restores the row and shows the error; an edit's new pattern shows
+    before the save completes; a new rule appears before its add
+    completes and then carries its real id. The 3.24 delete and edit
+    tests still pass.
+
+- [ ] **3.54 Category changes don't lag the page.** Deleting a category
+  and moving a subcategory (and likely add / rename) freeze or lag the
+  page noticeably (user report, 2026-11-11). The DB side is small:
+  `move_child` is one `UPDATE`, `delete_category` two `UPDATE`s and a
+  `DELETE`, with no rule re-run. That leaves two suspects:
+  - (a) As in 3.47, the change waits for the full `refresh`, which re-runs
+    every page's queries.
+  - (b) **UI-thread work on the result.** A changed category list
+    re-sets items on every category picker: `sync_queue` re-sets every
+    surviving queue picker, plus the rule / move / delete targets, the
+    Rules page's Move picker and the table delegate's `child_choices`.
+    The tree virtual list is also rebuilt.
+
+  There's also no index on `transactions(category_id)`, so the
+  reassign `UPDATE` and `transaction_counts` scan the table.
+  - **Measure first,** with 3.56's `FINANCI_TIMINGS=1` logging, after
+    3.57's scoped refreshes (do 3.47 and 3.54 in one branch), on the dev-seed DB and on a copy of the real
+    DB. Log for each of delete / move / add / rename: click to DB
+    returning, to refresh result, the refresh's per-query times, and the
+    **main-thread time spent applying the result** (from entering the
+    `update_in` closure to its return, broken down by picker re-sets and
+    table refresh). Numbers go in the commit message; fix what dominates.
+  - **Optimistic tree update:** delete removes the node (and its row
+    count moves to the reassign target) and move re-parents the node in
+    `self.categories` right away, with `cx.notify()`; roll back and show
+    the error on failure. The refresh then reconciles.
+  - **Cheaper picker refresh:** build the `Names` list once per refresh
+    and share it (`Rc`/`SharedString`s), and re-set items only on pickers
+    that are **built and visible** (queue pickers are already lazy per
+    3.19; do the same for the rest). Other pickers re-set lazily when
+    next opened or shown (a `categories_version` counter compared on
+    render).
+  - **Index:** if the measurements show the scans matter, add a numbered
+    migration `CREATE INDEX tx_category ON transactions(category_id)`
+    (0001 stays frozen).
+  - Tests:
+    - after a confirmed delete or a move, the tree shows the change in
+      the same frame, before the DB task completes;
+    - a failing move (e.g. target removed underneath) rolls back and
+      shows the error;
+    - after a category change, the hidden pickers are re-set on their
+      next render, not during the refresh (count re-sets with a test
+      hook);
+    - if the index is added, a migration test checks it exists;
+    - the existing category CRUD tests pass.
+
+### Lane C — small tasks on other pages
+
+- [ ] **3.63 An app icon.** The window and Dock / taskbar show the
+  default icon (user request, 2026-11-11). The source artwork is
+  committed: `assets/icon/financi.svg` (1024 × 1024, macOS icon grid: a
+  dark rounded square with three rising bars, the tallest green). Don't
+  redesign it; ask the user if it needs changes.
+  - **Rendered PNGs, committed:** `assets/icon/png/financi-<n>.png` for n
+    = 16, 32, 64, 128, 256, 512, 1024, made by `scripts/icons.sh` with
+    `rsvg-convert` (installed here) and exposed as `mise run icons`. The
+    build reads the PNGs, so it needs no SVG renderer.
+  - **Linux, X11:** set `WindowOptions.icon` (`gpui-pre`
+    `platform.rs`, X11 only) from the 256 px PNG, embedded with
+    `include_bytes!` and decoded with the `image` crate. `image` 0.25 is
+    already in `Cargo.lock` through GPUI; add it as a direct dependency at
+    that version with `default-features = false, features = ["png"]`.
+  - **Linux, Wayland:** compositors ignore per-window icons and match the
+    window's `app_id` to a desktop entry. Set `WindowOptions.app_id =
+    Some(APP_ID)` (`const APP_ID: &str = "financi"`) and add
+    `packaging/linux/financi.desktop` (`Name=financi`, `Exec=financi`,
+    `Icon=financi`, `StartupWMClass=financi`, `Categories=Office;Finance;`).
+    `mise run install-desktop` copies it to `~/.local/share/applications/`
+    and the PNGs to `~/.local/share/icons/hicolor/<n>x<n>/apps/financi.png`.
+  - **macOS:** the Dock icon comes from the app bundle. Add `mise run
+    bundle` (`scripts/bundle-macos.sh`): build release, make
+    `target/release/financi.app` with an `Info.plist`
+    (`CFBundleIconFile`, `CFBundleIdentifier` `dev.financi.app`,
+    `CFBundleShortVersionString` from the 3.39 version) and an `.icns`
+    made with `iconutil` from an `.iconset` of the PNGs. For `cargo run`,
+    also set the Dock icon at startup with
+    `NSApplication::setApplicationIconImage` through `objc2-app-kit`
+    (0.3.2 is already in `Cargo.lock`; add it as a macOS-only dependency
+    at that version). If either dependency can't be added at the locked
+    version, stop and ask.
+  - Tests: the embedded PNG decodes to 256 × 256 RGBA; the desktop file's
+    `Icon` and `StartupWMClass` equal `APP_ID`; `scripts/icons.sh` is
+    idempotent (re-running changes no committed PNG). Check by hand on
+    this Linux machine that the taskbar shows the icon after `mise run
+    install-desktop`, and say which session type (X11 / Wayland) you
+    checked. Add the new `mise` tasks to `CLAUDE.md` → *Commands*.
+
 - [ ] **3.37 In-row Undo says "Undo".** 3.32 made the newest history
   row's Undo an icon-only button, which the user finds unclear. Make it
   the `undo-2` icon **plus the label "Undo"** (still `.xsmall().ghost()`,
@@ -1640,139 +960,161 @@ the order above (3.28 → 3.29 → 3.26).
   "Undo" and it paints an icon; 3.32's bounds and fit tests still pass
   in both states. Update the *Imports* row of `ui-conventions.md`.
 
-- [x] **3.38 Tooltip on the sidebar's database path.** The sidebar footer
-  (`Shell::sidebar`, `.footer(...)`) shows the DB path in `text_xs` muted
-  with an ellipsis, so on a normal path most of it is cut off by the
-  sidebar's width (user request, 2026-11-11). Give the path element an `id`
-  and a hover `.tooltip(...)` (gpui-base `Tooltip`, as the queue's merchant
-  cell does) showing the full path, prefixed "Database: ". Leave the
-  footer's look unchanged otherwise. Tests: hovering the path shows a
-  tooltip whose text is the full `db_path`, with a path longer than the
-  sidebar. Note it in the *Sidebar* section of `ui-conventions.md`.
+- [ ] **3.61 The import preview names the institution.** From `plan.md`
+  → *Make account selection on import clearer* (never made a task; user
+  confirmed 2026-11-11). The account picker already lists "Institution ·
+  Account" (`Account::display_name`), but the preview's only sign of the
+  institution is a muted `text_xs` "Detected format: …" after the file
+  name, which is easy to miss when choosing which card a file belongs to.
+  - Line one of the preview: file name, then the **institution name**
+    (e.g. "American Express", from the parser's institution, not the
+    parser id) as an outline tag in `text_sm`, replacing "Detected format:
+    …".
+  - The "Into" picker lists only that institution's eligible accounts, as
+    now; check each item reads "Institution · Account" and that "+ New
+    account…" creates the account under the detected institution.
+  - Tests: the preview paints the institution name and no "Detected
+    format"; the picker items carry the institution. Tick the `plan.md`
+    box and update the *Import preview* bullet of `ui-conventions.md`.
 
-- [x] **3.39 Show the version in the sidebar.** From `plan.md` → *Show the
-  version subtly in the UI* (planned with the semver tags but never made a
-  task; user asked again 2026-11-11). Add a `crates/financi/build.rs` that
-  sets `FINANCI_VERSION` from `git describe --tags --always --dirty`,
-  falling back to `CARGO_PKG_VERSION` when git or the tags aren't there
-  (and `rerun-if-changed` on `.git/HEAD` and the refs so it stays
-  current). Expose it as one `pub const`/fn (M5's export manifest will
-  reuse it). Show it as the last line of the sidebar footer, `text_xs`
-  muted, e.g. "v0.13.7" (or "v0.13.7-3-gabc1234-dirty"), ellipsized with
-  the same kind of hover tooltip as 3.38. Do 3.38 and 3.39 in one branch
-  (same footer). Tests: the footer paints the version text and it equals
-  the const; the fallback path is unit-tested (factor the choice into a
-  function that takes the git output). Tick the plan.md box too, and note
-  it in the *Sidebar* section of `ui-conventions.md`.
+- [ ] **3.59 Searchable category pickers.** From `plan.md` → *Make
+  category dropdowns usable with thousands of categories* (never made a
+  task; user confirmed 2026-11-11). A flat scrolling list doesn't work at
+  that size, and same-named subcategories under different categories
+  can't be told apart.
+  - gpui-component's `SelectState` has `.searchable(true)`
+    (`gpui-component-0.9.0/src/select.rs`, ~line 305: a search input at
+    the top of the menu), `SearchableVec` and `SelectGroup` for grouped
+    items, and `Select::menu_width`. Use them; don't hand-roll a picker.
+  - **Which pickers:** every `Select` that picks a category or
+    subcategory: the To categorize row pickers, the Rules page Move bar,
+    the Categories page's Move form (categories) and Delete form
+    (subcategories), the parent-scoped add-rule picker (3.53; searchable
+    once it has more than 10 items), and any others a grep for
+    `child_choices` / `SelectState::new` finds. The table's right-click
+    *Change category…* submenu is a menu, not a `Select`; leave it.
+  - **Items:** subcategories grouped under their category (`SelectGroup`,
+    the category as the group title), so each result is seen with its
+    category. Typing matches category **and** subcategory names, case-
+    insensitive: "food" shows every subcategory of Food. If grouped search
+    can't match group titles, use flat items labelled `Category ›
+    Subcategory` with the category part muted, and say which you chose in
+    the handoff.
+  - Keyboard: the search input has focus when the menu opens; arrows move,
+    Enter picks, Escape closes. The menu is wide enough for the longest
+    label up to 320 px; longer labels ellipsize.
+  - Renders only the visible options (check the gpui-component list is
+    virtual; if it isn't, stop and report).
+  - Tests: with 2 000 subcategories across 200 categories, typing a
+    subcategory name shows it with its category and Enter picks it;
+    typing a category name lists its subcategories; two same-named
+    subcategories under different categories are both shown, each under
+    its category; opening the menu builds only the visible items; the
+    existing categorize / move / delete tests pass. Add a rule to
+    `docs/ui-conventions.md` (*Interaction*): every category picker is
+    searchable and shows the category with each subcategory. Tick the
+    `plan.md` box.
 
+### Last in M3
+
+- [ ] **3.26 A scrollbar on everything that scrolls.** Most scrolling
+  areas give no sign that there is more content or where you are in it.
+  Every scrollable region shows a vertical scrollbar whenever its content
+  is taller than its viewport, and none when it fits. Do this last in
+  M3: 3.45, 3.52, 3.58 and 3.59 add or re-lay out scrolling regions.
+  - **Find every region at the time:** grep the UI code for
+    `overflow_y_scroll`, `overflow_x_scroll` and `v_virtual_list`. Besides
+    the lists below, that includes the Rules page list (`rules_scroll`),
+    the dashboard page scroll (3.45), the rule matches panel (3.52) and
+    the summary's month strip (3.30 already has its horizontal bar). 3.36
+    removes the scrolling legend list.
+  - Use gpui-base's `Scrollbar` (`gpui-base-0.9.0/src/scrollbar.rs`:
+    `Scrollbar::vertical(&handle)`); it takes a `ScrollHandle`, and
+    `VirtualListScrollHandle` implements `ScrollbarHandle` too. Don't
+    hand-roll one.
+  - **Always visible while the content overflows:** set
+    `ScrollbarMode::Always` once, app-wide, on the theme's
+    `ScrollbarTheme` at startup. The default (`Scrolling`) only shows the
+    bar while scrolling, which is the behaviour being replaced.
+  - **Virtualized lists** (category tree, rule list, To categorize queue):
+    reuse the handle each list already keeps on `Shell` (`tree_scroll`,
+    `rule_scroll`, `queue_scroll`, from 3.21).
+  - **Plain scrolling divs** (`overflow_y_scroll` in `ui.rs`: the chart
+    legend `legend-list`, the monthly summary `summary-rows`, the Transfers
+    list `transfer-reviews`): give each a `ScrollHandle` kept as a `Shell`
+    field (one per region, never created in `render`; same trap as 3.21)
+    and `track_scroll` it.
+  - **Popovers and dropdowns** that can outgrow their height: the Accounts
+    filter popover gets a max height, scrolls, and shows a scrollbar; check
+    that `Select` menus already show one for long lists (category pickers)
+    and fix them if not.
+  - **`DataTable`s** (transactions, import history) draw their own
+    scrollbars (`scrollbar_visible`); confirm they follow the app-wide
+    mode and show both when the content overflows.
+  - **Placement:** the bar overlays the region's right edge inside its
+    border (wrap the region in a `relative()` container and add the
+    `Scrollbar` as an absolutely positioned sibling). Content reserves the
+    bar's width (16 px) on the right so the thumb never covers amounts,
+    counts or buttons.
+  - Add a rule to `docs/ui-conventions.md` (*Layout*): every scrollable
+    region has a visible scrollbar while it overflows, and new scrolling
+    regions must add one.
+  - Tests: for each region above, with enough rows to overflow, the
+    scrollbar paints inside the region's bounds and the right-most content
+    (amount, count or button) doesn't overlap it; with content that fits,
+    no scrollbar paints; dragging the thumb (or `set_offset` on the handle)
+    moves the content, and the offset survives an unrelated `cx.notify()`.
 
 **Done when:** on the demo data the dashboard totals match
-`expected.json`, filters compose, tests cover 3.1–3.58.
-
----
-
-## M4 — Simplii Visa, transfer pairing, near-match review
-
-- [x] **4.1 Simplii Visa (assumed format).** No real Visa sample exists yet.
-  Assume it uses the **same format as Simplii chequing**. Because two
-  parsers can't claim the same header, replace `simplii-chequing` with one
-  parser `simplii` whose `account_kinds()` is `[Chequing, CreditCard]`; the
-  chosen account decides which. Funds Out = money out, Funds In = money in
-  for both. Keep accepting the old parser id `simplii-chequing` in
-  `by_id()` (existing `imports.parser_id` rows). `is_card_payment`: a
-  credit-card row with Funds In whose description contains `PAYMENT`.
-  Add a synthetic Visa fixture. Note in `plan.md` that this needs revisiting
-  when a real sample arrives.
-
-- [x] **4.2 Transfer pairing** (runs automatically after every import).
-  - Card payments: a chequing row with amount −X and a credit-card row with
-    amount +X categorized Card Payment, dates within **5 days**, both
-    unpaired.
-  - Own-account transfers: rows in two different chequing/savings accounts,
-    −X and +X, dates within **2 days**, at least one description containing
-    `TRANSFER`.
-  - Exactly one candidate → pair: set `transfer_pair_id` on both, and
-    categorize both as `Card Payment` or `Between Accounts`.
-  - More than one candidate → **always ask**: record it in a new table
-    (migration 0003):
-    ```sql
-    CREATE TABLE transfer_reviews (
-      transaction_id INTEGER PRIMARY KEY REFERENCES transactions(id) ON DELETE CASCADE,
-      candidate_ids  TEXT NOT NULL  -- comma-separated transaction ids
-    );
-    ```
-  - UI: the sidebar's Transfers item shows the open-review count and opens
-    the Transfers page (no banner, no sheet); for
-    each, pick the matching row or "Not a transfer".
-  - Paired rows show a link icon in the table; context menu *Unpair* clears
-    both sides and re-applies rules.
-  - Tests: single match pairs, tie goes to review, resolving a review,
-    unpair, an unrelated equal amount is not paired.
-
-- [x] **4.3 Near-match review in the import preview.**
-  - After reconciliation, for each new row find existing rows in the same
-    account with the **same cleaned merchant** (case-insensitive), amount
-    within **20%** of the existing amount, date within **±3 days**, not
-    already matched to another new row.
-  - The preview lists each suspected pair with "Same charge" / "Different
-    charge" (default: different, so it imports as new).
-  - On commit, for each "Same charge": keep the existing transaction id and
-    category, replace its date/amount/description/merchant/raw bytes/
-    `row_hash` with the new row's, and add the **old** hash to
-    `row_aliases` (with the new `import_id`).
-  - Reversible undo: migration 0003 also adds
-    ```sql
-    CREATE TABLE replacements (
-      import_id INTEGER NOT NULL REFERENCES imports(id) ON DELETE CASCADE,
-      transaction_id INTEGER NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
-      old_raw_bytes BLOB NOT NULL, old_row_hash TEXT NOT NULL,
-      old_posted_date TEXT NOT NULL, old_processed_date TEXT,
-      old_amount_cents INTEGER NOT NULL, old_description_raw TEXT NOT NULL,
-      old_merchant TEXT,
-      PRIMARY KEY (import_id, transaction_id)
-    );
-    ```
-    `undo_last_import` restores every replaced transaction from this table
-    *before* deleting the import.
-  - Master CSVs (2.2): after a commit with "Same charge" rows, and after
-    undoing one, rewrite the year files for both the old and new dates. The
-    old row is removed and the new one added exactly as exported; no row's
-    bytes are edited.
-  - Tests: tip-added charge is offered; "same" replaces and aliases; a later
-    overlapping export then adds 0; undo restores the old values; "different"
-    imports as new; the master CSV drops the old row and holds the new one,
-    and undo puts the old row back.
-
-**Done when:** tests cover 4.1–4.3.
+`expected.json`, filters compose, and every M3 task above is merged.
 
 ---
 
 ## M5 — Export / restore
 
-Design: `plan.md` → *Export*. The per-account, per-year master CSVs already
-exist from 2.2; export copies them instead of rebuilding anything.
+Design: `plan.md` → *Export and restore*. The per-account, per-year master
+CSVs already exist from 2.2; export copies them instead of rebuilding
+anything. 5.1 and 5.2 are backend only and may run in a free slot while M3
+is still open (see *Picking the next task*); 5.3 and 5.4 wait for M3.
 
-- [ ] **5.1 Export** (`financi-db/src/export.rs`, crates `zip`, `serde_json`).
-  - Run the 2.2 self-check, then zip: `financi.sqlite` (snapshot via
-    `VACUUM INTO` or the backup API), `manifest.json`, and the `csv/` tree
-    copied as-is (no rebuilding in export).
-  - `manifest.json`: financi version, schema version, exported_at, and per
-    file: account_key, institution, account name, kind, year, row count,
+- [ ] **5.1 Export, backend** (`financi-db/src/export.rs`, crates `zip`,
+  `serde_json`).
+  - `export(conn, root, dest, app_version)`: run the 2.2 self-check, then
+    zip `financi.sqlite` (snapshot via `VACUUM INTO` or the backup API),
+    `manifest.json`, and the `csv/` tree copied as-is (no rebuilding).
+  - `manifest.json`: financi version (passed in by the app, from 3.39's
+    `version.rs`), schema version, exported_at, and per file:
+    account_key, institution, account name, kind, year, row count,
     SHA-256; plus the database file's SHA-256.
-  - UI: File → Export… (and an Export… button on the Imports page) opens a save dialog defaulting
-    to `~/Desktop/financi-export-YYYY-MM-DD.zip`.
+  - Tests: the zip holds the three parts; every manifest hash and row
+    count matches the file; a missing year file is rebuilt by the
+    self-check before zipping; hidden rows are in the CSVs.
 
-- [ ] **5.2 Restore.**
-  - File → Restore…, a Restore… button on the Imports page, and a "Restore
-    from export…" link in the empty-state screen.
-  - Verify every file against the manifest SHA-256s; refuse if the schema
-    version is newer than this build; migrate if older.
-  - Back up the current database to `financi.sqlite.bak` (backup API) and
-    the current `csv/` to `csv.bak/`, then restore into the live connection
-    with rusqlite's backup/restore API on the worker thread (no file
-    swapping), replace `csv/` with the zip's tree, then refresh all views.
+- [ ] **5.2 Restore, backend.**
+  - `verify_export(zip)` checks every file against the manifest SHA-256s
+    and refuses a schema version newer than this build. `restore(...)`
+    backs up the current database to `financi.sqlite.bak` (backup API)
+    and `csv/` to `csv.bak/`, restores into the live connection with
+    rusqlite's backup API on the worker thread (no file swapping),
+    migrates an older schema, and replaces `csv/` with the zip's tree.
+    Expose it as a `DbWorker` job.
+  - Tests: a tampered file is refused before anything changes; a newer
+    schema is refused; an older one migrates; the `.bak` copies exist
+    after a restore; a failure part-way leaves the live database usable.
 
-- [ ] **5.3 Acceptance tests** (all must pass):
+- [ ] **5.3 Export and restore in the app.**
+  - File → Export… (⌘E) and the Imports page's **Export** button open a
+    save dialog defaulting to `~/Desktop/financi-export-YYYY-MM-DD.zip`.
+  - File → Restore…, the Imports page's **Restore** button and a
+    "Restore from export…" link on the empty-state screen open a file
+    dialog, then restore and refresh every view. Both say what happened in
+    a toast; errors stay until closed.
+  - Remove the "… is not available yet." toasts (`Shell::export_data`
+    and its Restore twin). UI tests for both flows
+    (stub the dialogs), and update the *Imports* row of
+    `ui-conventions.md`.
+
+- [ ] **5.4 Acceptance tests** (all must pass):
   - Overlapping re-import adds 0 rows (exists; keep it) and leaves the
     master CSVs byte-identical.
   - Totals match `fixtures/demo/expected.json` (from 3.1).
@@ -1784,12 +1126,82 @@ exist from 2.2; export copies them instead of rebuilding anything.
     the source database adds 0 rows; restore from the zip gives an identical
     database (same rows, categories, rules, locks, hidden flags) and `csv/`.
 
-**Done when:** 5.1–5.3 pass. v1 complete. Stop and report.
+**Done when:** 5.1–5.4 pass. Then do the final task below.
+
+---
+
+## Final — performance at scale (last of all)
+
+Runs after M5, when every other task is done (user decision, 2026-11-11).
+
+- [ ] **3.55 Fast at real scale: hundreds of rules, dozens of
+  categories.** The user has hundreds of rules and dozens of categories
+  and is worried about performance (2026-11-11). The dev seed (18 rules,
+  458 rows) hides scale problems. `CompiledRules::pick` loops over **every
+  rule for every row**, and a rule change runs that loop twice: once in
+  `reapply_rules`, and again in `rule_use_stats` (3.58) inside `refresh`. At
+  1 000 rules × 100 000 rows (10 years at the user's ~10 000 a year)
+  that's ~100 M checks per pass, likely around a
+  second or more. The live preview (`count_rule_matches`) scans every row
+  on each keystroke. **Runs last** (user decision, 2026-11-11): after M5 and every other
+  task. Earlier tasks measure on the dev seed and a throwaway local seed;
+  the committed scale seed and the timed budgets land here.
+  - **Scale fixture:** a `seed_large` (dev-seed feature) and a
+    `FINANCI_DEV_SEED=large` switch. It builds **1 000 rules** (80 %
+    substring, 20 % regex, overlapping on purpose), **80 categories**
+    (15 parents), and **100 000 transactions** over 10 years (the user has ~1 800 today
+    and expects ~10 000 a year) with realistic
+    merchant strings, all deterministic. It uses only synthetic data.
+  - **Budgets** (release build, on the large seed), as `#[ignore]` perf
+    tests runnable with `cargo test --release -- --ignored perf_`, which
+    print their times:
+    - `reapply_rules` < 150 ms;
+    - `rule_use_stats` < 150 ms;
+    - `count_rule_matches` < 30 ms;
+    - the full `refresh` query set < 250 ms;
+    - main-thread apply of a refresh result < 16 ms;
+    - opening the Categories and Rules pages < 16 ms per frame;
+    - a dashboard filter change shows its result within 100 ms (from
+      3.56);
+    - no frame over 16 ms while hovering, scrolling or typing, on the
+      one-year seed (from 3.57);
+    - the Rules page with 1 000 rules scrolls and filters under 16 ms a
+      frame (from 3.58).
+
+    Debug-build versions of the DB budgets (×10) run in the normal test
+    suite on a 10 000-row / 300-rule seed (one year) so regressions fail CI.
+  - **Matching in one pass per row:** in `CompiledRules`, replace the
+    per-rule loop with an **Aho-Corasick** automaton over the lowercased
+    substring patterns (`aho-corasick` crate, already in the tree via
+    `regex`; `MatchKind::Standard` with overlapping search to collect
+    every match) and one **`RegexSet`** for the regex rules (case-
+    insensitive). Each row is scanned once per kind; the winner is the
+    longest match, ties to the lowest id, substring before regex, exactly
+    as today. Invalid regexes stay excluded. The existing core tests are
+    the contract; add a property test that the new `pick` equals the old
+    per-rule loop on random rules and descriptions.
+  - **One pass per rule change:** have `reapply_rules` return the per-rule
+    use counts it computed, and cache them on the shell until the next
+    rule or import change, so `refresh` doesn't recompute them. If that
+    isn't enough, store the deciding rule: add a nullable
+    `transactions.category_rule_id` column in a new migration, set by
+    `reapply_rules` and at import. Uses then becomes a `GROUP BY`, and
+    3.52's "decides" set becomes a query. Only add the column if the
+    budgets need it.
+  - **Live preview:** debounce `preview_rule_match` by 150 ms, and keep
+    the in-flight task cancellable, as now.
+  - **UI at scale:** with 1 000 rules and 80 categories, check that the
+    rule lists, tree and pickers stay virtual or lazy (3.12, 3.19, 3.21).
+    Category pickers with 65 children stay usable (3.59 made
+    them searchable; check it holds at this size).
+  - Commit message: the before / after numbers for every budget.
 
 ---
 
 ## After v1 (not now)
 
 v1.1 spend-over-time line + top merchants · v1.2 flags (large, new merchant,
-FX/fees) · v1.3 recurring/subscriptions · more institutions · CSV export of
-filtered rows. Real Simplii Visa sample → revisit 4.1.
+FX/fees) · v1.3 recurring/subscriptions · default categories and merchant
+rules on first run (`plan.md` → *Categorization*; moved out of v1
+2026-11-11) · more institutions · CSV export of filtered rows. Real Simplii
+Visa sample → revisit 4.1.

@@ -77,9 +77,10 @@ Don't force-push. Remove the worktree only after the push succeeds.
 130k tokens fills fast. Treat context as the scarcest resource.
 
 - **Read sections, not files.** Find what you need with `grep -n` first,
-  then read a line range (`sed -n 120,180p file`). `plan.md` is ~7.5k
-  tokens, `docs/tasks.md` ~4.5k and `docs/ui-conventions.md` ~3.5k; read
-  only the parts for the current task. Never read anything under `target/`, `Cargo.lock`, or whole
+  then read a line range (`sed -n 120,180p file`). `plan.md` is ~6k tokens, `docs/tasks.md` ~18k and
+  `docs/ui-conventions.md` ~6k; read only the parts for the current task.
+  Never read `docs/tasks-done.md` whole: grep it for a task number when an
+  open task refers to a done one. Never read anything under `target/`, `Cargo.lock`, or whole
   fixture CSVs.
 - **UI docs only for UI tasks.** `docs/ui-conventions.md` and the *GPUI
   pitfalls* in `docs/tasks.md` are read only when a task touches GPUI view
@@ -110,21 +111,30 @@ sub-agents' branches.
 
 On start:
 
-1. Read `CLAUDE.md`, this file, the *How to work*, *Where things are* and
-   *GPUI pitfalls* sections of `docs/tasks.md`, and the current milestone's
-   section. Skip other milestones.
-2. Check `git status` and `git log --oneline -10`. The first unticked
-   `- [ ]` box in the current milestone is the next task.
+1. Read `CLAUDE.md`, this file, and from `docs/tasks.md` the sections
+   *How to work*, *Picking the next task* and *Where things are*. Read a
+   task's own text when you delegate it. Skip other milestones.
+2. Check `git status`, `git log --oneline -10` and `git worktree list`.
+   Continue unmerged features in their worktrees first, then pick new
+   tasks as *Picking the next task* says (lanes, not file order).
 
 ### Keep the pool full
+
+**The rule:** two sub-agents are running whenever two tasks can run in
+parallel, and every sub-agent runs in the background. Before you end any
+turn, count the sub-agents in flight. If it's fewer than two and
+*Picking the next task* (in `docs/tasks.md`) allows another task, start it
+in that same turn.
+
 
 The orchestrator doesn't work one task at a time. It runs a pool of two
 slots and refills a slot as soon as it frees. Each feature goes through the
 steps below, but two features move through them at the same time, each at
 its own pace.
 
-- **Never block on a sub-agent.** Start every sub-agent with
-  `background: true` on the subagent/task tool call. The tool blocks by
+- **Never block on a sub-agent.** Start every sub-agent with the tool's
+  background option (`run_in_background: true`, or `background: true`,
+  whichever your subagent/task tool calls it). The tool blocks by
   default: without that flag the orchestrator's turn stays inside the call
   until that agent returns, so it can't start or answer anything else, and
   only one slot is busy. With it, the call returns at once and the report
@@ -166,7 +176,8 @@ Steps for each feature:
    of correctness; the reviewer should judge the code.
 4. **Act on the verdict:**
    - `PASS` → merge to `main`, push and remove the worktree (see *Feature
-     worktrees*), then next task.
+     worktrees*), move the task's text to `docs/tasks-done.md` (*How to
+     work*, step 6), then start the next task in the freed slot.
    - `CHANGES` → send the findings back to the implementer as a new brief
      (fix commits, never amend or rewrite history), then review again.
    - At most **3 implement→review rounds** per task. After that, stop and
@@ -181,11 +192,12 @@ sub-agent works only in the worktree its brief names. Never run an
 implementer and a reviewer on the same feature at once.
 
 Before delegating, choose tasks that can safely run in parallel, so the two
-branches don't conflict at merge. Two features may run together only if
+branches don't conflict at merge. The lanes in `docs/tasks.md` are drawn so
+that tasks from different lanes can; the rules below are for anything else. Two features may run together only if
 neither depends on the other and they don't change the same functions or
-regions. Sharing a file is fine: most UI work lands in
-`crates/financi/src/ui.rs` and `ui_tests.rs`, and git merges separate parts
-of a file cleanly. Name the regions in each brief, and have implementers add
+regions. Sharing a file is fine: UI work lands in `crates/financi/src/ui.rs` and
+`ui_tests.rs` (per-page modules under `ui/` once 3.62 lands), and git merges
+separate parts of a file cleanly. Name the regions in each brief, and have implementers add
 new tests next to related tests, not at the end of the file. If you can't
 tell which regions a task will change, don't run it alongside another.
 
@@ -253,9 +265,9 @@ Read-only: verification and code review. Does not edit files or commit.
    repo path. Look at the change with
    `git show --stat <hash>`, then each file's diff on its own.
 2. **Verify independently.** Run the clean-checkout test from `CLAUDE.md`
-   for the reviewed commit (use `.cache/review` and
-   `.cache/review-target` so it never collides with the
-   implementer's paths), plus clippy. Report real results, including
+   for the reviewed commit with your slot's *review* paths
+   (`$MAIN/.cache/slot-<N>-review` and `…-review-target`), so it never
+   collides with the implementer's or the other slot's, plus clippy. Report real results, including
    failures, with the relevant output lines.
 3. **Review** against, in order:
    - Does it do what the task says, all of it, and nothing extra?
@@ -280,6 +292,7 @@ Read-only: verification and code review. Does not edit files or commit.
 
 ```
 TASK: <id and title, e.g. 2.3 Category model>
+SLOT: <1 or 2: picks the clean-checkout paths in CLAUDE.md>
 WORKTREE: <absolute path> (branch feat/<slug>); all repo paths below are relative to it
 SPEC (verbatim from docs/tasks.md):
 <task text>
@@ -303,6 +316,7 @@ LEFT / QUESTION: <what's unfinished, or the exact question for the user>
 
 ```
 REVIEW: <commit hash or range>
+SLOT: <1 or 2>
 WORKTREE: <absolute path> (branch feat/<slug>); all repo paths below are relative to it
 TASK: <id and title>
 SPEC (verbatim from docs/tasks.md):

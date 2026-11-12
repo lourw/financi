@@ -11,11 +11,12 @@ This file holds requirements and settled decisions. `docs/tasks.md` is the task 
 | M0: Skeleton + GPUI spike | Done |
 | M1: Amex import, end to end | Done |
 | M2: Master CSVs + categorize | Done |
-| M3: Core views | In progress: 3.1–3.22 done. Remaining, in this order: 3.24 (edit and delete rules), 3.25 (dashboard alignment), 3.27 (status toasts), 3.30 (summary scrolls sideways), 3.31 (slimmer chart legend), 3.32 (Imports buttons: row-sized Undo, icons), 3.33 (category / subcategory wording), 3.23 (Categories page layout), 3.28 (Rules page), 3.29 (show a row's rule), 3.26 (scrollbars everywhere) |
+| M3: Core views | In progress. Open tasks and their order: `docs/tasks.md` → *Picking the next task* |
 | M4: Simplii Visa, transfer pairing, near-match | Done |
-| M5: Export / restore | Not started |
+| M5: Export / restore | Not started (its backend tasks may fill an idle slot during M3) |
+| Final: performance at scale (task 3.55) | Last, after M5 |
 
-The prototype fixes under **Roadmap** are tracked separately from the milestones.
+The prototype fixes under **Roadmap** are tasks inside M3. Done tasks are archived in `docs/tasks-done.md`.
 
 ## Overview
 
@@ -35,7 +36,7 @@ financi is a single local Rust binary that imports CSV exports from banks and ca
 - Budgets, forecasting, investments, multi-user access.
 - Mobile or web front ends, a CLI, Windows.
 
-**v1 acceptance** (tests, task 5.3)
+**v1 acceptance** (tests, task 5.4)
 
 - An overlapping re-import adds 0 rows and leaves the master CSVs byte-identical.
 - Totals match the independent reference totals in `fixtures/demo/expected.json`.
@@ -159,7 +160,7 @@ financi-export-2026-11-07.zip
 - **Categories** have two levels, parent and child. Transactions are assigned to children only. The chart shows parents and drills into children.
 - **Kinds.** Each category is Expense, Income or Transfer, and transfer status comes only from this.
 - **System categories.** Transfers (Card Payment, Between Accounts) is present in every database and can't be renamed, moved or deleted.
-- **Default categories and rules.** The app ships a list of common expense and income categories plus substring rules for well-known merchants, so a first import is largely categorized. They are inserted once at first run of the real app, recorded in the `settings` table so deleted defaults never return, and only into a database with no transactions and no user categories. They are ordinary editable rows, not system rows. Existing databases are left alone, `FINANCI_DEV_SEED` runs skip them, and migrations still create only the system categories, so the "no categories" tests stay valid.
+- **Default categories and rules (after v1, decided 2026-11-11).** The app ships a list of common expense and income categories plus substring rules for well-known merchants, so a first import is largely categorized. They are inserted once at first run of the real app, recorded in the `settings` table so deleted defaults never return, and only into a database with no transactions and no user categories. They are ordinary editable rows, not system rows. Existing databases are left alone, `FINANCI_DEV_SEED` runs skip them, and migrations still create only the system categories, so the "no categories" tests stay valid.
 - **Rules** match `description_raw`, case-insensitively, by substring or regex. Substring rules beat regex rules; within each kind the longest pattern wins; ties go to the lowest rule id. There are no account or sign filters.
 - **Timing.** Rules apply at import and re-run over all unlocked rows whenever a rule is created, edited or deleted.
 - **Card payments** are detected by a built-in per-parser check that beats user rules.
@@ -180,7 +181,7 @@ A Cargo workspace keeps parsing and storage free of GPUI, so they can be tested 
 | `financi-core` | Raw file reader, shared model, parsing helpers, `StatementParser` trait, `row_hash`, rule matching | `chrono`, `sha2`, `regex` |
 | `financi-parsers` | One module per institution; detection by header | `financi-core` |
 | `financi-db` | Migrations, import with dedup, master CSVs, categories, rules, view queries, `DbWorker` | `rusqlite` (bundled), `directories`, `uuid` |
-| `financi` (bin) | Entry point, import flow helpers, GPUI views (`ui.rs`) | `gpui-kit =0.9.0` on `gpui-pre =0.3.11` |
+| `financi` (bin) | Entry point, import flow helpers, GPUI views (`ui.rs`; per-page `ui/` modules after task 3.62) | `gpui-kit =0.9.0` on `gpui-pre =0.3.11` |
 
 - Core reads each file once into a header and raw records, so bytes, positions and encoding survive for hashing and export. Parsers receive a `RawRecord` and implement identity, detection, mapping, `row_hash`, row order and card-payment detection.
 - Parsers produce a raw transaction; core normalizes it. Adding an institution means one small module and a fixture-based test.
@@ -202,20 +203,20 @@ Migrations in `crates/financi-db/migrations/` are the source of truth for the sc
 | `row_aliases` | Older hashes a confirmed near-match still answers to |
 | `settings` | UI preferences and first-run markers |
 | `flags` | Created in 0001, unused until v1.2 |
-| `transfer_reviews`, `replacements` | Planned in migration 0003 (tasks 4.2 and 4.3) |
+| `transfer_reviews`, `replacements` | Migrations 0003 and 0004 (tasks 4.2 and 4.3) |
 
 Recurring-series storage is deferred along with the recurring view.
 
 ## UI requirements
 
-Sidebar of pages: Dashboard, To categorize, Categories, Transfers, Imports. Layout and formats are in `docs/ui-conventions.md`.
+Sidebar of pages: Dashboard, To categorize, Categories, Rules, Transfers, Imports. Layout and formats are in `docs/ui-conventions.md`.
 
 **Dashboard**, linked through one shared filter state:
 
 - **Filters.** Date range presets (This month, Last month, Last 3 / 6 / 12 months, Year to date, All time) plus custom dates; default Last 3 months as whole calendar months, remembered between launches. Accounts filter: a dropdown of checkboxes built from gpui-kit parts, one per account, default all. "Include transfers", default off.
-- **Category chart.** gpui-kit `BarChart` beside a clickable legend (the chart takes no clicks). Clicking a parent filters the table and drills into its children; clicking a child again or pressing Esc clears.
+- **Category chart.** gpui-kit `BarChart` with a clickable legend (the chart takes no clicks; task 3.36 moves the legend under the chart). Clicking a parent filters the table and drills into its children; clicking a child again or pressing Esc clears.
 - **Monthly summary.** Parent rows, expandable to children, then Income, Spend and Net, one column per month plus Total. Clicking a cell filters the table to that category and month.
-- **Transaction table.** Date, account, merchant, category, amount. Search, sort by date or amount, "Uncategorized only" and "Show hidden" toggles. Virtualized. Right-click: Change category, Hide, Unhide.
+- **Transaction table.** Date, account, merchant, category, amount. Search, sort by any column, "Uncategorized only" and "Show hidden" toggles. Virtualized. Right-click: Change category, Hide, Unhide.
 
 **Responsiveness.** Every click, keystroke and filter change shows its effect within one frame (~16 ms): either the result itself (the row moves, the list updates, the filter applies) or a visible pending state on the control. Results backed by the database arrive within 100 ms at a year of data (~10 000 transactions, hundreds of rules), and stay within 250 ms at ten years. An action reloads only the data it can change, and a burst of changes runs only the newest. *(Added 2026-11-11; tasks 3.55–3.57.)*
 
@@ -236,40 +237,31 @@ Decisions recorded in the sections above are not repeated. These are the remaini
 | Possible duplicates | Handled by near-match review at import, not as a flag, because identical repeat purchases are kept on purpose. |
 | Component kit | gpui-kit was verified in M0 for file drop, `BarChart`, virtual `DataTable` and `Select`. It has no multi-select. |
 | Commit versions | A tracked post-commit hook tags each `main` commit `vX.Y.Z` from its Conventional Commit type. |
-| Agent workflow | `CLAUDE.md` and `AGENTS.md`: one milestone at a time, continuing to the next without a check-in, through the end of v1. |
+| Agent workflow | `CLAUDE.md` and `AGENTS.md`: one milestone at a time, continuing to the next without a check-in, through the end of v1. Two sub-agents in flight, picking from task lanes (`docs/tasks.md`). |
+| Late items (2026-11-11) | The scale seed and timed performance budgets (3.55) run last, after M5. Default categories and merchant rules move to after v1. |
 
 ## Roadmap
 
-**v1:** M3 (remaining: 3.24, 3.25, 3.27, 3.30, 3.31, 3.32, 3.33, 3.23, 3.28, 3.29, 3.26, in that order), then M5, per `docs/tasks.md`.
+**v1:** the rest of M3, then M5, then task 3.55, in the order `docs/tasks.md` → *Picking the next task* gives.
 
-**Prototype fixes** (feedback from 2026-11-08)
+**Prototype fixes** (feedback from 2026-11-08 onward; each is a task in `docs/tasks.md`)
 
-- [ ] **Let rules be edited and deleted.** *(Added 2026-11-10; task 3.24 in `docs/tasks.md`. Do first.)* Rules can only be added today, so a wrong pattern can't be corrected and keeps miscategorizing every import. Each rule on the Categories page gets Edit (pattern, regex switch and category, in place, with the live match count) and Delete… (two-click confirm). Saving or deleting re-runs all rules over unlocked transactions, as adding one does.
-- [ ] **Line up the dashboard.** *(Added 2026-11-10; task 3.25.)* Since labels were added, the filter controls sit at different heights and the page's regions don't share edges. Labelled controls, checkboxes and the transaction count share one center line; the two filter rows share column edges; the filters, chart, summary and table share the page's left and right edges; the chart and summary panels match in height and title position.
-- [ ] **Show status messages as toasts.** *(Added 2026-11-10; task 3.27.)* The "Categorized MERCHANT" line and other status text sit at the top of every page until cleared and push the content down. They become toasts in the window corner that take no layout space: confirmations fade after a few seconds, errors stay until closed.
-- [ ] **Let the monthly summary scroll sideways.** *(Added 2026-11-10; task 3.30.)* Long ranges overflow the panel and cut off months and the total. Category names and Total stay pinned while the months scroll horizontally, starting at the latest month, with a scrollbar while they overflow.
-- [ ] **Slim the chart legend.** *(Added 2026-11-10; task 3.31.)* The legend repeats each category's amount and share, so it is wide and squeezes the chart. It shows only the color and name; hovering a row shows the amount and share, and each bar shows its share above it.
-- [ ] **Fit the Undo button in its import history row.** *(Added 2026-11-10; task 3.32.)* The in-row Undo… is a full-size button that fills the 32 px row. It becomes a small ghost button centered in the row, and buttons inside table rows are small from now on. The page's buttons use icons instead of a trailing "…" (Import CSV, Undo, Export, Restore); the in-row Undo is icon-only with a tooltip.
-- [ ] **Say category and subcategory, not parent and child.** *(Added 2026-11-10; task 3.33.)* Every user-visible label, placeholder, button and error uses category / subcategory; the code and schema keep their names.
-- [ ] **Find and organize rules on a Rules page.** *(Added 2026-11-10; task 3.28. After 3.24.)* Rules can only be seen per category, so finding one means guessing its category. A Rules page lists every rule grouped by category, searchable by pattern or category name, with a "test a description" mode that shows which rule wins, an Unused filter, a per-rule count of the transactions it decides, and checkbox selection to move several rules to another category at once.
-- [ ] **Show which rule categorized a transaction.** *(Added 2026-11-10; task 3.29.)* The dashboard row menu gets Show rule, which opens the Rules page on that rule, or says why no rule applies (set by hand, card payment, no match).
-- [ ] **Show a scrollbar on everything that scrolls.** *(Added 2026-11-10; task 3.26. Do after 3.22 and 3.23, which re-lay out two of the lists.)* Every scrollable region (category tree, rule list, To categorize queue, chart legend, monthly summary, Transfers list, tables, long popovers and dropdowns) shows a scrollbar whenever its content overflows, visible without having to scroll first, and none when the content fits.
-- [ ] **Make every action feel instant.** *(Added 2026-11-11; tasks 3.56, 3.57, then 3.55, 3.47 and 3.54.)* Filters, buttons and edits lag because every action reloads every page's data on one database thread, in order, with no way to skip stale work, and search reloads on every keystroke. Each action reloads only what it changes, newer requests replace queued ones, search waits for a pause in typing, edits show on screen before the database confirms them, and test-enforced time limits keep it fast as the data grows.
-- [ ] **Ship default categories and merchant rules**, as specified under **Categorization**.
-- [ ] **Keep the app responsive with thousands of rows.** Profile the slowdown after large imports, then render only the rows on screen in every long list, starting with the To categorize queue. Create its per-row category dropdowns only when needed.
-- [ ] **Make category dropdowns usable with thousands of categories.** Scrolling a flat list won't work at that size, so every dropdown that picks a category (rules, the To categorize queue, the move and delete targets on the Categories page) becomes searchable: type to filter, match on both parent and child names, and show each result with its parent so same-named children can be told apart. Works from the keyboard and renders only the visible options.
-- [ ] **Give each section of the Categories page real boundaries and its own scrolling.** *(Tracked as tasks 3.21 and 3.23 in `docs/tasks.md`.)* As rules accumulate they crowd the page and push the new category section past the window edge. Each section (new category controls, category tree, selected category details, rules list) gets a defined boundary, and long content scrolls inside its own section. At the minimum window size and above, no section overflows the page or pushes another out of view.
-- [ ] **Make the charts scale cleanly with the window.** Chart lines currently overlap the labels, pieces are cut off, and the layout doesn't adapt to the space available. At the minimum window size and above, every chart stays inside its panel, nothing is clipped, and lines and labels don't overlap, with labels shortened or thinned out when space is tight.
-- [ ] **Align the columns in the To categorize table.** *(Tracked as tasks 3.21 and 3.22 in `docs/tasks.md`.)* Every column lines up from row to row. Text beyond a column's limit is cut with an ellipsis (…) and shown in full on hover.
-- [x] **Rename the "Spend" category type to "Expense".** The kind is `expense` in code, database and UI. `0001_init.sql` was edited in place because no data existed.
-- [ ] **Label the category type dropdown** with a visible "Category type" label.
-- [ ] **Make account selection on import clearer.** Show the detected institution prominently next to the account selection. Account names exclude the institution, so the picker shows "Amex · Cobalt" from institution and name.
-- [x] **Tag every commit with a semver version.** `.githooks/post-commit` creates an annotated tag on `main`: breaking change = major, `feat` = minor, anything else = patch. Enable per clone with `git config core.hooksPath .githooks`; publish with `git push --follow-tags`.
-- [x] **Show the version subtly in the UI.** Embed `git describe --tags --always` in a `build.rs`, falling back to `CARGO_PKG_VERSION`. Show it in small muted text at the bottom of the sidebar, and use the same value in the export manifest.
+Open:
+
+- [ ] **Make every action feel instant.** *(Added 2026-11-11; tasks 3.56, 3.57, then 3.47 + 3.54; timed budgets in 3.55, last.)* Filters, buttons and edits lag because every action reloads every page's data on one database thread, in order, with no way to skip stale work, and search reloads on every keystroke. Each action reloads only what it changes, newer requests replace queued ones, search waits for a pause in typing, edits show on screen before the database confirms them, and test-enforced time limits keep it fast as the data grows.
+- [ ] **Show a scrollbar on everything that scrolls.** *(Task 3.26, last in M3.)* Every scrollable region shows a scrollbar whenever its content overflows, visible without having to scroll first, and none when the content fits.
+- [ ] **Make category dropdowns usable with thousands of categories.** *(Task 3.59.)* Every dropdown that picks a category becomes searchable: type to filter, match on both category and subcategory names, and show each result with its category so same-named subcategories can be told apart. Works from the keyboard and renders only the visible options.
+- [ ] **Label the category type dropdown** with a visible "Category type" label. *(Task 3.60.)*
+- [ ] **Make account selection on import clearer.** *(Task 3.61.)* Show the detected institution prominently next to the account selection. Account names exclude the institution, so the picker shows "Amex · Cobalt" from institution and name.
+- [ ] **An app icon** instead of the default one. *(Added 2026-11-11; task 3.63.)*
+- The user's 2026-11-11 layout and polish requests (dashboard layout, Categories and Rules page clean-ups, button icons) are tasks 3.34–3.58 in `docs/tasks.md`.
+
+Done (details in `docs/tasks-done.md`): edit and delete rules (3.24), dashboard alignment (3.25), toasts (3.27), Rules page (3.28), show a row's rule (3.29), summary scrolls sideways (3.30), slimmer legend (3.31), Imports buttons (3.32), category / subcategory wording (3.33), Categories page sections (3.21, 3.23), responsive charts (3.15), aligned To categorize columns (3.21, 3.22), long lists render only visible rows (3.12, 3.19, 3.21; 3.55 checks it at scale), "Spend" renamed "Expense", semver tags on every commit, version in the sidebar (3.39).
 
 **After v1**
 
 - v1.1: spend-over-time line (total or selected category, with income and net as optional series) and top merchants (total, count, average; click filters the table).
 - v1.2: flags with a review list; a dismissed flag never returns. Thresholds live in settings. Unusually large: above 3x the median for the merchant, or for the category if the merchant has fewer than 3 past charges. New merchant: first appearance of the cleaned name. FX / fees: foreign currency, or a description matching FX fee, interest, NSF, late fee or annual fee.
 - v1.3: recurring / subscriptions: detect regular cadence at a similar amount; show cadence, last charge, next expected charge and yearly cost; flag price increases and stopped subscriptions.
+- Default categories and merchant rules on first run, as specified under **Categorization** (moved out of v1 on 2026-11-11).
 - Later: more institutions, CSV export of filtered rows.

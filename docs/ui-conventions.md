@@ -36,6 +36,7 @@ dashboard gets its own page.
 │ ORGANIZE       │ chips · search · toggles                             │
 │ ☑ To categorize 12                                                    │
 │ ◇ Categories   │ Transaction table (fills remaining height)           │
+│ ≡ Rules        │                                                      │
 │ ⇄ Transfers  2 │                                                      │
 │ DATA           │                                                      │
 │ ⇩ Imports      │                                                      │
@@ -54,7 +55,7 @@ dashboard gets its own page.
 - **Items** (`SidebarMenuItem` with a Lucide icon, `.active(...)` on the
   current page), in groups:
   - Dashboard
-  - *Organize:* To categorize, Categories, Transfers
+  - *Organize:* To categorize, Categories, Rules, Transfers
   - *Data:* Imports
 - **Counts:** an item with work waiting shows a count pill in its
   `suffix` (To categorize: uncategorized transactions; Transfers: reviews
@@ -285,8 +286,10 @@ case, and a table full of red reads as an alarm.
   "Uncategorized only") shows as a chip with a × above the table. The
   header filters (date, accounts, transfers) aren't chips, because the
   header already shows them.
-- **Row actions:** right-click context menu (2.9). No action buttons inside
-  rows. It includes **Show rule** (3.29), which opens the Rules page on the
+- **Row actions:** in the transactions table, a right-click context menu
+  (2.9) and no buttons inside rows. Lists that manage their rows (rule
+  rows, the newest import row) carry small ghost row buttons instead
+  (3.24, 3.32). The table's menu includes **Show rule** (3.29), which opens the Rules page on the
   rule that decided the row; when none did it is disabled with the reason
   ("Set by hand", "Card payment (built in)", "No rule matches").
 - **Destructive actions:** ask for confirmation inside the control (the
@@ -330,7 +333,7 @@ Decided from mockups. Don't reopen these without asking.
 | D5 | Category colors | Each category has its own stable color (see *Category colors*). |
 | D6 | Hints | Hover tooltips instead of caption text in panel titles. |
 | D7 | Panels | Bordered, never filled; compact two-line import preview. |
-| D8 | Navigation | Sidebar of pages (Dashboard, To categorize, Categories, Transfers, Imports). No side sheets, no banners; counts in the sidebar. |
+| D8 | Navigation | Sidebar of pages (Dashboard, To categorize, Categories, Rules, Transfers, Imports). No side sheets, no banners; counts in the sidebar. |
 | D9 | Import button | Not in the sidebar. Import CSV… is the Imports page's header action, plus ⌘O and drop anywhere. |
 
 ## Testing UI conventions
