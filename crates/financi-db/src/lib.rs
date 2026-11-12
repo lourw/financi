@@ -44,8 +44,9 @@ pub use transfers::{
 
 pub mod views;
 pub use views::{
-    CategorySpend, MonthlySummary, MonthlySummaryRow, TxSort, TxSortColumn, TxTableFilter,
-    ViewFilter, list_transactions_filtered, monthly_summary, spend_by_category,
+    CategorySpend, FilterSql, MonthlySummary, MonthlySummaryRow, TxSort, TxSortColumn,
+    TxTableFilter, ViewFilter, dashboard, list_transactions_filtered, monthly_summary,
+    spend_by_category,
 };
 
 #[cfg(feature = "dev-seed")]
@@ -201,6 +202,12 @@ pub fn migrate(conn: &mut Connection) -> Result<()> {
 
 /// Spend per top-level category (parents roll up their children), largest
 /// first. Transfers and hidden rows are excluded; refunds net against spend.
+///
+/// 3.88: not a dashboard query any more — the dashboard uses
+/// [`crate::views::dashboard`]. Kept only for the tests as an independent
+/// reference implementation of the spend rules, with its own hand-written
+/// conditions to check the shared [`FilterSql`] builder against.
+#[cfg(test)]
 pub fn spend_by_parent_category(conn: &Connection) -> Result<Vec<(String, i64)>> {
     let mut stmt = conn.prepare(
         "SELECT COALESCE(p.name, c.name, 'Uncategorized') AS cat,
@@ -218,18 +225,29 @@ pub fn spend_by_parent_category(conn: &Connection) -> Result<Vec<(String, i64)>>
 }
 
 /// Sidebar numbers: `(visible transactions, uncategorized visible
-/// transactions)` — the footer count and the To categorize pill.
+/// transactions)` — the footer count and the To categorize pill. Counts
+/// every non-hidden row whatever the dashboard filter (transfers included),
+/// so the conditions come from the shared [`FilterSql`] builder with an
+/// open, transfers-inclusive filter — one query, not two.
 pub fn sidebar_counts(conn: &Connection) -> Result<(i64, i64)> {
-    let total = conn.query_row(
-        "SELECT COUNT(*) FROM transactions WHERE hidden = 0",
-        [],
-        |r| r.get::<_, i64>(0),
-    )?;
-    let uncategorized = conn.query_row(
-        "SELECT COUNT(*) FROM transactions WHERE hidden = 0 AND category_id IS NULL",
-        [],
-        |r| r.get::<_, i64>(0),
-    )?;
+    let open = views::FilterSql::new(
+        &views::ViewFilter {
+            include_transfers: true,
+            ..Default::default()
+        },
+        None,
+    );
+    let sql = format!(
+        "SELECT COUNT(*), COALESCE(SUM(t.category_id IS NULL), 0)
+           FROM transactions t
+           LEFT JOIN categories c ON c.id = t.category_id
+          WHERE 1 = 1{}",
+        open.sql
+    );
+    let (total, uncategorized) =
+        conn.query_row(&sql, rusqlite::params_from_iter(open.args), |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
+        })?;
     Ok((total, uncategorized))
 }
 

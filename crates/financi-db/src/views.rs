@@ -1,9 +1,13 @@
 //! Filter model and filtered dashboard queries (task 3.1).
 //!
-//! [`ViewFilter`] is the single filter shared by both queries:
+//! [`ViewFilter`] is the single filter shared by the dashboard queries:
 //! [`spend_by_category`] feeds the category chart and legend,
-//! [`monthly_summary`] the monthly grid. With the default (open) filter the
-//! spend rules agree with [`crate::spend_by_parent_category`].
+//! [`monthly_summary`] the monthly grid, and [`dashboard`] runs the two in
+//! one pass over the same rows. [`list_transactions_filtered`] adds the
+//! table-only [`TxTableFilter`]. Every query writes its `WHERE` conditions
+//! from one [`FilterSql`] (3.88) so they cannot drift apart. With the
+//! default (open) filter the spend rules agree with the reference query
+//! kept for tests, `spend_by_parent_category`.
 //!
 //! Classification rules (both queries):
 //!
@@ -118,6 +122,129 @@ pub struct TxTableFilter {
     pub sort: TxSort,
 }
 
+/// One SQL `WHERE` fragment with its bound arguments, built once per query
+/// from the shared [`ViewFilter`] and, for the transaction table, its
+/// [`TxTableFilter`] (3.88), so every dashboard query applies the filter
+/// conditions identically.
+///
+/// `sql` is a chain of `AND` conditions to append after `WHERE 1 = 1`; its
+/// numbered placeholders run `?1`..=`?N` in the order of `args`, so a query
+/// adding its own arguments must number its placeholders from
+/// `args.len() + 1` on. The fragment references the transactions table as
+/// `t` and its `LEFT JOIN`ed categories as `c`; queries using it must
+/// alias them so.
+pub struct FilterSql {
+    pub sql: String,
+    pub args: Vec<Box<dyn ToSql>>,
+}
+
+impl FilterSql {
+    /// The conditions for a shared filter and, when given, the table's own
+    /// conditions: the inclusive date range, the account list (empty means
+    /// every account), transfers excluded unless requested, and the table's
+    /// category, month, uncategorized-only and search conditions. Hidden
+    /// rows are excluded unless the table filter shows them; with no table
+    /// filter they are always excluded (the aggregate queries' rule).
+    pub fn new(filter: &ViewFilter, table: Option<&TxTableFilter>) -> Self {
+        let mut fs = Self {
+            sql: String::new(),
+            args: Vec::new(),
+        };
+        let from = fs.push_arg(Box::new(filter.from.format("%Y-%m-%d").to_string()));
+        let to = fs.push_arg(Box::new(filter.to.format("%Y-%m-%d").to_string()));
+        fs.push_sql(&format!(
+            " AND t.posted_date >= {from} AND t.posted_date <= {to}"
+        ));
+        if !filter.account_ids.is_empty() {
+            let marks: Vec<String> = filter
+                .account_ids
+                .iter()
+                .map(|id| fs.push_arg(Box::new(*id)))
+                .collect();
+            fs.push_sql(" AND t.account_id IN (");
+            fs.push_sql(&marks.join(", "));
+            fs.push_sql(")");
+        }
+        if !filter.include_transfers {
+            fs.push_sql(" AND COALESCE(c.kind, 'expense') <> 'transfer'");
+        }
+        match table {
+            None => fs.push_sql(" AND t.hidden = 0"),
+            Some(table) => {
+                // A category selection matches that category, or a parent's children.
+                if let Some(cat) = table.category_id {
+                    let a = fs.push_arg(Box::new(cat));
+                    let b = fs.push_arg(Box::new(cat));
+                    fs.push_sql(&format!(" AND (t.category_id = {a} OR c.parent_id = {b})"));
+                }
+                if let Some(month) = table.month.as_ref().filter(|m| !m.is_empty()) {
+                    // A half-open `posted_date` range rather than
+                    // `substr(posted_date, 1, 7) = ?`, so the planner can
+                    // use the date index (3.88).
+                    match month_bounds(month) {
+                        Some((start, end)) => {
+                            let a = fs.push_arg(Box::new(start));
+                            let b = fs.push_arg(Box::new(end));
+                            fs.push_sql(&format!(
+                                " AND t.posted_date >= {a} AND t.posted_date < {b}"
+                            ));
+                        }
+                        // A malformed month matches nothing, as the old
+                        // equality against well-formed dates could.
+                        None => fs.push_sql(" AND 1 = 0"),
+                    }
+                }
+                if table.uncategorized_only {
+                    fs.push_sql(" AND t.category_id IS NULL");
+                }
+                // Case-insensitive substring on the raw stored strings. Case folding is
+                // ASCII-only: SQLite's `lower()` and Rust's `str::to_lowercase` are used
+                // on the term, so non-ASCII letters (e.g. an accented "café") are matched
+                // case-sensitively against the stored text. Good enough for v1; a
+                // locale-aware fold would need an ICU-backed SQLite build.
+                if let Some(term) = table.search.as_ref().filter(|s| !s.is_empty()) {
+                    let term = term.to_lowercase();
+                    let a = fs.push_arg(Box::new(term.clone()));
+                    let b = fs.push_arg(Box::new(term));
+                    fs.push_sql(&format!(
+                        " AND (instr(lower(t.description_raw), {a}) > 0 \
+                           OR instr(lower(COALESCE(t.merchant, '')), {b}) > 0)"
+                    ));
+                }
+                if !table.show_hidden {
+                    fs.push_sql(" AND t.hidden = 0");
+                }
+            }
+        }
+        fs
+    }
+
+    fn push_sql(&mut self, fragment: &str) {
+        self.sql.push_str(fragment);
+    }
+
+    /// Bind one argument and return its placeholder (`?1`, `?2`, …).
+    fn push_arg(&mut self, value: Box<dyn ToSql>) -> String {
+        let mark = format!("?{}", self.args.len() + 1);
+        self.args.push(value);
+        mark
+    }
+}
+
+/// The half-open bounds of a `YYYY-MM` month as `posted_date` strings,
+/// `[YYYY-MM-01, <next month>-01)`; December rolls into January of the
+/// next year. `None` for a malformed month.
+fn month_bounds(month: &str) -> Option<(String, String)> {
+    if month.len() != 7 || month.as_bytes()[4] != b'-' {
+        return None;
+    }
+    let ix = parse_month_index(month)?;
+    Some((
+        format!("{}-01", month_label(ix)),
+        format!("{}-01", month_label(ix + 1)),
+    ))
+}
+
 /// Browse-table rows for the dashboard (tasks 3.3–3.4): the shared
 /// [`ViewFilter`] (date range, accounts, transfers) plus the table-only
 /// [`TxTableFilter`] (category, month, search, uncategorized-only, show
@@ -131,15 +258,8 @@ pub fn list_transactions_filtered(
     filter: &ViewFilter,
     table: &TxTableFilter,
 ) -> Result<Vec<TransactionRow>> {
-    macro_rules! arg {
-        ($args:expr, $value:expr) => {{
-            let placeholder = format!("?{}", $args.len() + 1);
-            $args.push($value);
-            placeholder
-        }};
-    }
-
-    let mut sql = String::from(
+    let fs = FilterSql::new(filter, Some(table));
+    let mut sql = format!(
         "SELECT t.id, i.name || ' · ' || a.name, t.posted_date, t.description_raw, t.merchant,
                 c.name, t.amount_cents, t.category_id, t.hidden, t.transfer_pair_id,
                 t.category_locked
@@ -147,62 +267,9 @@ pub fn list_transactions_filtered(
            JOIN accounts a ON a.id = t.account_id
            JOIN institutions i ON i.id = a.institution_id
            LEFT JOIN categories c ON c.id = t.category_id
-          WHERE 1 = 1",
+          WHERE 1 = 1{}",
+        fs.sql
     );
-    let mut args: Vec<Box<dyn ToSql>> = Vec::new();
-
-    // Inclusive date range from the shared filter.
-    let from = arg!(args, Box::new(filter.from.format("%Y-%m-%d").to_string()));
-    let to = arg!(args, Box::new(filter.to.format("%Y-%m-%d").to_string()));
-    sql.push_str(&format!(
-        " AND t.posted_date >= {from} AND t.posted_date <= {to}"
-    ));
-
-    // Accounts (empty means every account, the ViewFilter convention).
-    if !filter.account_ids.is_empty() {
-        let marks: Vec<String> = filter
-            .account_ids
-            .iter()
-            .map(|id| arg!(args, Box::new(*id)))
-            .collect();
-        sql.push_str(" AND t.account_id IN (");
-        sql.push_str(&marks.join(", "));
-        sql.push(')');
-    }
-    if !filter.include_transfers {
-        sql.push_str(" AND COALESCE(c.kind, 'expense') <> 'transfer'");
-    }
-
-    // A category selection matches that category, or a parent's children.
-    if let Some(cat) = table.category_id {
-        let a = arg!(args, Box::new(cat));
-        let b = arg!(args, Box::new(cat));
-        sql.push_str(&format!(" AND (t.category_id = {a} OR c.parent_id = {b})"));
-    }
-    if let Some(month) = table.month.as_ref().filter(|m| !m.is_empty()) {
-        let m = arg!(args, Box::new(month.clone()));
-        sql.push_str(&format!(" AND substr(t.posted_date, 1, 7) = {m}"));
-    }
-    if table.uncategorized_only {
-        sql.push_str(" AND t.category_id IS NULL");
-    }
-    // Case-insensitive substring on the raw stored strings. Case folding is
-    // ASCII-only: SQLite's `lower()` and Rust's `str::to_lowercase` are used
-    // on the term, so non-ASCII letters (e.g. an accented "café") are matched
-    // case-sensitively against the stored text. Good enough for v1; a
-    // locale-aware fold would need an ICU-backed SQLite build.
-    if let Some(term) = table.search.as_ref().filter(|s| !s.is_empty()) {
-        let term = term.to_lowercase();
-        let a = arg!(args, Box::new(term.clone()));
-        let b = arg!(args, Box::new(term));
-        sql.push_str(&format!(
-            " AND (instr(lower(t.description_raw), {a}) > 0 \
-               OR instr(lower(COALESCE(t.merchant, '')), {b}) > 0)"
-        ));
-    }
-    if !table.show_hidden {
-        sql.push_str(" AND t.hidden = 0");
-    }
 
     // Per-column key plus direction (3.4, 3.44). Date's secondary keys
     // follow the direction, so reversing it mirrors the table exactly;
@@ -223,7 +290,7 @@ pub fn list_transactions_filtered(
     sql.push_str(&format!(" ORDER BY {order}"));
 
     let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map(params_from_iter(args), |r| {
+    let rows = stmt.query_map(params_from_iter(fs.args), |r| {
         Ok(TransactionRow {
             id: r.get(0)?,
             account: r.get(1)?,
@@ -306,7 +373,12 @@ pub fn spend_by_category(
     filter: &ViewFilter,
     parent: Option<i64>,
 ) -> Result<Vec<CategorySpend>> {
-    let agg = aggregate(conn, filter)?;
+    Ok(spend_rows(&aggregate(conn, filter)?, parent))
+}
+
+/// [`spend_by_category`]'s rows from an already-computed aggregate, so
+/// [`dashboard`] can share one pass with [`summary_rows`].
+fn spend_rows(agg: &Aggregate, parent: Option<i64>) -> Vec<CategorySpend> {
     let mut rows: Vec<(Option<i64>, String, i64)> = match parent {
         None => {
             let mut rows: Vec<_> = agg
@@ -333,8 +405,7 @@ pub fn spend_by_category(
     };
     sort_rows(&mut rows);
     let total: i64 = rows.iter().map(|r| r.2).sum();
-    Ok(rows
-        .into_iter()
+    rows.into_iter()
         .map(|(id, name, spend_cents)| CategorySpend {
             id,
             name,
@@ -345,15 +416,33 @@ pub fn spend_by_category(
                 spend_cents as f64 / total as f64
             },
         })
-        .collect())
+        .collect()
 }
 
 /// The monthly summary grid described on [`MonthlySummary`]. Parent and
 /// child rows are sorted by total spend descending (name ascending on
 /// ties) within the grid; `Uncategorized` sorts with the parents.
 pub fn monthly_summary(conn: &Connection, filter: &ViewFilter) -> Result<MonthlySummary> {
+    Ok(summary_rows(&aggregate(conn, filter)?, filter))
+}
+
+/// Both dashboard queries in one pass over the matching rows (3.88): the
+/// top-level [`spend_by_category`] rows (as `dashboard` feeds the chart,
+/// `parent` is `None`) and the [`monthly_summary`] grid, aggregating the
+/// filtered rows once instead of twice. Equal to calling the two wrappers
+/// with the same filter.
+pub fn dashboard(
+    conn: &Connection,
+    filter: &ViewFilter,
+) -> Result<(Vec<CategorySpend>, MonthlySummary)> {
     let agg = aggregate(conn, filter)?;
-    let months = month_grid(filter, &agg);
+    Ok((spend_rows(&agg, None), summary_rows(&agg, filter)))
+}
+
+/// [`monthly_summary`]'s grid from an already-computed aggregate, so
+/// [`dashboard`] can share one pass with [`spend_rows`].
+fn summary_rows(agg: &Aggregate, filter: &ViewFilter) -> MonthlySummary {
+    let months = month_grid(filter, agg);
 
     // (id, name, month values, total, child rows) per displayed parent.
     type ParentEntry = (Option<i64>, String, Vec<i64>, i64, Vec<MonthlySummaryRow>);
@@ -426,7 +515,7 @@ pub fn monthly_summary(conn: &Connection, filter: &ViewFilter) -> Result<Monthly
         months: net_months,
         total: net_total,
     });
-    Ok(MonthlySummary { months, rows })
+    MonthlySummary { months, rows }
 }
 
 /// One grouped row of the filtered transactions: raw `SUM(amount_cents)`
@@ -442,39 +531,20 @@ struct GroupedRow {
 }
 
 fn grouped_rows(conn: &Connection, filter: &ViewFilter) -> Result<Vec<GroupedRow>> {
-    let mut sql = String::from(
+    let fs = FilterSql::new(filter, None);
+    let sql = format!(
         "SELECT COALESCE(c.kind, 'expense'), p.id, p.name, c.id, c.name,
                 substr(t.posted_date, 1, 7), SUM(t.amount_cents)
            FROM transactions t
            LEFT JOIN categories c ON c.id = t.category_id
            LEFT JOIN categories p ON p.id = c.parent_id
-          WHERE t.hidden = 0 AND t.posted_date >= ?1 AND t.posted_date <= ?2",
+          WHERE 1 = 1{}
+          GROUP BY 1, 2, 3, 4, 5, 6",
+        fs.sql
     );
-    let mut args: Vec<Box<dyn ToSql>> = vec![
-        Box::new(filter.from.format("%Y-%m-%d").to_string()),
-        Box::new(filter.to.format("%Y-%m-%d").to_string()),
-    ];
-    if !filter.account_ids.is_empty() {
-        let marks: Vec<String> = (0..filter.account_ids.len())
-            .map(|i| format!("?{}", i + 3))
-            .collect();
-        sql.push_str(" AND t.account_id IN (");
-        sql.push_str(&marks.join(", "));
-        sql.push(')');
-        args.extend(
-            filter
-                .account_ids
-                .iter()
-                .map(|id| Box::new(*id) as Box<dyn ToSql>),
-        );
-    }
-    if !filter.include_transfers {
-        sql.push_str(" AND COALESCE(c.kind, 'expense') <> 'transfer'");
-    }
-    sql.push_str(" GROUP BY 1, 2, 3, 4, 5, 6");
 
     let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map(params_from_iter(args), |r| {
+    let rows = stmt.query_map(params_from_iter(fs.args), |r| {
         Ok(GroupedRow {
             kind: r.get(0)?,
             parent_id: r.get(1)?,
@@ -891,6 +961,177 @@ mod tests {
         );
     }
 
+    /// 3.88: the row table, the spend chart and the monthly grid are all
+    /// built from one [`FilterSql`], so for the same filter they must see
+    /// the same rows and agree on the totals — covering the date range,
+    /// month, account and category conditions at once.
+    #[test]
+    fn unified_filter_queries_agree_on_totals() {
+        let f = fixture();
+        let other_import = seed_import(&f.conn, f.other_account_id);
+        let add = |account: i64, import: i64, date: &str, cents: i64, cat: Option<i64>| {
+            add_txn(&f.conn, account, import, date, cents, cat)
+        };
+        add(
+            f.account_id,
+            f.import_id,
+            "2026-09-10",
+            -1000,
+            Some(f.groceries),
+        );
+        add(
+            f.account_id,
+            f.import_id,
+            "2026-09-20",
+            -1500,
+            Some(f.groceries),
+        );
+        add(
+            f.account_id,
+            f.import_id,
+            "2026-10-05",
+            -5000,
+            Some(f.groceries),
+        );
+        add(
+            f.account_id,
+            f.import_id,
+            "2026-10-06",
+            1200,
+            Some(f.groceries),
+        );
+        add(
+            f.account_id,
+            f.import_id,
+            "2026-10-20",
+            -3000,
+            Some(f.dining),
+        );
+        add(f.account_id, f.import_id, "2026-10-31", -700, None);
+        add(
+            f.account_id,
+            f.import_id,
+            "2026-11-05",
+            -2500,
+            Some(f.dining),
+        );
+        add(
+            f.account_id,
+            f.import_id,
+            "2026-11-10",
+            450_000,
+            Some(f.payroll),
+        );
+        let hidden = add(
+            f.account_id,
+            f.import_id,
+            "2026-10-15",
+            -9999,
+            Some(f.dining),
+        );
+        set_hidden(&f.conn, hidden, true).unwrap();
+        add(
+            f.account_id,
+            f.import_id,
+            "2026-10-10",
+            -150_000,
+            Some(f.card_payment),
+        );
+        add(
+            f.other_account_id,
+            other_import,
+            "2026-10-18",
+            -800,
+            Some(f.groceries),
+        );
+
+        // The shared filter: inclusive date range, both accounts, transfers
+        // out (the chart's default).
+        let filter = range(
+            "2026-09-15",
+            "2026-11-15",
+            &[f.account_id, f.other_account_id],
+            false,
+        );
+        let (spend, summary) = dashboard(&f.conn, &filter).unwrap();
+        // The thin wrappers agree with the single-pass dashboard.
+        assert_eq!(spend_by_category(&f.conn, &filter, None).unwrap(), spend);
+        assert_eq!(monthly_summary(&f.conn, &filter).unwrap(), summary);
+        // Chart rows and the grid's Spend row are the same total, and the
+        // row table over the same filter nets to the Net row: the hidden,
+        // transfer and out-of-range rows are out of all three.
+        assert_eq!(named(&summary, "Spend").total, 12_300);
+        assert_eq!(
+            spend.iter().map(|r| r.spend_cents).sum::<i64>(),
+            named(&summary, "Spend").total
+        );
+        assert_eq!(named(&summary, "Income").total, 450_000);
+        let rows = list_transactions_filtered(&f.conn, &filter, &TxTableFilter::default()).unwrap();
+        assert_eq!(rows.len(), 8);
+        assert_eq!(
+            rows.iter().map(|r| r.amount_cents).sum::<i64>(),
+            named(&summary, "Net").total,
+            "income minus spend over the same rows as the grid"
+        );
+
+        // A month in the table filter selects the same rows as the matching
+        // date range in the shared filter, and the aggregate over that
+        // range agrees with the month's amounts.
+        let by_month = list_transactions_filtered(
+            &f.conn,
+            &filter,
+            &TxTableFilter {
+                month: Some("2026-10".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let october = range(
+            "2026-10-01",
+            "2026-10-31",
+            &[f.account_id, f.other_account_id],
+            false,
+        );
+        let by_range =
+            list_transactions_filtered(&f.conn, &october, &TxTableFilter::default()).unwrap();
+        let ids = |rows: &[TransactionRow]| {
+            let mut ids: Vec<i64> = rows.iter().map(|r| r.id).collect();
+            ids.sort();
+            ids
+        };
+        assert_eq!(ids(&by_month), ids(&by_range), "month = its date range");
+        assert_eq!(by_month.iter().map(|r| r.amount_cents).sum::<i64>(), -8_300);
+        let (_, oct_sum) = dashboard(&f.conn, &october).unwrap();
+        assert_eq!(named(&oct_sum, "Spend").total, 8_300);
+
+        // A category selection narrows the table to that parent's rows,
+        // matching the chart's spend for the same parent.
+        let food = conn_food(&f.conn);
+        let by_food = list_transactions_filtered(
+            &f.conn,
+            &october,
+            &TxTableFilter {
+                category_id: Some(food),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(by_food.iter().map(|r| r.amount_cents).sum::<i64>(), -7_600);
+        let (oct_spend, _) = dashboard(&f.conn, &october).unwrap();
+        let food_row = oct_spend
+            .iter()
+            .find(|r| r.id == Some(food))
+            .expect("Food row in the chart");
+        assert_eq!(
+            food_row.spend_cents, 7_600,
+            "the chart's Food spend is the table's Food rows"
+        );
+
+        // The sidebar counts every visible row whatever the dashboard
+        // filter (transfers in, hidden out): 10 visible, 1 uncategorized.
+        assert_eq!(crate::sidebar_counts(&f.conn).unwrap(), (10, 1));
+    }
+
     #[test]
     fn refunds_net_against_their_category() {
         let f = fixture();
@@ -1263,6 +1504,99 @@ mod tests {
             },
         );
         assert_eq!(oct, vec![oct_last, oct_first], "whole month, newest first");
+    }
+
+    /// 3.88: the month condition is a half-open `posted_date` range (so it
+    /// can use the date index), which must still cover December exactly —
+    /// including the new year rollover.
+    #[test]
+    fn month_filter_covers_december_completely() {
+        let f = fixture();
+        let before = add_row(
+            &f.conn,
+            f.account_id,
+            f.import_id,
+            0,
+            "2026-11-30",
+            -100,
+            None,
+            "nov30",
+            None,
+        );
+        let first = add_row(
+            &f.conn,
+            f.account_id,
+            f.import_id,
+            1,
+            "2026-12-01",
+            -200,
+            None,
+            "dec1",
+            None,
+        );
+        let last = add_row(
+            &f.conn,
+            f.account_id,
+            f.import_id,
+            2,
+            "2026-12-31",
+            -300,
+            None,
+            "dec31",
+            None,
+        );
+        let after = add_row(
+            &f.conn,
+            f.account_id,
+            f.import_id,
+            3,
+            "2027-01-01",
+            -400,
+            None,
+            "jan1",
+            None,
+        );
+        let _ = (before, after);
+        let dec = table_ids(
+            &f.conn,
+            &TxTableFilter {
+                month: Some("2026-12".to_string()),
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            dec,
+            vec![last, first],
+            "the whole of December, New Year's Day excluded"
+        );
+    }
+
+    /// A malformed month matched no rows under the old `substr` equality;
+    /// the range rewrite keeps that.
+    #[test]
+    fn malformed_month_matches_no_rows() {
+        let f = fixture();
+        add_row(
+            &f.conn,
+            f.account_id,
+            f.import_id,
+            0,
+            "2026-10-01",
+            -100,
+            None,
+            "row",
+            None,
+        );
+        for month in ["2026-13", "2026-00", "20260-1", "banana", "2026-1"] {
+            let ids = table_ids(
+                &f.conn,
+                &TxTableFilter {
+                    month: Some(month.to_string()),
+                    ..Default::default()
+                },
+            );
+            assert!(ids.is_empty(), "{month:?} matches nothing");
+        }
     }
 
     #[test]
