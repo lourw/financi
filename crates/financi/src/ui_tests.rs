@@ -32,11 +32,12 @@ use super::{
     BAR_LABEL_MAX_CHARS, BUTTON_PAD_X, CELL_PAD_X, CHART_CHAR_PX, CHART_LABEL_GAP,
     CHART_LABEL_MAX_CHARS, CHART_LABEL_MIN_CHARS, DashboardBody, ExportData, HISTORY_DATES_W,
     HISTORY_FLEX_MIN_W, HISTORY_ROWS_W, HISTORY_TIME_W, ImportPanel, LEGEND_W, LegendSelection,
-    NAV_ROW_INSET, NEW_ACCOUNT, NEW_CATEGORY, NEW_RULE, PAGE_PAD, Page, PlanState, RestoreBackup,
-    RowMenuItem, RowShowRule, SIDEBAR_W, Shell, SummaryRowKind, TABLE_BORDER_X, TEXT_SM_CHAR_PX,
-    TX_FIXED_W, UNDO_ICON_W, UNDO_LABEL_MAX, UndoLastImport, band_label_budget, bar_label_plan,
-    bar_label_slots, bar_share_label, chart_tooltip_value, history_flex_widths, history_undo_col_w,
-    row_menu_items, row_show_rule, short_chart_labels, tx_flex_widths,
+    NAV_ROW_INSET, NEW_ACCOUNT, NEW_CATEGORY, NEW_RULE, PAGE_PAD, Page, PendingRuleAction,
+    PlanState, RestoreBackup, RowMenuItem, RowShowRule, SIDEBAR_W, Shell, SummaryRowKind,
+    TABLE_BORDER_X, TEXT_SM_CHAR_PX, TX_FIXED_W, UNDO_ICON_W, UNDO_LABEL_MAX, UndoLastImport,
+    band_label_budget, bar_label_plan, bar_label_slots, bar_share_label, chart_tooltip_value,
+    history_flex_widths, history_undo_col_w, row_menu_items, row_show_rule, short_chart_labels,
+    tx_flex_widths,
 };
 
 fn demo(name: &str) -> PathBuf {
@@ -2323,6 +2324,75 @@ fn an_invalid_regex_shows_the_error_and_saves_nothing(cx: &mut TestAppContext) {
             2,
             "no rows moved"
         );
+    });
+}
+
+/// 3.40: pressing Save puts the editor's Save button into its loading,
+/// disabled state (`pending_rule_action`) for as long as the DB task runs,
+/// and the editor closes once the task ends — the button never looks dead
+/// mid-save and can't be double-submitted.
+#[gpui::test]
+fn saving_a_rule_shows_loading_until_the_task_ends(cx: &mut TestAppContext) {
+    let (handle, shell, rule, _first, _second) = open_rule_fixture(cx);
+    start_rule_edit(cx, handle, &shell, rule);
+    set_edit_pattern(cx, handle, &shell, "SHOP B");
+    // The task hasn't run yet (the test executor only moves inside
+    // `wait_until`), so pending is observed while the save is in flight.
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.save_rule_edit(window, cx);
+            assert_eq!(
+                s.pending_rule_action,
+                Some(PendingRuleAction::Save(rule)),
+                "Save shows loading, disabled, while the save runs"
+            );
+        });
+    });
+    wait_until(cx, "the save task to finish", |cx| {
+        shell.read(cx).pending_rule_action.is_none()
+    });
+    wait_until(cx, "the refreshed rule list", |cx| {
+        shell
+            .read(cx)
+            .rules
+            .iter()
+            .any(|r| r.id == rule && r.pattern == "SHOP B")
+    });
+    cx.update(|cx| {
+        let s = shell.read(cx);
+        assert_eq!(s.pending_rule_action, None, "loading cleared");
+        assert_eq!(s.editing_rule, None, "the editor closed after the task");
+        assert_eq!(s.rule_error, None, "the save succeeded");
+    });
+}
+
+/// 3.40: when the DB refuses the save (bad regex), the loading state
+/// clears on the error path too — the editor stays open with its error,
+/// and the button is clickable again.
+#[gpui::test]
+fn a_refused_rule_save_clears_the_loading_state(cx: &mut TestAppContext) {
+    let (handle, shell, rule, _first, _second) = open_rule_fixture(cx);
+    start_rule_edit(cx, handle, &shell, rule);
+    set_edit_pattern(cx, handle, &shell, "[");
+    cx.update(|cx| {
+        shell.update(cx, |s, _cx| s.rule_edit_regex = true);
+    });
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.save_rule_edit(window, cx);
+            assert_eq!(s.pending_rule_action, Some(PendingRuleAction::Save(rule)));
+        });
+    });
+    wait_until(cx, "the editor error", |cx| {
+        shell.read(cx).pending_rule_action.is_none() && shell.read(cx).rule_error.is_some()
+    });
+    cx.update(|cx| {
+        let s = shell.read(cx);
+        assert_eq!(
+            s.pending_rule_action, None,
+            "loading cleared on the error path too"
+        );
+        assert_eq!(s.editing_rule, Some(rule), "the editor stays open");
     });
 }
 

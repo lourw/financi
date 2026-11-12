@@ -7,8 +7,8 @@
 
 use std::collections::HashMap;
 
-use financi_core::rules::{Rule, pick_category, validate_regex, winning_rule};
-use rusqlite::{Connection, OptionalExtension};
+use financi_core::rules::{CompiledPattern, CompiledRules, Rule, validate_regex, winning_rule};
+use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::categories::ensure_assignable;
 use crate::{DbError, Result};
@@ -143,8 +143,13 @@ pub fn move_rules(conn: &Connection, ids: &[i64], category_id: i64) -> Result<()
 /// winning rule's category, or `NULL` (Uncategorized) when nothing matches.
 /// Locked rows (`category_locked = 1`) are never touched — manual overrides
 /// (2.6) and the card payments locked at import keep their category.
+///
+/// 3.40: the rules are compiled once per call (each regex once, not once
+/// per rule per row) and one `UPDATE` statement is prepared and reused,
+/// so a save takes milliseconds instead of seconds even with thousands of
+/// rows and dozens of regex rules.
 pub fn reapply_rules(conn: &Connection) -> Result<()> {
-    let rules = list_rules(conn)?;
+    let rules = CompiledRules::new(&list_rules(conn)?);
     let rows: Vec<(i64, String, Option<i64>)> = {
         let mut stmt = conn.prepare(
             "SELECT id, description_raw, category_id FROM transactions WHERE category_locked = 0",
@@ -152,13 +157,11 @@ pub fn reapply_rules(conn: &Connection) -> Result<()> {
         let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
         rows.collect::<Result<_, _>>()?
     };
+    let mut update = conn.prepare("UPDATE transactions SET category_id = ?1 WHERE id = ?2")?;
     for (id, description, current) in rows {
-        let category_id = pick_category(&rules, &description);
+        let category_id = rules.pick(&description);
         if category_id != current {
-            conn.execute(
-                "UPDATE transactions SET category_id = ?1 WHERE id = ?2",
-                (category_id, id),
-            )?;
+            update.execute(params![category_id, id])?;
         }
     }
     Ok(())
@@ -211,8 +214,14 @@ pub fn count_rule_matches(
     is_regex: bool,
     exclude_rule_id: Option<i64>,
 ) -> Result<i64> {
+    // 3.40: compile the new pattern and the excluded rule's once, not
+    // once per row, so the live preview keeps up with typing.
+    let pattern = CompiledPattern::new(pattern, is_regex);
     let excluded = match exclude_rule_id {
-        Some(id) => Some(fetch_rule(conn, id)?),
+        Some(id) => {
+            let old = fetch_rule(conn, id)?;
+            Some(CompiledPattern::new(&old.pattern, old.is_regex))
+        }
         None => None,
     };
     let mut stmt =
@@ -221,11 +230,11 @@ pub fn count_rule_matches(
     let mut count = 0;
     for row in rows {
         let description = row?;
-        if !financi_core::rules::pattern_matches(pattern, is_regex, &description) {
+        if !pattern.is_match(&description) {
             continue;
         }
         if let Some(old) = &excluded
-            && financi_core::rules::pattern_matches(&old.pattern, old.is_regex, &description)
+            && old.is_match(&description)
         {
             continue;
         }
@@ -520,6 +529,88 @@ mod tests {
 
         assert!(update_rule(&conn, rule, "[bad", true, cat).is_err());
         assert_eq!(category_of(&conn, coffee), Some(cat));
+    }
+
+    /// 3.40 (user report): every rule save re-runs all rules over every
+    /// unlocked row. With the patterns compiled once per call, 5 000 rows
+    /// against 50 regex rules must finish in well under a second even in
+    /// a debug build — assert < 2 s. (Before the fix each regex was
+    /// compiled once per rule per row: ~22 s in release, minutes in
+    /// debug, for this shape.)
+    #[test]
+    fn reapply_rules_over_many_rows_and_regex_rules_is_fast() {
+        let conn = open_in_memory().unwrap();
+        let cat = child_category(&conn);
+        let account = crate::create_account(
+            &conn,
+            "amex",
+            &uuid::Uuid::new_v4().to_string(),
+            financi_core::AccountKind::CreditCard,
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO imports (account_id, parser_id, file_name, imported_at, header_raw,
+                                  encoding, has_bom, line_ending, trailing_newline, row_count)
+             VALUES (?1, 'amex', 'activity.csv', '2026-11-01', X'00', 'utf-8', 0, 'lf', 0, 5000)",
+            [account],
+        )
+        .unwrap();
+        let import = conn.last_insert_rowid();
+        {
+            let tx = conn.unchecked_transaction().unwrap();
+            {
+                let mut insert = tx
+                    .prepare(
+                        "INSERT INTO transactions (account_id, import_id, source_line, raw_bytes,
+                                                   row_hash, posted_date, amount_cents,
+                                                   description_raw, category_id, category_locked)
+                         VALUES (?1, ?2, ?3, X'00', ?4, '2026-10-31', -450, ?5, NULL, 0)",
+                    )
+                    .unwrap();
+                for n in 0..5000i64 {
+                    insert
+                        .execute(params![
+                            account,
+                            import,
+                            n,
+                            format!("perf-hash-{n}"),
+                            format!("MERCHANT {} STORE VANCOUVER BC", n % 977)
+                        ])
+                        .unwrap();
+                }
+            }
+            // 50 regex rules inserted directly: add_rule would re-run the
+            // rules 50 times, timing the wrong thing.
+            for i in 0..50i64 {
+                tx.execute(
+                    "INSERT INTO category_rules (pattern, is_regex, category_id)
+                     VALUES (?1, 1, ?2)",
+                    params![format!(r"MERCHANT\s+{}\s+STORE", 2 * i + 1), cat],
+                )
+                .unwrap();
+            }
+            tx.commit().unwrap();
+        }
+
+        let started = std::time::Instant::now();
+        reapply_rules(&conn).unwrap();
+        let elapsed = started.elapsed();
+
+        let categorized: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM transactions WHERE category_id = ?1",
+                [cat],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            categorized > 100,
+            "the regex rules categorized the rows they match ({categorized})"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(2),
+            "reapply_rules over 5 000 rows and 50 regex rules took {elapsed:?}",
+        );
     }
 
     #[test]
