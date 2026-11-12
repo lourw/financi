@@ -50,12 +50,6 @@ fn open_shell(
     cx: &mut TestAppContext,
     setup: impl FnOnce(&financi_db::rusqlite::Connection),
 ) -> (AnyWindowHandle, Entity<Shell>) {
-    // The DB worker answers from its own OS thread.
-    cx.executor().allow_parking();
-    cx.update(gpui_kit::init);
-    let conn = open_in_memory().unwrap();
-    setup(&conn);
-    let db = DbWorker::spawn(conn);
     // A real path beside a scratch directory so master CSV writes during
     // import/undo never land in the repository. The database itself stays
     // in memory.
@@ -63,6 +57,22 @@ fn open_shell(
         "financi-ui-db-{}/financi.sqlite",
         std::process::id()
     ));
+    open_shell_at(cx, setup, db_path)
+}
+
+/// `open_shell` with a chosen database path (3.38: the footer tooltip
+/// test uses a path longer than the sidebar).
+fn open_shell_at(
+    cx: &mut TestAppContext,
+    setup: impl FnOnce(&financi_db::rusqlite::Connection),
+    db_path: PathBuf,
+) -> (AnyWindowHandle, Entity<Shell>) {
+    // The DB worker answers from its own OS thread.
+    cx.executor().allow_parking();
+    cx.update(gpui_kit::init);
+    let conn = open_in_memory().unwrap();
+    setup(&conn);
+    let db = DbWorker::spawn(conn);
     cx.update(|cx| {
         let bounds = Bounds {
             origin: Point::default(),
@@ -6116,6 +6126,59 @@ fn sidebar_nav_items_and_section_labels_share_one_flush_inset() {
         NAV_ROW_INSET, 0.,
         "nav items and section labels must share one inset, flush with the \
          header and footer (`docs/ui-conventions.md`, *Sidebar*)"
+    );
+}
+
+/// 3.38: the sidebar footer's database path ellipsizes at the sidebar's
+/// width, and hovering it shows the full path prefixed "Database: " in a
+/// tooltip (`docs/ui-conventions.md`, *Sidebar*).
+#[gpui::test]
+fn sidebar_db_path_shows_the_full_path_on_hover(cx: &mut TestAppContext) {
+    // A path well over 100 characters: even at a conservative 4.5 px per
+    // `text_xs` glyph it needs far more than the 210 px sidebar, so the
+    // footer must ellipsize it.
+    let db_path = std::env::temp_dir().join(format!(
+        "financi-ui-db-{}/databases/a-scratch-directory-with-a-very-long-name-for-ellipsis/financi.sqlite",
+        std::process::id()
+    ));
+    let (handle, _shell) = open_shell_at(cx, |_| {}, db_path.clone());
+    let path = db_path.to_string_lossy().to_string();
+    let mut window = VisualTestContext::from_window(handle, cx);
+    draw_frame(cx, handle);
+
+    let cell = window
+        .debug_bounds(leaked(format!("sidebar:db-path:{path}")))
+        .expect("the footer draws the database path");
+    assert!(
+        cell.size.width < px(path.chars().count() as f32 * 4.5),
+        "the path truncates: the cell is {:?} wide, the full text needs at \
+         least {:?}",
+        cell.size.width,
+        px(path.chars().count() as f32 * 4.5),
+    );
+
+    // The tooltip carries the full path, prefixed "Database: "; it only
+    // exists while the path is hovered.
+    let tip = leaked(format!("sidebar:db-path-tooltip:Database: {path}"));
+    assert!(
+        window.debug_bounds(tip).is_none(),
+        "nothing hovers the path, so no tooltip is drawn yet"
+    );
+    window.simulate_mouse_move(
+        point(
+            cell.origin.x + cell.size.width / 2.,
+            cell.origin.y + cell.size.height / 2.,
+        ),
+        None,
+        Modifiers::default(),
+    );
+    // The tooltip appears after a 500 ms hover; the test clock is fake.
+    cx.executor().advance_clock(Duration::from_millis(600));
+    cx.run_until_parked();
+    draw_frame(cx, handle);
+    assert!(
+        window.debug_bounds(tip).is_some(),
+        "hovering the path shows a tooltip with the full path",
     );
 }
 

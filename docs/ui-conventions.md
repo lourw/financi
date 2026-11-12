@@ -61,7 +61,8 @@ dashboard gets its own page.
   open). Hide the pill at 0. The counts replace dashboard banners: there
   are no banners.
 - **Footer:** transaction count and database path, `text_xs`,
-  `muted_foreground`, path ellipsized.
+  `muted_foreground`, path ellipsized. The ellipsized path shows its full
+  text, prefixed `Database: `, in a hover tooltip (3.38).
 - The selected page isn't persisted; launch opens Dashboard.
 
 ### Pages

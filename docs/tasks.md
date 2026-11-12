@@ -1113,7 +1113,7 @@ the order above (3.28 → 3.29 → 3.26).
   "Undo" and it paints an icon; 3.32's bounds and fit tests still pass
   in both states. Update the *Imports* row of `ui-conventions.md`.
 
-- [ ] **3.38 Tooltip on the sidebar's database path.** The sidebar footer
+- [x] **3.38 Tooltip on the sidebar's database path.** The sidebar footer
   (`Shell::sidebar`, `.footer(...)`) shows the DB path in `text_xs` muted
   with an ellipsis, so on a normal path most of it is cut off by the
   sidebar's width (user request, 2026-11-11). Give the path element an `id`

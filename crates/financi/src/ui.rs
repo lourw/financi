@@ -4292,10 +4292,33 @@ impl Shell {
                     .text_color(muted)
                     .child(format!("{} transactions", flow::count(self.total_visible)))
                     .child(
+                        // 3.38: the path ellipsizes at the sidebar's width;
+                        // hovering shows the full path prefixed "Database: "
+                        // (ui-conventions, *Sidebar*).
                         div()
+                            .id("sidebar:db-path")
                             .min_w_0()
                             .overflow_hidden()
                             .text_ellipsis()
+                            .debug_selector({
+                                let path = self.db_path.display().to_string();
+                                move || format!("sidebar:db-path:{path}")
+                            })
+                            .tooltip({
+                                let full = format!("Database: {}", self.db_path.display());
+                                move |window, cx| {
+                                    let tip = full.clone();
+                                    Tooltip::element(move |_, _| {
+                                        div()
+                                            .debug_selector({
+                                                let s = tip.clone();
+                                                move || format!("sidebar:db-path-tooltip:{s}")
+                                            })
+                                            .child(tip.clone())
+                                    })
+                                    .build(window, cx)
+                                }
+                            })
                             .child(self.db_path.display().to_string()),
                     ),
             )
