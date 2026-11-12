@@ -47,7 +47,6 @@ use gpui_kit::component::date_picker::{DatePicker, DatePickerEvent, DatePickerSt
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
 use gpui_kit::component::popover::Popover;
-use gpui_kit::component::searchable_list::{SearchableListItem, SearchableVec};
 use gpui_kit::component::select::{Select, SelectEvent, SelectState};
 use gpui_kit::component::sidebar::{Sidebar, SidebarItem, SidebarMenuItem};
 use gpui_kit::component::switch::Switch;
@@ -63,64 +62,6 @@ use gpui_kit::*;
 use crate::flow::{self, LoadedFile, PlanSummary};
 
 type Names = Vec<SharedString>;
-
-/// 3.41: one "Parent › Child" entry of the rule pickers. Plain text as
-/// shown, plus debug selectors on the open menu's row so headless tests
-/// can measure the drawn text against the menu's width: the visible box
-/// fills the row, and an absolutely positioned invisible copy keeps its
-/// natural (unclipped) text width — the two bound each other exactly
-/// when the name fits.
-#[derive(Clone, PartialEq)]
-struct RuleChoice(SharedString);
-
-impl SearchableListItem for RuleChoice {
-    type Value = SharedString;
-
-    fn title(&self) -> SharedString {
-        self.0.clone()
-    }
-
-    fn value(&self) -> &Self::Value {
-        &self.0
-    }
-
-    fn render(&self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
-        let full = self.0.clone();
-        let probe = self.0.clone();
-        div()
-            .id("rule-choice")
-            .debug_selector(move || format!("rule-choice:{full}"))
-            .w_full()
-            .min_w_0()
-            .relative()
-            .child(self.0.clone())
-            .child(
-                div()
-                    .id("rule-choice-natural")
-                    .debug_selector({
-                        let probe = probe.clone();
-                        move || format!("rule-choice-natural:{probe}")
-                    })
-                    .absolute()
-                    .whitespace_nowrap()
-                    .opacity(0.)
-                    .child(probe),
-            )
-    }
-}
-
-/// 3.41: the rule pickers' delegate. `SearchableVec` (not a plain `Vec`)
-/// so the menu's search box actually narrows the list as you type.
-type RuleChoices = SearchableVec<RuleChoice>;
-
-fn rule_choices(names: &[(i64, String)]) -> RuleChoices {
-    SearchableVec::new(
-        names
-            .iter()
-            .map(|(_, n)| RuleChoice(SharedString::from(n.clone())))
-            .collect::<Vec<_>>(),
-    )
-}
 
 /// Every checkbox in the app is built through here (3.14) so they are all
 /// constructed alike: the check mark itself arrives with the icon assets
@@ -169,53 +110,6 @@ fn control_slot(selector: String, probe: String, control: impl IntoElement) -> D
         )
 }
 
-/// 3.41: the rule rows' Category picker (`Select::new` over the child
-/// categories) — `RULE_CATEGORY_W` wide, the rule list's Category column
-/// width, so the picker and the list read as one column; the open menu
-/// is `RULE_CATEGORY_MENU_W` wide and searchable (the state's
-/// `searchable`) so a full "Parent › Child" shows and can be typed; the
-/// trigger ellipsizes, so it carries a hover tooltip with the full name
-/// (ui-conventions *Categories*). `id` tells the rows apart
-/// (`rule:category-select:<id>`).
-fn category_select(
-    target: &Entity<SelectState<RuleChoices>>,
-    id: &'static str,
-    cx: &App,
-) -> Stateful<Div> {
-    let state = target.clone();
-    let wrapper = div()
-        .id(SharedString::from(id))
-        .w(px(RULE_CATEGORY_W))
-        .flex_shrink_0()
-        .debug_selector(move || format!("rule:category-select:{id}"));
-    let tip = target.read(cx).selected_value().cloned();
-    let wrapper = match tip {
-        Some(fallback) => wrapper.tooltip(move |window, cx| {
-            let shown = state
-                .read(cx)
-                .selected_value()
-                .cloned()
-                .unwrap_or_else(|| fallback.clone());
-            let for_text = shown.clone();
-            Tooltip::element(move |_, _| {
-                div()
-                    .debug_selector({
-                        let for_sel = shown.clone();
-                        move || format!("rule:category-tooltip:{for_sel}")
-                    })
-                    .child(for_text.clone())
-            })
-            .build(window, cx)
-        }),
-        None => wrapper,
-    };
-    wrapper.child(
-        Select::new(target)
-            .menu_width(px(RULE_CATEGORY_MENU_W))
-            .placeholder("Category…"),
-    )
-}
-
 /// Words for Categories page controls whose painted text is reachable by
 /// tests only through debug selectors (3.33): each const feeds both the
 /// label/placeholder and its `label:<text>` selector, so the two can't
@@ -240,9 +134,6 @@ const MOVE_RULES_TO_PH: &str = "Move rules to…";
 /// width (`flex_1`) and truncates with a tooltip.
 const RULE_TYPE_W: f32 = 80.;
 const RULE_CATEGORY_W: f32 = 200.;
-/// 3.41: the rule pickers' open-menu width — wide enough for a full
-/// "Parent › Child" name where the 200 px trigger has to ellipsize.
-const RULE_CATEGORY_MENU_W: f32 = 320.;
 /// 3.28: the Rules page list's fixed columns beside the flexed Pattern: a
 /// checkbox column, and Uses (right-aligned). Same sharing rule as
 /// [`RULE_TYPE_W`]: row and column headings use these.
@@ -1981,9 +1872,7 @@ pub struct Shell {
     child_choices: Vec<(i64, String)>,
     rule_pattern: Entity<InputState>,
     rule_regex: bool,
-    /// 3.41: the add-rule Category picker — searchable, 320 px menu, the
-    /// full name in a hover tooltip.
-    rule_target: Entity<SelectState<RuleChoices>>,
+    rule_target: Entity<SelectState<Names>>,
     rule_match_count: Option<i64>,
     rule_task: Option<Task<()>>,
     rule_error: Option<String>,
@@ -2007,9 +1896,7 @@ pub struct Shell {
     /// clears it, and `sync_category_choices` closes the editor when its
     /// rule is gone.
     rule_edit_pattern: Entity<InputState>,
-    /// 3.41: like `rule_target`, the editor's picker is searchable with
-    /// the wide menu and the full-name tooltip.
-    rule_edit_target: Entity<SelectState<RuleChoices>>,
+    rule_edit_target: Entity<SelectState<Names>>,
     rule_edit_regex: bool,
     /// 3.28: the Rules page search box; live filter over the list (pattern
     /// and target category name, case-insensitive), focused when the page
@@ -2352,8 +2239,7 @@ impl Shell {
         let rule_pattern = cx.new(|cx| {
             InputState::new(window, cx).placeholder("Text or regex a description must contain")
         });
-        let rule_target =
-            cx.new(|cx| SelectState::new(rule_choices(&[]), None, window, cx).searchable(true));
+        let rule_target = cx.new(|cx| SelectState::new(Names::new(), None, window, cx));
         // The live "matches N transactions" preview runs on every pattern
         // keystroke (ui-conventions, Categories page).
         let preview_sub = cx.subscribe(&rule_pattern, |this, _, ev: &InputEvent, cx| {
@@ -2368,8 +2254,7 @@ impl Shell {
         let rule_edit_pattern = cx.new(|cx| {
             InputState::new(window, cx).placeholder("Text or regex a description must contain")
         });
-        let rule_edit_target =
-            cx.new(|cx| SelectState::new(rule_choices(&[]), None, window, cx).searchable(true));
+        let rule_edit_target = cx.new(|cx| SelectState::new(Names::new(), None, window, cx));
         let rule_edit_sub = cx.subscribe_in(
             &rule_edit_pattern,
             window,
@@ -3488,9 +3373,8 @@ impl Shell {
             .iter()
             .map(|(_, n)| SharedString::from(n.clone()))
             .collect();
-        self.rule_target.update(cx, |s, cx| {
-            s.set_items(rule_choices(&self.child_choices), window, cx)
-        });
+        self.rule_target
+            .update(cx, |s, cx| s.set_items(names.clone(), window, cx));
         self.delete_target
             .update(cx, |s, cx| s.set_items(names.clone(), window, cx));
         // 3.28: the Move bar's picker offers the same child categories.
@@ -3905,12 +3789,17 @@ impl Shell {
         self.rule_edit_pattern.update(cx, |i, cx| {
             i.set_value(rule.pattern.clone(), window, cx);
         });
+        let names: Names = self
+            .child_choices
+            .iter()
+            .map(|(_, n)| SharedString::from(n.clone()))
+            .collect();
         let selected = self
             .child_choices
             .iter()
             .position(|(cid, _)| *cid == rule.category_id);
         self.rule_edit_target.update(cx, |s, cx| {
-            s.set_items(rule_choices(&self.child_choices), window, cx);
+            s.set_items(names, window, cx);
             s.set_selected_index(
                 selected.map(gpui_kit::component::IndexPath::new),
                 window,
@@ -5802,7 +5691,9 @@ impl Shell {
                             .flex_shrink_0()
                             .gap_1()
                             .child(field_label(muted, "Category"))
-                            .child(category_select(&self.rule_edit_target, "edit", cx)),
+                            .child(div().w(px(160.)).child(
+                                Select::new(&self.rule_edit_target).placeholder("Category…"),
+                            )),
                     )
                     .child(
                         Button::new(SharedString::from(format!("rule-edit-save-{}", rule.id)))
@@ -6395,7 +6286,9 @@ impl Shell {
                                         .flex_shrink_0()
                                         .gap_1()
                                         .child(field_label(muted, "Category"))
-                                        .child(category_select(&self.rule_target, "add", cx)),
+                                        .child(div().w(px(160.)).child(
+                                            Select::new(&self.rule_target).placeholder("Category…"),
+                                        )),
                                 )
                                 .child(
                                     Button::new("add-rule")
@@ -6930,11 +6823,12 @@ impl Shell {
                                             .flex_shrink_0()
                                             .gap_1()
                                             .child(field_label(muted, "Category"))
-                                            .child(category_select(
-                                                &self.rule_target,
-                                                "cat-add",
-                                                cx,
-                                            )),
+                                            .child(
+                                                div().w(px(160.)).child(
+                                                    Select::new(&self.rule_target)
+                                                        .placeholder("Category…"),
+                                                ),
+                                            ),
                                     )
                                     .child(
                                         Button::new("add-rule")
