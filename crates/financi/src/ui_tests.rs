@@ -33,11 +33,11 @@ use super::{
     CHART_LABEL_MAX_CHARS, CHART_LABEL_MIN_CHARS, DashboardBody, ExportData, HISTORY_DATES_W,
     HISTORY_FLEX_MIN_W, HISTORY_ROWS_W, HISTORY_TIME_W, ImportPanel, LEGEND_W, LegendSelection,
     NAV_ROW_INSET, NEW_ACCOUNT, NEW_CATEGORY, NEW_RULE, PAGE_PAD, Page, PendingRuleAction,
-    PlanState, RestoreBackup, RowMenuItem, RowShowRule, SIDEBAR_W, Shell, SummaryRowKind,
-    TABLE_BORDER_X, TEXT_SM_CHAR_PX, TX_FIXED_W, UNDO_ICON_W, UNDO_LABEL_MAX, UndoLastImport,
-    band_label_budget, bar_label_plan, bar_label_slots, bar_share_label, chart_tooltip_value,
-    history_flex_widths, history_undo_col_w, row_menu_items, row_show_rule, short_chart_labels,
-    tx_flex_widths,
+    PlanState, RestoreBackup, RowMenuItem, RowShowRule, SIDEBAR_W, SUBCATEGORY_PH, Shell,
+    SummaryRowKind, TABLE_BORDER_X, TEXT_SM_CHAR_PX, TX_FIXED_W, UNDO_ICON_W, UNDO_LABEL_MAX,
+    UndoLastImport, band_label_budget, bar_label_plan, bar_label_slots, bar_share_label,
+    chart_tooltip_value, history_flex_widths, history_undo_col_w, row_menu_items, row_show_rule,
+    short_chart_labels, tx_flex_widths,
 };
 
 fn demo(name: &str) -> PathBuf {
@@ -2208,25 +2208,30 @@ fn save_rule_edit(cx: &mut TestAppContext, handle: AnyWindowHandle, shell: &Enti
     });
 }
 
-/// 3.24: Edit swaps the row for a pre-filled editor — the rule's pattern,
-/// regex kind and category are in the controls, and the editor is open on
-/// that rule only.
+/// 3.24: Edit swaps the row for a pre-filled editor — the rule's pattern
+/// and regex kind are in the controls, and the editor is open on that
+/// rule only. 3.53: the editor carries no category picker — the rule's
+/// category is where it lives, not a field to edit.
 #[gpui::test]
 fn the_rule_editor_is_prefilled_from_the_rule(cx: &mut TestAppContext) {
     let (handle, shell, rule, _first, _second) = open_rule_fixture(cx);
     start_rule_edit(cx, handle, &shell, rule);
+    draw_frame(cx, handle);
     cx.update(|cx| {
         let s = shell.read(cx);
         assert_eq!(s.editing_rule, Some(rule), "the editor is open on the rule");
         assert_eq!(s.rule_edit_pattern.read(cx).value().to_string(), "COFFEE");
         assert!(!s.rule_edit_regex, "substring kind pre-filled");
-        let sel = s.rule_edit_target.read(cx).selected_index(cx);
-        assert_eq!(
-            sel.map(|ix| s.child_choices[ix.row].0),
-            Some(s.rules[0].category_id),
-            "the rule's category is selected in the picker"
-        );
     });
+    // 3.53: the editor draws its own controls and nothing that picks a
+    // category — saving keeps the rule's category (pinned by the next
+    // test), so there is no picker here.
+    let mut window = VisualTestContext::from_window(handle, cx);
+    assert!(
+        window.debug_bounds("rule:edit-pattern-input").is_some()
+            && window.debug_bounds("rule:edit-save-btn").is_some(),
+        "the editor paints its pattern field and Save"
+    );
     wait_until(cx, "live match count for the edit", |cx| {
         shell.read(cx).rule_match_count.is_some()
     });
@@ -2269,43 +2274,36 @@ fn editing_a_rules_pattern_recategorizes_unlocked_rows(cx: &mut TestAppContext) 
     });
 }
 
-/// 3.24: changing a rule's category moves the rows it matches onto the new
-/// one.
+/// 3.53: the editor has no picker, so saving an edit — even with a new
+/// pattern — keeps the rule on its own category, and the rows follow the
+/// rule there. Moving a rule to another category is the Rules page's
+/// Move bar (3.28), not the editor.
 #[gpui::test]
-fn changing_a_rules_category_moves_its_rows(cx: &mut TestAppContext) {
+fn saving_a_rule_edit_keeps_its_category(cx: &mut TestAppContext) {
     let (handle, shell, rule, first, second) = open_rule_fixture(cx);
     start_rule_edit(cx, handle, &shell, rule);
-    with_window(cx, handle, |window, cx| {
-        shell.update(cx, |s, cx| {
-            let ix = s
-                .child_choices
-                .iter()
-                .position(|(id, _)| *id == second)
-                .unwrap();
-            s.rule_edit_target.update(cx, |sel, cx| {
-                sel.set_selected_index(Some(gpui_kit::component::IndexPath::new(ix)), window, cx);
-            });
-        });
-    });
+    set_edit_pattern(cx, handle, &shell, "SHOP B");
     save_rule_edit(cx, handle, &shell);
-    wait_until(cx, "the category change saved", |cx| {
+    wait_until(cx, "the edit saved", |cx| {
         shell
             .read(cx)
             .rules
             .iter()
-            .any(|r| r.id == rule && r.category_id == second)
+            .any(|r| r.id == rule && r.pattern == "SHOP B")
     });
     cx.update(|cx| {
         let s = shell.read(cx);
+        let saved = s.rules.iter().find(|r| r.id == rule).unwrap();
+        assert_eq!(saved.category_id, first, "the rule stayed on its category");
         assert_eq!(
             s.cat_counts.get(&first).copied().unwrap_or(0),
-            0,
-            "`first` no longer holds the rule's rows"
+            1,
+            "the kept row is on `first`, where the rule still lives"
         );
         assert_eq!(
             s.cat_counts.get(&second).copied().unwrap_or(0),
-            3,
-            "both moved rows joined `second` (with the locked row)"
+            1,
+            "`second` gained nothing — only its locked row is there"
         );
     });
 }
@@ -4457,6 +4455,20 @@ fn the_categories_page_labels_its_controls(cx: &mut TestAppContext) {
     cx.run_until_parked();
     let mut window = VisualTestContext::from_window(handle, cx);
     draw_frame(cx, handle);
+    // 3.53: a parent without subcategories can't hold a rule, so the hint
+    // stands in for the add-rule row — the scan below needs a child first.
+    assert!(
+        window.debug_bounds("cat:add-rule-need-child").is_some(),
+        "a childless parent offers the add-a-subcategory hint"
+    );
+    add_child(cx, handle, &shell, "Restaurants");
+    let child_id = cx.update(|cx| find_child(&shell, cx, "Restaurants").unwrap());
+    // Adding a child selects it, so the scan goes back to the parent.
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| s.select_category(parent_id, window, cx));
+    });
+    cx.run_until_parked();
+    draw_frame(cx, handle);
     for sel in [
         "label:Category tree",
         "label:New category name",
@@ -4467,7 +4479,7 @@ fn the_categories_page_labels_its_controls(cx: &mut TestAppContext) {
         "label:Delete",
         "label:Move its transactions to",
         "label:Pattern",
-        "label:Category",
+        "label:Subcategory",
     ] {
         assert!(
             window.debug_bounds(sel).is_some(),
@@ -4475,8 +4487,6 @@ fn the_categories_page_labels_its_controls(cx: &mut TestAppContext) {
         );
     }
     // A selected child adds the move-to-category picker's label.
-    add_child(cx, handle, &shell, "Restaurants");
-    let child_id = cx.update(|cx| find_child(&shell, cx, "Restaurants").unwrap());
     with_window(cx, handle, |window, cx| {
         shell.update(cx, |s, cx| s.select_category(child_id, window, cx));
     });
@@ -4485,6 +4495,16 @@ fn the_categories_page_labels_its_controls(cx: &mut TestAppContext) {
     assert!(
         window.debug_bounds("label:Move to category").is_some(),
         "the child detail paints the move picker's label"
+    );
+    // 3.53: under a subcategory the add-rule row drops its picker — the
+    // selection itself names where the rule goes.
+    assert!(
+        window.debug_bounds("label:Pattern").is_some(),
+        "the add-rule row keeps its pattern label under a subcategory"
+    );
+    assert!(
+        window.debug_bounds("label:Subcategory").is_none(),
+        "and no subcategory picker"
     );
 }
 
@@ -4858,11 +4878,11 @@ fn selecting_a_category_lists_only_its_own_rules(cx: &mut TestAppContext) {
     );
 }
 
-/// 3.23: the add-rule Category picker defaults to the selected category
-/// when it lists it (the picker lists subcategories), and clears when the
-/// selection is one it cannot show.
+/// 3.53: with a subcategory selected the page already says where the rule
+/// goes — the add-rule row has no category picker, and Add rule targets
+/// the selection itself.
 #[gpui::test]
-fn the_add_rule_picker_defaults_to_the_selected_subcategory(cx: &mut TestAppContext) {
+fn a_selected_subcategory_adds_a_rule_without_a_picker(cx: &mut TestAppContext) {
     let mut ids = (0i64, 0i64, 0i64, 0i64);
     let (handle, shell) = open_shell(cx, |c| ids = seed_split_rules(c));
     let (_drinks, _transport, _coffee_rule, _fuel_rule) = ids;
@@ -4875,30 +4895,190 @@ fn the_add_rule_picker_defaults_to_the_selected_subcategory(cx: &mut TestAppCont
         shell.update(cx, |s, cx| s.select_category(fuel, window, cx));
     });
     cx.run_until_parked();
-    cx.update(|cx| {
-        let s = shell.read(cx);
-        let want = s
-            .child_choices
+    draw_frame(cx, handle);
+    let mut window = VisualTestContext::from_window(handle, cx);
+    assert!(
+        window.debug_bounds("cat:add-rule-row").is_some(),
+        "the add-rule row still shows under a subcategory"
+    );
+    assert!(
+        window
+            .debug_bounds("rule:subcategory-select:cat-add")
+            .is_none(),
+        "the row carries no category picker — the selection names the target"
+    );
+    assert!(
+        window
+            .debug_bounds(leaked(format!("label:{SUBCATEGORY_PH}")))
+            .is_none(),
+        "no \"Subcategory…\" placeholder paints either"
+    );
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.rule_pattern
+                .update(cx, |i, cx| i.set_value("PRET", window, cx));
+        });
+    });
+    let btn = window
+        .debug_bounds("rule:add-rule-btn:cat-add")
+        .expect("the row's Add rule button");
+    window.simulate_click(btn.center(), Modifiers::default());
+    wait_until(cx, "the rule added on the selected subcategory", |cx| {
+        shell
+            .read(cx)
+            .rules
             .iter()
-            .position(|(id, _)| *id == fuel)
-            .expect("Fuel is a subcategory choice");
-        assert_eq!(
-            s.rule_target.read(cx).selected_index(cx).map(|p| p.row),
-            Some(want),
-            "the picker defaults to the selected subcategory"
-        );
-        assert_eq!(s.child_choices[want].1, "Transport › Fuel");
+            .any(|r| r.pattern == "PRET" && r.category_id == fuel)
     });
-    // A parent is not in the picker, so selecting one clears the pick.
+}
+
+/// 3.53: under a parent the row picks among the parent's own children by
+/// their own names — no default pick, no other category's children, no
+/// "Parent › Child" labels — and Add rule without a pick explains itself
+/// instead of saving.
+#[gpui::test]
+fn the_add_rule_picker_lists_the_selected_parents_children(cx: &mut TestAppContext) {
+    let mut ids = (0i64, 0i64, 0i64, 0i64);
+    let (handle, shell) = open_shell(cx, |c| ids = seed_split_rules(c));
+    let (_drinks, _transport, _coffee_rule, _fuel_rule) = ids;
+    wait_until(cx, "both rules loaded", |cx| {
+        shell.read(cx).rules.len() == 2 && shell.read(cx).categories.len() == 3
+    });
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Categories, cx)));
     select_parent(cx, handle, &shell, "Drinks");
+    draw_frame(cx, handle);
+    let mut window = VisualTestContext::from_window(handle, cx);
+    assert!(
+        window
+            .debug_bounds("rule:subcategory-select:cat-add")
+            .is_some(),
+        "under a parent the row paints its subcategory picker"
+    );
+    assert!(
+        window
+            .debug_bounds(leaked(format!("label:{SUBCATEGORY_PH}")))
+            .is_some(),
+        "the picker reads {SUBCATEGORY_PH:?} while nothing is picked"
+    );
+    cx.update(|cx| {
+        let s = shell.read(cx);
+        assert!(
+            s.cat_rule_target.read(cx).selected_index(cx).is_none(),
+            "a fresh parent selection pre-picks nothing"
+        );
+    });
+    // The open menu holds this parent's children, by their own names.
+    let trigger = window
+        .debug_bounds("rule:subcategory-select:cat-add")
+        .expect("the picker trigger");
+    window.simulate_click(trigger.center(), Modifiers::default());
+    cx.run_until_parked();
+    draw_frame(cx, handle);
+    draw_frame(cx, handle);
+    assert!(
+        window.debug_bounds("rule-choice:Coffee").is_some(),
+        "the parent's own child is listed by its own name"
+    );
+    assert!(
+        window.debug_bounds("rule-choice:Fuel").is_none(),
+        "another parent's child is not in the list"
+    );
+    assert!(
+        window.debug_bounds("rule-choice:Drinks › Coffee").is_none(),
+        "the names are bare, not \"Parent › Child\""
+    );
+    // Add rule with a pattern but no pick: the error explains, nothing
+    // saves. Close the menu first — the click must land on the button.
+    click_past_anything(cx, &mut window);
+    draw_frame(cx, handle);
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.rule_pattern
+                .update(cx, |i, cx| i.set_value("UBER", window, cx));
+        });
+    });
+    let btn = window
+        .debug_bounds("rule:add-rule-btn:cat-add")
+        .expect("the row's Add rule button");
+    window.simulate_click(btn.center(), Modifiers::default());
+    wait_until(cx, "the no-pick error", |cx| {
+        shell.read(cx).rule_error.is_some()
+    });
     cx.update(|cx| {
         let s = shell.read(cx);
         assert_eq!(
-            s.rule_target.read(cx).selected_index(cx).map(|p| p.row),
-            None,
-            "selecting a parent clears the picker"
+            s.rule_error.as_deref(),
+            Some("Choose the subcategory the rule assigns."),
+            "the error names the missing pick"
         );
+        assert_eq!(s.rules.len(), 2, "no rule was added");
     });
+}
+
+/// 3.53: a parent with no subcategories cannot hold a rule (rules target
+/// a child), so a muted hint stands in for the add-rule row; a parent
+/// with children keeps the row.
+#[gpui::test]
+fn a_childless_parent_offers_no_rule_row(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |conn| {
+        let drinks =
+            financi_db::categories::create_parent(conn, "Drinks", CategoryKind::Expense).unwrap();
+        financi_db::categories::create_child(conn, drinks, "Coffee").unwrap();
+        financi_db::categories::create_parent(conn, "Books", CategoryKind::Expense).unwrap();
+    });
+    // +1: the system `Transfers` parent from migration 0002.
+    wait_until(cx, "both parents loaded", |cx| {
+        shell.read(cx).categories.len() == 3
+    });
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Categories, cx)));
+    select_parent(cx, handle, &shell, "Books");
+    draw_frame(cx, handle);
+    let mut window = VisualTestContext::from_window(handle, cx);
+    assert!(
+        window.debug_bounds("cat:add-rule-need-child").is_some(),
+        "the childless parent shows the add-a-subcategory hint"
+    );
+    assert!(
+        window.debug_bounds("cat:add-rule-row").is_none(),
+        "and no add-rule row"
+    );
+    select_parent(cx, handle, &shell, "Drinks");
+    draw_frame(cx, handle);
+    assert!(
+        window.debug_bounds("cat:add-rule-need-child").is_none(),
+        "the hint is gone once the selection has children"
+    );
+    assert!(
+        window.debug_bounds("cat:add-rule-row").is_some(),
+        "the parent with children keeps the add-rule row"
+    );
+}
+
+/// 3.53: the rule list ends with a muted pointer to the Rules page — the
+/// editor no longer moves rules — and only while there are rules there
+/// to move.
+#[gpui::test]
+fn the_rule_list_points_at_the_rules_page(cx: &mut TestAppContext) {
+    let mut ids = (0i64, 0i64, 0i64, 0i64);
+    let (handle, shell) = open_shell(cx, |c| ids = seed_split_rules(c));
+    let (_drinks, _transport, _coffee_rule, _fuel_rule) = ids;
+    wait_until(cx, "both rules loaded", |cx| {
+        shell.read(cx).rules.len() == 2 && shell.read(cx).categories.len() == 3
+    });
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Categories, cx)));
+    select_parent(cx, handle, &shell, "Drinks");
+    draw_frame(cx, handle);
+    let mut window = VisualTestContext::from_window(handle, cx);
+    assert!(
+        window.debug_bounds("cat:rules-move-hint").is_some(),
+        "a category with rules shows the move hint"
+    );
+    select_parent(cx, handle, &shell, "Transfers");
+    draw_frame(cx, handle);
+    assert!(
+        window.debug_bounds("cat:rules-move-hint").is_none(),
+        "a ruleless category shows no move hint"
+    );
 }
 
 /// 3.23: the header's "New category…" button opens the add-category form
@@ -5084,15 +5264,18 @@ fn the_categories_page_fits_the_minimum_window(cx: &mut TestAppContext) {
 /// 3.41: a child category whose full label "Drinks › …" is exactly 40
 /// characters — too wide for the 200 px trigger (it ellipsizes), but it
 /// fits the 320 px open menu.
-const LONG_CHILD: &str = "international subscriptions ltd";
+/// 3.41/3.53: a child category named exactly 40 characters — too wide
+/// for the 200 px trigger (it ellipsizes, and the hover tooltip names
+/// the selection), but it fits the 320 px open menu.
+const LONG_CHILD: &str = "international-subscriptions-limited-2026";
 
 fn long_label() -> String {
     format!("Drinks › {LONG_CHILD}")
 }
 
 /// 3.41: like `seed_rule_fixture`, but the rule targets the long-named
-/// child, so the editor's picker opens with the long selection and the
-/// trigger needs its tooltip. Returns `(rule, long child, short child)`.
+/// child, so the Categories picker's menu and the trigger's tooltip have
+/// a 40-character name to show. Returns `(rule, long child, short child)`.
 fn seed_long_name_rule_fixture(conn: &financi_db::rusqlite::Connection) -> (i64, i64, i64) {
     let acct = create_account(conn, "amex", "Cobalt", AccountKind::CreditCard).unwrap();
     conn.execute(
@@ -5118,9 +5301,9 @@ fn seed_long_name_rule_fixture(conn: &financi_db::rusqlite::Connection) -> (i64,
     (rule, long, short)
 }
 
-/// 3.41: open the shell over the long-name fixture and select the parent,
-/// so the Categories detail panel paints its add-rule row. Returns
-/// `(handle, shell, rule, long child, short child)`.
+/// 3.41/3.53: open the shell over the long-name fixture and select the
+/// parent, so the Categories detail panel paints its add-rule row and
+/// picker. Returns `(handle, shell, rule, long child, short child)`.
 fn open_long_name_rule_fixture(
     cx: &mut TestAppContext,
 ) -> (AnyWindowHandle, Entity<Shell>, i64, i64, i64) {
@@ -5134,6 +5317,118 @@ fn open_long_name_rule_fixture(
     cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Categories, cx)));
     select_parent(cx, handle, &shell, "Drinks");
     (handle, shell, rule, long, short)
+}
+
+/// 3.53: open a rule picker the way a user does — a click on the middle
+/// of the trigger — and paint until the (deferred) menu is up.
+fn open_picker_menu(
+    cx: &mut TestAppContext,
+    window: &mut VisualTestContext,
+    handle: AnyWindowHandle,
+    sel: &'static str,
+) {
+    let b = window
+        .debug_bounds(sel)
+        .unwrap_or_else(|| panic!("{sel} paints"));
+    window.simulate_click(b.center(), Modifiers::default());
+    cx.run_until_parked();
+    draw_frame(cx, handle);
+    draw_frame(cx, handle);
+}
+
+/// 3.53: click outside an open menu to dismiss it (the popup closes on
+/// any press that misses it).
+fn click_past_anything(cx: &mut TestAppContext, window: &mut VisualTestContext) {
+    window.simulate_click(point(px(2.), px(2.)), Modifiers::default());
+    cx.run_until_parked();
+}
+
+/// 3.53: assert a menu row paints with its text unclipped — the natural
+/// (nowrap, absolutely positioned) probe copy fits inside the drawn row
+/// — and that the row sits inside the window.
+fn assert_menu_item_unclipped(window: &mut VisualTestContext, label: &str, win_w: f32) {
+    let item = window
+        .debug_bounds(leaked(format!("rule-choice:{label}")))
+        .unwrap_or_else(|| panic!("{label:?} paints in the open menu"));
+    let natural = window
+        .debug_bounds(leaked(format!("rule-choice-natural:{label}")))
+        .expect("the natural-width probe paints beside the menu row");
+    assert!(
+        f32::from(natural.size.width) <= f32::from(item.size.width) + 1.,
+        "{label:?} is clipped in the menu: the text wants {:?}, the row is {:?}",
+        natural.size.width,
+        item.size.width,
+    );
+    // The 320 px menu minus the list and row padding; a menu as narrow
+    // as the trigger (200 px) fails this.
+    assert!(
+        f32::from(item.size.width) >= 250.,
+        "the menu row is {:?} wide, not the wide (320 px) menu",
+        item.size.width,
+    );
+    assert!(
+        f32::from(item.origin.x) + f32::from(item.size.width) <= win_w,
+        "the open menu runs past the window's right edge: row ends at {:?}, window is {win_w} px wide",
+        f32::from(item.origin.x) + f32::from(item.size.width),
+    );
+}
+
+/// 3.53: a 40-character child name is too wide for the 200 px trigger —
+/// the trigger caps there and its ellipsized pick carries a hover tooltip
+/// — while the open menu grows to 320 px and paints the full name
+/// unclipped, inside the window.
+#[gpui::test]
+fn the_subcategory_menu_shows_a_forty_character_name(cx: &mut TestAppContext) {
+    let (handle, shell, _rule, _long, _short) = open_long_name_rule_fixture(cx);
+    resize_and_draw(cx, handle, 1200., 720.);
+    let mut window = VisualTestContext::from_window(handle, cx);
+    let name = LONG_CHILD;
+
+    let trigger = window
+        .debug_bounds("rule:subcategory-select:cat-add")
+        .expect("the Categories page paints the add-rule picker");
+    assert!(
+        (f32::from(trigger.size.width) - 200.).abs() <= 1.,
+        "the picker's trigger is {:?} wide, not the 200 px ceiling",
+        trigger.size.width,
+    );
+
+    open_picker_menu(cx, &mut window, handle, "rule:subcategory-select:cat-add");
+    assert_menu_item_unclipped(&mut window, name, 1200.);
+
+    // Pick the long child; the trigger then holds the ellipsized name…
+    let item = window
+        .debug_bounds(leaked(format!("rule-choice:{name}")))
+        .expect("the long child paints in the open menu");
+    window.simulate_click(item.center(), Modifiers::default());
+    cx.run_until_parked();
+    draw_frame(cx, handle);
+    cx.update(|cx| {
+        let s = shell.read(cx);
+        assert_eq!(
+            s.cat_rule_target
+                .read(cx)
+                .selected_value()
+                .map(|v| v.as_str()),
+            Some(name),
+            "the long child is the picker's selection"
+        );
+    });
+
+    // …and hovering it shows the full name in a tooltip.
+    let trigger = window
+        .debug_bounds("rule:subcategory-select:cat-add")
+        .expect("the picker trigger");
+    window.simulate_mouse_move(trigger.center(), None, Modifiers::default());
+    cx.executor().advance_clock(Duration::from_millis(600));
+    cx.run_until_parked();
+    draw_frame(cx, handle);
+    assert!(
+        window
+            .debug_bounds(leaked(format!("rule:category-tooltip:{name}")))
+            .is_some(),
+        "hovering the ellipsized trigger shows the full name {name:?} in a tooltip",
+    );
 }
 
 /// 3.42: in every rule row — the add-rule row on each page and the rule

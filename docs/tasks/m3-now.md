@@ -35,7 +35,7 @@ Features the paused run left half done. Finish each in its existing worktree bef
     `ui.rs` from the paused run (panel, heading row, Categorize button
     mirroring its picker). Continue from them; don't start over.
 
-- [ ] **3.53 No category picker where the page already says it.** The
+- [x] **3.53 No category picker where the page already says it.** The
   Categories page's add-rule row and rule editor each carry a Category
   picker, but the rule list sits inside a selected category, so the
   picker mostly repeats the selection (user request, 2026-11-11).
@@ -81,7 +81,7 @@ Features the paused run left half done. Finish each in its existing worktree bef
 
     Update the *Categories* row of `ui-conventions.md`.
 
-- [ ] **3.42 The regex switch lines up with the rule fields.** In the
+- [x] **3.42 The regex switch lines up with the rule fields.** In the
   add-rule row (`cat:add-rule-row`) and the rule editor row, the
   **regex** `Switch` sits lower than the Pattern input, the Category
   picker and the buttons (user report, 2026-11-11). Cause: both rows are
