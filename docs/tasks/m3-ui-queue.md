@@ -6,46 +6,6 @@ Do these in the order listed (`docs/tasks.md` → *Picking the next task*). Each
 
 Steps 1–15 of `docs/tasks/gpui.md` → *GPUI best practices*, task by task.
 
-- [x] **3.62 Split `ui.rs` and `ui_tests.rs` by page.** Pure refactor,
-  no behaviour change (planned 2026-11-11 in a docs review). `ui.rs` is
-  ~7 500 lines, one `impl Shell` block of ~5 500 of them, and
-  `ui_tests.rs` is ~8 500 lines. Every UI task edits both, so two UI
-  branches in flight conflict at merge, and one file costs an agent most
-  of its 130k context to navigate.
-  - **Review update (2026-11-11):** Pure move, as written. The test-helper dedupe and selector renames are 3.75; moving key bindings, menus and global actions out of `Shell::new` is 3.76 — not part of the move.
-  - `git mv crates/financi/src/ui.rs crates/financi/src/ui/mod.rs` first,
-    in its own commit, so history follows the file. Then move code into
-    sibling modules under `crates/financi/src/ui/`:
-    - `mod.rs`: `Shell` (the struct and `new`), `Page`, `Render for
-      Shell`, the page switch, `refresh` and `on_db`;
-    - `widgets.rs`: shared helpers (`checkbox`, `field_label`,
-      `region_title`, `filter_tip`, `category_palette`, toasts, shared
-      width consts);
-    - `sidebar.rs`, `dashboard.rs` (filters, chart, summary,
-      `TxTable`, row menu), `queue.rs`, `categories.rs`, `rules.rs`,
-      `transfers.rs`, `imports.rs` (`ImportPanel`,
-      `ImportHistoryTable`).
-  - Each page module adds its own `impl Shell { … }` block. Child modules
-    can read the parent module's private fields, so `Shell`'s fields stay
-    private. Items moved out of `mod.rs` that siblings use become
-    `pub(super)`; nothing becomes `pub` that wasn't.
-  - Tests: `ui_tests.rs` → `ui/tests/mod.rs` (shared helpers:
-    `wait_until`, seeding, bounds helpers) plus one file per page, the
-    same split as the code. Every test keeps its name. The number of
-    tests listed by `cargo test --workspace --features
-    financi-db/dev-seed -- --list` is equal before and after (put both
-    counts in the commit message).
-  - Aim for no file over ~1 500 lines. Move code; don't rewrite it.
-    `git diff --stat` should show adds ≈ removes.
-  - Update the docs that name the files: `CLAUDE.md` (*UI docs are for UI
-    work only*: `crates/financi/src/ui/`), `AGENTS.md` (*Keep the pool
-    full*: UI work lands in per-page modules), `docs/tasks.md` (*Where things are*), `docs/tasks/gpui.md`, `docs/ui-conventions.md` (`ui_tests.rs` mentions). Open
-    task texts that say "`ui.rs`" mean the matching module from now on;
-    don't rewrite them.
-  - **Scheduling:** the only UI branch in flight while it runs (the
-    other slot does M5 backend work). Start it after 3.53's branch merges,
-    and merge it before any other UI branch starts.
-
 - [ ] **3.74 Group `Shell`'s state by page.** (Architecture, user decision
   2026-11-11: move to page entities.) Pure refactor, no behaviour change,
   right after 3.62. Today every page module reaches into ~200 shared
