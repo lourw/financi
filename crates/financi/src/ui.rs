@@ -150,16 +150,23 @@ fn field_label(muted: Hsla, text: &'static str) -> Div {
 /// `items_end` row — the regex switch beside Pattern and Category — goes
 /// in a slot the height of one control (32 px), centred, so its centre
 /// matches the controls beside it while the row's bottoms stay aligned.
-/// The debug selector (`<selector>`) records the slot, whose centre is
-/// the control's.
-fn control_slot(selector: String, control: impl IntoElement) -> Div {
+/// The debug selectors record the slot (`<selector>`) and, in a
+/// shrink-wrap probe div (the pattern `RuleChoice::render` uses), the
+/// control itself (`<probe>`) — the Switch widget carries no selector,
+/// so without the probe a test could only ever measure the slot.
+fn control_slot(selector: String, probe: String, control: impl IntoElement) -> Div {
     div()
         .h(px(32.))
         .flex()
         .items_center()
         .flex_shrink_0()
         .debug_selector(move || selector.clone())
-        .child(control)
+        .child(
+            div()
+                .flex_shrink_0()
+                .debug_selector(move || probe.clone())
+                .child(control),
+        )
 }
 
 /// 3.41: the rule rows' Category picker (`Select::new` over the child
@@ -5704,6 +5711,7 @@ impl Shell {
                         // buttons.
                         control_slot(
                             "rule:regex-slot:edit".into(),
+                            "rule:switch:edit".into(),
                             Switch::new(SharedString::from(format!("rule-edit-regex-{}", rule.id)))
                                 .label("regex")
                                 .checked(self.rule_edit_regex)
@@ -6294,6 +6302,7 @@ impl Shell {
                                     // 3.42: control-height slot, centred.
                                     control_slot(
                                         "rule:regex-slot:add".into(),
+                                        "rule:switch:add".into(),
                                         Switch::new("rule-regex")
                                             .label("regex")
                                             .checked(self.rule_regex)
@@ -6828,6 +6837,7 @@ impl Shell {
                                         // 3.42: control-height slot, centred.
                                         control_slot(
                                             "rule:regex-slot:cat-add".into(),
+                                            "rule:switch:cat-add".into(),
                                             Switch::new("rule-regex")
                                                 .label("regex")
                                                 .checked(self.rule_regex)

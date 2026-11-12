@@ -5278,9 +5278,10 @@ fn the_rule_editor_picker_shows_the_full_name(cx: &mut TestAppContext) {
 }
 
 /// 3.42: in every rule row — the add-rule row on each page and the rule
-/// editor — the regex switch sits on the controls' centre line: its
-/// vertical centre equals the Pattern input's and the primary button's
-/// within 1 px.
+/// editor — the regex switch sits on the controls' centre line: the
+/// switch itself (its shrink-wrap probe, not the 32 px slot around it)
+/// centres within 1 px of the Pattern input, the primary button and the
+/// slot.
 #[gpui::test]
 fn the_regex_switch_lines_up_with_the_rule_fields(cx: &mut TestAppContext) {
     let (handle, shell, rule, _long, _short) = open_long_name_rule_fixture(cx);
@@ -5296,10 +5297,15 @@ fn the_regex_switch_lines_up_with_the_rule_fields(cx: &mut TestAppContext) {
     let aligned = |window: &mut VisualTestContext,
                    where_: &str,
                    switch: &'static str,
+                   slot: &'static str,
                    input: &'static str,
                    button: &'static str| {
         let sw = centre(window, switch, where_);
-        for (what, sel) in [("the Pattern input", input), ("the primary button", button)] {
+        for (what, sel) in [
+            ("the slot around it", slot),
+            ("the Pattern input", input),
+            ("the primary button", button),
+        ] {
             let c = centre(window, sel, where_);
             assert!(
                 (c - sw).abs() <= 1.,
@@ -5312,6 +5318,7 @@ fn the_regex_switch_lines_up_with_the_rule_fields(cx: &mut TestAppContext) {
     aligned(
         &mut window,
         "add-rule",
+        "rule:switch:cat-add",
         "rule:regex-slot:cat-add",
         "rule:pattern-input:cat-add",
         "rule:add-rule-btn:cat-add",
@@ -5323,6 +5330,7 @@ fn the_regex_switch_lines_up_with_the_rule_fields(cx: &mut TestAppContext) {
     aligned(
         &mut window,
         "rule editor",
+        "rule:switch:edit",
         "rule:regex-slot:edit",
         "rule:edit-pattern-input",
         "rule:edit-save-btn",
@@ -5337,6 +5345,7 @@ fn the_regex_switch_lines_up_with_the_rule_fields(cx: &mut TestAppContext) {
     aligned(
         &mut window,
         "Rules page add-rule",
+        "rule:switch:add",
         "rule:regex-slot:add",
         "rule:pattern-input:add",
         "rule:add-rule-btn:add",
