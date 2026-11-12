@@ -818,7 +818,7 @@ the order above (3.28 → 3.29 → 3.26).
     text shows both counts; 3.22's heading-alignment and fit tests pass.
     Update the *To categorize* row of `ui-conventions.md`.
 
-- [ ] **3.35 Dashboard filters on one line.** The filter region (a
+- [x] **3.35 Dashboard filters on one line.** The filter region (a
   "Filters" title, then two rows each with a label line over a control
   line) takes about a fifth of the window height. Make it one 32 px row
   with no region title and no label lines (user request, 2026-11-11; this

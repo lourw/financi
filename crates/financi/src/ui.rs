@@ -51,8 +51,8 @@ use gpui_kit::component::switch::Switch;
 use gpui_kit::component::table::{Column, ColumnSort, DataTable, TableDelegate, TableState};
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{
-    ActiveTheme as _, Collapsible, Disableable as _, Sizable as _, VirtualListScrollHandle, h_flex,
-    v_flex, v_virtual_list,
+    ActiveTheme as _, Collapsible, Disableable as _, Icon, Sizable as _, VirtualListScrollHandle,
+    h_flex, v_flex, v_virtual_list,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -106,22 +106,32 @@ fn region_title(text: &'static str) -> Div {
         .child(text)
 }
 
-/// One column of a dashboard filter row (3.25, ui-conventions *Pages*): a
-/// label line over a control line [`FILTER_CONTROL_H`] tall with the control
-/// vertically centred, so every control in the row shares one centre line
-/// however tall it is. A column whose label is `""` (checkboxes, the
-/// transaction count) carries an invisible label line of the same height so
-/// its control still sits on the row's control line.
-fn filter_column(muted: Hsla, label: &'static str, control: impl IntoElement) -> Div {
-    v_flex()
-        .gap_1()
-        .flex_none()
-        .child(if label.is_empty() {
-            div().text_xs().invisible().child(".").into_any_element()
-        } else {
-            field_label(muted, label).into_any_element()
+/// Hover tooltip naming a dashboard filter control that has no visible
+/// label (3.35, ui-conventions *Interaction*). The tooltip body carries the
+/// `filters:tooltip:<name>` selector so headless tests can see it appear.
+fn filter_tip(id: &'static str, name: &'static str, control: impl IntoElement) -> Stateful<Div> {
+    div()
+        .id(SharedString::from(id))
+        .tooltip(move |window, cx| {
+            Tooltip::element(move |_, _| {
+                div()
+                    .debug_selector(move || format!("filters:tooltip:{name}"))
+                    .child(name)
+            })
+            .build(window, cx)
         })
-        .child(h_flex().h(FILTER_CONTROL_H).items_center().child(control))
+        .child(control)
+}
+
+/// The Options button's label (3.35): "Options", or "Options · N" when N
+/// of its toggles (include transfers, uncategorized only, show hidden) are
+/// on.
+fn options_label(on: usize) -> String {
+    if on == 0 {
+        "Options".to_string()
+    } else {
+        format!("Options · {on}")
+    }
 }
 
 /// Run `f` on the database thread, flattening worker and query errors.
@@ -1246,13 +1256,16 @@ const LEGEND_W: f32 = 140.;
 const CHART_PANEL_SHARE: f32 = 0.45;
 const PAGE_PAD: f32 = 16.;
 const REGION_GAP: f32 = 12.;
-// Filter rows (3.25): the control line every filter column shares, and the
-// width of the first column of each row (the row-2 search box matches it).
+// Filter row (3.35): the height every filter control shares, the date-range
+// select's width (fits "Last 12 months" on one line), and the search box's
+// floor.
 const FILTER_CONTROL_H: Pixels = px(32.);
-const FILTER_COL_W: Pixels = px(240.);
-/// The narrowest the custom range's From/To columns shrink (3.25): row 1
-/// gives them 140 px when there is room, and only down to this when the
-/// window is at its minimum and the count must still fit on the page.
+const FILTER_DATE_RANGE_W: Pixels = px(170.);
+const FILTER_SEARCH_MIN_W: Pixels = px(140.);
+/// The custom range's From/To pickers: 140 px when there is room, shrinking
+/// first, down to [`FILTER_DATE_MIN_W`], when the window is at its minimum
+/// and the rest of the row must still fit on the page (3.25, 3.35).
+const FILTER_DATE_W: Pixels = px(140.);
 const FILTER_DATE_MIN_W: Pixels = px(110.);
 
 /// Generous width of one 10px system-font character, rounded up so the
@@ -2005,7 +2018,7 @@ impl Shell {
         );
         // The dashboard search box filters the table on every keystroke.
         let search_input =
-            cx.new(|cx| InputState::new(window, cx).placeholder("Search description or merchant"));
+            cx.new(|cx| InputState::new(window, cx).placeholder("Search transactions"));
         let search_sub = cx.subscribe_in(
             &search_input,
             window,
@@ -4604,141 +4617,99 @@ impl Shell {
             .min_h_0()
             .min_w_0()
             .gap_3()
-            // One labelled filter region (3.16): the date range, accounts
-            // and transfers controls, then search and the table toggles —
-            // every control carries a visible label, none relies on a
-            // placeholder. The header row is still the filter row
-            // (ui-conventions, *Pages*).
+            // One filter row (3.35, ui-conventions *Pages*): no region
+            // title and no label lines. Every control is 32 px tall and
+            // centred on the row; the controls without a visible label
+            // name themselves in a hover tooltip. Left to right: date
+            // range, the custom From/To pickers, accounts, search (takes
+            // the slack), Options (the three toggles), then the count.
             .child(
-                v_flex()
+                h_flex()
                     .w_full()
+                    .h(FILTER_CONTROL_H)
                     .debug_selector(|| "filters:region".into())
                     .gap_2()
-                    .child(region_title("Filters"))
+                    .items_center()
                     .child(
-                        h_flex()
-                            .w_full()
-                            .debug_selector(|| "filters:row1".into())
-                            .gap_3()
-                            .items_start()
-                            .child(filter_column(
-                                muted,
-                                "Date range",
-                                div()
-                                    .debug_selector(|| "filters:date-range".into())
-                                    .w(FILTER_COL_W)
-                                    .child(Select::new(&self.date_preset_select)),
-                            ))
-                            // The From/To columns want 140 px but shrink
-                            // first when the row runs out of room, so the
-                            // custom range fits the minimum window with the
-                            // count (3.25 fix); the other columns hold.
-                            .when(matches!(self.date_range, DateRange::Custom { .. }), |g| {
-                                g.child(
-                                    filter_column(
-                                        muted,
-                                        "From",
-                                        div()
-                                            .debug_selector(|| "filters:from".into())
-                                            .child(DatePicker::new(&self.date_from_picker)),
-                                    )
-                                    .w(px(140.))
-                                    .flex_shrink(1.)
-                                    .min_w(FILTER_DATE_MIN_W),
-                                )
-                                .child(
-                                    filter_column(
-                                        muted,
-                                        "To",
-                                        div()
-                                            .debug_selector(|| "filters:to".into())
-                                            .child(DatePicker::new(&self.date_to_picker)),
-                                    )
-                                    .w(px(140.))
-                                    .flex_shrink(1.)
-                                    .min_w(FILTER_DATE_MIN_W),
-                                )
-                            })
-                            // Accounts multi-select (3.3): a dropdown popover of
-                            // checkboxes, one per account, all checked by default.
-                            .child(filter_column(
-                                muted,
-                                "Accounts",
-                                // The selector (test builds only, 3.11) lets
-                                // headless tests find the trigger and click it.
-                                div()
-                                    .debug_selector(|| "accounts:filter".into())
-                                    .child(self.accounts_popover(cx)),
-                            ))
-                            .child(filter_column(
-                                muted,
-                                // No label of its own: the invisible label
-                                // line (3.25) keeps the control centred on
-                                // the same line as its neighbours.
-                                "",
-                                checkbox("include-transfers")
-                                    .label("Include transfers")
-                                    .checked(self.include_transfers)
-                                    .on_click(cx.listener(|this, on: &bool, window, cx| {
-                                        this.set_include_transfers(*on, window, cx);
-                                    })),
-                            ))
-                            // The count rides the end of the row (3.25): it
-                            // shares the control line and anchors the region's
-                            // right edge to the page.
+                        filter_tip(
+                            "filters:date-range-tip",
+                            "Date range",
+                            div()
+                                .debug_selector(|| "filters:date-range".into())
+                                .w(FILTER_DATE_RANGE_W)
+                                .child(Select::new(&self.date_preset_select)),
+                        )
+                        .flex_none(),
+                    )
+                    // The From/To pickers want 140 px but shrink first
+                    // (floor 110 px) when the row runs out of room, so the
+                    // custom range fits the minimum window (3.25, 3.35).
+                    .when(matches!(self.date_range, DateRange::Custom { .. }), |g| {
+                        g.child(
+                            div()
+                                .debug_selector(|| "filters:from".into())
+                                .w(FILTER_DATE_W)
+                                .flex_shrink(1.)
+                                .min_w(FILTER_DATE_MIN_W)
+                                .child(DatePicker::new(&self.date_from_picker)),
+                        )
+                        .child(
+                            div()
+                                .debug_selector(|| "filters:to".into())
+                                .w(FILTER_DATE_W)
+                                .flex_shrink(1.)
+                                .min_w(FILTER_DATE_MIN_W)
+                                .child(DatePicker::new(&self.date_to_picker)),
+                        )
+                    })
+                    // Accounts multi-select (3.3): a dropdown popover of
+                    // checkboxes, one per account, all checked by default.
+                    // The selector (test builds only, 3.11) lets headless
+                    // tests find the trigger and click it.
+                    .child(
+                        filter_tip(
+                            "filters:accounts-tip",
+                            "Accounts",
+                            div()
+                                .debug_selector(|| "accounts:filter".into())
+                                .child(self.accounts_popover(cx)),
+                        )
+                        .flex_none(),
+                    )
+                    // Search (3.4) takes the row's slack; the placeholder
+                    // and the leading icon say what it is.
+                    .child(
+                        div()
+                            .debug_selector(|| "filters:search".into())
+                            .flex_1()
+                            .min_w(FILTER_SEARCH_MIN_W)
                             .child(
-                                filter_column(
-                                    muted,
-                                    "",
-                                    div()
-                                        .debug_selector(|| "filters:count".into())
-                                        .text_sm()
-                                        .text_color(muted)
-                                        .child(format!(
-                                            "{} transactions",
-                                            flow::count(self.row_count as i64)
-                                        )),
-                                )
-                                .ml_auto(),
+                                Input::new(&self.search_input)
+                                    .prefix(Icon::new(IconName::Search).small().text_color(muted)),
                             ),
                     )
-                    // Second filter row (3.4): search box and the two table-only
-                    // toggles. Kept on their own line so the date-range pickers
-                    // never crowd them. The search column matches the first
-                    // column of the row above (3.25, ui-conventions *Pages*).
                     .child(
-                        h_flex()
-                            .w_full()
-                            .debug_selector(|| "filters:row2".into())
-                            .gap_3()
-                            .items_start()
-                            .child(filter_column(
-                                muted,
-                                "Search",
-                                div()
-                                    .debug_selector(|| "filters:search".into())
-                                    .w(FILTER_COL_W)
-                                    .child(Input::new(&self.search_input)),
-                            ))
-                            .child(filter_column(
-                                muted,
-                                "",
-                                checkbox("uncategorized-only")
-                                    .label("Uncategorized only")
-                                    .checked(self.uncategorized_only)
-                                    .on_click(cx.listener(|this, on: &bool, window, cx| {
-                                        this.set_uncategorized_only(*on, window, cx);
-                                    })),
-                            ))
-                            .child(filter_column(
-                                muted,
-                                "",
-                                checkbox("show-hidden")
-                                    .label("Show hidden")
-                                    .checked(self.show_hidden)
-                                    .on_click(cx.listener(|this, on: &bool, window, cx| {
-                                        this.set_show_hidden(*on, window, cx);
-                                    })),
+                        filter_tip(
+                            "filters:options-tip",
+                            "Options",
+                            div()
+                                .debug_selector(|| "filters:options".into())
+                                .child(self.options_popover(cx)),
+                        )
+                        .flex_none(),
+                    )
+                    // The count ends the row at the page's right edge.
+                    .child(
+                        div()
+                            .debug_selector(|| "filters:count".into())
+                            .flex_none()
+                            .ml_auto()
+                            .whitespace_nowrap()
+                            .text_sm()
+                            .text_color(muted)
+                            .child(format!(
+                                "{} transactions",
+                                flow::count(self.row_count as i64)
                             )),
                     ),
             )
@@ -4860,6 +4831,68 @@ impl Shell {
                                 });
                             })
                     }))
+            })
+    }
+
+    /// Options popover (3.35): the three filter toggles that used to sit in
+    /// the filter rows — same state and handlers. The trigger counts how
+    /// many are on. Right-anchored so it opens inside the page.
+    fn options_popover(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let shell = cx.entity();
+        let (transfers, uncategorized, hidden) = (
+            self.include_transfers,
+            self.uncategorized_only,
+            self.show_hidden,
+        );
+        let on = [transfers, uncategorized, hidden]
+            .iter()
+            .filter(|b| **b)
+            .count();
+        let label = options_label(on);
+        Popover::new("filter-options")
+            .anchor(Anchor::TopRight)
+            .trigger(
+                Button::new("filter-options-trigger")
+                    .icon(IconName::ListFilter)
+                    // The selector carries the label so tests can pin the
+                    // exact words ("Options · 2") the way `label:<text>` does.
+                    .debug_selector(|| format!("filters:options-btn:{label}"))
+                    .label(label),
+            )
+            .content(move |_, _, _| {
+                let (s1, s2, s3) = (shell.clone(), shell.clone(), shell.clone());
+                v_flex()
+                    .gap_2()
+                    .child(
+                        checkbox("include-transfers")
+                            .label("Include transfers")
+                            .checked(transfers)
+                            .on_click(move |on: &bool, window, cx| {
+                                s1.update(cx, |this, cx| {
+                                    this.set_include_transfers(*on, window, cx);
+                                });
+                            }),
+                    )
+                    .child(
+                        checkbox("uncategorized-only")
+                            .label("Uncategorized only")
+                            .checked(uncategorized)
+                            .on_click(move |on: &bool, window, cx| {
+                                s2.update(cx, |this, cx| {
+                                    this.set_uncategorized_only(*on, window, cx);
+                                });
+                            }),
+                    )
+                    .child(
+                        checkbox("show-hidden")
+                            .label("Show hidden")
+                            .checked(hidden)
+                            .on_click(move |on: &bool, window, cx| {
+                                s3.update(cx, |this, cx| {
+                                    this.set_show_hidden(*on, window, cx);
+                                });
+                            }),
+                    )
             })
     }
 
