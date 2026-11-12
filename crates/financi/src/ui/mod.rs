@@ -9,6 +9,8 @@
 
 mod categories;
 mod dashboard;
+mod dashboard_chart;
+mod dashboard_filters;
 mod imports;
 mod queue;
 mod rules;
