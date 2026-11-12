@@ -779,8 +779,8 @@ out.
     rendered text with a long-named tree, a subcategory selected, and each
     validation error triggered); the renamed buttons still work.
 
-**Bugs reported by the user on 2026-11-11** (3.34–3.56, plus a fix folded
-into 3.23). Order (user re-prioritized the dashboard, 2026-11-11): **3.40 → 3.23 → 3.35 → 3.56 → 3.36 → 3.45 → 3.46 → 3.53/3.42/3.48/3.49/3.50/3.51 → 3.43 → 3.44 → 3.55 → 3.47/3.54 → 3.37 → 3.38/3.39 → 3.34 → 3.52**, then the rest of
+**Bugs reported by the user on 2026-11-11** (3.34–3.57, plus a fix folded
+into 3.23). Order (user re-prioritized the dashboard, then responsiveness, 2026-11-11): **3.40 → 3.23 → 3.35 → 3.56 → 3.57 → 3.36 → 3.45 → 3.46 → 3.53/3.42/3.48/3.49/3.50/3.51 → 3.43 → 3.44 → 3.55 → 3.47/3.54 → 3.37 → 3.38/3.39 → 3.34 → 3.52**, then the rest of
 the order above (3.28 → 3.29 → 3.26).
 
 - 3.23 also fixes: **the rule list overflows the page.** Today each rule
@@ -1380,6 +1380,62 @@ the order above (3.28 → 3.29 → 3.26).
     - an import still refreshes every page;
     - the existing filter, sort and selection tests pass.
 
+- [ ] **3.57 The whole app responds at once.** Beyond the dashboard
+  filters (3.56), the app is "just not very responsive when we change
+  things like filters or buttons" (user report, 2026-11-11). It's the same
+  root cause, app-wide: ~30 call sites run the full `Shell::refresh`
+  after an action, all on one FIFO `DbWorker`, with nothing on screen
+  until it returns. Do this right after 3.56 and build on its
+  `RefreshScope` and generation counter.
+  - **Scope every action.** Give each `refresh(window, cx)` call site
+    the narrowest `RefreshScope` that covers what the action can change,
+    and write the mapping as a table in the code (doc comment on
+    `RefreshScope`). For example:
+
+    | Action | Refreshes |
+    |---|---|
+    | filters, selection, sort | dashboard |
+    | change a row's category, hide, unhide | dashboard + sidebar counts + queue + category counts |
+    | rule add / edit / delete / move | dashboard + rules + uses + queue + category counts |
+    | category add / rename / move / delete | tree + pickers + dashboard + rules |
+    | import / undo / restore | everything |
+    | page switch | nothing; data is already loaded |
+
+    The full refresh stays only for data-wide changes. A test asserts
+    each action's scope (via the query-count hook from 3.56).
+  - **Latest wins, everywhere:** every scoped refresh goes through 3.56's
+    generation check, per scope, so a burst of clicks runs at most the
+    in-flight job plus the newest.
+  - **Feedback within a frame.** Every button that starts DB work either
+    updates the screen optimistically (row category change, hide /
+    unhide, queue Categorize, rule and category edits per 3.47 / 3.54) or
+    shows `.loading(true)` and is disabled until it finishes (as 3.40 did
+    for rule Save). No click may leave the screen unchanged for longer
+    than one frame. Add this rule to `ui-conventions.md` (*Interaction*).
+  - **Render-path audit.** Log frame times with `FINANCI_TIMINGS=1` and
+    find per-frame work that scales with data. Candidates seen while
+    planning:
+    - `visible_rules()` clones a `Vec<Rule>` on each call;
+    - `rules_page_items` rebuilds the Rules page items every render;
+    - `chart_bars` and the label plan are recomputed every render;
+    - `category_colors` builds a map every render.
+
+    Cache these on the shell, rebuilt only when their inputs change.
+    Budget: no frame over 16 ms on the one-year seed while hovering,
+    scrolling or typing (release build).
+  - **Measure before and after:** the click-to-result time for ten
+    common actions (each filter kind, change category, hide, rule save,
+    rule delete, category move, queue Categorize, page switch), on the
+    dev seed and the one-year seed. Put the table in the commit message.
+  - Tests:
+    - the per-action scope table above (one test per row);
+    - a click on change-category / hide / Categorize updates the row in
+      the same frame, before the DB task runs, and rolls back on error;
+    - a page switch issues no DB query;
+    - the caches rebuild when their inputs change and not otherwise
+      (counter hook);
+    - the existing behaviour tests pass.
+
 - [ ] **3.36 Chart legend under the chart.** The legend column beside the
   bars (`LEGEND_W`, 140 px) still takes width the plot needs. Move it
   below the chart and condense it (user request, 2026-11-11; changes
@@ -1536,7 +1592,7 @@ the order above (3.28 → 3.29 → 3.26).
 
 
 **Done when:** on the demo data the dashboard totals match
-`expected.json`, filters compose, tests cover 3.1–3.56.
+`expected.json`, filters compose, tests cover 3.1–3.57.
 
 ---
 
