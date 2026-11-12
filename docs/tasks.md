@@ -779,8 +779,8 @@ out.
     rendered text with a long-named tree, a subcategory selected, and each
     validation error triggered); the renamed buttons still work.
 
-**Bugs reported by the user on 2026-11-11** (3.34–3.57, plus a fix folded
-into 3.23). Order (user re-prioritized the dashboard, then responsiveness, 2026-11-11): **3.40 → 3.23 → 3.35 → 3.56 → 3.57 → 3.36 → 3.45 → 3.46 → 3.53/3.42/3.48/3.49/3.50/3.51 → 3.43 → 3.44 → 3.55 → 3.47/3.54 → 3.37 → 3.38/3.39 → 3.34 → 3.52**, then the rest of
+**Bugs reported by the user on 2026-11-11** (3.34–3.58, plus a fix folded
+into 3.23). Order (user re-prioritized the dashboard, then responsiveness, 2026-11-11): **3.40 → 3.23 → 3.35 → 3.56 → 3.57 → 3.36 → 3.45 → 3.46 → 3.58 → 3.53/3.42/3.48/3.49/3.50/3.51 → 3.43 → 3.44 → 3.55 → 3.47/3.54 → 3.37 → 3.38/3.39 → 3.34 → 3.52**, then the rest of
 the order above (3.28 → 3.29 → 3.26).
 
 - 3.23 also fixes: **the rule list overflows the page.** Today each rule
@@ -976,6 +976,81 @@ the order above (3.28 → 3.29 → 3.26).
       name.
 
     Update the *Categories* row of `ui-conventions.md`.
+
+- [ ] **3.58 A cleaner Rules page with totals.** The Rules page (3.28)
+  "is very very ugly". The user also wants each rule's **total amount**
+  next to its count, and the page must stay virtualized and responsive
+  (user request, 2026-11-11). Today it has 24 px rows on the page
+  background with no panel, a filter row of mixed controls, plain group
+  header rows, and a Move bar that pushes the list down. Keep every
+  behaviour of 3.28 / 3.29 (search, Test a description, Type, Unused,
+  grouping and collapse, sort, checkboxes and Move, Show rule landing);
+  change the look and add the totals:
+  - **Header:** "Rules" and a muted summary "N rules · M unused"
+    (`flow::count`), then **New rule** (`plus` icon, primary, no "…",
+    3.43) at the right.
+  - **Filter row:** one 32 px row like the dashboard's (3.35): Search
+    `flex_1` with a leading search icon and the placeholder "Search rules
+    or categories". Then a Type select (~140 px) and an **Options**
+    popover holding **Test a description** and **Unused only**, showing
+    "Options · N" when N are on. Each control without a visible label
+    gets a tooltip.
+  - **One bordered panel** (D7, `radius`, no fill) fills the rest of the
+    page and holds the list:
+    - a 32 px heading row inside it (`text_sm` muted, `px_3`, bottom
+      `border`), with the columns: checkbox (24 px), **Pattern**
+      (`flex_1`), **Type** (80 px), **Uses** (80 px, right), **Total**
+      (110 px, right), then actions;
+    - **group headers** are 36 px rows on `muted` background: chevron,
+      "Food › Coffee" semibold, then the muted "4 rules", and the group's
+      summed Uses and Total right-aligned under their columns;
+    - **rule rows** are 40 px, `px_3`, with a bottom `border` divider and
+      `list_hover`. The pattern is in `mono_font_family` (regexes are
+      easier to read), ellipsized with a tooltip. Type is a small
+      outline tag ("text" / "regex") instead of plain text. A 0 in Uses
+      is muted.
+    - Edit / Delete (icons, 3.43) show only on row hover or when the row
+      is focused or has the editor open. Their column keeps its width so
+      nothing shifts.
+  - **Total column:** the signed sum of the transactions the rule
+    *decides* (same set as Uses), formatted as the transactions table
+    does (`flow::money`, money in shown in `success`). The header's sort
+    buttons get **Total** too (by absolute amount, descending).
+  - **Move bar:** with rows checked it **replaces the heading row**
+    inside the panel (same 32 px), with no extra row pushing the list:
+    "N selected", the subcategory picker (searchable), **Move**, and
+    **Clear**.
+  - **DB:** replace `rule_use_counts` with `rule_use_stats(conn) ->
+    HashMap<i64, RuleUse { count, total_cents }>`, which also sums
+    `amount_cents`, in the same single pass. Callers (Uses on this page,
+    3.49 on the Categories page, 3.52) use it. If 3.55 has made `reapply_rules`
+    return the counts, extend that to stats too. Group sums are
+    computed in Rust from the per-rule stats.
+  - **Virtualized and responsive:** the list stays one `v_virtual_list`
+    (headers included). Build `rules_page_items` and the per-row display
+    data (formatted totals, labels) **only when** rules, stats, filters,
+    collapse state or sort change, cached on the shell (3.57's render
+    audit), not every frame. Search filtering is debounced by 150 ms.
+    Per-row widgets (checkbox, buttons) are built only for visible rows
+    (3.24's test pattern). Budget: with 1 000 rules (3.55's large seed)
+    scrolling and typing stay under 16 ms a frame in a release build.
+  - Must fit 1200 × 720: no horizontal overflow, nothing clipped, with
+    long patterns and category names.
+  - Tests:
+    - the panel and heading row paint inside the page;
+    - Total shows each rule's signed sum, matching a direct SQL sum for
+      the rows it decides;
+    - group headers show the summed Uses and Total;
+    - sorting by Total works;
+    - Edit / Delete paint only on hover / focus;
+    - the Move bar replaces the heading row, and the list's top doesn't
+      move when rows are checked;
+    - with 1 000 rules only the visible rows are built, and the item
+      cache rebuilds only on input changes (counter hook);
+    - every 3.28 / 3.29 behaviour test still passes (update their
+      selectors, don't delete them).
+
+    Update the *Rules* row of `ui-conventions.md`.
 
 - [ ] **3.53 No category picker where the page already says it.** The
   Categories page's add-rule row and rule editor each carry a Category
@@ -1592,7 +1667,7 @@ the order above (3.28 → 3.29 → 3.26).
 
 
 **Done when:** on the demo data the dashboard totals match
-`expected.json`, filters compose, tests cover 3.1–3.57.
+`expected.json`, filters compose, tests cover 3.1–3.58.
 
 ---
 
