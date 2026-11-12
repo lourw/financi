@@ -10,7 +10,7 @@ re-queries every page after every action. Zed-style GPUI is the target
 changes, and the task that does it, in implementation order. When a step's
 task merges, the rule becomes binding (see *Coding practices*).
 
-1. **Small files, one per page** (3.62). `ui.rs` / `ui_tests.rs` become
+1. **Small files, one per page** (3.62, done). `ui.rs` / `ui_tests.rs` became
    `ui/<page>.rs` modules and `ui/tests/<page>.rs`. Pure move.
 2. **State belongs to the page that owns it** (3.74). Page fields move
    into per-page state structs; `Shell::new` shrinks to wiring.
@@ -119,13 +119,14 @@ that task has merged; until then, don't make the old pattern worse.
   `TestAppContext` (`gpui` dev-dependency with `test-support`).
 - In test modules, never `use gpui_kit::*;` — it imports GPUI's `test` macro,
   which shadows `#[test]` and makes `#[gpui::test]` recurse. Import names
-  explicitly (see `ui_tests.rs`).
+  explicitly (see `ui/tests/mod.rs`).
 - UI tests talk to a real `DbWorker` thread: call
   `cx.executor().allow_parking()` and poll with the `wait_until` helper.
 - `BarChart` has no click handler. `SelectState::set_items` and
   `set_selected_index` need a `&mut Window`, so async updates use
   `cx.spawn_in(window, …)` + `this.update_in(cx, |this, window, cx| …)`.
-- All DB work goes through `DbWorker` via the `on_db` helper in `ui.rs`.
+- All DB work goes through `DbWorker` via the `on_db` helper in
+  `ui/widgets.rs`.
 - gpui-base's `virtual_list()` makes a new scroll handle on every call;
   pass the list's own `VirtualListScrollHandle` from `Shell` with
   `.track_scroll(&handle)` or it won't scroll (3.21).

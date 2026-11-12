@@ -402,7 +402,7 @@ Confirmed with the user. Don't reopen without asking.
 
 ## 7. Testing UI conventions
 
-- UI tests (`ui_tests.rs` style) check behavior, not pixels: which rows
+- UI tests (`ui/tests/` style) check behavior, not pixels: which rows
   show, which filter is active, what text a state shows, that a region
   paints inside its page and fits 1200 × 720.
 - Click through rendered controls with a click helper (a simulated mouse

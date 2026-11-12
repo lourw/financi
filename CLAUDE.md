@@ -60,7 +60,7 @@ financi-parsers --test real_samples -- --ignored --nocapture`
 
 - **Tests and synthetic data with every change.** Unit tests for logic,
   fixture files for parsers, UI tests in the style of
-  `crates/financi/src/ui_tests.rs`. Never commit real bank data (CSV files
+  `crates/financi/src/ui/tests/`. Never commit real bank data (CSV files
   are git-ignored except under `**/fixtures/**`).
 - **Commit after each logical piece** (usually one task), Conventional
   Commits: `feat(scope): …`, `fix: …`, `test: …`, `docs: …`, `refactor: …`,
