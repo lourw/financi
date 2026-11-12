@@ -55,11 +55,28 @@ impl Default for ViewFilter {
     }
 }
 
-/// Which column the dashboard transaction table is ordered by (task 3.4).
+/// Which column the dashboard transaction table is ordered by (task 3.4;
+/// Account, Description and Category added by task 3.44).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TxSortColumn {
     Date,
+    Account,
+    Description,
+    Category,
     Amount,
+}
+
+/// The `ORDER BY` key for a sort column (3.44): what the table's cell
+/// shows, case-insensitively for the text columns (`COLLATE NOCASE`);
+/// `Uncategorized` sorts by its label like any category name.
+fn sort_key(column: TxSortColumn) -> &'static str {
+    match column {
+        TxSortColumn::Date => "t.posted_date",
+        TxSortColumn::Amount => "t.amount_cents",
+        TxSortColumn::Account => "(i.name || ' · ' || a.name) COLLATE NOCASE",
+        TxSortColumn::Description => "trim(t.description_raw) COLLATE NOCASE",
+        TxSortColumn::Category => "COALESCE(c.name, 'Uncategorized') COLLATE NOCASE",
+    }
 }
 
 /// The table's ordering: a [`TxSortColumn`] and its direction. The default
@@ -187,23 +204,21 @@ pub fn list_transactions_filtered(
         sql.push_str(" AND t.hidden = 0");
     }
 
-    let order = match table.sort {
-        TxSort {
-            column: TxSortColumn::Date,
-            descending: true,
-        } => "t.posted_date DESC, t.import_id DESC, t.source_line ASC",
-        TxSort {
-            column: TxSortColumn::Date,
-            descending: false,
-        } => "t.posted_date ASC, t.import_id ASC, t.source_line DESC",
-        TxSort {
-            column: TxSortColumn::Amount,
-            descending: true,
-        } => "t.amount_cents DESC, t.posted_date DESC, t.import_id DESC, t.source_line ASC",
-        TxSort {
-            column: TxSortColumn::Amount,
-            descending: false,
-        } => "t.amount_cents ASC, t.posted_date DESC, t.import_id DESC, t.source_line ASC",
+    // Per-column key plus direction (3.4, 3.44). Date's secondary keys
+    // follow the direction, so reversing it mirrors the table exactly;
+    // every other column breaks ties on the newest-first date order, so
+    // the order is stable however it is sorted.
+    let key = sort_key(table.sort.column);
+    let order = if table.sort.column == TxSortColumn::Date {
+        let (dir, flip) = if table.sort.descending {
+            ("DESC", "ASC")
+        } else {
+            ("ASC", "DESC")
+        };
+        format!("t.posted_date {dir}, t.import_id {dir}, t.source_line {flip}")
+    } else {
+        let dir = if table.sort.descending { "DESC" } else { "ASC" };
+        format!("{key} {dir}, t.posted_date DESC, t.import_id DESC, t.source_line ASC")
     };
     sql.push_str(&format!(" ORDER BY {order}"));
 
@@ -1523,6 +1538,243 @@ mod tests {
             vec![big, small, refund],
             "amount ascending: the biggest money-out first"
         );
+    }
+
+    /// 3.44: Account sorts on the cell's `Institution · Account` text,
+    /// case-insensitively; ties fall back to the newest-first date order.
+    #[test]
+    fn sort_by_account_both_directions() {
+        let f = fixture();
+        let apple = create_account(&f.conn, "amex", "apple", AccountKind::CreditCard).unwrap();
+        let apple_import = seed_import(&f.conn, apple);
+        let zebra = create_account(&f.conn, "amex", "Zebra", AccountKind::CreditCard).unwrap();
+        let zebra_import = seed_import(&f.conn, zebra);
+        let other_import = seed_import(&f.conn, f.other_account_id);
+        // Two rows share the account key: they tie and fall back to date.
+        let amex_old = add_row(
+            &f.conn,
+            f.account_id,
+            f.import_id,
+            0,
+            "2026-10-01",
+            -100,
+            None,
+            "old",
+            None,
+        );
+        let amex_new = add_row(
+            &f.conn,
+            f.account_id,
+            f.import_id,
+            1,
+            "2026-10-09",
+            -100,
+            None,
+            "new",
+            None,
+        );
+        let apple_row = add_row(
+            &f.conn,
+            apple,
+            apple_import,
+            0,
+            "2026-10-02",
+            -100,
+            None,
+            "apple",
+            None,
+        );
+        let zebra_row = add_row(
+            &f.conn,
+            zebra,
+            zebra_import,
+            0,
+            "2026-10-03",
+            -100,
+            None,
+            "zebra",
+            None,
+        );
+        let simplii_row = add_row(
+            &f.conn,
+            f.other_account_id,
+            other_import,
+            0,
+            "2026-10-04",
+            -100,
+            None,
+            "simplii",
+            None,
+        );
+
+        let sort = |descending: bool| {
+            table_ids(
+                &f.conn,
+                &TxTableFilter {
+                    sort: TxSort {
+                        column: TxSortColumn::Account,
+                        descending,
+                    },
+                    ..Default::default()
+                },
+            )
+        };
+        // NOCASE: "apple" before "Zebra" (binary collation would put
+        // "Zebra" first); the institution prefix orders first, so every
+        // Simplii row follows every American Express row. The tied pair
+        // keeps the newest-first date order in both directions.
+        assert_eq!(
+            sort(false),
+            vec![amex_new, amex_old, apple_row, zebra_row, simplii_row]
+        );
+        assert_eq!(
+            sort(true),
+            vec![simplii_row, zebra_row, apple_row, amex_new, amex_old]
+        );
+    }
+
+    /// 3.44: Description sorts on the trimmed raw description,
+    /// case-insensitively; trimmed ties fall back to the date order.
+    #[test]
+    fn sort_by_description_both_directions() {
+        let f = fixture();
+        // The two "amazon" rows tie after trimming (one carries trailing
+        // whitespace) and fall back to date.
+        let amazon_old = add_row(
+            &f.conn,
+            f.account_id,
+            f.import_id,
+            0,
+            "2026-10-01",
+            -100,
+            None,
+            "amazon",
+            None,
+        );
+        let amazon_new = add_row(
+            &f.conn,
+            f.account_id,
+            f.import_id,
+            1,
+            "2026-10-08",
+            -100,
+            None,
+            "amazon ",
+            None,
+        );
+        let best = add_row(
+            &f.conn,
+            f.account_id,
+            f.import_id,
+            2,
+            "2026-10-02",
+            -100,
+            None,
+            "Best Buy",
+            None,
+        );
+        // Leading whitespace: untrimmed it would sort first; trimmed it
+        // sorts as "corner cafe", after "Best Buy".
+        let corner = add_row(
+            &f.conn,
+            f.account_id,
+            f.import_id,
+            3,
+            "2026-10-03",
+            -100,
+            None,
+            "  corner cafe  ",
+            None,
+        );
+
+        let sort = |descending: bool| {
+            table_ids(
+                &f.conn,
+                &TxTableFilter {
+                    sort: TxSort {
+                        column: TxSortColumn::Description,
+                        descending,
+                    },
+                    ..Default::default()
+                },
+            )
+        };
+        // NOCASE: "amazon" before "Best Buy" (binary collation would put
+        // "Best Buy" first). The tied pair keeps the newest-first date
+        // order in both directions.
+        assert_eq!(sort(false), vec![amazon_new, amazon_old, best, corner]);
+        assert_eq!(sort(true), vec![corner, best, amazon_new, amazon_old]);
+    }
+
+    /// 3.44: Category sorts on the category name, `Uncategorized` included
+    /// by its label, case-insensitively.
+    #[test]
+    fn sort_by_category_both_directions() {
+        let f = fixture();
+        let bath = create_parent(&f.conn, "bath", CategoryKind::Expense).unwrap();
+        let water = create_parent(&f.conn, "water", CategoryKind::Expense).unwrap();
+        let bath_row = add_row(
+            &f.conn,
+            f.account_id,
+            f.import_id,
+            0,
+            "2026-10-01",
+            -100,
+            Some(bath),
+            "bath",
+            None,
+        );
+        let groceries_row = add_row(
+            &f.conn,
+            f.account_id,
+            f.import_id,
+            1,
+            "2026-10-02",
+            -100,
+            Some(f.groceries),
+            "groceries",
+            None,
+        );
+        let uncat = add_row(
+            &f.conn,
+            f.account_id,
+            f.import_id,
+            2,
+            "2026-10-03",
+            -100,
+            None,
+            "uncategorized",
+            None,
+        );
+        let water_row = add_row(
+            &f.conn,
+            f.account_id,
+            f.import_id,
+            3,
+            "2026-10-04",
+            -100,
+            Some(water),
+            "water",
+            None,
+        );
+
+        let sort = |descending: bool| {
+            table_ids(
+                &f.conn,
+                &TxTableFilter {
+                    sort: TxSort {
+                        column: TxSortColumn::Category,
+                        descending,
+                    },
+                    ..Default::default()
+                },
+            )
+        };
+        // NOCASE: "bath" before "Groceries" (binary collation would put
+        // "Groceries" first); the NULL row sorts as "Uncategorized", in
+        // the middle in both directions — not first or last by NULL-ness.
+        assert_eq!(sort(false), vec![bath_row, groceries_row, uncat, water_row]);
+        assert_eq!(sort(true), vec![water_row, uncat, groceries_row, bath_row]);
     }
 
     #[test]

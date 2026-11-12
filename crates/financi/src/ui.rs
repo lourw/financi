@@ -446,8 +446,8 @@ impl TableDelegate for TxTable {
     }
 
     fn column(&self, col_ix: usize, _: &App) -> Column {
-        // Date and Amount are sortable (3.4). The active column carries its
-        // direction so the header icon matches the ordering; the other shows
+        // Every column sorts (3.4, 3.44). The active column carries its
+        // direction so the header icon matches the ordering; the others show
         // faint chevrons.
         let sort = |column: TxSortColumn, base: Column| match self.sort {
             TxSort {
@@ -465,10 +465,19 @@ impl TableDelegate for TxTable {
                 TxSortColumn::Date,
                 Column::new("date", "Date").width(px(110.)),
             ),
-            1 => Column::new("account", "Account").width(px(self.flex_widths.0)),
-            2 => Column::new("description", "Description").width(px(self.flex_widths.1)),
+            1 => sort(
+                TxSortColumn::Account,
+                Column::new("account", "Account").width(px(self.flex_widths.0)),
+            ),
+            2 => sort(
+                TxSortColumn::Description,
+                Column::new("description", "Description").width(px(self.flex_widths.1)),
+            ),
             // Room for the post-edit "Apply to all matching …" affordance.
-            3 => Column::new("category", "Category").width(px(self.flex_widths.2)),
+            3 => sort(
+                TxSortColumn::Category,
+                Column::new("category", "Category").width(px(self.flex_widths.2)),
+            ),
             _ => sort(
                 TxSortColumn::Amount,
                 Column::new("amount", "Amount").width(px(120.)).text_right(),
@@ -483,18 +492,29 @@ impl TableDelegate for TxTable {
         window: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) {
-        // Only Date (0) and Amount (4) sort; the table has already cycled its
-        // own icon state, so map its value to a `TxSort` and hand it to the
-        // shell, which re-queries. `Default` (the icon's off step) falls back
-        // to that column's natural first direction. `cx` coerces to `&mut App`
-        // like the menu callbacks; the shell is a different entity, so
-        // updating it here is not re-entrant.
+        // Every column sorts (3.4, 3.44); the table has already cycled its
+        // own icon state (off → Descending → Ascending → off), so map the
+        // column and its cycled value to a `TxSort` and hand it to the
+        // shell, which re-queries. `Default` (the icon's off step) falls
+        // back to that column's natural first direction. `cx` coerces to
+        // `&mut App` like the menu callbacks; the shell is a different
+        // entity, so updating it here is not re-entrant.
         let column = match col_ix {
             0 => TxSortColumn::Date,
+            1 => TxSortColumn::Account,
+            2 => TxSortColumn::Description,
+            3 => TxSortColumn::Category,
             4 => TxSortColumn::Amount,
             _ => return,
         };
-        let descending = !matches!(sort, ColumnSort::Ascending);
+        // Date and Amount start out newest/biggest first (3.4); a text
+        // column's first click sorts A→Z (3.44). The cycle then alternates
+        // directions: from A→Z the icon sits on Ascending, whose next step
+        // is the off step, which maps to Z→A.
+        let descending = match column {
+            TxSortColumn::Date | TxSortColumn::Amount => !matches!(sort, ColumnSort::Ascending),
+            _ => matches!(sort, ColumnSort::Default),
+        };
         let next = TxSort { column, descending };
         self.sort = next;
         (self.on_sort)(next, window, cx);
