@@ -6,7 +6,7 @@ Runs beside the UI queue, in the order listed. Backend only: don't read the UI d
 
 Runs beside the UI queue. 5.1 and 5.2 (in M5) follow 3.90.
 
-- [ ] **3.88 One filter WHERE builder for every dashboard query.** (Code
+- [x] **3.88 One filter WHERE builder for every dashboard query.** (Code
   review, 2026-11-11.) Backend only (`financi-db/src/views.rs`,
   `lib.rs`); runs in a free slot. 3.46 depends on it.
   - The filter conditions are written out four times
