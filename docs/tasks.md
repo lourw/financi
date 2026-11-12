@@ -779,8 +779,8 @@ out.
     rendered text with a long-named tree, a subcategory selected, and each
     validation error triggered); the renamed buttons still work.
 
-**Bugs reported by the user on 2026-11-11** (3.34–3.50, plus a fix folded
-into 3.23). Order: **3.40 → 3.23 → 3.41/3.42/3.48/3.49/3.50 → 3.43 → 3.44 → 3.47 → 3.35 → 3.36 → 3.45 → 3.46 → 3.37 → 3.38/3.39 → 3.34**, then the rest of
+**Bugs reported by the user on 2026-11-11** (3.34–3.51, plus a fix folded
+into 3.23). Order: **3.40 → 3.23 → 3.41/3.42/3.48/3.49/3.50/3.51 → 3.43 → 3.44 → 3.47 → 3.35 → 3.36 → 3.45 → 3.46 → 3.37 → 3.38/3.39 → 3.34**, then the rest of
 the order above (3.28 → 3.29 → 3.26).
 
 - 3.23 also fixes: **the rule list overflows the page.** Today each rule
@@ -938,6 +938,53 @@ the order above (3.28 → 3.29 → 3.26).
     subcategory still work (existing tests). Update the *Categories* row
     of `ui-conventions.md` (drop **Organize** from the section list) and
     note the exception in the *Forms* labels rule.
+
+- [ ] **3.51 Organize and Delete hidden until asked for.** The category
+  detail panel spends vertical space on two sections that are rarely
+  used, **Organize** (add a subcategory / move a subcategory) and
+  **Delete** (move its transactions, then delete), so the rules list gets
+  less of the panel (user request, 2026-11-11). Hide both by default:
+  - **Title row actions:** next to Rename, at the right of the category
+    name, add small buttons, each with an icon and no "…" (3.43):
+    - **Add subcategory** (`folder-plus`), on a parent;
+    - **Move** (`folder-input`), on a subcategory;
+    - **Delete** (`trash-2`), not on system categories.
+    Rename stays where it is.
+  - Each opens an **inline bordered form** right under the title row,
+    the same pattern as the header's New category form (3.23):
+    - Add subcategory: `[New subcategory name] [Add subcategory]
+      [Cancel]`;
+    - Move: `[Move to category… ▾] [Move] [Cancel]`;
+    - Delete: `[Move its transactions to… ▾] [Delete] [Cancel]`. Its
+      Delete is still the two-click "Click again to delete" confirm in
+      `danger`.
+    The forms have no section titles or field labels (3.50: the
+    placeholder is the label; `accessibility_label`s set). One form at a
+    time: opening one closes another; Cancel, Escape, a successful
+    action, selecting another category or leaving the page closes it.
+    The title-row button of the open form shows `.selected(true)`.
+  - Remove the Organize and Delete sections and their `border_t_1`
+    dividers. With no form open the panel is the title row, a divider,
+    then **Rules**, which gets all the remaining height.
+  - Must fit the detail panel at 1200 × 720 with a long category name:
+    the name ellipsizes before the buttons do. If the buttons can't all
+    fit, make Add subcategory / Move / Delete icon-only with tooltips;
+    don't let them wrap or clip.
+  - 3.50's label removal applies inside the forms; do 3.50 and 3.51 in
+    one branch.
+  - Tests:
+    - with no form open, the Rules section's top sits right under the
+      title row's divider and the rule list is taller than before (bounds);
+    - each button opens its form and the others stay closed;
+    - opening a second form closes the first;
+    - Cancel, Escape and selecting another category each close it;
+    - add / move / delete still work through the forms (existing tests,
+      updated to open the form first);
+    - system categories have no Delete button;
+    - at 1200 × 720 the buttons paint inside the panel with a 60-character
+      name.
+
+    Update the *Categories* row of `ui-conventions.md`.
 
 - [ ] **3.43 No buttons end in "…".** The user doesn't want "…" on
   buttons; use an icon instead, or just drop it (user request,
@@ -1254,7 +1301,7 @@ the order above (3.28 → 3.29 → 3.26).
 
 
 **Done when:** on the demo data the dashboard totals match
-`expected.json`, filters compose, tests cover 3.1–3.50.
+`expected.json`, filters compose, tests cover 3.1–3.51.
 
 ---
 
