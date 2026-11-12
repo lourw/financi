@@ -62,7 +62,10 @@ dashboard gets its own page.
   are no banners.
 - **Footer:** transaction count and database path, `text_xs`,
   `muted_foreground`, path ellipsized. The ellipsized path shows its full
-  text, prefixed `Database: `, in a hover tooltip (3.38).
+  text, prefixed `Database: `, in a hover tooltip (3.38). The last line is
+  the build version — `git describe`, e.g. `v0.17.0-3-gabc1234-dirty`,
+  same `text_xs` muted, ellipsized with the same kind of hover tooltip
+  (3.39).
 - The selected page isn't persisted; launch opens Dashboard.
 
 ### Pages

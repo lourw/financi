@@ -6182,6 +6182,55 @@ fn sidebar_db_path_shows_the_full_path_on_hover(cx: &mut TestAppContext) {
     );
 }
 
+/// 3.39: the sidebar footer's last line is the build version — it paints
+/// the text `version::VERSION` carries, `v`-prefixed once — with the same
+/// kind of hover tooltip as the path (3.38).
+#[gpui::test]
+fn sidebar_footer_shows_the_app_version(cx: &mut TestAppContext) {
+    let (handle, _shell) = open_shell(cx, |_| {});
+    let mut window = VisualTestContext::from_window(handle, cx);
+    draw_frame(cx, handle);
+
+    // The selector embeds the label, so a match proves the footer paints
+    // exactly the const's text.
+    let label = crate::version::version_label();
+    let text_sel = leaked(format!("sidebar:version-text:{label}"));
+    let cell = window
+        .debug_bounds(text_sel)
+        .unwrap_or_else(|| panic!("the footer paints the version text {label:?}"));
+    assert!(
+        label.starts_with('v'),
+        "the version label is \"v\"-prefixed: {label:?}"
+    );
+    assert_eq!(
+        label.trim_start_matches('v'),
+        crate::version::VERSION.trim_start_matches('v'),
+        "the shown label is the const, with one \"v\" prefix"
+    );
+
+    // Hovering shows the full version, as with the path (3.38).
+    let tip = leaked(format!("sidebar:version-tooltip:{label}"));
+    assert!(
+        window.debug_bounds(tip).is_none(),
+        "nothing hovers the version, so no tooltip is drawn yet"
+    );
+    window.simulate_mouse_move(
+        point(
+            cell.origin.x + cell.size.width / 2.,
+            cell.origin.y + cell.size.height / 2.,
+        ),
+        None,
+        Modifiers::default(),
+    );
+    cx.executor().advance_clock(Duration::from_millis(600));
+    cx.run_until_parked();
+    draw_frame(cx, handle);
+    assert!(
+        window.debug_bounds(tip).is_some(),
+        "hovering the version shows a tooltip with the full version",
+    );
+}
+
 /// 3.35: the Options popover carries the old filter-row toggles — same ids,
 /// same state and handlers. A real click opens it, all three checkboxes
 /// paint, and Include transfers toggles the rows exactly as before.

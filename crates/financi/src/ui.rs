@@ -4320,7 +4320,39 @@ impl Shell {
                                 }
                             })
                             .child(self.db_path.display().to_string()),
-                    ),
+                    )
+                    .child({
+                        // 3.39: the build version as the footer's last line,
+                        // e.g. "v0.17.0-3-gabc1234-dirty" (plan.md → *Show
+                        // the version subtly in the UI*). Ellipsized with a
+                        // hover tooltip, like the path above (3.38).
+                        let label = crate::version::version_label();
+                        div()
+                            .id("sidebar:version")
+                            .min_w_0()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .debug_selector({
+                                let s = label.clone();
+                                move || format!("sidebar:version-text:{s}")
+                            })
+                            .tooltip({
+                                let label = label.clone();
+                                move |window, cx| {
+                                    let tip = label.clone();
+                                    Tooltip::element(move |_, _| {
+                                        div()
+                                            .debug_selector({
+                                                let s = tip.clone();
+                                                move || format!("sidebar:version-tooltip:{s}")
+                                            })
+                                            .child(tip.clone())
+                                    })
+                                    .build(window, cx)
+                                }
+                            })
+                            .child(label)
+                    }),
             )
     }
 

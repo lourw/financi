@@ -1123,7 +1123,7 @@ the order above (3.28 → 3.29 → 3.26).
   tooltip whose text is the full `db_path`, with a path longer than the
   sidebar. Note it in the *Sidebar* section of `ui-conventions.md`.
 
-- [ ] **3.39 Show the version in the sidebar.** From `plan.md` → *Show the
+- [x] **3.39 Show the version in the sidebar.** From `plan.md` → *Show the
   version subtly in the UI* (planned with the semver tags but never made a
   task; user asked again 2026-11-11). Add a `crates/financi/build.rs` that
   sets `FINANCI_VERSION` from `git describe --tags --always --dirty`,
