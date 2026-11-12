@@ -1,7 +1,8 @@
 # UI conventions
 
 financi's design system: how every page looks and behaves. `plan.md` says
-what to build and `docs/tasks.md` gives the order and the GPUI pitfalls. A
+what to build and `docs/tasks.md` gives the order (GPUI pitfalls are in
+`docs/tasks/gpui.md`). A
 task that names a specific layout wins for that task; update this file in
 the same commit. Where the code differs from a rule here, the rule is the
 target and a task brings the code in line.

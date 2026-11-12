@@ -17,7 +17,8 @@ of each. Every agent has the same 130k-token context cap.
 
 Project rules live in `CLAUDE.md` (commands, testing, commit style, clean
 checkout verification). Requirements are in `plan.md`; the task checklist is
-`docs/tasks.md`, which wins over `plan.md` for M2–M5. The UI design
+`docs/tasks.md` (an index pointing to one file per milestone or queue under
+`docs/tasks/`), which wins over `plan.md` for M2–M5. The UI design
 (layout, spacing, colors, formats, confirmed decisions) is
 `docs/ui-conventions.md`; every UI change follows it. Everything below adds
 to those files, it doesn't replace them, with one exception: the
@@ -28,7 +29,7 @@ orchestrator pushes `main` as described in *Feature worktrees*, despite
 
 ## Feature worktrees
 
-Every feature (one task from `docs/tasks.md`, or one piece of work the user
+Every feature (one task from `docs/tasks/`, or one piece of work the user
 asks for) gets its own branch and worktree. Never commit feature work
 directly on `main` or in the main checkout. The orchestrator runs these
 steps from the main checkout.
@@ -77,14 +78,14 @@ Don't force-push. Remove the worktree only after the push succeeds.
 130k tokens fills fast. Treat context as the scarcest resource.
 
 - **Read sections, not files.** Find what you need with `grep -n` first,
-  then read a line range (`sed -n 120,180p file`). `plan.md` is ~6k tokens, `docs/tasks.md` ~29k (read its
-  top sections, then only the task you're delegating or doing) and
+  then read a line range (`sed -n 120,180p file`). `plan.md` is ~6k tokens, the `docs/tasks.md` index ~2k (read it whole), each
+  file under `docs/tasks/` 1–11k (read only the task you need) and
   `docs/ui-conventions.md` ~6k; read only the parts for the current task.
-  Never read `docs/tasks-done.md` whole: grep it for a task number when an
+  Never read `docs/tasks/done.md` whole: grep it for a task number when an
   open task refers to a done one. Never read anything under `target/`, `Cargo.lock`, or whole
   fixture CSVs.
 - **UI docs only for UI tasks.** `docs/ui-conventions.md` and the *GPUI
-  pitfalls* in `docs/tasks.md` are read only when a task touches GPUI view
+  pitfalls* (`docs/tasks/gpui.md`) are read only when a task touches GPUI view
   code. Backend tasks (parsers, `financi-core`, `financi-db`, migrations)
   skip them, and their briefs don't name them.
 - **Trim command output.** Cargo output can be thousands of lines:
@@ -112,9 +113,8 @@ sub-agents' branches.
 
 On start:
 
-1. Read `CLAUDE.md`, this file, and from `docs/tasks.md` the sections
-   *How to work*, *Picking the next task*, *GPUI best practices* and
-   *Where things are*. Read a
+1. Read `CLAUDE.md`, this file and the `docs/tasks.md` index. Skim the
+   step list in `docs/tasks/gpui.md` → *GPUI best practices*. Read a
    task's own text when you delegate it. Skip other milestones.
 2. Check `git status`, `git log --oneline -10` and `git worktree list`.
    Continue unmerged features in their worktrees first, then pick new
@@ -166,7 +166,7 @@ Steps for each feature:
 
 1. **Delegate** the task to the implementer with the *Task brief*
    template, after syncing `main` and creating the task's worktree (see
-   *Feature worktrees*). Include the task text verbatim from `docs/tasks.md`, the files
+   *Feature worktrees*). Include the task text verbatim from its `docs/tasks/` file, the files
    it will likely touch, and any relevant pitfalls. Point to `plan.md`
    and `docs/ui-conventions.md` sections by heading instead of pasting
    them; every UI task's brief names the `docs/ui-conventions.md` sections
@@ -178,7 +178,7 @@ Steps for each feature:
    of correctness; the reviewer should judge the code.
 4. **Act on the verdict:**
    - `PASS` → merge to `main`, push and remove the worktree (see *Feature
-     worktrees*), move the task's text to `docs/tasks-done.md` (*How to
+     worktrees*), move the task's text to `docs/tasks/done.md` (*How to
      work*, step 6), then start the next task in the freed slot.
    - `CHANGES` → send the findings back to the implementer as a new brief
      (fix commits, never amend or rewrite history), then review again.
@@ -226,7 +226,7 @@ the user which should win.
 ### Resuming
 
 If the orchestrator stops mid-milestone (budget, block, user question),
-the state is recoverable from git: ticked boxes in `docs/tasks.md`,
+the state is recoverable from git: ticked boxes in `docs/tasks/`,
 `git log`, and `git worktree list` for unmerged features, which are
 continued in their existing worktrees. If there is extra state (open review findings, a user decision),
 put it in the report to the user. Don't create a scratch file in the repo.
@@ -241,7 +241,7 @@ Does exactly one task (or one fix list) and returns.
    builds and commits happen there. `cd` doesn't move file tools, so give
    them `<WORKTREE>/<path>` for every repo path (`CLAUDE.md`, `plan.md`,
    `docs/…`, code). Read `CLAUDE.md` and only the code and doc sections the
-   task needs. Before UI work, read *GPUI pitfalls* in `docs/tasks.md`
+   task needs. Before UI work, read `docs/tasks/gpui.md`
    and the relevant sections of `docs/ui-conventions.md` (always
    *Decisions*, plus whatever the brief names).
 2. Implement with tests and synthetic data (`CLAUDE.md` rules: integer
@@ -250,7 +250,7 @@ Does exactly one task (or one fix list) and returns.
    `crates/financi/src/ui_tests.rs`).
 3. Before committing: `cargo fmt --all`, then build, clippy and tests (with
    the trimmed commands above). All must pass with no new warnings.
-4. Tick the task's box in `docs/tasks.md` in the same commit. Commit with
+4. Tick the task's box in its `docs/tasks/` file in the same commit. Commit with
    a Conventional Commit message. Never push.
 5. Verify the commit in a clean checkout exactly as `CLAUDE.md` describes.
 6. Return the *Implementer report*.
@@ -279,7 +279,7 @@ Read-only: verification and code review. Does not edit files or commit.
      `0001`, `DbWorker`, no real bank data, box ticked, commit style).
    - Tests: do they cover the rules and refusals the task lists? Would they
      fail if the code were wrong?
-   - GPUI pitfalls from `docs/tasks.md` for UI changes.
+   - `docs/tasks/gpui.md` practices and pitfalls for UI changes.
    - UI changes match `docs/ui-conventions.md` (layout, spacing, theme
      tokens instead of raw colors, number/date formats, decisions).
 4. Return the *Review report*. Only report findings you can point to in the
@@ -296,11 +296,11 @@ Read-only: verification and code review. Does not edit files or commit.
 TASK: <id and title, e.g. 2.3 Category model>
 SLOT: <1 or 2: picks the clean-checkout paths in CLAUDE.md>
 WORKTREE: <absolute path> (branch feat/<slug>); all repo paths below are relative to it
-SPEC (verbatim from docs/tasks.md):
+SPEC (verbatim from docs/tasks/<file>.md):
 <task text>
 LIKELY FILES: <paths>
 REGIONS: <functions or regions this task may change; the other in-flight feature's regions, or "none in flight">
-READ: <plan.md / docs/tasks.md / docs/ui-conventions.md section headings, pitfalls that apply>
+READ: <plan.md / docs/tasks/gpui.md / docs/ui-conventions.md section headings that apply>
 NOTES: <user decisions, prior review findings to fix, or "none">
 ```
 
@@ -321,7 +321,7 @@ REVIEW: <commit hash or range>
 SLOT: <1 or 2>
 WORKTREE: <absolute path> (branch feat/<slug>); all repo paths below are relative to it
 TASK: <id and title>
-SPEC (verbatim from docs/tasks.md):
+SPEC (verbatim from docs/tasks/<file>.md):
 <task text>
 ```
 

@@ -9,9 +9,10 @@ you're working in, not the main checkout. In a feature worktree, read docs
 and code from that worktree, never from the main checkout's copy.
 
 **Read first:** `plan.md` (requirements and decisions) and `docs/tasks.md`
-(the open tasks and the order to do them in; it wins over plan.md on M2–M5
-detail). Done tasks are archived in `docs/tasks-done.md`; don't read it
-unless an open task points to one. Work one milestone at a time (with the
+(the task index: how to work, the order, and which file under `docs/tasks/`
+holds each task; the task files win over plan.md on M2–M5 detail). Read
+only the task file you need. Done tasks are archived in
+`docs/tasks/done.md`; don't read it unless an open task points to one. Work one milestone at a time (with the
 exceptions *Picking the next task* lists) and continue to the next without
 checking in; stop when v1 is complete. Ask before deviating from a task.
 
@@ -21,7 +22,8 @@ shared pool of at most two implementer or reviewer sub-agents), the
 the handoff templates. Follow it.
 
 **UI docs are for UI work only.** Read `docs/ui-conventions.md` and the
-*GPUI pitfalls* in `docs/tasks.md` only when the task changes the GPUI app
+`docs/tasks/gpui.md` (target architecture, coding practices, pitfalls)
+only when the task changes the GPUI app
 (`crates/financi/src/ui*.rs`, `crates/financi/src/ui/` after task 3.62, or
 other view code). Skip them for backend
 work (parsers, `financi-core`, `financi-db`, migrations, `flow.rs`
@@ -86,6 +88,6 @@ financi-parsers --test real_samples -- --ignored --nocapture`
 - Money is integer cents; negative = money out. Row hashes use raw exported
   strings; don't normalize before hashing.
 - All DB access from the UI goes through `DbWorker`.
-- GPUI pitfalls are listed in `docs/tasks.md`; read them before UI work.
+- GPUI practices and pitfalls are in `docs/tasks/gpui.md`; read it before UI work.
 - Layout, spacing, colors and formats for every view are in
   `docs/ui-conventions.md`; follow it for any UI change.

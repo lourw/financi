@@ -2,7 +2,7 @@
 
 2026-11-08 · @Louie
 
-This file holds requirements and settled decisions. `docs/tasks.md` is the task checklist and wins on M2–M5 detail. `docs/ui-conventions.md` covers layout and formats. All product questions are settled; new ones are decided and recorded under **Decisions** rather than left open here.
+This file holds requirements and settled decisions. `docs/tasks.md` is the task index (task files under `docs/tasks/`) and wins on M2–M5 detail. `docs/ui-conventions.md` covers layout and formats. All product questions are settled; new ones are decided and recorded under **Decisions** rather than left open here.
 
 ## Status
 
@@ -16,7 +16,7 @@ This file holds requirements and settled decisions. `docs/tasks.md` is the task 
 | M5: Export / restore | Not started (its backend tasks may fill an idle slot during M3) |
 | Final: performance at scale (task 3.55) | Last, after M5 |
 
-The prototype fixes under **Roadmap** are tasks inside M3. Done tasks are archived in `docs/tasks-done.md`.
+The prototype fixes under **Roadmap** are tasks inside M3. Done tasks are archived in `docs/tasks/done.md`.
 
 ## Overview
 
@@ -238,7 +238,7 @@ Decisions recorded in the sections above are not repeated. These are the remaini
 | Component kit | gpui-kit was verified in M0 for file drop, `BarChart`, virtual `DataTable` and `Select`. It has no multi-select. |
 | Commit versions | A tracked post-commit hook tags each `main` commit `vX.Y.Z` from its Conventional Commit type. |
 | Agent workflow | `CLAUDE.md` and `AGENTS.md`: one milestone at a time, continuing to the next without a check-in, through the end of v1. Two sub-agents in flight, picking from task lanes (`docs/tasks.md`). |
-| UI architecture (2026-11-11) | After a code review, the UI moves to idiomatic GPUI: one entity per page, a shared `Catalog` model that emits change events, keyed latest-wins DB jobs with a read connection, and shared `RenderOnce` components. This work goes before the remaining feature tasks (`docs/tasks.md` → *GPUI best practices*). |
+| UI architecture (2026-11-11) | After a code review, the UI moves to idiomatic GPUI: one entity per page, a shared `Catalog` model that emits change events, keyed latest-wins DB jobs with a read connection, and shared `RenderOnce` components. This work goes before the remaining feature tasks (`docs/tasks/gpui.md` → *GPUI best practices*). |
 | Late items (2026-11-11) | The scale seed and timed performance budgets (3.55) run last, after M5. Default categories and merchant rules move to after v1. |
 
 ## Roadmap
@@ -247,7 +247,7 @@ Decisions recorded in the sections above are not repeated. These are the remaini
 
 **Code review (2026-11-11):** four reviewers (database, backend, UI, design) audited the code. Their findings are tasks 3.64–3.91: correctness fixes, cheap scale fixes, the move to page entities and a shared data model, shared UI components, and a restructured `docs/ui-conventions.md`.
 
-**Prototype fixes** (feedback from 2026-11-08 onward; each is a task in `docs/tasks.md`)
+**Prototype fixes** (feedback from 2026-11-08 onward; each is a task under `docs/tasks/`, ordered in `docs/tasks.md`)
 
 Open:
 
@@ -257,9 +257,9 @@ Open:
 - [ ] **Label the category type dropdown** with a visible "Category type" label. *(Task 3.60.)*
 - [ ] **Make account selection on import clearer.** *(Task 3.61.)* Show the detected institution prominently next to the account selection. Account names exclude the institution, so the picker shows "Amex · Cobalt" from institution and name.
 - [ ] **An app icon** instead of the default one. *(Added 2026-11-11; task 3.63.)*
-- The user's 2026-11-11 layout and polish requests (dashboard layout, Categories and Rules page clean-ups, button icons) are tasks 3.34–3.58 in `docs/tasks.md`.
+- The user's 2026-11-11 layout and polish requests (dashboard layout, Categories and Rules page clean-ups, button icons) are tasks 3.34–3.58 under `docs/tasks/`.
 
-Done (details in `docs/tasks-done.md`): edit and delete rules (3.24), dashboard alignment (3.25), toasts (3.27), Rules page (3.28), show a row's rule (3.29), summary scrolls sideways (3.30), slimmer legend (3.31), Imports buttons (3.32), category / subcategory wording (3.33), Categories page sections (3.21, 3.23), responsive charts (3.15), aligned To categorize columns (3.21, 3.22), long lists render only visible rows (3.12, 3.19, 3.21; 3.55 checks it at scale), "Spend" renamed "Expense", semver tags on every commit, version in the sidebar (3.39).
+Done (details in `docs/tasks/done.md`): edit and delete rules (3.24), dashboard alignment (3.25), toasts (3.27), Rules page (3.28), show a row's rule (3.29), summary scrolls sideways (3.30), slimmer legend (3.31), Imports buttons (3.32), category / subcategory wording (3.33), Categories page sections (3.21, 3.23), responsive charts (3.15), aligned To categorize columns (3.21, 3.22), long lists render only visible rows (3.12, 3.19, 3.21; 3.55 checks it at scale), "Spend" renamed "Expense", semver tags on every commit, version in the sidebar (3.39).
 
 **After v1**
 
