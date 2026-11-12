@@ -940,6 +940,26 @@ the UI; tests cover 2.1–2.9.
     interrupted read returns `Superseded`; panics still reach the caller
     as `JobPanicked` (3.70).
 
+- [x] **3.88 One filter WHERE builder for every dashboard query.** (Code
+  review, 2026-11-11.) Backend only (`financi-db/src/views.rs`,
+  `lib.rs`); runs in a free slot. 3.46 depends on it.
+  - The filter conditions are written out four times
+    (`list_transactions_filtered` with its own `arg!` macro,
+    `grouped_rows` with hand-numbered placeholders,
+    `spend_by_parent_category`, `sidebar_counts`). Add one `FilterSql {
+    sql, args }` built from `(&ViewFilter, Option<&TxTableFilter>)` and
+    use it in all of them. Delete `spend_by_parent_category` (kept only
+    for a test).
+  - `spend_by_category` and `monthly_summary` each run the same
+    aggregate. Add `dashboard(conn, filter) -> (Vec<CategorySpend>,
+    MonthlySummary)` that aggregates once; keep the two as thin wrappers
+    if tests need them.
+  - The month filter uses `substr(posted_date, 1, 7) = ?`, which can't
+    use the index; use `posted_date >= 'YYYY-MM-01' AND posted_date <
+    <next month>`.
+  - Tests: all existing view tests pass unchanged; one test checks the
+    three queries agree on totals for the same filter.
+
 ---
 
 ## M4 — Simplii Visa, transfer pairing, near-match review
