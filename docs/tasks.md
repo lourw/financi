@@ -779,8 +779,8 @@ out.
     rendered text with a long-named tree, a subcategory selected, and each
     validation error triggered); the renamed buttons still work.
 
-**Bugs reported by the user on 2026-11-11** (3.34–3.54, plus a fix folded
-into 3.23). Order: **3.40 → 3.23 → 3.53/3.42/3.48/3.49/3.50/3.51 → 3.43 → 3.44 → 3.47/3.54 → 3.35 → 3.36 → 3.45 → 3.46 → 3.37 → 3.38/3.39 → 3.34 → 3.52**, then the rest of
+**Bugs reported by the user on 2026-11-11** (3.34–3.55, plus a fix folded
+into 3.23). Order: **3.40 → 3.23 → 3.53/3.42/3.48/3.49/3.50/3.51 → 3.43 → 3.44 → 3.55 → 3.47/3.54 → 3.35 → 3.36 → 3.45 → 3.46 → 3.37 → 3.38/3.39 → 3.34 → 3.52**, then the rest of
 the order above (3.28 → 3.29 → 3.26).
 
 - 3.23 also fixes: **the rule list overflows the page.** Today each rule
@@ -1074,6 +1074,58 @@ the order above (3.28 → 3.29 → 3.26).
     date); a UI test that clicking each header re-sorts the rows and the
     header shows the direction; the 3.4 sort tests still pass. Update
     the *Dashboard* row of `ui-conventions.md` ("every column sorts").
+
+- [ ] **3.55 Fast at real scale: hundreds of rules, dozens of
+  categories.** The user has hundreds of rules and dozens of categories
+  and is worried about performance (2026-11-11). The dev seed (18 rules,
+  458 rows) hides scale problems. `CompiledRules::pick` loops over **every
+  rule for every row**, and a rule change runs that loop twice: once in
+  `reapply_rules`, and again in `rule_use_counts` inside `refresh`. At
+  1 000 rules × 50 000 rows that's ~50 M checks per pass, likely around a
+  second or more. The live preview (`count_rule_matches`) scans every row
+  on each keystroke. Do this before 3.47 / 3.54, so they measure against
+  realistic data.
+  - **Scale fixture:** a `seed_large` (dev-seed feature) and a
+    `FINANCI_DEV_SEED=large` switch. It builds **1 000 rules** (80 %
+    substring, 20 % regex, overlapping on purpose), **80 categories**
+    (15 parents), and **50 000 transactions** over 10 years with realistic
+    merchant strings, all deterministic. It uses only synthetic data.
+  - **Budgets** (release build, on the large seed), as `#[ignore]` perf
+    tests runnable with `cargo test --release -- --ignored perf_`, which
+    print their times:
+    - `reapply_rules` < 150 ms;
+    - `rule_use_counts` < 150 ms;
+    - `count_rule_matches` < 30 ms;
+    - the full `refresh` query set < 250 ms;
+    - main-thread apply of a refresh result < 16 ms;
+    - opening the Categories and Rules pages < 16 ms per frame.
+
+    Debug-build versions of the DB budgets (×10) run in the normal test
+    suite on a 5 000-row / 300-rule seed so regressions fail CI.
+  - **Matching in one pass per row:** in `CompiledRules`, replace the
+    per-rule loop with an **Aho-Corasick** automaton over the lowercased
+    substring patterns (`aho-corasick` crate, already in the tree via
+    `regex`; `MatchKind::Standard` with overlapping search to collect
+    every match) and one **`RegexSet`** for the regex rules (case-
+    insensitive). Each row is scanned once per kind; the winner is the
+    longest match, ties to the lowest id, substring before regex, exactly
+    as today. Invalid regexes stay excluded. The existing core tests are
+    the contract; add a property test that the new `pick` equals the old
+    per-rule loop on random rules and descriptions.
+  - **One pass per rule change:** have `reapply_rules` return the per-rule
+    use counts it computed, and cache them on the shell until the next
+    rule or import change, so `refresh` doesn't recompute them. If that
+    isn't enough, store the deciding rule: add a nullable
+    `transactions.category_rule_id` column in a new migration, set by
+    `reapply_rules` and at import. Uses then becomes a `GROUP BY`, and
+    3.52's "decides" set becomes a query. Only add the column if the
+    budgets need it.
+  - **Live preview:** debounce `preview_rule_match` by 150 ms, and keep
+    the in-flight task cancellable, as now.
+  - **UI at scale:** with 1 000 rules and 80 categories, check that the
+    rule lists, tree and pickers stay virtual or lazy (3.12, 3.19, 3.21).
+    Category pickers with 65 children should be `searchable`.
+  - Commit message: the before / after numbers for every budget.
 
 - [ ] **3.47 A deleted rule leaves the list at once.** After the second
   click on a rule's Delete, the row stays in the list for a noticeable
@@ -1427,7 +1479,7 @@ the order above (3.28 → 3.29 → 3.26).
 
 
 **Done when:** on the demo data the dashboard totals match
-`expected.json`, filters compose, tests cover 3.1–3.54.
+`expected.json`, filters compose, tests cover 3.1–3.55.
 
 ---
 
