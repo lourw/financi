@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 use chrono::{Datelike, NaiveDate};
 use financi_core::dates::{DatePreset, preset_range};
 use financi_core::parse::merchant;
+use financi_core::rules::Rule;
 use financi_core::{AccountKind, CategoryKind};
 use financi_db::import::TransactionRow;
 use financi_db::settings::{self, DateRange, UI_DATE_RANGE, UI_INCLUDE_TRANSFERS};
@@ -32,10 +33,10 @@ use super::{
     CHART_LABEL_MAX_CHARS, CHART_LABEL_MIN_CHARS, DashboardBody, ExportData, HISTORY_DATES_W,
     HISTORY_FLEX_MIN_W, HISTORY_ROWS_W, HISTORY_TIME_W, ImportPanel, LEGEND_W, LegendSelection,
     NAV_ROW_INSET, NEW_ACCOUNT, NEW_CATEGORY, NEW_RULE, PAGE_PAD, Page, PlanState, RestoreBackup,
-    RowMenuItem, SIDEBAR_W, Shell, SummaryRowKind, TABLE_BORDER_X, TEXT_SM_CHAR_PX, TX_FIXED_W,
-    UNDO_ICON_W, UNDO_LABEL_MAX, UndoLastImport, band_label_budget, bar_label_plan,
+    RowMenuItem, RowShowRule, SIDEBAR_W, Shell, SummaryRowKind, TABLE_BORDER_X, TEXT_SM_CHAR_PX,
+    TX_FIXED_W, UNDO_ICON_W, UNDO_LABEL_MAX, UndoLastImport, band_label_budget, bar_label_plan,
     bar_label_slots, bar_share_label, chart_tooltip_value, history_flex_widths, history_undo_col_w,
-    row_menu_items, short_chart_labels, tx_flex_widths,
+    row_menu_items, row_show_rule, short_chart_labels, tx_flex_widths,
 };
 
 fn demo(name: &str) -> PathBuf {
@@ -3981,6 +3982,130 @@ fn rules_page_opens_with_the_search_focused(cx: &mut TestAppContext) {
     assert!(focused, "returning to the Rules page focuses Search again");
 }
 
+/// 3.29: *Show rule* from a dashboard row's menu opens the Rules page on
+/// the rule that decided that row: the search box takes the rule's pattern,
+/// the rule's row is scrolled into view and carries the reveal highlight,
+/// and a new search or a page switch drops the highlight. The fixture adds
+/// 30 filler rules in their own "Fill ›" groups (all matching "COFFEE", all
+/// sorted before "Food › Coffee") so the revealing really has to scroll.
+#[gpui::test]
+fn show_rule_from_a_row_lands_on_the_deciding_rule(cx: &mut TestAppContext) {
+    let mut ids = (0i64, 0i64, 0i64, [0i64; 4]);
+    let (handle, shell) = open_shell(cx, |conn| {
+        ids = seed_rules_page(conn);
+        let fill =
+            financi_db::categories::create_parent(conn, "Fill", CategoryKind::Expense).unwrap();
+        for n in 1..=30 {
+            let child =
+                financi_db::categories::create_child(conn, fill, &format!("A{n:02}")).unwrap();
+            financi_db::rules::add_rule(conn, &format!("COFFEE A{n:02}"), false, child).unwrap();
+        }
+    });
+    let (coffee, _snacks, _games, rules) = ids;
+    let (r1, r3) = (rules[0], rules[2]);
+    wait_until(cx, "the rules and dashboard rows loaded", |cx| {
+        let s = shell.read(cx);
+        s.rules.len() == 34
+            && s.rule_uses.get(&r1) == Some(&2)
+            && s.cat_counts.get(&coffee) == Some(&3)
+            && s.table.read(cx).delegate().rows.len() == 5
+    });
+    let mut window = VisualTestContext::from_window(handle, cx);
+
+    // The menu model on the dashboard row: r1 decided it, so *Show rule*
+    // is live.
+    let row = cx
+        .update(|cx| {
+            table_rows(&shell, cx)
+                .into_iter()
+                .find(|r| r.description.contains("BEAN ROAST 1"))
+        })
+        .expect("the roast row is on the dashboard");
+    assert_eq!(
+        cx.update(|cx| shell.update(cx, |s, _| row_show_rule(
+            &row,
+            &s.rules,
+            s.card_payment_category
+        ))),
+        RowShowRule::Found(r1)
+    );
+    assert_eq!(
+        cx.update(|cx| shell.read(cx).page),
+        Page::Dashboard,
+        "the menu is opened on the dashboard"
+    );
+
+    // Clicking *Show rule* navigates, narrows, scrolls and highlights.
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| s.show_rule(r1, window, cx));
+    });
+    let active = format!("rules:row-{r1}:active");
+    for _ in 0..8 {
+        cx.run_until_parked();
+        draw_frame(cx, handle);
+        if paints(&mut window, active.clone()) {
+            break;
+        }
+    }
+    assert_eq!(
+        cx.update(|cx| shell.read(cx).page),
+        Page::Rules,
+        "*Show rule* lands on the Rules page"
+    );
+    assert_eq!(
+        with_window(cx, handle, |_, cx| {
+            shell.read(cx).rules_search.read(cx).value().to_string()
+        }),
+        "COFFEE",
+        "the search box takes the rule's pattern, find-in-page style"
+    );
+    assert_eq!(cx.update(|cx| shell.read(cx).rules_reveal), Some(r1));
+    assert!(
+        paints(&mut window, active.clone()),
+        "the deciding rule paints highlighted"
+    );
+    assert!(
+        !paints(&mut window, format!("rules:row-{r1}")),
+        "the highlighted row carries only the reveal selector"
+    );
+    assert!(
+        !paints(&mut window, format!("rules:row-{r3}")),
+        "r3 (\"GAME\") does not match the pattern and stays hidden"
+    );
+    let y = rules_sel_y(&mut window, &active);
+    assert!(
+        y > 0. && y < 720.,
+        "the revealed row was scrolled into view (y {y})"
+    );
+
+    // Typing a fresh search is the user's own search: the highlight is
+    // gone. The search box has the focus, so a real Backspace edits it
+    // (`set_value` would be programmatic and emit no Change event).
+    cx.simulate_keystrokes(handle, "backspace");
+    cx.run_until_parked();
+    draw_frame(cx, handle);
+    assert_eq!(cx.update(|cx| shell.read(cx).rules_reveal), None);
+    assert!(
+        !paints(&mut window, active.clone()),
+        "the highlight did not survive the user's own edit"
+    );
+
+    // Revealing again and then leaving the page drops it too.
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| s.show_rule(r1, window, cx));
+    });
+    cx.run_until_parked();
+    draw_frame(cx, handle);
+    assert!(paints(&mut window, active.clone()), "revealed again");
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
+    draw_frame(cx, handle);
+    assert_eq!(
+        cx.update(|cx| shell.read(cx).rules_reveal),
+        None,
+        "the reveal belongs to the Rules page"
+    );
+}
+
 // -- page switching (3.11) ---------------------------------------------------
 
 /// 3.11: after a page switch only the current page paints. Walks every page,
@@ -4916,6 +5041,7 @@ fn browse_row(hidden: bool, paired: bool) -> TransactionRow {
         amount_cents: -450,
         hidden,
         transfer_pair_id: paired.then_some(2),
+        category_locked: false,
     }
 }
 
@@ -4944,6 +5070,63 @@ fn menu_shows_hide_for_a_visible_row_and_unhide_only_for_a_hidden_one() {
         row_menu_items(&browse_row(true, false)),
         [RowMenuItem::ChangeCategory, RowMenuItem::Unhide],
         "an unpaired row never offers Unpair"
+    );
+}
+
+/// 3.29: the *Show rule* item finds the rule that decided the row, or says
+/// why it cannot: a hand-set (locked) row, the built-in card payment, or no
+/// rule matching the description. The reason rides in the item's label.
+#[test]
+fn show_rule_finds_the_deciding_rule_or_gives_the_disabled_reason() {
+    let coffee = Rule {
+        id: 7,
+        pattern: "COFFEE".into(),
+        is_regex: false,
+        category_id: 3,
+    };
+    let rules = [coffee];
+    // An unlocked row that a rule matches: the item works, plain label.
+    let row = browse_row(false, false);
+    assert_eq!(row_show_rule(&row, &rules, None), RowShowRule::Found(7));
+    assert_eq!(row_show_rule(&row, &rules, None).menu_label(), "Show rule");
+    // A locked row was set by hand, whatever the rules would say.
+    let mut locked = browse_row(false, false);
+    locked.category_locked = true;
+    locked.category_id = Some(9);
+    assert_eq!(row_show_rule(&locked, &rules, None), RowShowRule::SetByHand);
+    assert_eq!(
+        row_show_rule(&locked, &rules, Some(4)),
+        RowShowRule::SetByHand
+    );
+    // Locked to the built-in card-payment category: its own reason, even
+    // though a rule would have matched (card payments beat the rules).
+    assert_eq!(
+        row_show_rule(&locked, &rules, Some(9)),
+        RowShowRule::CardPayment
+    );
+    // A locked row with no category at all still reads as hand-set.
+    let mut locked_none = browse_row(false, false);
+    locked_none.category_locked = true;
+    assert_eq!(
+        row_show_rule(&locked_none, &rules, Some(9)),
+        RowShowRule::SetByHand
+    );
+    // Nothing matches: there is no rule to show.
+    let mut unmatched = browse_row(false, false);
+    unmatched.description = "PARKING FEE METRO".into();
+    assert_eq!(row_show_rule(&unmatched, &rules, None), RowShowRule::NoRule);
+    // The disabled labels say why, in the menu.
+    assert_eq!(
+        RowShowRule::SetByHand.menu_label(),
+        "Show rule — Set by hand"
+    );
+    assert_eq!(
+        RowShowRule::CardPayment.menu_label(),
+        "Show rule — Card payment (built in)"
+    );
+    assert_eq!(
+        RowShowRule::NoRule.menu_label(),
+        "Show rule — No rule matches"
     );
 }
 

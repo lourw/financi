@@ -640,7 +640,7 @@ out.
     `ui-conventions.md`, and drop "there's no Rules page" from its
     *Categories* row.
 
-- [ ] **3.29 "Which rule did this?" from a transaction.** On the dashboard
+- [x] **3.29 "Which rule did this?" from a transaction.** On the dashboard
   table's row context menu, add **Show rule**: it opens the Rules page
   with that rule found, scrolled into view and highlighted
   (`list_active`). The item is disabled with a reason when no rule

@@ -828,6 +828,10 @@ pub struct TransactionRow {
     /// The row this one is paired with as a transfer (4.2), `Some` for
     /// paired rows — the table draws a link icon and offers *Unpair*.
     pub transfer_pair_id: Option<i64>,
+    /// `category_locked` (2.5): the category was set by hand or locked at
+    /// import (a built-in card payment), so rules never move the row. The
+    /// dashboard menu reads it to disable *Show rule* (3.29).
+    pub category_locked: bool,
 }
 
 /// Transactions newest first, optionally for one account. Hidden rows are
@@ -838,7 +842,8 @@ pub fn list_transactions(
 ) -> Result<Vec<TransactionRow>, DbError> {
     let mut stmt = conn.prepare(
         "SELECT t.id, i.name || ' · ' || a.name, t.posted_date, t.description_raw, t.merchant,
-                c.name, t.amount_cents, t.category_id, t.hidden, t.transfer_pair_id
+                c.name, t.amount_cents, t.category_id, t.hidden, t.transfer_pair_id,
+                t.category_locked
            FROM transactions t
            JOIN accounts a ON a.id = t.account_id
            JOIN institutions i ON i.id = a.institution_id
@@ -858,6 +863,7 @@ pub fn list_transactions(
             category_id: r.get(7)?,
             hidden: r.get(8)?,
             transfer_pair_id: r.get(9)?,
+            category_locked: r.get(10)?,
         })
     })?;
     Ok(rows.collect::<Result<_, _>>()?)
