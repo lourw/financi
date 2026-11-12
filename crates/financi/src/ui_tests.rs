@@ -51,12 +51,6 @@ fn open_shell(
     cx: &mut TestAppContext,
     setup: impl FnOnce(&financi_db::rusqlite::Connection),
 ) -> (AnyWindowHandle, Entity<Shell>) {
-    // The DB worker answers from its own OS thread.
-    cx.executor().allow_parking();
-    cx.update(gpui_kit::init);
-    let conn = open_in_memory().unwrap();
-    setup(&conn);
-    let db = DbWorker::spawn(conn);
     // A real path beside a scratch directory so master CSV writes during
     // import/undo never land in the repository. The database itself stays
     // in memory.
@@ -64,6 +58,22 @@ fn open_shell(
         "financi-ui-db-{}/financi.sqlite",
         std::process::id()
     ));
+    open_shell_at(cx, setup, db_path)
+}
+
+/// `open_shell` with a chosen database path (3.38: the footer tooltip
+/// test uses a path longer than the sidebar).
+fn open_shell_at(
+    cx: &mut TestAppContext,
+    setup: impl FnOnce(&financi_db::rusqlite::Connection),
+    db_path: PathBuf,
+) -> (AnyWindowHandle, Entity<Shell>) {
+    // The DB worker answers from its own OS thread.
+    cx.executor().allow_parking();
+    cx.update(gpui_kit::init);
+    let conn = open_in_memory().unwrap();
+    setup(&conn);
+    let db = DbWorker::spawn(conn);
     cx.update(|cx| {
         let bounds = Bounds {
             origin: Point::default(),
@@ -6470,6 +6480,108 @@ fn sidebar_nav_items_and_section_labels_share_one_flush_inset() {
     );
 }
 
+/// 3.38: the sidebar footer's database path ellipsizes at the sidebar's
+/// width, and hovering it shows the full path prefixed "Database: " in a
+/// tooltip (`docs/ui-conventions.md`, *Sidebar*).
+#[gpui::test]
+fn sidebar_db_path_shows_the_full_path_on_hover(cx: &mut TestAppContext) {
+    // A path well over 100 characters: even at a conservative 4.5 px per
+    // `text_xs` glyph it needs far more than the 210 px sidebar, so the
+    // footer must ellipsize it.
+    let db_path = std::env::temp_dir().join(format!(
+        "financi-ui-db-{}/databases/a-scratch-directory-with-a-very-long-name-for-ellipsis/financi.sqlite",
+        std::process::id()
+    ));
+    let (handle, _shell) = open_shell_at(cx, |_| {}, db_path.clone());
+    let path = db_path.to_string_lossy().to_string();
+    let mut window = VisualTestContext::from_window(handle, cx);
+    draw_frame(cx, handle);
+
+    let cell = window
+        .debug_bounds(leaked(format!("sidebar:db-path:{path}")))
+        .expect("the footer draws the database path");
+    assert!(
+        cell.size.width < px(path.chars().count() as f32 * 4.5),
+        "the path truncates: the cell is {:?} wide, the full text needs at \
+         least {:?}",
+        cell.size.width,
+        px(path.chars().count() as f32 * 4.5),
+    );
+
+    // The tooltip carries the full path, prefixed "Database: "; it only
+    // exists while the path is hovered.
+    let tip = leaked(format!("sidebar:db-path-tooltip:Database: {path}"));
+    assert!(
+        window.debug_bounds(tip).is_none(),
+        "nothing hovers the path, so no tooltip is drawn yet"
+    );
+    window.simulate_mouse_move(
+        point(
+            cell.origin.x + cell.size.width / 2.,
+            cell.origin.y + cell.size.height / 2.,
+        ),
+        None,
+        Modifiers::default(),
+    );
+    // The tooltip appears after a 500 ms hover; the test clock is fake.
+    cx.executor().advance_clock(Duration::from_millis(600));
+    cx.run_until_parked();
+    draw_frame(cx, handle);
+    assert!(
+        window.debug_bounds(tip).is_some(),
+        "hovering the path shows a tooltip with the full path",
+    );
+}
+
+/// 3.39: the sidebar footer's last line is the build version — it paints
+/// the text `version::VERSION` carries, `v`-prefixed once — with the same
+/// kind of hover tooltip as the path (3.38).
+#[gpui::test]
+fn sidebar_footer_shows_the_app_version(cx: &mut TestAppContext) {
+    let (handle, _shell) = open_shell(cx, |_| {});
+    let mut window = VisualTestContext::from_window(handle, cx);
+    draw_frame(cx, handle);
+
+    // The selector embeds the label, so a match proves the footer paints
+    // exactly the const's text.
+    let label = crate::version::version_label();
+    let text_sel = leaked(format!("sidebar:version-text:{label}"));
+    let cell = window
+        .debug_bounds(text_sel)
+        .unwrap_or_else(|| panic!("the footer paints the version text {label:?}"));
+    assert!(
+        label.starts_with('v'),
+        "the version label is \"v\"-prefixed: {label:?}"
+    );
+    assert_eq!(
+        label.trim_start_matches('v'),
+        crate::version::VERSION.trim_start_matches('v'),
+        "the shown label is the const, with one \"v\" prefix"
+    );
+
+    // Hovering shows the full version, as with the path (3.38).
+    let tip = leaked(format!("sidebar:version-tooltip:{label}"));
+    assert!(
+        window.debug_bounds(tip).is_none(),
+        "nothing hovers the version, so no tooltip is drawn yet"
+    );
+    window.simulate_mouse_move(
+        point(
+            cell.origin.x + cell.size.width / 2.,
+            cell.origin.y + cell.size.height / 2.,
+        ),
+        None,
+        Modifiers::default(),
+    );
+    cx.executor().advance_clock(Duration::from_millis(600));
+    cx.run_until_parked();
+    draw_frame(cx, handle);
+    assert!(
+        window.debug_bounds(tip).is_some(),
+        "hovering the version shows a tooltip with the full version",
+    );
+}
+
 /// 3.35: the Options popover carries the old filter-row toggles — same ids,
 /// same state and handlers. A real click opens it, all three checkboxes
 /// paint, and Include transfers toggles the rows exactly as before.
@@ -6932,6 +7044,192 @@ fn sorting_the_amount_header_reorders_rows_without_a_reentrant_panic(cx: &mut Te
     wait_until(cx, "rows reordered by amount", |cx| {
         descriptions(cx) == ["PAYROLL DEPOSIT", "CORNER CAFE", "GROCER STORE"]
     });
+}
+
+/// Three rows over two accounts with mixed-case descriptions and a
+/// categorized / uncategorized mix, so every sortable column (3.44) has its
+/// own expected order. Amounts are all distinct.
+fn seed_sort_columns_rows(conn: &financi_db::rusqlite::Connection) {
+    let cobalt = create_account(conn, "amex", "Cobalt", AccountKind::CreditCard).unwrap();
+    let no_fee = create_account(conn, "simplii", "No Fee", AccountKind::Chequing).unwrap();
+    let import = |account: i64| {
+        conn.execute(
+            "INSERT INTO imports (account_id, parser_id, file_name, imported_at, header_raw,
+                                  encoding, has_bom, line_ending, trailing_newline, row_count)
+             VALUES (?1, 'amex', 'seed.csv', '2026-11-01', X'00', 'utf-8', 0, 'lf', 0, 0)",
+            [account],
+        )
+        .unwrap();
+        conn.last_insert_rowid()
+    };
+    let cobalt_import = import(cobalt);
+    let no_fee_import = import(no_fee);
+    let food = financi_db::categories::create_parent(conn, "Food", CategoryKind::Expense).unwrap();
+    let groceries = financi_db::categories::create_child(conn, food, "Groceries").unwrap();
+    let mut line = 0i64;
+    let mut txn = |account: i64,
+                   import: i64,
+                   date: &str,
+                   cents: i64,
+                   description: &str,
+                   category: Option<i64>| {
+        conn.execute(
+            "INSERT INTO transactions (account_id, import_id, source_line, raw_bytes,
+                                       row_hash, posted_date, amount_cents,
+                                       description_raw, category_id)
+             VALUES (?1, ?2, 0, X'00', ?3, ?4, ?5, ?6, ?7)",
+            (
+                account,
+                import,
+                format!("sort-hash-{line}"),
+                date,
+                cents,
+                description,
+                category,
+            ),
+        )
+        .unwrap();
+        line += 1;
+    };
+    txn(
+        cobalt,
+        cobalt_import,
+        "2026-11-01",
+        -100,
+        "corner cafe",
+        Some(groceries),
+    );
+    txn(no_fee, no_fee_import, "2026-11-02", 300, "Best Buy", None);
+    txn(cobalt, cobalt_import, "2026-11-03", -50, "amazon", None);
+}
+
+#[gpui::test]
+fn every_transactions_table_column_sorts(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_sort_columns_rows);
+    wait_until(cx, "three rows", |cx| shell.read(cx).row_count == 3);
+
+    let descriptions = |cx: &App| -> Vec<String> {
+        table_rows(&shell, cx)
+            .iter()
+            .map(|r| r.description.clone())
+            .collect()
+    };
+    // Newest-first default (3.4): 11-03, 11-02, 11-01.
+    assert_eq!(cx.read(descriptions), ["amazon", "Best Buy", "corner cafe"]);
+
+    let table = cx.update(|cx| shell.read(cx).table.clone());
+    // Drive the header sort as the 3.4 test above does, passing the
+    // `ColumnSort` the table's own icon cycle hands the delegate: the off
+    // step cycles to Descending (the first click), then Ascending, back to
+    // off, …
+    let click = |cx: &mut TestAppContext, col_ix: usize, value: ColumnSort| {
+        with_window(cx, handle, |window, cx| {
+            table.update(cx, |t, cx| {
+                t.delegate_mut().perform_sort(col_ix, value, window, cx);
+            });
+        });
+    };
+    // Every expected order below differs from the one before it, so
+    // waiting for it also waits for the re-query to settle before the
+    // next click.
+    let assert_sorted = |cx: &mut TestAppContext, want: TxSort, order: [&str; 3], col_ix: usize| {
+        wait_until(cx, "rows re-sorted", |cx| descriptions(cx) == order);
+        cx.update(|cx| {
+            assert_eq!(shell.read(cx).tx_sort, want, "{:?}", want.column);
+            // The active header shows the direction the rows are in.
+            assert_eq!(
+                table.read(cx).delegate().column(col_ix, cx).sort,
+                Some(if want.descending {
+                    ColumnSort::Descending
+                } else {
+                    ColumnSort::Ascending
+                }),
+                "header of column {col_ix} shows the direction"
+            );
+        });
+    };
+
+    // Account, first click (icon off → Descending): A→Z on
+    // "Institution · Account"; the tied Cobalt rows fall back to date.
+    click(cx, 1, ColumnSort::Descending);
+    assert_sorted(
+        cx,
+        TxSort {
+            column: TxSortColumn::Account,
+            descending: false,
+        },
+        ["amazon", "corner cafe", "Best Buy"],
+        1,
+    );
+    // Second click (Ascending → off step): Z→A.
+    click(cx, 1, ColumnSort::Default);
+    assert_sorted(
+        cx,
+        TxSort {
+            column: TxSortColumn::Account,
+            descending: true,
+        },
+        ["Best Buy", "amazon", "corner cafe"],
+        1,
+    );
+    // Description, first click: A→Z, case-insensitively.
+    click(cx, 2, ColumnSort::Descending);
+    assert_sorted(
+        cx,
+        TxSort {
+            column: TxSortColumn::Description,
+            descending: false,
+        },
+        ["amazon", "Best Buy", "corner cafe"],
+        2,
+    );
+    // Category, first click: A→Z with the uncategorized rows sorted as
+    // "Uncategorized" — after Groceries, before nothing here, and their
+    // tie keeps the newest-first date order.
+    click(cx, 3, ColumnSort::Descending);
+    assert_sorted(
+        cx,
+        TxSort {
+            column: TxSortColumn::Category,
+            descending: false,
+        },
+        ["corner cafe", "amazon", "Best Buy"],
+        3,
+    );
+    // Second click: Z→A, so "Uncategorized" leads.
+    click(cx, 3, ColumnSort::Default);
+    assert_sorted(
+        cx,
+        TxSort {
+            column: TxSortColumn::Category,
+            descending: true,
+        },
+        ["amazon", "Best Buy", "corner cafe"],
+        3,
+    );
+    // Date and Amount keep their first directions (3.4): Date's active
+    // descending column cycles to Ascending, Amount's off step to
+    // Descending (biggest first).
+    click(cx, 0, ColumnSort::Ascending);
+    assert_sorted(
+        cx,
+        TxSort {
+            column: TxSortColumn::Date,
+            descending: false,
+        },
+        ["corner cafe", "Best Buy", "amazon"],
+        0,
+    );
+    click(cx, 4, ColumnSort::Descending);
+    assert_sorted(
+        cx,
+        TxSort {
+            column: TxSortColumn::Amount,
+            descending: true,
+        },
+        ["Best Buy", "amazon", "corner cafe"],
+        4,
+    );
 }
 
 // ------------------------------------------------------------------ 3.5 chart

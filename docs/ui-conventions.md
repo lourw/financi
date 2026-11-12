@@ -1,341 +1,403 @@
 # UI conventions
 
-This file says how financi's window should look and behave, so every view
-added in M2–M5 matches. It sits beside `plan.md` (what to build) and
-`docs/tasks.md` (task order, GPUI pitfalls). If one of those files names a
-specific layout or control, that file wins. This one covers everything else.
+financi's design system: how every page looks and behaves. `plan.md` says
+what to build and `docs/tasks.md` gives the order (GPUI pitfalls are in
+`docs/tasks/gpui.md`). A
+task that names a specific layout wins for that task; update this file in
+the same commit. Where the code differs from a rule here, the rule is the
+target and a task brings the code in line.
 
-## Principles
+## 1. Principles
 
-1. **Data first, chrome last.** This is a desktop tool for one person who
-   knows their own money. Numbers and rows get the space. Decoration doesn't.
-   No hero headers, cards around cards, or icons that don't do anything.
-2. **One window, one filter state.** Every view reads the same `ViewFilter`
-   plus the selected category and month. Clicking a number narrows the
-   filter. Nothing opens a second window.
+1. **Data first, chrome last.** A desktop tool for one person who knows
+   their own money. Numbers and rows get the space. No hero headers, cards
+   in cards, or icons that do nothing.
+2. **One window, one filter state.** Every dashboard view reads the same
+   `ViewFilter` plus the selected category and month. Clicking a number
+   narrows the filter. Nothing opens a second window, side sheet or modal.
 3. **Use the gpui-kit theme as it is.** Colors, radius and fonts come from
-   `cx.theme()`, using the default shadcn "neutral" theme in both light and
-   dark mode. Don't hardcode `rgb(...)`/`hsla(...)` in views. If a color you
-   need isn't in the table below, ask.
-4. **Every state is designed.** Each region has an empty state, a loading
-   state (keep the old content and dim it; don't flash a blank region) and an
-   error state.
+   `cx.theme()` (default shadcn "neutral", light and dark). Never hardcode
+   `rgb(...)`/`hsla(...)` in views. If a color you need isn't in the token
+   table, ask.
+4. **Every state is designed.** Each region has an empty, a loading (keep
+   the old content, dimmed; never flash blank) and an error state.
 
-## Window layout
+## 2. Tokens
 
-The window is a gpui-kit `Sidebar` on the left and one page on the right.
-Pages replace side sheets, modals and banners: anything that isn't the
-dashboard gets its own page.
+### Spacing
 
-```
-┌────────────────┬──────────────────────────────────────────────────────┐
-│ financi        │ Page header: filters (Dashboard) or title + actions  │
-│                │ ┌ Spending by category ─────┐ ┌ Monthly summary ──┐ │
-│ ▣ Dashboard    │ │ BarChart + legend (~45%)  │ │categories × months│ │
-│                │ └───────────────────────────┘ └───────────────────┘ │
-│ ORGANIZE       │ chips · search · toggles                             │
-│ ☑ To categorize 12                                                    │
-│ ◇ Categories   │ Transaction table (fills remaining height)           │
-│ ⇄ Transfers  2 │                                                      │
-│ DATA           │                                                      │
-│ ⇩ Imports      │                                                      │
-│                │                                                      │
-│ 1,284 transactions                                                    │
-│ ~/…/financi.sqlite                                                    │
-└────────────────┴──────────────────────────────────────────────────────┘
-```
-
-### Sidebar
-
-- gpui-kit `Sidebar`, ~210px, background `sidebar`, `border` on the right.
-  Not collapsible in v1.
-- **Header:** the app name (`font_semibold`) only. No buttons in the
-  sidebar: it's navigation, and importing has its own page.
-- **Items** (`SidebarMenuItem` with a Lucide icon, `.active(...)` on the
-  current page), in groups:
-  - Dashboard
-  - *Organize:* To categorize, Categories, Transfers
-  - *Data:* Imports
-- **Counts:** an item with work waiting shows a count pill in its
-  `suffix` (To categorize: uncategorized transactions; Transfers: reviews
-  open). Hide the pill at 0. The counts replace dashboard banners: there
-  are no banners.
-- **Footer:** transaction count and database path, `text_xs`,
-  `muted_foreground`, path ellipsized.
-- The selected page isn't persisted; launch opens Dashboard.
-
-### Pages
-
-Every page has `p_4` padding and `gap_3` between regions. The first row is
-the page header: title (`text_lg`, `font_semibold`) and a muted summary on
-the left, page actions on the right. Dashboard is the exception: its
-header row is the filters.
-
-| Page | Contents |
-|---|---|
-| **Dashboard** | One filter row (3.35): date range, the custom From/To pickers, accounts, search, Options (include transfers, uncategorized only, show hidden) and the transaction count; chart + legend beside the monthly summary; filter chips; transaction table. The legend (3.31) is just the key — a 10px swatch and the category name (ellipsis) in a ~140 px column — and each bar carries its share above it; amounts and exact shares live in the hover tooltips. |
-| **To categorize** | The Uncategorized queue (2.7) as a table: merchant (`flex_1`, truncates with a tooltip showing the full name), transactions (bare number, right-aligned ~96 px), total (right-aligned ~110 px), dates (~190 px, `text_sm` muted), category picker (~220 px), Categorize button at natural width — fits the 1200 px minimum window, headings share the row widths. Choosing a category adds a rule. |
-| **Categories** | Two bordered panels side by side (3.23): the category tree left (~300px), the selected category right (`flex_1`) — together inside the 1200 px minimum window. Header: title, "N categories · M subcategories" summary, and the primary **New category…** action at the right; it toggles a bordered inline form (name input ~220px, Kind picker, Add category primary, Cancel) that closes on Cancel, on a successful add and on leaving the page. Tree rows: a 10px category swatch, the name (parents semibold, subcategories indented; both ellipsize), the `system` tag, and the transaction count right-aligned (`text_xs` muted); the selected row is `list_active`, hover is `list_hover`. The detail panel is sections split by `border_t_1` dividers: the category name (ellipsized, with Rename… at the right), **Organize** (add-subcategory row when a category is selected; move picker when a subcategory is), **Rules**, and **Delete** (system categories have no Delete section). With nothing selected the panel just prompts "Select a category to see its rules and settings." The rules list holds only the selected category's rules (a subcategory's own, a parent category's including its subcategories'); with none it shows "No rules for this category yet". The add-rule row (Pattern `flex_1`, regex switch, Category picker 200px (3.41) defaulting to the selected subcategory — the rule list's Category column width, its open menu 320px wide and searchable so full "Parent › Child" names show and can be typed, the ellipsized trigger carrying a hover tooltip with the full name, Add rule primary) carries the live "matches N transactions" count under it, and each rule row (Pattern `flex_1` truncating with a tooltip, Type ~80px, Category ~200px, Edit and Delete… at the right — ghost buttons with `text_xs` labels, visible on every row; the list is a virtual list, not a DataTable, so the *Tables* xsmall rule doesn't apply): Edit swaps the row in place for an editor in the add-rule row's shape (Pattern, regex switch, Category picker, pre-filled; Save primary, Cancel; Enter saves, Escape cancels; the same live count under the fields), and Delete… is the two-click "Click again to delete" confirm armed per row. One rule edits at a time; selecting a category or leaving the page closes the editor and disarms the delete. |
-| **Rules** | Every rule in one list (3.28); sidebar entry after Categories. Header: title, muted "N rules", and **New rule…** at the right, opening the same add-rule row as the Categories page (3.24) in place. Below it a filter row: Search (`flex_1`, focused when the page opens; matches the pattern and the target category's child and parent names, case-insensitive), a **Test a description** checkbox that turns the search into a pasted bank description — the list then shows only the rules matching it in matcher order (substring before regex, longest first, lowest id), the winner first and marked "wins" — a Type picker (All types / Substring / Regex) and an **Unused** checkbox (rules that currently decide no transactions). The list is grouped by parent, then child category, each group behind a collapsible header row ("Food › Coffee · 4 rules"); columns: Pattern (`flex_1`, ellipsis + tooltip), Type (~80px), Uses (right-aligned ~80px: transactions the rule currently decides) and the 3.24 Edit / Delete… actions; within a group rows sort by Pattern (default) or Uses via the column headings. Each row carries a checkbox; with any checked, a bar above the list shows "N selected", a Category picker and **Move**, which points every checked rule at the chosen subcategory in one DB call and re-runs rules once. Virtualized, headers included, with its own `VirtualListScrollHandle` on `Shell`. The dashboard row menu's *Show rule* (3.29) lands here: the page's filters are cleared so the rule is in the list, Search takes the rule's pattern, and the rule's row is scrolled into view carrying `list_active` until the user searches or leaves the page. |
-| **Transfers** | Open transfer reviews (4.2): each row with its candidates and "Not a transfer". |
-| **Imports** | Header actions, each an icon left of the label and no "…": **Import CSV** (`file-up`, primary), **Undo** (`undo-2`, two-click, newest import, disabled with no history), **Export** (`download`) and **Restore** (`archive-restore`) (live in M5; say so for now). The import preview (while a file is open) on top, then import history (time, file, account, rows added, dates). The newest row only carries an in-row Undo: xsmall ghost, icon only (`undo-2`) with a hover tooltip "Undo this import"; armed it reads "Click again to undo" in `danger` text, sharing the header Undo's confirm state. |
-
-- **Dashboard middle row:** chart and summary side by side, ~45/55, same
-  fixed height (~340px) — both panels carry an explicit height so their
-  titles share one line. The summary scrolls if it overflows. The chart
-  never scrolls.
-- **Summary month strip (3.30):** the category name column is fixed
-  (~160px, swatch + name ellipsized with a hover tooltip, subcategory indent
-  unchanged) and `Total` (~96px) is pinned right; only the 88px month
-  columns between them scroll sideways (Shift+wheel / trackpad, plus a
-  thin horizontal scrollbar over the month zone while they overflow).
-  One shared handle keeps the header months over their cells; vertical
-  scrolling moves whole rows, names included. A range change lands on
-  the most recent month; when every month fits there is no scrolling and
-  the months sit flush against `Total`, as before.
-- **Dashboard filter row (3.35):** one 32 px row — no region title and no
-  label lines (this replaces 3.16's visible-label rule and 3.25's two-row
-  layout for the dashboard filters). Left to right, `gap_2`, every control
-  the default 32 px tall and vertically centred: the **Date range** select
-  (~170 px); when the range is Custom the **From** / **To** pickers
-  (140 px each, shrinking first to a 110 px floor); the **Accounts**
-  popover trigger ("All accounts" / "N of M accounts"); the **Search**
-  input `flex_1` with a `min_w` of ~140 px, a leading search icon and the
-  placeholder "Search transactions"; an **Options** button (`list-filter`
-  icon + "Options", reading "Options · N" when N of its toggles are on)
-  opening a popover with the checkboxes **Include transfers**,
-  **Uncategorized only** and **Show hidden**; then the muted transaction
-  count, `ml_auto`, ending at the page's right edge. Each control without
-  a visible label names itself in a hover tooltip (Date range, Accounts,
-  Options). The row must fit 1200 × 720 with the custom range open,
-  nothing clipped and no wrapping. The filter region, the
-  chart panel, the summary and the table span the page's left and right
-  edges exactly; the table's flexible columns (Account, Description,
-  Category) absorb the window width so it never overhangs the page.
-- **Tables** take `flex_1` and scroll. Minimum window size: 1200 × 720.
-- **Opening a file** (drop anywhere on any page, ⌘O, Imports → Import CSV…,
-  `FINANCI_DEV_OPEN`)
-  switches to the Imports page with the preview open.
-- **Import preview:** two lines in a bordered panel. Line one: file name,
-  institution (muted), then Cancel and the primary action at the right end.
-  Line two: `Into [account ▾] | 32 new of 84 rows · 52 already imported,
-  skipped · Oct 1 – Dec 4, 2026` in muted text with the key number in
-  `foreground`. No big stat blocks.
-- **No side sheets, no modals** for app content. Native file dialogs and
-  in-place confirmation ("Click again to undo") are the only exceptions.
-
-## Spacing and sizing
-
-Use gpui's spacing helpers only, in these steps:
+gpui spacing helpers only, in these steps:
 
 | Step | Helper | Use |
 |---|---|---|
-| 4px | `gap_1` | icon next to its label, chip contents |
-| 8px | `gap_2` | controls inside one group (buttons in a row, label + input) |
-| 12px | `gap_3` | between page regions; between filter groups |
-| 16px | `p_4` | page padding; padding inside a panel |
+| 4 px | `gap_1` | icon next to its label, chip contents |
+| 8 px | `gap_2` | controls in one group (a filter row, buttons in a row) |
+| 12 px | `gap_3`, `px_3` | between page regions; list row and heading padding |
+| 16 px | `p_4` | page padding; padding inside a content panel |
 
-- Panels (import preview, chart, summary, category tree): `border_1`,
-  `theme.border`, `rounded(theme.radius)`, background `theme.background`.
-  **No filled panels.** A grey `secondary` fill or a tinted warning box
-  looked heavy in the mockups and was rejected.
-- **Button order in a row of actions:** Cancel first, then the primary
-  action last, at the right end (the macOS order).
-- **Forms (3.42):** a labelled field is a label line over a 32 px control,
-  and an action row of such fields is `items_end`; an *unlabelled* control
-  in that row (the rule rows' regex switch) goes into a 32 px slot
-  (`h_flex().h(px(32.)).items_center()`) so its centre matches the controls'
-  centres instead of dropping to its bottom edge.
-- **Tables:** default gpui-kit row height, striped (`.stripe(true)`).
-  Buttons *inside* DataTable rows are `xsmall` `ghost()` buttons, never the
-  default size (3.32) — a medium button fills the 32 px row edge to edge
-  and makes the row look taller. Keep them vertically centered with at
-  least 4 px clear above and below; an icon-only in-row button carries a
-  hover tooltip naming the action.
-- **Text never pushes its container wider.** Any flex child that holds text
-  (legend rows, summary cells, select labels) gets `min_w_0()` plus
-  `overflow_hidden()`/`text_ellipsis()`, and amount and percent columns get
-  fixed widths. Filter selects get a width that fits their longest
-  label on one line. The first mockups broke exactly here: legend amounts
-  spilled into the summary, and the date range label wrapped.
-- **Chart labels fit the space (3.15, 3.31).** The category chart's band
-  labels shorten to a character budget and thin out when bands get
-  narrow, so two neighbouring labels never overlap or spill past the
-  panel at the minimum window size or above; the budget follows the live
-  window width. Full names always stay in the legend and the tooltip.
-  Each bar carries its share above it (3.31) — whole percent (`18%`),
-  one decimal only below one percent (`0.4%`), `muted_foreground` — and
-  when the bars are too narrow for the text those labels thin out the
-  same way, first-to-last, rather than colliding.
+### Heights
 
-## Typography
+| Element | Height |
+|---|---|
+| Control (input, select, button, date picker) | 32 px (gpui-kit default size) |
+| `DataList` heading row; filter row | 32 px |
+| `DataList` group header | 36 px |
+| `DataList` row | 40 px |
+| `DataTable` row | 32 px (gpui-kit default) |
 
-- Font: the theme's system UI font. Base size 16px (gpui-kit default), but
-  **data regions use `text_sm` (14px)**: table, summary, legend.
-- Region titles: `text_sm`, `font_semibold`, `theme.foreground`. No larger
-  headings inside a page. Page titles are `text_lg`; the app name in the
-  sidebar header is `font_semibold`.
-- Secondary text (counts, captions, the status bar, hints): `text_xs` or
-  `text_sm` in `theme.muted_foreground`.
-- Numbers line up: right-align every amount column. If the system font's
-  digits don't line up in practice, switch amount cells (only those) to
-  `theme.mono_font_family`.
-- Copy: sentence case ("Import CSV", not "Import Csv"). Buttons are verbs.
-  Use an ellipsis when the button opens a dialog or picker. The Imports page
-  header buttons are the exception (3.32): they carry a Lucide icon left of
-  the label and no "…" — Import CSV, Undo, Export, Restore — because the
-  action runs straight away and any confirmation is the button's own armed
-  state, not a dialog. Errors say what happened and what to do next ("Pick
-  an account before importing").
+Button sizes: page header and form actions at default size; panel
+title-row actions `small`; buttons inside a list or table row `xsmall`
+`ghost`, vertically centered with at least 4 px clear above and below.
 
-## Color (theme tokens)
+### App-wide widths
+
+- Sidebar ~210 px. Minimum window 1200 × 720: every page fits it with
+  nothing clipped, no wrapping and no horizontal page overflow.
+- Page-specific widths (column widths, picker widths) are constants next
+  to the page's code, not tokens.
+
+### Typography
+
+- The theme's system UI font. Base 16 px, but **data regions use
+  `text_sm`** (14 px): lists, tables, summary, legend.
+- Page title `text_lg` `font_semibold`. Region and panel titles
+  `text_sm` `font_semibold` `foreground`; no larger headings inside a
+  page. The sidebar's app name is `font_semibold`.
+- Secondary text (counts, summaries, captions, list headings):
+  `text_xs` or `text_sm` in `muted_foreground`. Field labels, where
+  allowed (*Labels*), are `text_xs` muted.
+- Amount columns are right-aligned. If system-font digits don't line up,
+  switch amount cells (only those) to `mono_font_family`. Rule patterns
+  are shown in `mono_font_family`.
+- Sentence case ("Import CSV"). Buttons are verbs.
+
+### Color tokens
 
 | Meaning | Token | Where |
 |---|---|---|
-| Text | `foreground` | everything by default |
-| Secondary text | `muted_foreground` | captions, Uncategorized label, hints |
-| Lines | `border` | panel borders, dividers |
-| Main action | `primary` (button) | at most one per page: the confirming action (Import 32 transactions, Add rule) |
-| Money in | `success` | positive amounts in the table |
-| Problems | `danger` | errors, negative Net in the summary |
-| Needs action | sidebar count pill | work waiting is a count in the sidebar, never a banner or filled box |
-| Selection | `list_active` / `table_active` | selected legend row, selected summary cell |
-| Category colors | `blue`, `cyan`, `magenta`, `yellow`, `green`, `red`, then their `_light` variants | one color per category; see *Category colors* below |
-| Hidden rows | `muted_foreground` text | "Show hidden" mode |
+| Text | `foreground` | everything by default, including money out |
+| Secondary text | `muted_foreground` | captions, summaries, Uncategorized, hidden rows, 0 counts |
+| Lines | `border` | panel borders, row dividers, section dividers |
+| Main action | `primary` button | at most one visible per page or panel (*Buttons*) |
+| Money in | `success` | positive amounts in tables |
+| Problems | `danger` | errors, armed confirms, negative Net |
+| Hover / selection | `list_hover` / `list_active`, `table_active` | hovered row; selected row, legend item, summary cell |
+| Group header fill | `muted` | `DataList` group headers, the one allowed fill |
+| Toast surface | `popover` | toast cards |
+| Needs action | sidebar count pill | never a banner or filled box |
+| Category colors | `blue`, `cyan`, `magenta`, `yellow`, `green`, `red`, then their `_light` variants | see below |
+
+Money out is plain `foreground`: spending is the normal case and a table
+of red reads as an alarm. Expected behavior isn't a warning ("Rows you
+already have are skipped" is plain muted text).
 
 ### Category colors
 
-Every category gets its own color, the same everywhere it appears: its bar
-(`BarChart::fill` takes a closure per bar), its legend swatch, and a swatch
-before its name in the monthly summary.
+Each category has one color, the same everywhere: its bar
+(`BarChart::fill`), its legend swatch, its swatch in the summary, the
+category tree and lists.
 
-- Palette, in order: the theme's `blue`, `cyan`, `magenta`, `yellow`,
-  `green`, `red`, then `blue_light` … `red_light` (12 colors, light and dark
-  handled by the theme). Red and green come last because they also mean
-  danger and money in.
-- **Stable, not by rank.** Assign by position among siblings sorted by
-  category id (`index % 12`), so a category keeps its color when the date
-  range changes the order. Drilling into a category gives its subcategories
-  their own colors from the start of the palette.
-- Uncategorized is always `muted_foreground` grey, never a palette color.
-- The swatch is a 10×10 square with a 2px radius. Don't color text with
-  category colors.
+- Palette order: `blue`, `cyan`, `magenta`, `yellow`, `green`, `red`, then
+  `blue_light` … `red_light` (12). Red and green come last because they
+  also mean danger and money in.
+- **Stable, not by rank:** `index % 12` by position among siblings sorted
+  by category id, so a color survives range changes. Drilling in gives the
+  subcategories colors from the start of the palette.
+- Uncategorized is always `muted_foreground`, never a palette color.
+- Shown only as a `Swatch`. Never color text with category colors.
 
-Expected behavior isn't a warning. "Rows you already have are skipped" is
-plain muted text. Something the user must decide shows as a sidebar count, not a warning box.
+## 3. Components
 
-Money out is drawn in plain `foreground`, not red. Spending is the normal
-case, and a table full of red reads as an alarm.
+*(Built in task 3.89 in `crates/financi/src/ui/widgets.rs`; until then,
+match this by hand.)* Pages compose these; don't restyle them per page.
 
-## Numbers, dates and labels
+- **`Panel`** — `border_1` `border`, `rounded(theme.radius)`, no fill
+  (background `background`). Optional title row: `text_sm`
+  `font_semibold` title on the left, `small` actions on the right. A
+  content panel pads `p_4`; a panel holding a `DataList` has no padding
+  and the list runs edge to edge.
+- **`PageHeader { title, summary, actions }`** — the first row of every
+  page except Dashboard: `text_lg` semibold title, a muted summary
+  ("N rules · M unused", counts via `flow::count`), actions right-aligned.
+- **`DataList`** — a heading row plus a virtual list (`v_virtual_list`;
+  per-row widgets built only for visible rows). Columns are typed
+  `Fixed(px) | Flex` with an alignment, shared by heading and rows so they
+  always line up; a `Flex` text column gets `min_w_0` and ellipsizes with a
+  tooltip holding the full text.
+  - Heading row 32 px, `text_sm` muted, `px_3`, bottom `border`. Sortable
+    headings toggle the sort on click.
+  - Rows 40 px, `px_3`, bottom `border` divider (none after the last),
+    `list_hover` on hover, `list_active` when selected.
+  - Optional group headers: 36 px on `muted` fill, chevron to collapse,
+    the group name semibold, a muted count, and group sums under their
+    columns.
+  - Optional actions column at the right: `row_action_button`s revealed
+    on row hover or focus (or while the row's editor is open). The column's
+    width is always reserved so nothing shifts.
+- **`FilterRow`** — one 32 px row, `gap_2`, controls vertically centered.
+  Controls have no visible labels; each names itself by placeholder or
+  tooltip. Search is `flex_1` with a `min_w`, a leading search icon and a
+  placeholder ("Search transactions"). Rarely used toggles go in an
+  **Options** popover (`list-filter` icon + "Options", reading
+  "Options · N" when N are on). A muted count or summary sits last,
+  `ml_auto`, at the page's right edge.
+- **`InlineForm`** — a bordered row opened in place, right under the
+  header or panel title row whose action opened it. Placeholder-labelled
+  controls, then Cancel and the primary action at the right end. Escape,
+  Cancel, a successful submit and leaving the page close it; opening
+  another form closes the open one (one form open at a time).
+- **`Swatch`** — 10 × 10 square, 2 px radius, the category color.
+- **`TypeTag`** — small outline tag (`text_xs`, `border`, radius), e.g.
+  "text" / "regex", "system", the import preview's institution.
+- **`control_slot(el)`** — a 32 px tall, `items_center`, `flex_shrink_0`
+  slot that lines an unlabelled control (a switch, a checkbox) up with
+  labelled 32 px controls in the same `items_end` row.
+- **`row_action_button(icon, tooltip)`** — `xsmall` `ghost`, icon only,
+  with a hover tooltip naming the action. Two-click destructive buttons
+  widen to show "Click again to …" when armed.
 
-- **Every control carries a visible label (3.16).** Inputs, dropdowns, date
-  pickers and filter groups get a visible label or a section heading; a
-  placeholder is never the only label. Field labels are `text_xs`,
-  `muted_foreground`, above or beside the control; region titles name a
-  group of controls or a data panel (`text_sm`, `font_semibold`):
-  *Spending by category*, *Monthly summary*, the Categories *Category tree*
-  heading and its labelled detail pickers, and the queue's column headings.
-  Group related controls under those headings rather than stacking rows of
-  unlabelled boxes. Labels sit above controls, so they never add width at
-  the 1200 × 720 minimum. The dashboard's filter row is the one exception
-  (3.35): no title, no label lines — its controls name themselves in hover
-  tooltips (see *Pages*).
-- **Money:** `$1,234.56`. In the table, amounts are signed: `-$86.42` out,
-  `$2,105.00` in (green). In the chart, its tooltips and the summary,
-  amounts are positive spend. Net is the one signed summary row.
-- **Shares:** one decimal, `22.4%`. Over the chart bars (3.31) whole
-  percents — `18%`, one decimal only below one percent (`0.4%`).
-- **Dates:** `2026-11-06` in the table (sorts by eye, no locale guessing).
-  Month headers in the summary: `Sep 2026`. Ranges: `Sep 1 – Nov 30, 2026`.
-- **Accounts:** the account's own name ("Amex Gold", "Simplii Chequing").
-  Don't add the institution unless two accounts would otherwise show the
-  same name.
-- **Categories in the table:** the subcategory name, with the category it
-  belongs to in `muted_foreground` before it: `Food › Groceries`.
-  Uncategorized rows show `Uncategorized` in `muted_foreground`.
-- **Uncategorized in the legend and summary:** always the last category row
-  (whatever its amount), with its name in `muted_foreground`, so it reads as
-  work still to do rather than as a category.
+## 4. Patterns
 
-## Copy
+### Labels
 
-- **Say "category" and "subcategory", never "parent", "child" or
-  "children".** The two-level tree is a category and its subcategories;
-  every string the user can see (labels, placeholders, buttons, errors,
-  tooltips) uses those words, including error text from `financi-db` that
-  the UI shows. Code identifiers, DB columns and element ids keep the old
-  names (`parent_id`, `add-child`) — only the wording changes. Pending
-  copy (3.23's `N parents · M categories`, 3.28's text) follows this rule
-  when it lands: `N categories · M subcategories`.
+- **Filter rows and inline forms carry no visible labels.** The
+  placeholder or a hover tooltip names the control, and every unlabelled
+  control sets an `accessibility_label`.
+- **Visible labels** (`text_xs` muted, above the control) only in
+  multi-field forms where a filled value hides the placeholder: the rule
+  editor's Pattern, the New category form's name and "Category type".
+- Region titles name data panels (*Spending by category*, *Monthly
+  summary*). Don't add a title that repeats a placeholder.
 
-## Interaction
+### Buttons
 
-- **Click to filter.** Legend rows, summary cells and summary row headers
-  all set the shared filter. The selected item uses the active color. Click
-  it again, or press Esc, to clear it.
-- **Hints go in hover tooltips, not captions.** Don't put instructions like
-  "click a cell to filter" in panel titles. Use `.tooltip(...)` on the
-  element (it needs an `id`). Summary cell: `Shopping · Oct 2026 · 14
-  transactions`, with "Click to show them in the table" under it. Chart bar
-  (BarChart's own `tooltip_title`/`tooltip_value`): name, exact amount and
-  share (`Restaurants · $642.15 · 31.4% of Food`). Legend rows (3.31) carry
-  the same text — full name over `amount · share%` — so the row itself can
-  stay just swatch and name.
-- **Filter chips.** Each active narrowing filter (category, month, search,
-  "Uncategorized only") shows as a chip with a × above the table. The
-  header filters (date, accounts, transfers) aren't chips, because the
-  header already shows them.
-- **Row actions:** right-click context menu (2.9). No action buttons inside
-  rows. It includes **Show rule** (3.29), which opens the Rules page on the
-  rule that decided the row; when none did it is disabled with the reason
-  ("Set by hand", "Card payment (built in)", "No rule matches").
-- **Destructive actions:** ask for confirmation inside the control (the
-  current "Click again to undo" pattern) or on the page itself. Never use a
-  native alert.
-- **Keyboard:** Esc clears the innermost selection first (chip, then
-  drill-down). ⌘O import, ⌘E export (3.7).
+- Never end a button label in "…". Actions carry a Lucide icon left of the
+  label (`plus` New, `pencil` Rename/Edit, `trash-2` Delete, `file-up`
+  Import CSV, `undo-2` Undo, `download` Export, `archive-restore` Restore).
+  Menu items keep "…" when they open a dialog.
+- **At most one primary visible per page or panel.** A header action
+  shows outline while its inline form is open (the form's submit is the
+  primary). Row-level "ready" buttons are outline, never primary.
+- Order in a row of actions: Cancel, then the primary last at the right
+  end (macOS order).
 
-## Feedback
+### Tables and lists
 
-- **Toasts, never inline status lines.** Action feedback ("Categorized
-  MERCHANT", "Export is not available yet.", errors) shows as a gpui-base
-  toast overlaying the window's bottom-right corner. No page ever renders
-  a status line in its content column: the page area starts at the top of
-  the content padding whether or not a toast shows.
-- **Timers.** Success and info toasts dismiss themselves after ~4 s;
-  errors stay until the user closes them. A burst of messages stacks
-  (newest in front), it does not replace.
-- **Card.** One line of `text_sm` message on the `popover` surface with a
-  `border` and `radius` (the panel rule); error text is `danger`,
-  otherwise `foreground`. Click anywhere on the card to dismiss it.
+- `DataTable` (dashboard transactions, import history) and `DataList` both
+  use row dividers and `list_hover`; no stripes.
+- `DataTable` and `DataList` take `flex_1` (or a fixed height inside a
+  scrolling page) and scroll inside themselves. Flexible columns absorb
+  the window width so a table never overhangs the page.
+- Row actions in the transactions table are a right-click context menu
+  (Change category, Hide, Unhide, **Show rule**), no buttons in rows.
+  Show rule opens the Rules page on the deciding rule; with none it is
+  disabled with the reason ("Set by hand", "Card payment (built in)", "No
+  rule matches"). Lists that manage their rows use `row_action_button`s.
 
-## States
+### Destructive actions
+
+Two-click confirm inside the control: the first click arms it and it reads
+"Click again to …" in `danger`; the second acts. Escape, leaving the page
+or changing the selection disarms it. No modals, no native alerts.
+
+### Feedback
+
+- Every click shows its effect, or a loading/disabled state on the
+  control, within one frame (`plan.md` → *Responsiveness*).
+- **Toasts, never inline status lines.** Messages ("Categorized
+  MERCHANT", "Export is not available yet.", errors) are gpui-base toasts
+  over the window's bottom-right corner. No page renders a status line in
+  its content column.
+- Success and info toasts dismiss after ~4 s; errors stay until closed. A
+  burst stacks (newest in front), never replaces.
+- Card: one line of `text_sm` on `popover`, `border`, `radius`; error text
+  `danger`, else `foreground`. Clicking the card dismisses it.
+- Errors say what happened and what to do next ("Pick an account before
+  importing").
+
+### States
 
 | Region | Empty | Loading | Error |
 |---|---|---|---|
-| Whole window (no data) | Centered: "Drop an Amex or Simplii CSV export here, or press ⌘O" plus "Restore from export…" link (5.2) | none | none |
+| Whole window (no data) | Centered: "Drop an Amex or Simplii CSV export here, or press ⌘O" plus a Restore link (5.2) | none | none |
 | Chart / summary | "No spending in this range" (muted, centered) | previous content, dimmed | `danger` line inside the panel |
-| Table | "No transactions match these filters" + "Clear filters" link | previous rows | `danger` line above the table |
+| Table / list | "No transactions match these filters" + "Clear filters" link (or the list's own message), centered in its panel | previous rows | `danger` line above it |
 
-## Decisions (confirmed with the user, 2026-11-07)
+### Keyboard
 
-Decided from mockups. Don't reopen these without asking.
+- Escape cancels the innermost transient UI of the focused page: editor,
+  inline form, armed confirm, then selection (chip, then drill-down on the
+  dashboard). Bind it through GPUI key contexts and actions on the page,
+  never a global key handler.
+- Enter submits the focused form.
+- ⌘O import, ⌘E export.
 
-| # | Question | Decision |
-|---|---|---|
-| D1 | Category chart | gpui-kit `BarChart` beside a clickable legend, as task 3.5 says. Bars aren't drawn into the legend rows. |
-| D2 | Category label in the table | `Category › Subcategory`, with the category muted. |
-| D3 | Color of money going out | Normal `foreground`. Only money in is colored (green). |
-| D4 | Undo last import | On the Imports page (newest row) and in File → Undo last import. |
-| D5 | Category colors | Each category has its own stable color (see *Category colors*). |
-| D6 | Hints | Hover tooltips instead of caption text in panel titles. |
-| D7 | Panels | Bordered, never filled; compact two-line import preview. |
-| D8 | Navigation | Sidebar of pages (Dashboard, To categorize, Categories, Transfers, Imports). No side sheets, no banners; counts in the sidebar. |
-| D9 | Import button | Not in the sidebar. Import CSV… is the Imports page's header action, plus ⌘O and drop anywhere. |
+### Filtering and hints
 
-## Testing UI conventions
+- **Click to filter.** Legend items, summary cells and summary row
+  headers set the shared filter; the selected item is `list_active`.
+  Clicking it again, or Escape, clears it.
+- **Hints go in hover tooltips, never captions** (`.tooltip(...)`, needs an
+  `id`). Summary cell: `Shopping · Oct 2026 · 14 transactions` over "Click
+  to show them in the table". Chart bar and legend item: the full name over
+  `amount · share` (`Restaurants · $642.15 · 31.4% of Food`).
+- **Filter chips:** each active narrowing filter (category, month,
+  search, Uncategorized only) is a chip with a ×, above the table. Filters
+  the filter row already shows (dates, accounts, transfers) aren't chips.
+  Once 3.46 lands, chips sit under the pinned filter row next to Clear all.
 
-UI tests (`ui_tests.rs` style) check behavior, not pixels: which rows show,
-which filter is active, what text a state shows. When a convention here
-changes, update this file in the same commit.
+### Scrolling and overflow
+
+- Every scrollable region shows a scrollbar while its content overflows,
+  visible without scrolling first, and none when it fits (3.26).
+- **Text never pushes its container wider.** Any flex child holding text
+  gets `min_w_0` plus `overflow_hidden`/`text_ellipsis`; ellipsized text
+  carries a tooltip with the full text. Amount and percent columns have
+  fixed widths; selects are wide enough for their longest label.
+
+### Formats
+
+- **Money:** `$1,234.56`. Tables are signed: `-$86.42` out, `$2,105.00` in
+  (`success`). Chart, tooltips and summary show positive spend; Net is the
+  one signed summary row.
+- **Shares:** one decimal, `22.4%`. Over chart bars: whole percent
+  (`18%`), one decimal only below 1 % (`0.4%`).
+- **Dates:** `2026-11-06` in tables; summary months `Sep 2026`; ranges
+  `Sep 1 – Nov 30, 2026`.
+- **Accounts:** "Institution · Account" everywhere (`Amex · Cobalt`).
+- **Categories:** `Food › Groceries`, the category muted.
+  Uncategorized is muted text; in the legend and summary it is always the
+  last category row, whatever its amount.
+
+### Copy
+
+Say **category** and **subcategory**, never parent, child or children, in
+every user-visible string (labels, placeholders, buttons, tooltips, errors,
+including `financi-db` errors the UI shows). Code identifiers and DB
+columns keep their names (`parent_id`).
+
+## 5. Pages
+
+Every page has `p_4` padding and `gap_3` between regions. Opening a file
+(drop anywhere, ⌘O, Import CSV, `FINANCI_DEV_OPEN`) switches to Imports
+with the preview open. The selected page isn't persisted; launch opens
+Dashboard.
+
+**Sidebar.** gpui-kit `Sidebar`, ~210 px, `sidebar` background, `border`
+right, not collapsible. Header: the app name only; no buttons. Items
+(`SidebarMenuItem`, Lucide icon, `.active` on the current page): Dashboard;
+*Organize*: To categorize, Categories, Rules, Transfers; *Data*: Imports.
+Items with work waiting (uncategorized transactions, open transfer reviews)
+show a count pill in their `suffix`, hidden at 0; there are no banners.
+Footer, `text_xs` muted, ellipsized with full-text tooltips: transaction
+count, database path (tooltip "Database: …"), build version (`git
+describe`).
+
+**Dashboard.** No `PageHeader`; the first row is a `FilterRow`: Date range
+select, From/To pickers when Custom (shrinking first, to a floor), Accounts
+popover ("All accounts" / "N of M accounts"), Search, Options (Include
+transfers, Uncategorized only, Show hidden), then the transaction count.
+It must fit 1200 × 720 with Custom open. Below: the chart `Panel`
+(*Spending by category*: `BarChart`, share labels over bars, band labels
+shortened and thinned to fit the live width, full names in legend and
+tooltips) beside the *Monthly summary* `Panel` (~45/55, both 340 px; the
+summary's name column and Total are pinned while only month columns
+scroll sideways on one shared handle, landing on the latest month). Then
+filter chips and the transactions `DataTable`, where every column sorts
+(text A→Z first, Date and Amount newest/biggest first; the sort survives
+filter changes). The legend moves under the chart (3.36); chart, summary
+and table stack in a scrolling page under a pinned filter row (3.45);
+every filter applies to all three views, with Clear all (3.46); filter
+changes apply at once (3.56).
+
+**To categorize.** `PageHeader` ("N transactions · M merchants") and a
+`Panel` holding a `DataList` of the Uncategorized queue: merchant (`Flex`),
+transactions and total (right), dates (muted), a category picker and a
+Categorize button that stays outline and is disabled until a category is
+picked. Choosing a category adds a rule. Panel and list look per 3.34;
+pickers become searchable (3.59).
+
+**Categories.** `PageHeader` ("N categories · M subcategories", **New
+category** opening an `InlineForm`: name, "Category type", Cancel, Add
+category). Two `Panel`s side by side: the category tree (~300 px; rows
+with `Swatch`, name — categories semibold, subcategories indented — the
+`system` `TypeTag` and a muted count; `list_active` / `list_hover`) and the
+selected category's detail (`flex_1`; with none selected it prompts
+"Select a category to see its rules and settings."). The detail's title
+row holds the name and `small` actions (Rename; Add subcategory, Move,
+Delete each opening an `InlineForm` under it, 3.51); sections are split by
+`border_t_1` dividers. Its Rules section is a `DataList` of the category's
+rules (a category's include its subcategories'; "No rules for this
+category yet" when empty) with an add-rule row (Pattern, regex switch in a
+`control_slot`, Add rule) showing a live "matches N transactions" count.
+Edit swaps a row for a two-line editor (Pattern labelled at full width,
+then the switch and Cancel / Save; 3.48), one at a time; Delete is a
+two-click confirm. Selecting a category or leaving the page closes the
+editor and disarms. Planned: no category picker in rule rows (3.53), a
+Uses column (3.49), a focused rule's transactions under the list (3.52).
+
+**Rules.** `PageHeader` ("N rules · M unused", **New rule** opening the
+add-rule row in place). `FilterRow`: Search ("Search rules or
+categories", focused on open; matches pattern and category names), a Type
+select, Options (Test a description, Unused only). A `Panel` with a
+grouped `DataList` (group per category › subcategory, collapsible, with
+summed Uses and Total): checkbox, Pattern (mono), Type (`TypeTag`), Uses,
+Total, actions (Edit, Delete); sortable by Pattern, Uses, Total. Test a
+description turns Search into a pasted bank description and lists only the
+matching rules in matcher order, the winner first and marked "wins".
+Checked rows replace the heading row with a Move bar ("N selected", a
+subcategory picker, Move, Clear). Show rule lands here: filters cleared,
+Search set to the pattern, the row scrolled into view in `list_active`
+until the user searches or leaves. The look, Total and the Move bar
+arrive with 3.58.
+
+**Transfers.** Open transfer reviews, each row with its candidates and
+"Not a transfer".
+
+**Imports.** `PageHeader` actions: **Import CSV** (primary), **Undo**
+(two-click, newest import, disabled with no history), **Export**,
+**Restore** (live in M5; until then a toast says so). The import preview
+(while a file is open) on top, then the history `DataTable` (time, file,
+account, rows added, dates). The newest history row carries an in-row Undo
+sharing the header Undo's confirm state, tooltip "Undo this import"; it
+gains the label "Undo" (3.37).
+
+**Import preview.** A two-line `Panel`. Line one: file name, the
+institution, then Cancel and the primary import action ("Import 32
+transactions") at the right end. Line two, muted with the key number in
+`foreground`: `Into [account ▾] | 32 new of 84 rows · 52 already
+imported, skipped · Oct 1 – Dec 4, 2026`. No stat blocks. The institution
+becomes a `TypeTag` (3.61).
+
+## 6. Decisions
+
+Confirmed with the user. Don't reopen without asking.
+
+| # | Date | Question | Decision |
+|---|---|---|---|
+| D1 | 2026-11-07 | Category chart | gpui-kit `BarChart` with a clickable legend, beside the summary; bars aren't drawn into the legend. 3.36 moves the legend under the chart and 3.45 puts chart and summary on their own rows. |
+| D2 | 2026-11-07 | Category label in tables | `Category › Subcategory`, the category muted. |
+| D3 | 2026-11-07 | Money going out | Plain `foreground`; only money in is colored. |
+| D4 | 2026-11-07 | Undo last import | Imports page (header and newest row) and File → Undo last import. |
+| D5 | 2026-11-07 | Category colors | One stable color per category (*Category colors*). |
+| D6 | 2026-11-07 | Hints | Hover tooltips, never captions. |
+| D7 | 2026-11-07 | Panels | Bordered, never filled; compact two-line import preview. |
+| D8 | 2026-11-07 | Navigation | Sidebar of pages: Dashboard, To categorize, Categories, Rules, Transfers, Imports. No side sheets, modals or banners; counts in the sidebar. |
+| D9 | 2026-11-07 | Import button | Not in the sidebar: Imports header, ⌘O, drop anywhere. |
+| D10 | 2026-11-11 | Labels | Filter rows and inline forms name controls by placeholder or tooltip; visible labels only where a filled value hides the placeholder. |
+| D11 | 2026-11-11 | "…" on buttons | Never; an icon left of the label instead. Menus keep "…" for dialogs. |
+| D12 | 2026-11-11 | Primary buttons | At most one visible per page or panel; row-level buttons are never primary. |
+| D13 | 2026-11-11 | Table rows | Dividers and hover, no stripes. |
+| D14 | 2026-11-11 | Account names | "Institution · Account" everywhere. |
+
+## 7. Testing UI conventions
+
+- UI tests (`ui_tests.rs` style) check behavior, not pixels: which rows
+  show, which filter is active, what text a state shows, that a region
+  paints inside its page and fits 1200 × 720.
+- Click through rendered controls with a click helper (a simulated mouse
+  click at the control's painted bounds) where possible, rather than
+  calling the handler directly.
+- To assert that nothing happened, first wait until the DB worker has no
+  pending requests (`wait_until` on its idle state), then assert.
+- When a convention here changes, update this file in the same commit.
