@@ -126,6 +126,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0002_categorize.sql"),
     include_str!("../migrations/0003_transfers.sql"),
     include_str!("../migrations/0004_replacements.sql"),
+    include_str!("../migrations/0005_perf_indexes.sql"),
 ];
 
 pub const SCHEMA_VERSION: u32 = MIGRATIONS.len() as u32;
@@ -254,6 +255,39 @@ mod tests {
         let mut conn = open_in_memory().unwrap();
         migrate(&mut conn).unwrap();
         migrate(&mut conn).unwrap();
+    }
+
+    #[test]
+    fn perf_indexes_exist() {
+        // 3.73: undo resolves `transfer_pair_id` links per deleted row,
+        // category reassign/counts/filters look rows up by `category_id`,
+        // and the transactions table's default order is
+        // (posted_date, import_id, source_line). All three must exist.
+        let conn = open_in_memory().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT name, sql FROM sqlite_master
+                  WHERE type = 'index' AND tbl_name = 'transactions'
+                    AND name IN ('tx_transfer_pair', 'tx_category', 'tx_date_import_line')",
+            )
+            .unwrap();
+        let mut indexes: Vec<(String, String)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        indexes.sort();
+        assert_eq!(indexes.len(), 3, "all three indexes exist: {indexes:?}");
+        assert_eq!(indexes[0].0, "tx_category");
+        assert!(indexes[0].1.contains("(category_id)"));
+        assert_eq!(indexes[1].0, "tx_date_import_line");
+        assert!(
+            indexes[1]
+                .1
+                .contains("(posted_date, import_id, source_line)")
+        );
+        assert_eq!(indexes[2].0, "tx_transfer_pair");
+        assert!(indexes[2].1.contains("WHERE transfer_pair_id IS NOT NULL"));
     }
 
     #[test]

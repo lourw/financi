@@ -17,7 +17,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use financi_core::{Encoding, LineEnding};
-use rusqlite::Connection;
+use rusqlite::{Connection, ToSql, params_from_iter};
 
 use crate::{Account, DbError, Result, get_account, list_accounts};
 
@@ -82,8 +82,14 @@ pub fn rewrite_years(conn: &Connection, root: &Path, account_id: i64, years: &[i
     let dir = account_dir(root, &account);
     ensure_account_json(&dir, &account)?;
 
-    let rows = account_rows(conn, account_id)?;
     let wanted: BTreeSet<i32> = years.iter().copied().collect();
+    // Load only the years being written (3.73): an import or undo touches
+    // one or two years, not the account's whole history.
+    let rows = if wanted.is_empty() {
+        Vec::new()
+    } else {
+        account_rows(conn, account_id, Some(&wanted))?
+    };
     let mut by_year: BTreeMap<i32, Vec<(&Row, &ImportMeta)>> = BTreeMap::new();
     for (row, meta) in &rows {
         if let Some(year) = row.year()
@@ -115,7 +121,7 @@ pub fn self_check(conn: &Connection, root: &Path) -> Result<SelfCheckReport> {
             report.account_json_updated += 1;
         }
 
-        let rows = account_rows(conn, account.id)?;
+        let rows = account_rows(conn, account.id, None)?;
         let mut by_year: BTreeMap<i32, Vec<(&Row, &ImportMeta)>> = BTreeMap::new();
         for (row, meta) in &rows {
             if let Some(year) = row.year() {
@@ -175,16 +181,37 @@ fn account_dir(root: &Path, account: &Account) -> PathBuf {
 
 /// All transactions for an account, hidden rows included, with the metadata
 /// of the import they came from. Row aliases are not rows of their own.
-fn account_rows(conn: &Connection, account_id: i64) -> Result<Vec<(Row, ImportMeta)>> {
-    let mut stmt = conn.prepare(
+/// `years`, when given, loads only rows whose `posted_date` starts with one
+/// of those years — `rewrite_years` rewrites only the years it touched, so
+/// it never needs the other years' raw bytes (3.73). A row whose date has
+/// no readable year can never match a wanted year, so it is not loaded
+/// either; the caller's own `Row::year` check stays authoritative.
+fn account_rows(
+    conn: &Connection,
+    account_id: i64,
+    years: Option<&BTreeSet<i32>>,
+) -> Result<Vec<(Row, ImportMeta)>> {
+    let mut sql = String::from(
         "SELECT t.import_id, t.source_line, t.raw_bytes, t.posted_date,
                 i.id, i.parser_id, i.header_raw, i.encoding, i.has_bom,
                 i.line_ending, i.trailing_newline
            FROM transactions t JOIN imports i ON i.id = t.import_id
-          WHERE t.account_id = ?1
-          ORDER BY t.import_id, t.source_line",
-    )?;
-    let rows = stmt.query_map([account_id], |r| {
+          WHERE t.account_id = ?1",
+    );
+    let mut args: Vec<Box<dyn ToSql>> = vec![Box::new(account_id)];
+    if let Some(years) = years.filter(|ys| !ys.is_empty()) {
+        let marks = (0..years.len())
+            .map(|i| format!("?{}", args.len() + 1 + i))
+            .collect::<Vec<_>>()
+            .join(", ");
+        sql.push_str(&format!(
+            " AND CAST(substr(t.posted_date, 1, 4) AS INTEGER) IN ({marks})"
+        ));
+        args.extend(years.iter().map(|y| Box::new(*y) as Box<dyn ToSql>));
+    }
+    sql.push_str(" ORDER BY t.import_id, t.source_line");
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params_from_iter(args), |r| {
         let encoding: String = r.get(7)?;
         let line_ending: String = r.get(9)?;
         Ok((

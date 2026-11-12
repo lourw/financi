@@ -64,28 +64,37 @@ pub struct PairingSummary {
 }
 
 /// One transaction eligible to be paired: unpaired, not excluded, with a
-/// parseable posted date.
+/// parseable posted date. `description_lower` is `description_raw`
+/// lowercased once at load, so matching never re-lowercases per pair (3.73).
 struct Candidate {
     id: i64,
     account_id: i64,
     kind: String,
     posted: NaiveDate,
     amount_cents: i64,
-    description: String,
+    description_lower: String,
     category_id: Option<i64>,
     category_locked: bool,
 }
 
-/// Load every pairable transaction with its account kind.
-fn load_candidates(conn: &Connection) -> Result<Vec<Candidate>> {
+/// Load the transactions that can still pair, with their account kind:
+/// unpaired, not excluded, and either an unlocked chequing/savings row
+/// (card-payment debits, own-account transfers) or a credit-card row
+/// already categorized `Card Payment` (the credit side, whose category
+/// condition replaces the lock check). Every other row can match nothing,
+/// so it never loads (3.73: at 100 000 rows loading — and comparing —
+/// everything dominated every import, unpair and review).
+fn load_candidates(conn: &Connection, card_payment: i64) -> Result<Vec<Candidate>> {
     let mut stmt = conn.prepare(
         "SELECT t.id, t.account_id, a.kind, t.posted_date, t.amount_cents,
                 t.description_raw, t.category_id, t.category_locked
            FROM transactions t
            JOIN accounts a ON a.id = t.account_id
-          WHERE t.transfer_pair_id IS NULL AND t.transfer_excluded = 0",
+          WHERE t.transfer_pair_id IS NULL AND t.transfer_excluded = 0
+            AND ((a.kind IN ('chequing', 'savings') AND t.category_locked = 0)
+                 OR (a.kind = 'credit_card' AND t.category_id = ?1))",
     )?;
-    let rows = stmt.query_map([], |r| {
+    let rows = stmt.query_map(params![card_payment], |r| {
         Ok((
             r.get::<_, i64>(0)?,
             r.get::<_, i64>(1)?,
@@ -112,7 +121,7 @@ fn load_candidates(conn: &Connection) -> Result<Vec<Candidate>> {
             kind,
             posted,
             amount_cents,
-            description,
+            description_lower: description.to_lowercase(),
             category_id,
             category_locked,
         });
@@ -128,19 +137,42 @@ fn within(a: NaiveDate, b: NaiveDate, window: i64) -> bool {
 /// The symmetric "could pair with" relation for one pairing kind, as an
 /// adjacency list. Only rows `keep` accepts can be endpoints; each pair is
 /// checked once and inserted in both directions, ids ascending.
+///
+/// Cheap on large tables (3.73): a pair needs equal absolute amounts, so
+/// rows are bucketed by `amount_cents.abs()` and compared only within their
+/// bucket; each bucket is then walked in (posted date, id) order and the
+/// inner loop stops at the first row further than `window_days` ahead.
+/// `matches` still decides every pair it is reached for — the bucketing and
+/// the window only skip pairs it would reject anyway — so the relation is
+/// the same one the naive all-pairs scan produced.
 fn adjacency(
     rows: &[Candidate],
+    window_days: i64,
     keep: &dyn Fn(&Candidate) -> bool,
     matches: &dyn Fn(&Candidate, &Candidate) -> bool,
 ) -> HashMap<i64, Vec<i64>> {
     let mut adj: HashMap<i64, Vec<i64>> = HashMap::new();
-    for a in rows.iter().filter(|c| keep(c)) {
-        for b in rows.iter().filter(|c| keep(c) && c.id > a.id) {
-            if matches(a, b) {
-                adj.entry(a.id).or_default().push(b.id);
-                adj.entry(b.id).or_default().push(a.id);
+    let mut buckets: HashMap<i64, Vec<&Candidate>> = HashMap::new();
+    for row in rows.iter().filter(|c| keep(c)) {
+        buckets.entry(row.amount_cents.abs()).or_default().push(row);
+    }
+    for bucket in buckets.values_mut() {
+        bucket.sort_unstable_by_key(|c| (c.posted, c.id));
+        for (i, a) in bucket.iter().enumerate() {
+            for b in bucket[i + 1..].iter() {
+                if (b.posted - a.posted).num_days() > window_days {
+                    break;
+                }
+                let (lo, hi) = if a.id < b.id { (a, b) } else { (b, a) };
+                if matches(lo, hi) {
+                    adj.entry(lo.id).or_default().push(hi.id);
+                    adj.entry(hi.id).or_default().push(lo.id);
+                }
             }
         }
+    }
+    for list in adj.values_mut() {
+        list.sort_unstable();
     }
     adj
 }
@@ -250,19 +282,18 @@ fn record_reviews(
 /// working around one changes the candidates other rows see.
 pub fn run_transfer_pairing(conn: &Connection) -> Result<PairingSummary> {
     conn.execute("DELETE FROM transfer_reviews", [])?;
-    let candidates = load_candidates(conn)?;
+    let card_payment = card_payment_category(conn)?;
+    let between_accounts = between_accounts_category(conn)?;
+    let candidates = load_candidates(conn, card_payment)?;
     let rows: HashMap<i64, &Candidate> = candidates.iter().map(|c| (c.id, c)).collect();
     let mut paired = std::collections::BTreeSet::new();
     let mut summary = PairingSummary::default();
-
-    let card_payment = card_payment_category(conn)?;
-    let between_accounts = between_accounts_category(conn)?;
 
     // Card payments: chequing −X against a credit-card +X already
     // categorized Card Payment. The credit side's category condition
     // replaces the lock check (import locks it); the debit side must be
     // unlocked for pairing to rewrite its category.
-    let card_adj = adjacency(&candidates, &|_| true, &|a, b| {
+    let card_adj = adjacency(&candidates, CARD_PAYMENT_WINDOW_DAYS, &|_| true, &|a, b| {
         let (debit, credit) = if a.amount_cents < b.amount_cents {
             (a, b)
         } else {
@@ -283,6 +314,7 @@ pub fn run_transfer_pairing(conn: &Connection) -> Result<PairingSummary> {
     // ∓X, at least one description containing TRANSFER (case-insensitive).
     let own_adj = adjacency(
         &candidates,
+        OWN_ACCOUNT_WINDOW_DAYS,
         &|c| matches!(c.kind.as_str(), "chequing" | "savings") && !c.category_locked,
         &|a, b| {
             let (debit, credit) = if a.amount_cents < b.amount_cents {
@@ -294,8 +326,8 @@ pub fn run_transfer_pairing(conn: &Connection) -> Result<PairingSummary> {
                 && debit.amount_cents < 0
                 && credit.amount_cents > 0
                 && debit.amount_cents == -credit.amount_cents
-                && (debit.description.to_lowercase().contains("transfer")
-                    || credit.description.to_lowercase().contains("transfer"))
+                && (debit.description_lower.contains("transfer")
+                    || credit.description_lower.contains("transfer"))
                 && within(debit.posted, credit.posted, OWN_ACCOUNT_WINDOW_DAYS)
         },
     );
@@ -772,6 +804,92 @@ mod tests {
             )
             .unwrap();
         assert_eq!(n, 0, "an unrelated equal amount is not paired");
+    }
+
+    #[test]
+    fn pairing_is_fast_among_tens_of_thousands_of_rows() {
+        // 3.73: the engine used to load nearly every unpaired row and test
+        // every pair — ~200 million predicate checks at 20 000 rows, on
+        // every import, unpair and review. It now loads only rows that can
+        // pair, buckets them by absolute amount and compares within the
+        // date window, so the pair below is found almost instantly. The
+        // bound is deliberately generous (debug CI builds vary; the naive
+        // all-pairs scan over this data took minutes): it fails on the old
+        // behaviour while leaving the real runtime — milliseconds — room.
+        let mut conn = open_in_memory().unwrap();
+        let (cheq, card) = (chequing(&conn, "Chequing"), credit(&conn, "Cobalt"));
+        conn.execute(
+            "INSERT INTO imports (account_id, parser_id, file_name, imported_at, header_raw,
+                                  encoding, has_bom, line_ending, trailing_newline, row_count)
+             VALUES (?1, 'amex', 'noise.csv', '2026-11-01', X'00', 'utf-8', 0, 'lf', 0, 21000)",
+            [cheq],
+        )
+        .unwrap();
+        let import = conn.last_insert_rowid();
+        let start = chrono::NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+        {
+            let tx = conn.transaction().unwrap();
+            {
+                let mut stmt = tx
+                    .prepare(
+                        "INSERT INTO transactions (account_id, import_id, source_line, raw_bytes,
+                                                   row_hash, posted_date, amount_cents, description_raw)
+                         VALUES (?1, ?2, ?3, X'00', ?4, ?5, ?6, 'GROCERY STORE')",
+                    )
+                    .unwrap();
+                for i in 0..20_000i64 {
+                    // Distinct amounts: each row sits alone in its bucket.
+                    let date = start + chrono::Duration::days(i % 365);
+                    stmt.execute(params![
+                        cheq,
+                        import,
+                        i,
+                        uuid::Uuid::new_v4().to_string(),
+                        date.format("%Y-%m-%d").to_string(),
+                        -(1_000_000 + i),
+                    ])
+                    .unwrap();
+                }
+                for i in 0..1_000i64 {
+                    // One shared amount: a single big bucket spread over the
+                    // year, so the windowed scan compares few pairs inside it.
+                    let date = start + chrono::Duration::days(i % 365);
+                    stmt.execute(params![
+                        cheq,
+                        import,
+                        20_000 + i,
+                        uuid::Uuid::new_v4().to_string(),
+                        date.format("%Y-%m-%d").to_string(),
+                        -250_000i64,
+                    ])
+                    .unwrap();
+                }
+            }
+            tx.commit().unwrap();
+        }
+        // The one real pair: chequing −X and a card +X already `Card Payment`.
+        let debit = row(
+            &conn,
+            cheq,
+            "2026-10-26",
+            -50_000,
+            "CREDIT CARD PAYMENT",
+            None,
+        );
+        let credit_row = card_payment_row(&conn, card, "2026-10-25", 50_000);
+
+        let began = std::time::Instant::now();
+        let out = run_transfer_pairing(&conn).unwrap();
+        let elapsed = began.elapsed();
+        assert_eq!(out.paired, 1, "the one real pair is still found");
+        assert_eq!(out.reviews, 0, "the noise rows ask for nothing");
+        assert_eq!(state(&conn, debit).0, Some(credit_row));
+        assert_eq!(state(&conn, credit_row).0, Some(debit));
+        assert!(
+            elapsed < std::time::Duration::from_secs(5),
+            "pairing 21 000 rows took {elapsed:?} — well over even the \
+             generous bound, the quadratic scan is back",
+        );
     }
 
     #[test]

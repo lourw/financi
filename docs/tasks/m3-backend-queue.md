@@ -6,7 +6,7 @@ Runs beside the UI queue, in the order listed. Backend only: don't read the UI d
 
 Runs beside the UI queue. 5.1 and 5.2 (in M5) follow 3.90.
 
-- [ ] **3.73 Imports and undo stay fast as data grows.** (Code review,
+- [x] **3.73 Imports and undo stay fast as data grows.** (Code review,
   2026-11-11; cheap fixes now, timed budgets in 3.55.)
   - **Compile rules once per import.** `categorize_new_rows`
     (`import.rs`) and `overrides.rs` call `pick_category` per row, which
