@@ -26,7 +26,7 @@ fn check(env: &str, expected_parser: &str, kind: AccountKind) {
         // Line numbers and field names only; the value may be personal.
         match f {
             financi_core::ParseError::BadValue { line, field, .. } => {
-                eprintln!("  record {line}: bad {field}")
+                eprintln!("  line {line}: bad {field}")
             }
             other => eprintln!("  {other}"),
         }

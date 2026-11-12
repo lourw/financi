@@ -40,7 +40,7 @@ impl StatementParser for Amex {
     }
 
     fn map(&self, record: &RawRecord) -> Result<RawTransaction, ParseError> {
-        let line = record.source_line;
+        let line = record.file_line;
         let f = &record.fields;
         if f.len() != HEADER.len() {
             return Err(ParseError::FieldCount {
@@ -218,13 +218,14 @@ mod tests {
             matches!(
                 err,
                 ParseError::BadValue {
-                    line: 0,
+                    line: 2,
                     field: "Date",
                     ..
                 }
             ),
             "{err}"
         );
+        assert!(err.to_string().starts_with("line 2: bad Date"), "{err}");
         let err = Amex
             .map(&record("05 Nov 2026,06 Nov 2026,X,abc"))
             .unwrap_err();

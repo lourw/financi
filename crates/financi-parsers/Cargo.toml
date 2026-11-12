@@ -7,3 +7,6 @@ publish = false
 
 [dependencies]
 financi-core.workspace = true
+
+[dev-dependencies]
+sha2.workspace = true
