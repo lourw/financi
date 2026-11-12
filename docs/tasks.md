@@ -899,7 +899,7 @@ the order above (3.28 → 3.29 → 3.26).
     picker" with "Buttons never end in "…"; actions carry a Lucide icon
     left of the label (menus keep "…")", and update the *Categories* row.
 
-- [ ] **3.44 Every transactions-table column sorts.** On the dashboard
+- [x] **3.44 Every transactions-table column sorts.** On the dashboard
   only Date and Amount sort (3.4); Account, Description and Category
   don't (user request, 2026-11-11).
   - **DB** (`financi-db/src/views.rs`): add `Account`, `Description` and
