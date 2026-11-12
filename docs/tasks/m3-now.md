@@ -4,7 +4,7 @@ Features the paused run left half done. Finish each in its existing worktree bef
 
 ## Now: finish the in-flight features (3.34, 3.53 + 3.42)
 
-- [ ] **3.34 To categorize looks cleaner.** The queue is loose rows on the
+- [x] **3.34 To categorize looks cleaner.** The queue is loose rows on the
   page background: no panel, no row separators, a semibold merchant, and a
   bright primary Categorize button on every row, so the page is a column
   of blue buttons. Keep the columns, widths and behavior of 3.22; change
@@ -30,10 +30,6 @@ Features the paused run left half done. Finish each in its existing worktree bef
     picking; the summary
     text shows both counts; 3.22's heading-alignment and fit tests pass.
     Update the *To categorize* row of `ui-conventions.md`.
-  - **In progress:** worktree `../worktrees/financi/3-34-to-categorize`
-    (branch `feat/3-34-to-categorize`) has ~170 uncommitted lines in
-    `ui.rs` from the paused run (panel, heading row, Categorize button
-    mirroring its picker). Continue from them; don't start over.
 
 - [ ] **3.53 No category picker where the page already says it.** The
   Categories page's add-rule row and rule editor each carry a Category

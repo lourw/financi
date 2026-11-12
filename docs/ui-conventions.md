@@ -310,12 +310,13 @@ and table stack in a scrolling page under a pinned filter row (3.45);
 every filter applies to all three views, with Clear all (3.46); filter
 changes apply at once (3.56).
 
-**To categorize.** `PageHeader` ("N transactions · M merchants") and a
-`Panel` holding a `DataList` of the Uncategorized queue: merchant (`Flex`),
-transactions and total (right), dates (muted), a category picker and a
-Categorize button that stays outline and is disabled until a category is
-picked. Choosing a category adds a rule. Panel and list look per 3.34;
-pickers become searchable (3.59).
+**To categorize.** `PageHeader` ("N transactions · M merchants") and one
+bordered `Panel` filling the rest of the page, holding the Uncategorized
+queue as a `DataList` (32 px heading row, 40 px rows with dividers and
+`list_hover`): merchant (`Flex`, normal weight), transactions and total
+(right), dates (`text_sm` muted), a category picker and a `small` outline
+Categorize button, disabled until that row's picker has a category.
+Choosing a category adds a rule. Pickers become searchable (3.59).
 
 **Categories.** `PageHeader` ("N categories · M subcategories", **New
 category** opening an `InlineForm`: name, "Category type", Cancel, Add
