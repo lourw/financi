@@ -779,8 +779,8 @@ out.
     rendered text with a long-named tree, a subcategory selected, and each
     validation error triggered); the renamed buttons still work.
 
-**Bugs reported by the user on 2026-11-11** (3.34–3.49, plus a fix folded
-into 3.23). Order: **3.40 → 3.23 → 3.41/3.42/3.48/3.49 → 3.43 → 3.44 → 3.47 → 3.35 → 3.36 → 3.45 → 3.46 → 3.37 → 3.38/3.39 → 3.34**, then the rest of
+**Bugs reported by the user on 2026-11-11** (3.34–3.50, plus a fix folded
+into 3.23). Order: **3.40 → 3.23 → 3.41/3.42/3.48/3.49/3.50 → 3.43 → 3.44 → 3.47 → 3.35 → 3.36 → 3.45 → 3.46 → 3.37 → 3.38/3.39 → 3.34**, then the rest of
 the order above (3.28 → 3.29 → 3.26).
 
 - 3.23 also fixes: **the rule list overflows the page.** Today each rule
@@ -916,6 +916,28 @@ the order above (3.28 → 3.29 → 3.26).
     heading paints and cells show child names only; 3.23's heading
     alignment test passes for both. Update the *Categories* row of
     `ui-conventions.md`.
+
+- [ ] **3.50 No Organize heading or repeated labels.** In the category
+  detail panel, the **Organize** section title and the "Move to
+  category" field label just repeat what the picker's placeholder
+  ("Move to category…") already says (user request, 2026-11-11). The
+  parent side has the same problem: the "New subcategory name" label sits
+  over an input whose placeholder is "New subcategory name".
+  - Remove `region_title("Organize")` and both `field_label`s in that
+    section. Each side becomes one `h_flex().items_center().gap_2()` row:
+    - subcategory: `[Move to category… ▾] [Move]`;
+    - parent: `[New subcategory name] [Add subcategory]`.
+    Keep the `border_t_1` dividers above and below, so it still reads as
+    its own section.
+  - This overrides 3.16's visible-label rule for this section only; the
+    placeholder is the label. Give the input and the select an
+    `accessibility_label` with the same text.
+  - Tests: no "Organize" or "Move to category" / "New subcategory name"
+    label paints in the detail panel (the placeholders still do);
+    the control and its button share a vertical centre; move and add-
+    subcategory still work (existing tests). Update the *Categories* row
+    of `ui-conventions.md` (drop **Organize** from the section list) and
+    note the exception in the *Forms* labels rule.
 
 - [ ] **3.43 No buttons end in "…".** The user doesn't want "…" on
   buttons; use an icon instead, or just drop it (user request,
@@ -1232,7 +1254,7 @@ the order above (3.28 → 3.29 → 3.26).
 
 
 **Done when:** on the demo data the dashboard totals match
-`expected.json`, filters compose, tests cover 3.1–3.49.
+`expected.json`, filters compose, tests cover 3.1–3.50.
 
 ---
 
