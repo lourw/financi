@@ -32,13 +32,14 @@ use super::{
     BAR_LABEL_MAX_CHARS, BUTTON_PAD_X, CELL_PAD_X, CHART_CHAR_PX, CHART_LABEL_GAP,
     CHART_LABEL_MAX_CHARS, CHART_LABEL_MIN_CHARS, DashboardBody, ExportData, HISTORY_DATES_W,
     HISTORY_FLEX_MIN_W, HISTORY_ROWS_W, HISTORY_TIME_W, ImportPanel, LEGEND_W, LegendSelection,
-    NAV_ROW_INSET, NEW_ACCOUNT, NEW_CATEGORY, NEW_RULE, PAGE_PAD, Page, PendingRuleAction,
-    PlanState, RestoreBackup, RowMenuItem, RowShowRule, SIDEBAR_W, SUBCATEGORY_PH, Shell,
-    SummaryRowKind, TABLE_BORDER_X, TEXT_SM_CHAR_PX, TX_FIXED_W, UNDO_ICON_W, UNDO_LABEL_MAX,
-    UndoLastImport, band_label_budget, bar_label_plan, bar_label_slots, bar_share_label,
-    chart_tooltip_value, history_flex_widths, history_undo_col_w, row_menu_items, row_show_rule,
-    short_chart_labels, tx_flex_widths,
+    NEW_ACCOUNT, NEW_CATEGORY, NEW_RULE, PAGE_PAD, Page, PendingRuleAction, PlanState,
+    RestoreBackup, RowMenuItem, RowShowRule, SIDEBAR_W, SUBCATEGORY_PH, Shell, SummaryRowKind,
+    TABLE_BORDER_X, TEXT_SM_CHAR_PX, TX_FIXED_W, UNDO_ICON_W, UNDO_LABEL_MAX, UndoLastImport,
+    band_label_budget, bar_label_plan, bar_label_slots, bar_share_label, chart_tooltip_value,
+    history_flex_widths, history_undo_col_w, row_menu_items, row_show_rule, short_chart_labels,
+    tx_flex_widths,
 };
+use crate::ui::sidebar::NAV_ROW_INSET;
 
 fn demo(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
