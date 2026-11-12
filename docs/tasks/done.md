@@ -881,6 +881,35 @@ the UI; tests cover 2.1–2.9.
 
     Update the *Categories* row of `ui-conventions.md`.
 
+- [x] **3.77 A DbWorker that keeps reads fast.** (Architecture, code
+  review 2026-11-11.) Backend only (`financi-db/src/worker.rs`, `lib.rs`);
+  runs in a free slot any time after the Fixes lane. Today it is one FIFO
+  thread with one connection: queued stale jobs still run, and a slow
+  write (an import with pairing, a rule re-run, 5.1's snapshot) blocks
+  every dashboard read behind it.
+  - **Keyed latest-wins jobs:** `call_keyed(key, f)` keeps at most one
+    *pending* job per key; a replaced job resolves `Superseded`, which
+    callers drop quietly. This replaces the generation counter 3.56 used
+    to plan.
+  - **A reader:** a second thread with a read-only connection (WAL allows
+    reads during a write) for list and aggregate queries (`call_read`).
+    Writes, and reads that must see a write just made, stay on the
+    writer. Set `busy_timeout = 5000` on both connections; run `PRAGMA
+    optimize` after migrations.
+  - **Interrupt stale reads:** keep the reader's
+    `rusqlite::InterruptHandle`, so superseding a running keyed read
+    interrupts it.
+  - **Timings in one place:** with `FINANCI_TIMINGS=1` (debug builds),
+    log each job's label, queue wait and run time. Tasks that used to
+    plan their own timing log use this.
+  - **Typed errors:** add `on_db_typed` returning `DbError` for new code,
+    so the UI can tell "rule gone" from "constraint failed"; leave the
+    existing `on_db` signature alone.
+  - Tests: three keyed jobs queued behind a slow one run only the last;
+    a read on the reader completes while a slow write runs; an
+    interrupted read returns `Superseded`; panics still reach the caller
+    as `JobPanicked` (3.70).
+
 ---
 
 ## M4 — Simplii Visa, transfer pairing, near-match review
