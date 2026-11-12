@@ -2,8 +2,9 @@
 //!
 //! - [`open`] opens (or creates) a database, enables WAL and foreign keys, and
 //!   applies pending migrations.
-//! - [`DbWorker`] owns the connection on its own thread, so imports and
-//!   queries never block the GPUI thread.
+//! - [`DbWorker`] owns the connections on worker threads — a writer and, for
+//!   file databases, a read-only reader — so imports and queries never block
+//!   the GPUI thread.
 //! - [`seed`] (feature `dev-seed`) fills a database with synthetic data.
 
 use std::path::{Path, PathBuf};
@@ -11,7 +12,7 @@ use std::path::{Path, PathBuf};
 use rusqlite::Connection;
 
 mod worker;
-pub use worker::{DbWorker, WorkerGone};
+pub use worker::{DbWorker, WorkerGone, on_db_typed};
 
 pub mod accounts;
 pub use accounts::{
@@ -65,6 +66,12 @@ pub enum DbError {
     },
     #[error("database schema version {found} is newer than this build supports ({supported})")]
     TooNew { found: u32, supported: u32 },
+    #[error("the database job panicked; the worker survived")]
+    JobPanicked,
+    #[error("job superseded by a newer one with the same key")]
+    Superseded,
+    #[error(transparent)]
+    WorkerGone(#[from] worker::WorkerGone),
     #[error("unknown institution {0:?}")]
     UnknownInstitution(String),
     #[error("no parser with id {0:?}")]
@@ -142,6 +149,7 @@ pub fn open(path: &Path) -> Result<Connection> {
     let mut conn = Connection::open(path)?;
     configure(&conn)?;
     migrate(&mut conn)?;
+    optimize(&conn)?;
     Ok(conn)
 }
 
@@ -150,14 +158,24 @@ pub fn open_in_memory() -> Result<Connection> {
     let mut conn = Connection::open_in_memory()?;
     configure(&conn)?;
     migrate(&mut conn)?;
+    optimize(&conn)?;
     Ok(conn)
 }
 
 fn configure(conn: &Connection) -> Result<()> {
-    // WAL is a no-op (stays "memory") for in-memory databases.
+    // WAL is a no-op (stays "memory") for in-memory databases. It is what
+    // lets the reader thread query while the writer thread writes (3.77).
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "foreign_keys", true)?;
     conn.pragma_update(None, "synchronous", "NORMAL")?;
+    conn.busy_timeout(worker::BUSY_TIMEOUT)?;
+    Ok(())
+}
+
+/// Refresh the query planner's statistics after migrations (3.77). Cheap
+/// when nothing changed.
+fn optimize(conn: &Connection) -> Result<()> {
+    conn.execute_batch("PRAGMA optimize;")?;
     Ok(())
 }
 
