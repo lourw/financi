@@ -12,7 +12,7 @@
 //! row for the browse table and every count.
 
 use financi_core::rules::CompiledRules;
-use financi_core::{RawTransaction, parse::merchant};
+use financi_core::{AccountKind, RawTransaction, parse::merchant};
 use rusqlite::{Connection, OptionalExtension};
 
 use crate::categories::{card_payment_category, ensure_assignable};
@@ -29,14 +29,18 @@ struct StoredRow {
     description_raw: String,
     merchant: Option<String>,
     parser_id: String,
+    /// `accounts.kind`, raw: `is_card_payment` is per-kind (3.66) and
+    /// [`clear_override`] parses it.
+    kind: String,
 }
 
 fn fetch_row(conn: &Connection, transaction_id: i64) -> Result<StoredRow> {
     conn.query_row(
         "SELECT t.posted_date, t.processed_date, t.amount_cents, t.original_currency,
-                t.original_amount_cents, t.description_raw, t.merchant, i.parser_id
+                t.original_amount_cents, t.description_raw, t.merchant, i.parser_id, a.kind
            FROM transactions t
            JOIN imports i ON i.id = t.import_id
+           JOIN accounts a ON a.id = t.account_id
           WHERE t.id = ?1",
         [transaction_id],
         |r| {
@@ -49,6 +53,7 @@ fn fetch_row(conn: &Connection, transaction_id: i64) -> Result<StoredRow> {
                 description_raw: r.get(5)?,
                 merchant: r.get(6)?,
                 parser_id: r.get(7)?,
+                kind: r.get(8)?,
             })
         },
     )
@@ -79,10 +84,10 @@ pub fn set_category(conn: &Connection, transaction_id: i64, category_id: i64) ->
 /// Card-payment rows are locked at import (2.5) even though nobody
 /// overrode them, so unlocking one must not hand it to the rules: the
 /// stored row is checked again with its import's parser
-/// (`imports.parser_id` → [`financi_parsers::by_id`]) and, when
-/// `is_card_payment` still says yes, the row is restored to
-/// `Transfers > Card Payment` and stays locked — built-in detection beats
-/// user rules permanently.
+/// (`imports.parser_id` → [`financi_parsers::by_id`]) and its account's
+/// kind (3.66) and, when `is_card_payment` still says yes, the row is
+/// restored to `Transfers > Card Payment` and stays locked — built-in
+/// detection beats user rules permanently.
 ///
 /// The row is rebuilt as a [`RawTransaction`] from its stored columns.
 /// Marker checks such as Amex's read only stored, already-mapped fields
@@ -90,6 +95,8 @@ pub fn set_category(conn: &Connection, transaction_id: i64, category_id: i64) ->
 /// without keeping the original `RawRecord` around.
 pub fn clear_override(conn: &Connection, transaction_id: i64) -> Result<()> {
     let row = fetch_row(conn, transaction_id)?;
+    let account_kind =
+        AccountKind::parse(&row.kind).ok_or(DbError::UnknownAccountKind(row.kind.clone()))?;
     let parser = financi_parsers::by_id(&row.parser_id)
         .ok_or(DbError::UnknownParser(row.parser_id.clone()))?;
     let txn = RawTransaction {
@@ -101,7 +108,7 @@ pub fn clear_override(conn: &Connection, transaction_id: i64) -> Result<()> {
         description_raw: row.description_raw.clone(),
         merchant: row.merchant.clone(),
     };
-    if parser.is_card_payment(&txn) {
+    if parser.is_card_payment(&txn, account_kind) {
         let card_payment = card_payment_category(conn)?;
         conn.execute(
             "UPDATE transactions SET category_id = ?1, category_locked = 1 WHERE id = ?2",

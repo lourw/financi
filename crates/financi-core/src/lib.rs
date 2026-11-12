@@ -207,7 +207,11 @@ pub trait StatementParser {
     /// `true` when this row moves the owner's own money instead of spending
     /// it (Amex's `PAYMENT RECEIVED`). Matching rows become
     /// `Transfers > Card Payment` and are locked against rules.
-    fn is_card_payment(&self, _txn: &RawTransaction) -> bool {
+    /// `kind` is the account the row is importing into: a payment marker
+    /// can mean different things per account kind, e.g. Simplii only treats
+    /// `PAYMENT RECEIVED` rows as card payments on the Visa account, never
+    /// on chequing (3.66). Parsers whose rule can't vary by kind ignore it.
+    fn is_card_payment(&self, _txn: &RawTransaction, _kind: AccountKind) -> bool {
         false
     }
 }

@@ -16,7 +16,9 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 
 use chrono::NaiveDate;
 use financi_core::rules::CompiledRules;
-use financi_core::{ParseError, RawFile, RawTransaction, RowHash, StatementParser, parse};
+use financi_core::{
+    AccountKind, ParseError, RawFile, RawTransaction, RowHash, StatementParser, parse,
+};
 use rusqlite::{Connection, params};
 
 use crate::categories::card_payment_category;
@@ -259,7 +261,7 @@ pub fn commit_import(
         .collect();
     let replacing: HashSet<usize> = replacements.iter().map(|m| m.new_row).collect();
 
-    let categories = categorize_new_rows(&tx, parser, &plan.new_rows)?;
+    let categories = categorize_new_rows(&tx, parser, plan.account.kind, &plan.new_rows)?;
     {
         let mut insert = tx.prepare(
             "INSERT INTO transactions
@@ -406,19 +408,22 @@ fn apply_replacement(
 /// The `(category_id, category_locked)` pair for each new row, in order.
 /// The parser's built-in card-payment check runs first and beats user
 /// rules: those rows get `Transfers > Card Payment` and are locked, so
-/// re-running rules on rule changes never moves them. Every other row takes
-/// the winning rule, or stays `NULL` (Uncategorized). The rule set is
-/// compiled once for the whole call, not per row (3.73).
+/// re-running rules on rule changes never moves them. The check sees the
+/// account's kind, since the same marker can mean income on a chequing
+/// account and a transfer on the card (3.66). Every other row takes the
+/// winning rule, or stays `NULL` (Uncategorized). The rule set is compiled
+/// once for the whole call, not per row (3.73).
 fn categorize_new_rows(
     conn: &Connection,
     parser: &dyn StatementParser,
+    kind: AccountKind,
     rows: &[PreparedRow],
 ) -> Result<Vec<(Option<i64>, bool)>, ImportError> {
     let rules = CompiledRules::new(&list_rules(conn)?);
     let mut card_payment: Option<i64> = None;
     let mut out = Vec::with_capacity(rows.len());
     for row in rows {
-        if parser.is_card_payment(&row.txn) {
+        if parser.is_card_payment(&row.txn, kind) {
             let id = match card_payment {
                 Some(id) => id,
                 None => {

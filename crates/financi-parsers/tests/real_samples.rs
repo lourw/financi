@@ -7,9 +7,9 @@
 //!
 //! Prints only counts, never transaction contents.
 
-use financi_core::read_raw_file;
+use financi_core::{AccountKind, read_raw_file};
 
-fn check(env: &str, expected_parser: &str) {
+fn check(env: &str, expected_parser: &str, kind: AccountKind) {
     let Some(path) = std::env::var_os(env) else {
         eprintln!("{env} not set, skipping");
         return;
@@ -31,11 +31,20 @@ fn check(env: &str, expected_parser: &str) {
             other => eprintln!("  {other}"),
         }
     }
+    // How many rows the built-in check treats as card payments on an
+    // account of `kind` (3.66) — a count only, never contents.
+    let card_payments = file
+        .records
+        .iter()
+        .filter_map(|r| parser.map(r).ok())
+        .filter(|t| parser.is_card_payment(t, kind))
+        .count();
     eprintln!(
-        "{env}: {} rows, {} failed, parser {}",
+        "{env}: {} rows, {} failed, parser {}, {} card payments",
         file.records.len(),
         failures.len(),
-        parser.id()
+        parser.id(),
+        card_payments
     );
     assert!(failures.is_empty());
 }
@@ -43,11 +52,15 @@ fn check(env: &str, expected_parser: &str) {
 #[test]
 #[ignore = "needs local real exports"]
 fn real_amex_export_parses() {
-    check("FINANCI_SAMPLE_AMEX", "amex");
+    check("FINANCI_SAMPLE_AMEX", "amex", AccountKind::CreditCard);
 }
 
 #[test]
 #[ignore = "needs local real exports"]
 fn real_simplii_chequing_export_parses() {
-    check("FINANCI_SAMPLE_SIMPLII_CHEQUING", "simplii");
+    check(
+        "FINANCI_SAMPLE_SIMPLII_CHEQUING",
+        "simplii",
+        AccountKind::Chequing,
+    );
 }

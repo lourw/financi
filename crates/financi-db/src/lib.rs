@@ -31,6 +31,9 @@ pub use overrides::{apply_rule_from_merchant, clear_override, set_category, set_
 pub mod queue;
 pub use queue::{UncategorizedGroup, categorize_group, uncategorized_by_merchant};
 
+pub mod repair;
+pub use repair::repair_misclassified_card_payments;
+
 pub mod rules;
 pub use rules::{add_rule, delete_rule, list_rules, update_rule};
 
@@ -77,6 +80,8 @@ pub enum DbError {
     UnknownInstitution(String),
     #[error("no parser with id {0:?}")]
     UnknownParser(String),
+    #[error("stored account kind {0:?} is not known")]
+    UnknownAccountKind(String),
     #[error("no account with id {0}")]
     UnknownAccount(i64),
     #[error("an account named {name:?} already exists at this institution")]
@@ -151,6 +156,9 @@ pub fn open(path: &Path) -> Result<Connection> {
     let mut conn = Connection::open(path)?;
     configure(&conn)?;
     migrate(&mut conn)?;
+    // One-time data repairs recorded in settings; they need the migrated
+    // schema and run before anything else touches the data (3.66).
+    repair::repair_misclassified_card_payments(&mut conn)?;
     optimize(&conn)?;
     Ok(conn)
 }
@@ -371,6 +379,60 @@ mod tests {
             .pragma_query_value(None, "journal_mode", |r| r.get(0))
             .unwrap();
         assert_eq!(mode, "wal");
+        drop(conn);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn open_repairs_misclassified_card_payments() {
+        // 3.66: the first open after the upgrade repairs rows the old
+        // kind-blind Simplii rule locked into Card Payment on chequing.
+        let dir = std::env::temp_dir().join(format!("financi-test-{}", uuid::Uuid::new_v4()));
+        let path = dir.join("financi.sqlite");
+        {
+            let conn = open(&path).unwrap();
+            let account = crate::accounts::create_account(
+                &conn,
+                "simplii",
+                "Chequing",
+                financi_core::AccountKind::Chequing,
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO imports (account_id, parser_id, file_name, imported_at, header_raw,
+                                      encoding, has_bom, line_ending, trailing_newline, row_count)
+                 VALUES (?1, 'simplii', 'chequing.csv', '2026-11-01', X'00', 'utf-8', 0, 'lf', 0, 1)",
+                [account],
+            )
+            .unwrap();
+            let card = crate::categories::card_payment_category(&conn).unwrap();
+            conn.execute(
+                "INSERT INTO transactions (account_id, import_id, source_line, raw_bytes,
+                                           row_hash, posted_date, amount_cents,
+                                           description_raw, category_id, category_locked)
+                 VALUES (?1, ?2, 0, X'00', 'gst', '2026-10-12', 10000,
+                         ' GST PAYMENT CANADA', ?3, 1)",
+                rusqlite::params![account, conn.last_insert_rowid(), card],
+            )
+            .unwrap();
+            // Make the database look like one written before the repair
+            // existed (fresh opens record the key immediately).
+            conn.execute(
+                "DELETE FROM settings WHERE key = ?1",
+                [repair::MISCLASSIFIED_CARD_PAYMENTS],
+            )
+            .unwrap();
+        }
+        let conn = open(&path).unwrap();
+        let (category, locked): (Option<i64>, bool) = conn
+            .query_row(
+                "SELECT category_id, category_locked FROM transactions",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(category, None, "the locked income row is uncategorized");
+        assert!(!locked, "and free for the rules again");
         drop(conn);
         std::fs::remove_dir_all(dir).unwrap();
     }

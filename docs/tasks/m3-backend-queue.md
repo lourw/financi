@@ -6,7 +6,7 @@ Runs beside the UI queue, in the order listed. Backend only: don't read the UI d
 
 Runs beside the UI queue. 5.1 and 5.2 (in M5) follow 3.90.
 
-- [ ] **3.66 Simplii card payments only on the card.** (Code review,
+- [x] **3.66 Simplii card payments only on the card.** (Code review,
   2026-11-11.) `Simplii::is_card_payment` (`financi-parsers/src/simplii.rs`)
   only sees the `RawTransaction`, so the Visa rule ("money in whose
   description contains PAYMENT") also runs on **chequing** imports. A
