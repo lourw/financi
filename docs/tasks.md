@@ -779,8 +779,8 @@ out.
     rendered text with a long-named tree, a subcategory selected, and each
     validation error triggered); the renamed buttons still work.
 
-**Bugs reported by the user on 2026-11-11** (3.34–3.51, plus a fix folded
-into 3.23). Order: **3.40 → 3.23 → 3.41/3.42/3.48/3.49/3.50/3.51 → 3.43 → 3.44 → 3.47 → 3.35 → 3.36 → 3.45 → 3.46 → 3.37 → 3.38/3.39 → 3.34**, then the rest of
+**Bugs reported by the user on 2026-11-11** (3.34–3.52, plus a fix folded
+into 3.23). Order: **3.40 → 3.23 → 3.41/3.42/3.48/3.49/3.50/3.51 → 3.43 → 3.44 → 3.47 → 3.35 → 3.36 → 3.45 → 3.46 → 3.37 → 3.38/3.39 → 3.34 → 3.52**, then the rest of
 the order above (3.28 → 3.29 → 3.26).
 
 - 3.23 also fixes: **the rule list overflows the page.** Today each rule
@@ -1145,6 +1145,53 @@ the order above (3.28 → 3.29 → 3.26).
     Update the *Dashboard* row and the *Dashboard filter rows* bullet of
     `ui-conventions.md`.
 
+- [ ] **3.52 A rule's transactions under the rule list.** Nice-to-have
+  (user request, 2026-11-11): clicking a rule shows, in its own scrollable
+  area, the transactions that rule matches. Do it after 3.51 (which frees
+  the vertical space) and after 3.28 (whose row checkboxes are the
+  multi-select; this is a separate single **focus**).
+  - **Focus:** clicking a rule row (not its checkbox, Edit or Delete)
+    makes it the `focused_rule` (`list_active` row background); clicking
+    it again, Escape, selecting another category or leaving the page
+    clears it. Deleting the focused rule clears it; editing keeps it.
+  - **Layout:** with a rule focused, the Rules section splits vertically.
+    The rule list stays on top (`flex_1`, `min_h(120)`), then a
+    `border_t_1` divider. Below it is the **matches panel** (~45 % of the
+    section, `min_h(160)`): a header "Transactions matching `PATTERN`"
+    (pattern ellipsized, tooltip) with a muted "N · M decided by this
+    rule" summary, then a virtual list (`v_virtual_list`, scrollbar per
+    3.26) of rows. With nothing focused the list takes the whole section,
+    as now.
+  - **Rows:** Date (110 px), Description (`flex_1`, ellipsized with
+    tooltip), Account (`text_sm` muted, ~140 px), Amount (right-aligned,
+    `flow::money`). Rows the rule matches but doesn't decide carry a
+    muted trailing tag and `muted_foreground` text:
+    - "won by `OTHER`" when another rule wins (`winning_rule`);
+    - "locked" when the row's category is locked.
+    Rows the rule decides sort first, then by date descending.
+  - **DB:** `rule_matches(conn, rule_id) -> Vec<RuleMatchRow>` in
+    `financi-db/src/rules.rs`: every transaction (locked or not) whose
+    description the rule's pattern matches (`CompiledPattern`, compiled
+    once), with a `status` of `Decides`, `WonBy(rule_id)` or `Locked`.
+    Use one `CompiledRules` per call, as `rule_use_counts` does, so the
+    "decides" set agrees with Uses (3.28). Loaded through `DbWorker` when
+    focus changes and after every refresh while focused; a stale result
+    for a previous focus is dropped (keep the `Task`, drop on refocus).
+  - **While editing** the focused rule, the panel keeps showing the
+    saved rule's matches (the live count under the editor is the
+    preview); it reloads after Save.
+  - Empty state inside the panel: "This rule matches no transactions".
+  - Tests:
+    - DB: statuses for decides / won-by / locked rows, consistent with
+      `rule_use_counts`; an invalid regex returns empty.
+    - UI: clicking a row focuses it and the panel paints below the list
+      inside the section; the summary counts are right; a won-by row shows
+      its tag; Escape and re-click clear focus; focus changes drop a late
+      result; at 1200 × 720 both the list and the panel are at least their
+      minimum heights with 3.51's forms closed.
+
+    Update the *Categories* row of `ui-conventions.md`.
+
 - [ ] **3.36 Chart legend under the chart.** The legend column beside the
   bars (`LEGEND_W`, 140 px) still takes width the plot needs. Move it
   below the chart and condense it (user request, 2026-11-11; changes
@@ -1301,7 +1348,7 @@ the order above (3.28 → 3.29 → 3.26).
 
 
 **Done when:** on the demo data the dashboard totals match
-`expected.json`, filters compose, tests cover 3.1–3.51.
+`expected.json`, filters compose, tests cover 3.1–3.52.
 
 ---
 
