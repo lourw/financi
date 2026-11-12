@@ -6,36 +6,6 @@ Runs beside the UI queue, in the order listed. Backend only: don't read the UI d
 
 Runs beside the UI queue. 5.1 and 5.2 (in M5) follow 3.90.
 
-- [x] **3.66 Simplii card payments only on the card.** (Code review,
-  2026-11-11.) `Simplii::is_card_payment` (`financi-parsers/src/simplii.rs`)
-  only sees the `RawTransaction`, so the Visa rule ("money in whose
-  description contains PAYMENT") also runs on **chequing** imports. A
-  chequing deposit such as "GST PAYMENT CANADA", "PAYMENT REVERSAL" or an
-  e-transfer memo saying payment becomes `Transfers › Card Payment`,
-  locked against rules and left out of totals: income vanishes. On the
-  Visa side, a refund from a merchant whose name contains PAYMENT
-  ("PAYPAL *PAYMENTS") is locked as a transfer too.
-  - Change the trait to `fn is_card_payment(&self, txn: &RawTransaction,
-    kind: AccountKind) -> bool` and pass the account's kind at import
-    (`import.rs`) and in `overrides.rs`. Simplii returns false unless
-    `kind == CreditCard`, and matches `PAYMENT` only together with
-    `RECEIVED` or `THANK YOU` (as Amex's `PAYMENT RECEIVED`). Amex
-    ignores `kind`.
-  - **Repair existing data:** add a numbered migration (or a one-time
-    startup step recorded in `settings`) that, for chequing and savings
-    accounts, finds rows in Card Payment with `amount_cents > 0` and no
-    `transfer_pair_id`, clears `category_locked` and re-runs rules on
-    them. Before writing it, run a read-only count on a copy of the
-    user's DB (`FINANCI_DB=.cache/real-copy.sqlite`, counts only, never
-    commit it) and put the count in the handoff.
-  - The opt-in `real_samples` test prints the card-payment count per
-    file.
-  - Tests: a chequing fixture row ` GST PAYMENT CANADA,,100.00` is not a
-    card payment and counts as income; "PAYPAL *PAYMENTS" money in on the
-    Visa is not a card payment; "PAYMENT RECEIVED THANK YOU" on the Visa
-    still is; the repair unlocks and recategorizes an affected row and
-    leaves a paired or negative one alone.
-
 - [ ] **3.67 The CSV reader survives real-world files.** (Code review,
   2026-11-11.) All in `financi-core/src/raw.rs`, `lib.rs` and
   `financi/src/flow.rs`.
