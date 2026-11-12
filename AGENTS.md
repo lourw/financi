@@ -77,7 +77,8 @@ Don't force-push. Remove the worktree only after the push succeeds.
 130k tokens fills fast. Treat context as the scarcest resource.
 
 - **Read sections, not files.** Find what you need with `grep -n` first,
-  then read a line range (`sed -n 120,180p file`). `plan.md` is ~6k tokens, `docs/tasks.md` ~18k and
+  then read a line range (`sed -n 120,180p file`). `plan.md` is ~6k tokens, `docs/tasks.md` ~29k (read its
+  top sections, then only the task you're delegating or doing) and
   `docs/ui-conventions.md` ~6k; read only the parts for the current task.
   Never read `docs/tasks-done.md` whole: grep it for a task number when an
   open task refers to a done one. Never read anything under `target/`, `Cargo.lock`, or whole
@@ -112,11 +113,12 @@ sub-agents' branches.
 On start:
 
 1. Read `CLAUDE.md`, this file, and from `docs/tasks.md` the sections
-   *How to work*, *Picking the next task* and *Where things are*. Read a
+   *How to work*, *Picking the next task*, *GPUI best practices* and
+   *Where things are*. Read a
    task's own text when you delegate it. Skip other milestones.
 2. Check `git status`, `git log --oneline -10` and `git worktree list`.
    Continue unmerged features in their worktrees first, then pick new
-   tasks as *Picking the next task* says (lanes, not file order).
+   tasks as *Picking the next task* says (queues, then lanes).
 
 ### Keep the pool full
 
@@ -192,8 +194,8 @@ sub-agent works only in the worktree its brief names. Never run an
 implementer and a reviewer on the same feature at once.
 
 Before delegating, choose tasks that can safely run in parallel, so the two
-branches don't conflict at merge. The lanes in `docs/tasks.md` are drawn so
-that tasks from different lanes can; the rules below are for anything else. Two features may run together only if
+branches don't conflict at merge. The queues and lanes in `docs/tasks.md` say
+which tasks may pair; the rules below are for anything else. Two features may run together only if
 neither depends on the other and they don't change the same functions or
 regions. Sharing a file is fine: UI work lands in `crates/financi/src/ui.rs` and
 `ui_tests.rs` (per-page modules under `ui/` once 3.62 lands), and git merges

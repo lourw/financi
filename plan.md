@@ -11,7 +11,7 @@ This file holds requirements and settled decisions. `docs/tasks.md` is the task 
 | M0: Skeleton + GPUI spike | Done |
 | M1: Amex import, end to end | Done |
 | M2: Master CSVs + categorize | Done |
-| M3: Core views | In progress. Open tasks and their order: `docs/tasks.md` → *Picking the next task* |
+| M3: Core views | In progress: the architecture and scalability refactor first, then the remaining features. Order: `docs/tasks.md` → *Picking the next task* |
 | M4: Simplii Visa, transfer pairing, near-match | Done |
 | M5: Export / restore | Not started (its backend tasks may fill an idle slot during M3) |
 | Final: performance at scale (task 3.55) | Last, after M5 |
@@ -185,7 +185,7 @@ A Cargo workspace keeps parsing and storage free of GPUI, so they can be tested 
 
 - Core reads each file once into a header and raw records, so bytes, positions and encoding survive for hashing and export. Parsers receive a `RawRecord` and implement identity, detection, mapping, `row_hash`, row order and card-payment detection.
 - Parsers produce a raw transaction; core normalizes it. Adding an institution means one small module and a fixture-based test.
-- SQLite runs in WAL mode on one `DbWorker` thread. The UI sends queries to it and re-queries on a "data changed" event.
+- SQLite runs in WAL mode behind `DbWorker`: one writer thread, plus a read-only connection for list and aggregate queries (task 3.77). Mutations report which data domains they changed; a shared `Catalog` model re-queries those and emits a "data changed" event that each page entity subscribes to (task 3.78).
 - The database is plain SQLite in the per-OS app data directory (`~/Library/Application Support/financi/` on macOS, `$XDG_DATA_HOME/financi/` on Linux). Disk encryption (FileVault / LUKS) is relied on.
 - GPUI and gpui-kit are pinned exactly, with `runtime_shaders`, so no full Xcode is needed.
 
@@ -238,11 +238,14 @@ Decisions recorded in the sections above are not repeated. These are the remaini
 | Component kit | gpui-kit was verified in M0 for file drop, `BarChart`, virtual `DataTable` and `Select`. It has no multi-select. |
 | Commit versions | A tracked post-commit hook tags each `main` commit `vX.Y.Z` from its Conventional Commit type. |
 | Agent workflow | `CLAUDE.md` and `AGENTS.md`: one milestone at a time, continuing to the next without a check-in, through the end of v1. Two sub-agents in flight, picking from task lanes (`docs/tasks.md`). |
+| UI architecture (2026-11-11) | After a code review, the UI moves to idiomatic GPUI: one entity per page, a shared `Catalog` model that emits change events, keyed latest-wins DB jobs with a read connection, and shared `RenderOnce` components. This work goes before the remaining feature tasks (`docs/tasks.md` → *GPUI best practices*). |
 | Late items (2026-11-11) | The scale seed and timed performance budgets (3.55) run last, after M5. Default categories and merchant rules move to after v1. |
 
 ## Roadmap
 
-**v1:** the rest of M3, then M5, then task 3.55, in the order `docs/tasks.md` → *Picking the next task* gives.
+**v1:** the rest of M3 (architecture and scalability refactor first, then features), then M5, then task 3.55, in the order `docs/tasks.md` → *Picking the next task* gives.
+
+**Code review (2026-11-11):** four reviewers (database, backend, UI, design) audited the code. Their findings are tasks 3.64–3.91: correctness fixes, cheap scale fixes, the move to page entities and a shared data model, shared UI components, and a restructured `docs/ui-conventions.md`.
 
 **Prototype fixes** (feedback from 2026-11-08 onward; each is a task in `docs/tasks.md`)
 
