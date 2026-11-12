@@ -779,8 +779,8 @@ out.
     rendered text with a long-named tree, a subcategory selected, and each
     validation error triggered); the renamed buttons still work.
 
-**Bugs reported by the user on 2026-11-11** (3.34–3.46, plus a fix folded
-into 3.23). Order: **3.40 → 3.23 → 3.41/3.42 → 3.43 → 3.44 → 3.35 → 3.36 → 3.45 → 3.46 → 3.37 → 3.38/3.39 → 3.34**, then the rest of
+**Bugs reported by the user on 2026-11-11** (3.34–3.47, plus a fix folded
+into 3.23). Order: **3.40 → 3.23 → 3.41/3.42 → 3.43 → 3.44 → 3.47 → 3.35 → 3.36 → 3.45 → 3.46 → 3.37 → 3.38/3.39 → 3.34**, then the rest of
 the order above (3.28 → 3.29 → 3.26).
 
 - 3.23 also fixes: **the rule list overflows the page.** Today each rule
@@ -925,6 +925,48 @@ the order above (3.28 → 3.29 → 3.26).
     date); a UI test that clicking each header re-sorts the rows and the
     header shows the direction; the 3.4 sort tests still pass. Update
     the *Dashboard* row of `ui-conventions.md` ("every column sorts").
+
+- [ ] **3.47 A deleted rule leaves the list at once.** After the second
+  click on a rule's Delete, the row stays in the list for a noticeable
+  moment before it disappears (user report, 2026-11-11, after 3.40
+  landed). 3.40 made `reapply_rules` fast (34 ms for 5 000 rows × 50
+  regex rules), so the wait is elsewhere. Today `arm_delete_rule` only
+  changes the list after **both** the `delete_rule` task **and** the
+  full `refresh` finish: `refresh` re-runs every page's queries
+  (transactions, chart, summary, imports, category tree and counts,
+  rules, queue, transfer reviews) in one `on_db` call before
+  `self.rules` is replaced. On top of that, every `DbWorker` job queues
+  behind any in-flight one (the live preview count, a previous refresh).
+  - **Measure first.** In a debug build, log (`log::debug!`, behind
+    `FINANCI_TIMINGS=1`) the time from the confirming click to (a)
+    `delete_rule` returning, (b) the refresh result arriving, and each
+    query inside `refresh`. Run it on the dev-seed DB and on a copy of the
+    real DB (`FINANCI_DB=.cache/real-copy.sqlite`, timings only; never
+    commit it). Put the numbers in the commit message, and fix whatever
+    dominates if it isn't covered below (e.g. a missing index for
+    `transaction_counts` or `uncategorized_by_merchant`).
+  - **Optimistic removal:** on the confirming click, drop the rule from
+    `self.rules` (and the visible list) right away and `cx.notify()`,
+    keeping a copy. On error, put it back at its position and show the
+    error in `rule_error`. The refresh still runs after and brings
+    counts and categories up to date.
+  - **Do the same for Save and Add**, so a rule edit shows its new
+    pattern/category in the row at once, and a new rule appears at once,
+    with the same rollback on error. Rollback on a failed Add means
+    removing the provisional row; it has no id until the DB returns one,
+    so give it a temporary negative id and swap it for the real one.
+  - **Narrower refresh after rule changes.** Add a `refresh_after_rules`
+    that runs only what a rule change can affect (rules, transactions,
+    chart, summary, category counts, queue, sidebar counts), not imports
+    history or transfer reviews. Only do this if the measurements show
+    the full refresh is a noticeable part of the wait.
+  - Tests: after the confirming click, the rule is gone from the list in
+    the same frame, before the DB task completes (run the UI without
+    advancing the executor); a failing delete (rule removed underneath)
+    restores the row and shows the error; an edit's new pattern shows
+    before the save completes; a new rule appears before its add
+    completes and then carries its real id. The 3.24 delete and edit
+    tests still pass.
 
 - [ ] **3.34 To categorize looks cleaner.** The queue is loose rows on the
   page background: no panel, no row separators, a semibold merchant, and a
@@ -1140,7 +1182,7 @@ the order above (3.28 → 3.29 → 3.26).
 
 
 **Done when:** on the demo data the dashboard totals match
-`expected.json`, filters compose, tests cover 3.1–3.46.
+`expected.json`, filters compose, tests cover 3.1–3.47.
 
 ---
 
