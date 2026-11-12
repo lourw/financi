@@ -3209,6 +3209,136 @@ fn the_queue_fits_the_minimum_window(cx: &mut TestAppContext) {
     );
 }
 
+/// 3.34: the queue list lives in one bordered panel that fills the rest of
+/// the page — the heading row and the rows both paint inside it, below the
+/// header summary, and nothing sits loose on the page background.
+#[gpui::test]
+fn the_queue_list_paints_inside_one_panel(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |conn| seed_queue_thousands(conn, 3));
+    wait_until(cx, "3 queue groups", |cx| shell.read(cx).queue.len() == 3);
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::ToCategorize, cx)));
+    cx.run_until_parked();
+    let mut window = VisualTestContext::from_window(handle, cx);
+    draw_frame(cx, handle);
+    let panel = window
+        .debug_bounds("queue:panel")
+        .expect("the queue page paints one bordered panel");
+    // The panel fits the default 1100 × 720 window.
+    assert!(
+        panel.origin.x >= px(0.)
+            && panel.origin.y >= px(0.)
+            && panel.origin.x + panel.size.width <= px(1100.) + px(1.)
+            && panel.origin.y + panel.size.height <= px(720.) + px(1.),
+        "the panel fits the window: {panel:?}",
+    );
+    // The heading row and the first queue row paint inside the panel, with
+    // the heading above the rows.
+    let heading = window
+        .debug_bounds("label:Merchant")
+        .expect("the panel's heading row paints");
+    let row = window
+        .debug_bounds(leaked("queue:row:QUEUE MERCHANT 0000".to_string()))
+        .expect("the panel paints the queue's rows");
+    assert!(
+        heading.origin.x >= panel.origin.x
+            && heading.origin.y >= panel.origin.y
+            && row.origin.x >= panel.origin.x
+            && row.origin.y + row.size.height <= panel.origin.y + panel.size.height + px(1.),
+        "the heading {heading:?} and the row {row:?} sit inside the panel {panel:?}",
+    );
+    assert!(
+        heading.origin.y < row.origin.y,
+        "the heading is above the rows: heading y {}, row y {}",
+        heading.origin.y,
+        row.origin.y,
+    );
+}
+
+/// 3.34: the header carries a muted summary with both counts — transactions
+/// and merchants — through `flow::count`.
+#[gpui::test]
+fn the_queue_header_summarizes_transactions_and_merchants(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |conn| seed_queue_thousands(conn, 3));
+    wait_until(cx, "3 queue groups", |cx| shell.read(cx).queue.len() == 3);
+    let txns = cx.update(|cx| shell.read(cx).queue.iter().map(|g| g.count).sum::<i64>());
+    assert_eq!(txns, 6, "3 groups of 2 transactions each");
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::ToCategorize, cx)));
+    cx.run_until_parked();
+    let mut window = VisualTestContext::from_window(handle, cx);
+    draw_frame(cx, handle);
+    assert!(
+        window
+            .debug_bounds(leaked(
+                "queue:summary:6 transactions · 3 merchants".to_string()
+            ))
+            .is_some(),
+        "the header shows the muted \"6 transactions · 3 merchants\" summary",
+    );
+}
+
+/// 3.34: a row's Categorize button mirrors its picker — disabled with no
+/// pick, enabled once the row's picker holds a category — while rows without
+/// a pick stay disabled.
+#[gpui::test]
+fn the_queue_categorize_button_waits_for_its_picker(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |conn| seed_queue_thousands(conn, 3));
+    wait_until(cx, "3 queue groups", |cx| shell.read(cx).queue.len() == 3);
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::ToCategorize, cx)));
+    cx.run_until_parked();
+    let mut window = VisualTestContext::from_window(handle, cx);
+    draw_frame(cx, handle);
+    let merchant = "QUEUE MERCHANT 0000".to_string();
+    assert!(
+        window
+            .debug_bounds(leaked(format!(
+                "queue:categorize-state:{merchant}=disabled"
+            )))
+            .is_some(),
+        "with no pick the row's Categorize is disabled",
+    );
+    let child = cx.update(|cx| find_child(&shell, cx, "Groceries").unwrap());
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            let picker = s.queue_picker(&merchant, window, cx);
+            let ix = s
+                .child_choices
+                .iter()
+                .position(|(id, _)| *id == child)
+                .unwrap();
+            picker.update(cx, |sel, cx| {
+                sel.set_selected_index(Some(gpui_kit::component::IndexPath::new(ix)), window, cx);
+            });
+            // The popup's pick emits `Confirm`, which re-renders the rows;
+            // `set_selected_index` drives the state directly, so the test
+            // notifies on the subscription's behalf.
+            cx.notify();
+        });
+    });
+    draw_frame(cx, handle);
+    assert!(
+        window
+            .debug_bounds(leaked(format!("queue:categorize-state:{merchant}=enabled")))
+            .is_some(),
+        "after picking a category the row's Categorize is enabled",
+    );
+    assert!(
+        window
+            .debug_bounds(leaked(format!(
+                "queue:categorize-state:{merchant}=disabled"
+            )))
+            .is_none(),
+        "the disabled variant is gone",
+    );
+    assert!(
+        window
+            .debug_bounds(leaked(
+                "queue:categorize-state:QUEUE MERCHANT 0001=disabled".to_string()
+            ))
+            .is_some(),
+        "a row whose picker has no pick stays disabled",
+    );
+}
+
 #[gpui::test]
 fn delete_category_reassigns_transactions_and_rules(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, |c| {

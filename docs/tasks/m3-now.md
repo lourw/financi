@@ -2,38 +2,7 @@
 
 Features the paused run left half done. Finish each in its existing worktree before starting the queues. Index and order: `docs/tasks.md`.
 
-## Now: finish the in-flight features (3.34, 3.53 + 3.42)
-
-- [ ] **3.34 To categorize looks cleaner.** The queue is loose rows on the
-  page background: no panel, no row separators, a semibold merchant, and a
-  bright primary Categorize button on every row, so the page is a column
-  of blue buttons. Keep the columns, widths and behavior of 3.22; change
-  the look:
-  - **Header:** "To categorize" and a muted summary "N transactions · M
-    merchants" (`flow::count`).
-  - **One bordered panel** (D7, `radius`, no fill) that fills the rest of
-    the page and holds the list. Column headings are a 32 px heading row
-    inside the panel (`text_sm` muted, `px_3`), with a bottom `border`.
-    Rows are 40 px, `px_3`, each with a bottom `border` divider (none
-    after the last), `list_hover` on hover. Headings keep sharing the row
-    widths.
-  - **Merchant** in normal weight `foreground`; Transactions and Total
-    right-aligned; Dates `text_sm` muted (as now).
-  - **Categorize button:** `.small()` and not primary (outline/ghost
-    style) and **disabled until the row's picker has a category**, then enabled
-    (still outline: one primary per page, `ui-conventions.md` →
-    *Patterns*), so only rows ready to apply are clickable. The heading row's invisible spacer matches the new button
-    size.
-  - Empty state unchanged, centered inside the panel.
-  - Still fits 1200 × 720 with no horizontal overflow (3.22 tests stay).
-  - Tests: the panel paints inside the page; a row's Categorize is disabled with no pick and enabled (outline) after
-    picking; the summary
-    text shows both counts; 3.22's heading-alignment and fit tests pass.
-    Update the *To categorize* row of `ui-conventions.md`.
-  - **In progress:** worktree `../worktrees/financi/3-34-to-categorize`
-    (branch `feat/3-34-to-categorize`) has ~170 uncommitted lines in
-    `ui.rs` from the paused run (panel, heading row, Categorize button
-    mirroring its picker). Continue from them; don't start over.
+## Now: finish the in-flight features (3.53 + 3.42)
 
 - [ ] **3.53 No category picker where the page already says it.** The
   Categories page's add-rule row and rule editor each carry a Category
