@@ -984,6 +984,17 @@ the UI; tests cover 2.1–2.9.
     interrupted read returns `Superseded`; panics still reach the caller
     as `JobPanicked` (3.70).
 
+- [x] **3.87 Rule use stats.** (Split out of 3.58, 2026-11-11.) Backend
+  only (`financi-db/src/rules.rs`); runs in a free slot before 3.58.
+  Replace `rule_use_counts` with `rule_use_stats(conn) ->
+  HashMap<i64, RuleUse { count, total_cents }>`, one pass over unlocked,
+  non-card-payment, **non-hidden** rows (today `rule_use_counts` and
+  `count_rule_matches` count hidden rows while every other count excludes
+  them, so Uses disagrees with category counts once a row is hidden;
+  make `count_rule_matches` exclude them too). Callers switch to it.
+  Tests: count and signed total match a direct SQL sum for the rows each
+  rule decides; hidden rows are excluded from both functions.
+
 - [x] **3.88 One filter WHERE builder for every dashboard query.** (Code
   review, 2026-11-11.) Backend only (`financi-db/src/views.rs`,
   `lib.rs`); runs in a free slot. 3.46 depends on it.
