@@ -779,8 +779,8 @@ out.
     rendered text with a long-named tree, a subcategory selected, and each
     validation error triggered); the renamed buttons still work.
 
-**Bugs reported by the user on 2026-11-11** (3.34–3.47, plus a fix folded
-into 3.23). Order: **3.40 → 3.23 → 3.41/3.42 → 3.43 → 3.44 → 3.47 → 3.35 → 3.36 → 3.45 → 3.46 → 3.37 → 3.38/3.39 → 3.34**, then the rest of
+**Bugs reported by the user on 2026-11-11** (3.34–3.49, plus a fix folded
+into 3.23). Order: **3.40 → 3.23 → 3.41/3.42/3.48/3.49 → 3.43 → 3.44 → 3.47 → 3.35 → 3.36 → 3.45 → 3.46 → 3.37 → 3.38/3.39 → 3.34**, then the rest of
 the order above (3.28 → 3.29 → 3.26).
 
 - 3.23 also fixes: **the rule list overflows the page.** Today each rule
@@ -866,6 +866,56 @@ the order above (3.28 → 3.29 → 3.26).
     input's centre within 1 px, and the Save / Add rule button's centre
     too. Note the rule in `ui-conventions.md` (*Forms*: an unlabelled
     control in a labelled row sits in a 32 px slot, centred).
+
+- [ ] **3.48 The rule editor gives the pattern room.** Clicking Edit on
+  a rule swaps the row for an editor whose Pattern input shrinks so far
+  that the pattern can't really be edited (user report, 2026-11-11).
+  Cause: `rule_editor_row` is one `h_flex` with Pattern `flex_1` +
+  `min_w_0` and, after it, the regex switch, a 160 px Category picker,
+  Save and Cancel. In the detail panel (page minus the 210 px sidebar
+  and the 300 px tree panel) the fixed controls take ~400 px of ~600, and
+  3.41 widens the picker to 200 px, which makes it worse. The user also
+  saw the editor's regex switch sit off the row's line (3.42's cause).
+  - **Two lines:** line 1 is the "Pattern" label over the input at the
+    editor's **full width**. Line 2 is one `h_flex().items_center()` of
+    32 px controls, with no label line: the regex switch, the Category
+    picker (3.41's 200 px trigger / 320 px menu, placeholder
+    "Category…"), then `ml_auto` Save and Cancel. Line 2 has no labels,
+    so the switch lines up without 3.42's slot (3.42 still applies to
+    the add-rule row). The preview count and error line stay under both
+    lines.
+  - Bump the editor's entry in `rule_sizes` (today 80 / 108 px) to the
+    new height (~two control lines + label + preview, ~120 / ~148 px with
+    an error) so the virtual list doesn't overlap the next row.
+  - Enter saves, Escape cancels, focus lands in the pattern input with
+    the caret at the end (check it does today; if not, add it).
+  - The add-rule row: if its Pattern input is < 240 px wide at
+    1200 × 720 after 3.41, give it the same two-line shape; otherwise
+    leave it on one line.
+  - Tests: at 1200 × 720 the editor's pattern input is at least 90 % of
+    the detail panel's inner width; the switch, picker, Save and Cancel
+    share a vertical centre within 1 px; the row below the editor doesn't
+    overlap it (bounds); Save/Cancel/Enter/Escape tests from 3.24 pass.
+    Update the *Categories* row of `ui-conventions.md`.
+
+- [ ] **3.49 Drop the rules' Category column where it repeats.** Since
+  3.23 the rule list only shows the selected category's rules, so on a
+  subcategory every row's Category cell says the same thing (user
+  request, 2026-11-11).
+  - **Subcategory selected:** no Category column (heading and cells
+    gone); the Pattern column takes the width.
+  - **Parent selected:** its list mixes its subcategories' rules, so keep
+    the column but call it **Subcategory** and show only the child's
+    name (not "Parent › Child"), ellipsized with a tooltip. Narrow it to
+    ~140 px.
+  - The editor keeps its Category picker either way (it's how a rule
+    moves to another category); a rule saved to a category outside the
+    selection leaves the list.
+  - Tests: on a subcategory no "Category" heading or cell paints and the
+    pattern column is wider than before; on a parent the "Subcategory"
+    heading paints and cells show child names only; 3.23's heading
+    alignment test passes for both. Update the *Categories* row of
+    `ui-conventions.md`.
 
 - [ ] **3.43 No buttons end in "…".** The user doesn't want "…" on
   buttons; use an icon instead, or just drop it (user request,
@@ -1182,7 +1232,7 @@ the order above (3.28 → 3.29 → 3.26).
 
 
 **Done when:** on the demo data the dashboard totals match
-`expected.json`, filters compose, tests cover 3.1–3.47.
+`expected.json`, filters compose, tests cover 3.1–3.49.
 
 ---
 
