@@ -898,24 +898,41 @@ the order above (3.28 → 3.29 → 3.26).
     overlap it (bounds); Save/Cancel/Enter/Escape tests from 3.24 pass.
     Update the *Categories* row of `ui-conventions.md`.
 
-- [ ] **3.49 Drop the rules' Category column where it repeats.** Since
-  3.23 the rule list only shows the selected category's rules, so on a
-  subcategory every row's Category cell says the same thing (user
-  request, 2026-11-11).
-  - **Subcategory selected:** no Category column (heading and cells
-    gone); the Pattern column takes the width.
-  - **Parent selected:** its list mixes its subcategories' rules, so keep
-    the column but call it **Subcategory** and show only the child's
-    name (not "Parent › Child"), ellipsized with a tooltip. Narrow it to
-    ~140 px.
-  - The editor keeps its Category picker either way (it's how a rule
-    moves to another category); a rule saved to a category outside the
-    selection leaves the list.
-  - Tests: on a subcategory no "Category" heading or cell paints and the
-    pattern column is wider than before; on a parent the "Subcategory"
-    heading paints and cells show child names only; 3.23's heading
-    alignment test passes for both. Update the *Categories* row of
-    `ui-conventions.md`.
+- [ ] **3.49 A Uses column instead of Category.** Since 3.23 the
+  Categories page's rule list only shows the selected category's rules, so
+  on a subcategory every Category cell says the same thing. The user
+  wants the count of transactions each rule matches there instead (user
+  requests, 2026-11-11).
+  - **Replace the Category column with Uses** (`RULE_USES_W`, 80 px,
+    right-aligned, `flow::count`), the same number and wording as the
+    Rules page's Uses column (3.28, `rule_use_counts`): the transactions
+    the rule *decides*, so it agrees with stored categories and with
+    3.52's "decided by this rule". A heading tooltip says "Transactions
+    this rule categorizes". 0 shows in `muted_foreground`. The counts are
+    loaded in the same refresh as the rules (one `rule_use_counts` call;
+    no per-row queries) and update after every rule change.
+  - **Parent selected:** its list mixes its subcategories' rules, so the
+    subcategory also shows: a muted `text_xs` tag with the child's name
+    (not "Parent › Child") after the pattern, inside the Pattern column,
+    ellipsized first. A subcategory selection shows no tag.
+  - The editor keeps its Category picker (it's how a rule moves to
+    another category); a rule saved to a category outside the selection
+    leaves the list.
+  - Clicking the Uses heading sorts by it (descending), clicking Pattern
+    goes back, as on the Rules page. Reuse its sort state if it fits;
+    otherwise a separate `cat_rules_sort_by_uses`.
+  - Tests:
+    - no "Category" heading or cell paints;
+    - "Uses" paints with each rule's count, and matches the Rules page
+      for the same rule;
+    - a rule overlapped by a longer one shows only the rows it wins;
+    - the count updates after a rule edit or delete;
+    - on a parent, the subcategory tags paint, and on a subcategory they
+      don't;
+    - Uses sort works;
+    - 3.23's heading alignment and fit tests pass.
+
+    Update the *Categories* row of `ui-conventions.md`.
 
 - [ ] **3.50 No Organize heading or repeated labels.** In the category
   detail panel, the **Organize** section title and the "Move to
