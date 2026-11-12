@@ -73,7 +73,7 @@ header row is the filters.
 
 | Page | Contents |
 |---|---|
-| **Dashboard** | Filters (date range, accounts, include transfers); chart + legend beside the monthly summary; filter chips, search, toggles; transaction table. The legend (3.31) is just the key — a 10px swatch and the category name (ellipsis) in a ~140 px column — and each bar carries its share above it; amounts and exact shares live in the hover tooltips. |
+| **Dashboard** | One filter row (3.35): date range, the custom From/To pickers, accounts, search, Options (include transfers, uncategorized only, show hidden) and the transaction count; chart + legend beside the monthly summary; filter chips; transaction table. The legend (3.31) is just the key — a 10px swatch and the category name (ellipsis) in a ~140 px column — and each bar carries its share above it; amounts and exact shares live in the hover tooltips. |
 | **To categorize** | The Uncategorized queue (2.7) as a table: merchant (`flex_1`, truncates with a tooltip showing the full name), transactions (bare number, right-aligned ~96 px), total (right-aligned ~110 px), dates (~190 px, `text_sm` muted), category picker (~220 px), Categorize button at natural width — fits the 1200 px minimum window, headings share the row widths. Choosing a category adds a rule. |
 | **Categories** | Two bordered panels side by side (3.23): the category tree left (~300px), the selected category right (`flex_1`) — together inside the 1200 px minimum window. Header: title, "N categories · M subcategories" summary, and the primary **New category…** action at the right; it toggles a bordered inline form (name input ~220px, Kind picker, Add category primary, Cancel) that closes on Cancel, on a successful add and on leaving the page. Tree rows: a 10px category swatch, the name (parents semibold, subcategories indented; both ellipsize), the `system` tag, and the transaction count right-aligned (`text_xs` muted); the selected row is `list_active`, hover is `list_hover`. The detail panel is sections split by `border_t_1` dividers: the category name (ellipsized, with Rename… at the right), **Organize** (add-subcategory row when a category is selected; move picker when a subcategory is), **Rules**, and **Delete** (system categories have no Delete section). With nothing selected the panel just prompts "Select a category to see its rules and settings." The rules list holds only the selected category's rules (a subcategory's own, a parent category's including its subcategories'); with none it shows "No rules for this category yet". The add-rule row (Pattern `flex_1`, regex switch, Category picker ~160px defaulting to the selected subcategory, Add rule primary) carries the live "matches N transactions" count under it, and each rule row (Pattern `flex_1` truncating with a tooltip, Type ~80px, Category ~200px, Edit and Delete… at the right — ghost buttons with `text_xs` labels, visible on every row; the list is a virtual list, not a DataTable, so the *Tables* xsmall rule doesn't apply): Edit swaps the row in place for an editor in the add-rule row's shape (Pattern, regex switch, Category picker, pre-filled; Save primary, Cancel; Enter saves, Escape cancels; the same live count under the fields), and Delete… is the two-click "Click again to delete" confirm armed per row. One rule edits at a time; selecting a category or leaving the page closes the editor and disarms the delete. |
 | **Rules** | Every rule in one list (3.28); sidebar entry after Categories. Header: title, muted "N rules", and **New rule…** at the right, opening the same add-rule row as the Categories page (3.24) in place. Below it a filter row: Search (`flex_1`, focused when the page opens; matches the pattern and the target category's child and parent names, case-insensitive), a **Test a description** checkbox that turns the search into a pasted bank description — the list then shows only the rules matching it in matcher order (substring before regex, longest first, lowest id), the winner first and marked "wins" — a Type picker (All types / Substring / Regex) and an **Unused** checkbox (rules that currently decide no transactions). The list is grouped by parent, then child category, each group behind a collapsible header row ("Food › Coffee · 4 rules"); columns: Pattern (`flex_1`, ellipsis + tooltip), Type (~80px), Uses (right-aligned ~80px: transactions the rule currently decides) and the 3.24 Edit / Delete… actions; within a group rows sort by Pattern (default) or Uses via the column headings. Each row carries a checkbox; with any checked, a bar above the list shows "N selected", a Category picker and **Move**, which points every checked rule at the chosen subcategory in one DB call and re-runs rules once. Virtualized, headers included, with its own `VirtualListScrollHandle` on `Shell`. |
@@ -93,18 +93,22 @@ header row is the filters.
   scrolling moves whole rows, names included. A range change lands on
   the most recent month; when every month fits there is no scrolling and
   the months sit flush against `Total`, as before.
-- **Dashboard filter rows (3.25):** two rows, not merged — at the minimum
-  window (1200px) the merged row doesn't fit once the custom From/To
-  pickers join. Every item in a row is one column: a `field_label` line
-  (an invisible placeholder line of the same height where there's no
-  label) over a 32px control line with the control vertically centered,
-  so controls, checkboxes and the count share one center line. The first
-  column of each row is the same width (240px), so Search sits exactly
-  under Date range. The custom From/To columns take 140px but shrink
-  first (floor 110px) when space runs short, so row one with the custom
-  range open still fits the minimum window. The transaction count is the
-  row's last column, `ml_auto`, ending at the page's right edge. The
-  filter region, the
+- **Dashboard filter row (3.35):** one 32 px row — no region title and no
+  label lines (this replaces 3.16's visible-label rule and 3.25's two-row
+  layout for the dashboard filters). Left to right, `gap_2`, every control
+  the default 32 px tall and vertically centred: the **Date range** select
+  (~170 px); when the range is Custom the **From** / **To** pickers
+  (140 px each, shrinking first to a 110 px floor); the **Accounts**
+  popover trigger ("All accounts" / "N of M accounts"); the **Search**
+  input `flex_1` with a `min_w` of ~140 px, a leading search icon and the
+  placeholder "Search transactions"; an **Options** button (`list-filter`
+  icon + "Options", reading "Options · N" when N of its toggles are on)
+  opening a popover with the checkboxes **Include transfers**,
+  **Uncategorized only** and **Show hidden**; then the muted transaction
+  count, `ml_auto`, ending at the page's right edge. Each control without
+  a visible label names itself in a hover tooltip (Date range, Accounts,
+  Options). The row must fit 1200 × 720 with the custom range open,
+  nothing clipped and no wrapping. The filter region, the
   chart panel, the summary and the table span the page's left and right
   edges exactly; the table's flexible columns (Account, Description,
   Category) absorb the window width so it never overhangs the page.
@@ -224,14 +228,14 @@ case, and a table full of red reads as an alarm.
   pickers and filter groups get a visible label or a section heading; a
   placeholder is never the only label. Field labels are `text_xs`,
   `muted_foreground`, above or beside the control; region titles name a
-  group of controls or a data panel (`text_sm`, `font_semibold`): the
-  dashboard's *Filters* bar (sub-labels *Date range*, *From*, *To*,
-  *Accounts*, *Search*; the toggles label themselves), *Spending by
-  category*, *Monthly summary*, the Categories *Category tree* heading and
-  its labelled detail pickers, and the queue's column headings. Group
-  related controls under those headings rather than stacking rows of
+  group of controls or a data panel (`text_sm`, `font_semibold`):
+  *Spending by category*, *Monthly summary*, the Categories *Category tree*
+  heading and its labelled detail pickers, and the queue's column headings.
+  Group related controls under those headings rather than stacking rows of
   unlabelled boxes. Labels sit above controls, so they never add width at
-  the 1200 × 720 minimum.
+  the 1200 × 720 minimum. The dashboard's filter row is the one exception
+  (3.35): no title, no label lines — its controls name themselves in hover
+  tooltips (see *Pages*).
 - **Money:** `$1,234.56`. In the table, amounts are signed: `-$86.42` out,
   `$2,105.00` in (green). In the chart, its tooltips and the summary,
   amounts are positive spend. Net is the one signed summary row.

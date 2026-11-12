@@ -1599,11 +1599,12 @@ fn clear_filters_restores_a_table_emptied_by_search(cx: &mut TestAppContext) {
     });
 }
 
-/// 3.16: the dashboard's filter region paints its title and a visible label
-/// above every control — date preset, accounts, search — and the two custom
-/// range pickers are labelled too.
+/// 3.35: the dashboard's filter region is one row — no "Filters" title, no
+/// label lines (this replaces 3.16's visible-label rule for the dashboard
+/// filters). The row never grows past one 32 px control line, with the
+/// custom range closed or open.
 #[gpui::test]
-fn the_dashboard_filter_region_carries_visible_labels(cx: &mut TestAppContext) {
+fn the_dashboard_filter_region_is_one_untitled_row(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, |conn| {
         create_account(conn, "amex", "Cobalt", AccountKind::CreditCard).unwrap();
     });
@@ -1612,6 +1613,15 @@ fn the_dashboard_filter_region_carries_visible_labels(cx: &mut TestAppContext) {
     });
     let mut window = VisualTestContext::from_window(handle, cx);
     draw_frame(cx, handle);
+    let region = window
+        .debug_bounds("filters:region")
+        .expect("the filter region paints");
+    assert!(
+        f32::from(region.size.height) <= 40.,
+        "the filter region is {} tall, not a single row",
+        f32::from(region.size.height)
+    );
+    // The region title and every label line are gone.
     for sel in [
         "label:Filters",
         "label:Date range",
@@ -1619,11 +1629,12 @@ fn the_dashboard_filter_region_carries_visible_labels(cx: &mut TestAppContext) {
         "label:Search",
     ] {
         assert!(
-            window.debug_bounds(sel).is_some(),
-            "the filter region paints the visible label {sel:?}"
+            window.debug_bounds(sel).is_none(),
+            "{sel:?} must not paint any more (3.35 removed the region title \
+             and the label lines)"
         );
     }
-    // Custom range: both date pickers get labels, not just placeholders.
+    // Custom range: the pickers join the row and carry no labels either.
     with_window(cx, handle, |window, cx| {
         shell.update(cx, |s, cx| {
             s.change_date_preset(DatePreset::Custom, window, cx)
@@ -1633,9 +1644,53 @@ fn the_dashboard_filter_region_carries_visible_labels(cx: &mut TestAppContext) {
     draw_frame(cx, handle);
     for sel in ["label:From", "label:To"] {
         assert!(
-            window.debug_bounds(sel).is_some(),
-            "the custom range paints the visible label {sel:?}"
+            window.debug_bounds(sel).is_none(),
+            "{sel:?} must not paint (3.35: the pickers name themselves in \
+             tooltips, not labels)"
         );
+    }
+    let region = window
+        .debug_bounds("filters:region")
+        .expect("the filter region paints with the custom range open");
+    assert!(
+        f32::from(region.size.height) <= 40.,
+        "with the custom range the filter region is {} tall, not a single row",
+        f32::from(region.size.height)
+    );
+}
+
+/// 3.35: every dashboard filter control that lost its visible label names
+/// itself in a hover tooltip — Date range, Accounts, Options.
+#[gpui::test]
+fn the_unlabelled_filter_controls_show_their_names_on_hover(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |conn| {
+        create_account(conn, "amex", "Cobalt", AccountKind::CreditCard).unwrap();
+    });
+    wait_until(cx, "the account list loads", |cx| {
+        shell.read(cx).accounts.len() == 1
+    });
+    let mut window = VisualTestContext::from_window(handle, cx);
+    draw_frame(cx, handle);
+    for (sel, tip) in [
+        ("filters:date-range", "filters:tooltip:Date range"),
+        ("accounts:filter", "filters:tooltip:Accounts"),
+        ("filters:options", "filters:tooltip:Options"),
+    ] {
+        let b = window
+            .debug_bounds(sel)
+            .unwrap_or_else(|| panic!("{sel} paints on the dashboard"));
+        window.simulate_mouse_move(b.center(), None, Modifiers::default());
+        cx.executor().advance_clock(Duration::from_millis(600));
+        cx.run_until_parked();
+        draw_frame(cx, handle);
+        assert!(
+            window.debug_bounds(tip).is_some(),
+            "hovering {sel} shows the tooltip {tip:?}"
+        );
+        // Move off so no stale tooltip lingers into the next hover.
+        window.simulate_mouse_move(point(px(2.), px(2.)), None, Modifiers::default());
+        cx.run_until_parked();
+        draw_frame(cx, handle);
     }
 }
 
@@ -1707,53 +1762,35 @@ fn open_dashboard_for_geometry(
     (handle, shell)
 }
 
-/// 3.25 (dashboard alignment): every control in a filter row — dropdowns,
-/// pickers, checkboxes, the transaction count — sits on one centre line,
-/// vertically centred in the row's 32px control line. At both window sizes.
+/// 3.25, 3.35 (dashboard alignment): every control in the single filter
+/// row — dropdowns, the search box, Options, the transaction count — sits
+/// on one centre line, vertically centred in the 32 px row. The row stays
+/// one control line tall (≤ 40 px). At both window sizes.
 #[gpui::test]
-fn the_dashboard_filter_rows_share_one_centre_line(cx: &mut TestAppContext) {
+fn the_dashboard_filter_row_controls_share_one_centre_line(cx: &mut TestAppContext) {
     for (w, h) in [(1200., 720.), (1600., 1000.)] {
         let (handle, _shell) = open_dashboard_for_geometry(cx, w, h);
         let mut window = VisualTestContext::from_window(handle, cx);
         let centre = centre_y(&mut window, "filters:date-range");
         for sel in [
             "accounts:filter",
-            "checkbox:include-transfers",
+            "filters:search",
+            "filters:options",
             "filters:count",
         ] {
             let cy = centre_y(&mut window, sel);
             assert!(
                 (cy - centre).abs() <= 1.,
-                "{sel} centres at y {cy}, not on the first filter row's centre line {centre} ({w}x{h})"
+                "{sel} centres at y {cy}, not on the filter row's centre line {centre} ({w}x{h})"
             );
         }
-        let centre = centre_y(&mut window, "filters:search");
-        for sel in ["checkbox:uncategorized-only", "checkbox:show-hidden"] {
-            let cy = centre_y(&mut window, sel);
-            assert!(
-                (cy - centre).abs() <= 1.,
-                "{sel} centres at y {cy}, not on the second filter row's centre line {centre} ({w}x{h})"
-            );
-        }
-        // The rows stay separate, and the search column stacks under the
-        // first column: same left edge, same width (ui-conventions *Pages*).
-        let date = window
-            .debug_bounds("filters:date-range")
-            .expect("the date-range column paints");
-        let search = window
-            .debug_bounds("filters:search")
-            .expect("the search column paints");
+        let region = window
+            .debug_bounds("filters:region")
+            .expect("the filter region paints");
         assert!(
-            (f32::from(search.origin.x) - f32::from(date.origin.x)).abs() <= 1.,
-            "the search column starts at x {}, the date-range column at x {} ({w}x{h})",
-            f32::from(search.origin.x),
-            f32::from(date.origin.x),
-        );
-        assert!(
-            (f32::from(search.size.width) - f32::from(date.size.width)).abs() <= 1.,
-            "the search column is {} wide, the date-range column {} ({w}x{h})",
-            f32::from(search.size.width),
-            f32::from(date.size.width),
+            f32::from(region.size.height) <= 40.,
+            "the filter region is {} tall, not one 32 px row ({w}x{h})",
+            f32::from(region.size.height)
         );
     }
 }
@@ -1816,9 +1853,11 @@ fn the_dashboard_regions_share_the_page_edges(cx: &mut TestAppContext) {
     }
 }
 
-/// 3.25 (dashboard alignment): opening the custom date range adds the From
-/// and To pickers without breaking anything — they join the first row's
-/// centre line and the filter region still spans the page exactly.
+/// 3.25, 3.35 (dashboard alignment): opening the custom date range adds the
+/// From and To pickers without breaking anything — they join the filter
+/// row's centre line, every control and the count still paint inside the
+/// page (at 1200 × 720 nothing is clipped and nothing wraps), and the
+/// region still spans the page exactly. At both window sizes.
 #[gpui::test]
 fn the_dashboard_stays_aligned_with_a_custom_date_range(cx: &mut TestAppContext) {
     for (w, h) in [(1200., 720.), (1600., 1000.)] {
@@ -1833,57 +1872,78 @@ fn the_dashboard_stays_aligned_with_a_custom_date_range(cx: &mut TestAppContext)
         });
         draw_frame(cx, handle);
         let mut window = VisualTestContext::from_window(handle, cx);
-        let centre = centre_y(&mut window, "filters:date-range");
-        for sel in [
-            "filters:from",
-            "filters:to",
-            "accounts:filter",
-            "checkbox:include-transfers",
-            "filters:count",
-        ] {
-            let cy = centre_y(&mut window, sel);
-            assert!(
-                (cy - centre).abs() <= 1.,
-                "{sel} centres at y {cy}, not on the first filter row's centre line {centre} (custom range, {w}x{h})"
-            );
-        }
-        // The row still fits: with From and To visible the rightmost
-        // row-1 control stops at the page's right edge — the count may
-        // not hang off the page (the pickers shrink to make room).
-        let mut rightmost = 0_f32;
-        for sel in [
+        const CONTROLS: [&str; 7] = [
             "filters:date-range",
             "filters:from",
             "filters:to",
             "accounts:filter",
-            "checkbox:include-transfers",
+            "filters:search",
+            "filters:options",
             "filters:count",
-        ] {
+        ];
+        let centre = centre_y(&mut window, "filters:date-range");
+        for sel in CONTROLS {
+            let cy = centre_y(&mut window, sel);
+            assert!(
+                (cy - centre).abs() <= 1.,
+                "{sel} centres at y {cy}, not on the filter row's centre line {centre} (custom range, {w}x{h})"
+            );
+        }
+        // Every control and the count paint inside the page: no control
+        // hangs off either edge, and the row does not wrap to a second
+        // line (its height stays one control).
+        let left = SIDEBAR_W + PAGE_PAD;
+        let right = w - PAGE_PAD;
+        for sel in CONTROLS {
             let b = window
                 .debug_bounds(sel)
-                .unwrap_or_else(|| panic!("{sel} paints on the dashboard"));
-            rightmost = rightmost.max(f32::from(b.origin.x) + f32::from(b.size.width));
+                .unwrap_or_else(|| panic!("{sel} paints on the dashboard (custom range, {w}x{h})"));
+            assert!(
+                f32::from(b.origin.x) >= left - 0.01
+                    && f32::from(b.origin.x) + f32::from(b.size.width) <= right + 0.01,
+                "{sel} spans x {}–{}, outside the page's {left}–{right} (custom range, {w}x{h})",
+                f32::from(b.origin.x),
+                f32::from(b.origin.x) + f32::from(b.size.width),
+            );
         }
-        assert!(
-            rightmost <= w - PAGE_PAD + 0.01,
-            "with the custom range the row-1 controls reach x {rightmost}, past the page's right edge {} ({w}x{h})",
-            w - PAGE_PAD,
-        );
         let b = window
             .debug_bounds("filters:region")
             .expect("the filter region paints");
         assert!(
-            (f32::from(b.origin.x) - (SIDEBAR_W + PAGE_PAD)).abs() <= 1.,
+            f32::from(b.size.height) <= 40.,
+            "with the custom range the filter region wraps to {} px, not one row ({w}x{h})",
+            f32::from(b.size.height)
+        );
+        assert!(
+            (f32::from(b.origin.x) - left).abs() <= 1.,
             "with the custom range the filter region starts at x {}, not the page's left edge ({w}x{h})",
             f32::from(b.origin.x),
         );
         let r = f32::from(b.origin.x) + f32::from(b.size.width);
         assert!(
-            (r - (w - PAGE_PAD)).abs() <= 1.,
-            "with the custom range the filter region ends at x {r}, not the page's right edge {} ({w}x{h})",
-            w - PAGE_PAD,
+            (r - right).abs() <= 1.,
+            "with the custom range the filter region ends at x {r}, not the page's right edge {right} ({w}x{h})",
         );
     }
+}
+
+/// 3.35: with the filters collapsed to one row, the chart panel starts
+/// where the filter rows used to end — at least 80 px higher than the
+/// 177.5 px its top measured at 1200 × 720 on the pre-3.35 layout.
+#[gpui::test]
+fn the_chart_panel_starts_higher_now_the_filters_are_one_row(cx: &mut TestAppContext) {
+    const CHART_TOP_BEFORE: f32 = 177.5; // measured at HEAD~ on the 3.25 two-row layout
+    let (handle, _shell) = open_dashboard_for_geometry(cx, 1200., 720.);
+    let mut window = VisualTestContext::from_window(handle, cx);
+    let chart = window
+        .debug_bounds("panel:chart")
+        .expect("the chart panel paints");
+    assert!(
+        f32::from(chart.origin.y) <= CHART_TOP_BEFORE - 80.,
+        "the chart panel's top is at y {}, not at least 80 px above the \
+         pre-3.35 y {CHART_TOP_BEFORE}",
+        f32::from(chart.origin.y)
+    );
 }
 
 // -- categories page -------------------------------------------------------
@@ -5876,6 +5936,9 @@ fn sidebar_nav_items_and_section_labels_share_one_flush_inset() {
     );
 }
 
+/// 3.35: the Options popover carries the old filter-row toggles — same ids,
+/// same state and handlers. A real click opens it, all three checkboxes
+/// paint, and Include transfers toggles the rows exactly as before.
 #[gpui::test]
 fn clicking_the_include_transfers_checkbox_toggles_it(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, seed_two_accounts_and_a_transfer);
@@ -5883,17 +5946,69 @@ fn clicking_the_include_transfers_checkbox_toggles_it(cx: &mut TestAppContext) {
         shell.read(cx).row_count == 2 && shell.read(cx).accounts.len() == 2
     });
     let mut window = VisualTestContext::from_window(handle, cx);
+    let trigger = window
+        .debug_bounds("filters:options")
+        .expect("the filter row renders the Options button");
+    window.simulate_click(trigger.center(), Modifiers::default());
+    cx.run_until_parked();
+    draw_frame(cx, handle);
+    for sel in [
+        "checkbox:include-transfers",
+        "checkbox:uncategorized-only",
+        "checkbox:show-hidden",
+    ] {
+        assert!(
+            window.debug_bounds(sel).is_some(),
+            "the Options popover renders {sel}"
+        );
+    }
     let bounds = window
         .debug_bounds("checkbox:include-transfers")
-        .expect("the filter bar renders the include-transfers checkbox");
+        .expect("the Options popover renders the include-transfers checkbox");
     let at = point(
         bounds.origin.x + bounds.size.width / 2.,
         bounds.origin.y + bounds.size.height / 2.,
     );
     window.simulate_click(at, Modifiers::default());
-    cx.update(|cx| assert!(shell.read(cx).include_transfers, "click checks the box"));
+    wait_until(cx, "click checks the box and shows the transfer", |cx| {
+        shell.read(cx).include_transfers && shell.read(cx).row_count == 3
+    });
     window.simulate_click(at, Modifiers::default());
-    cx.update(|cx| assert!(!shell.read(cx).include_transfers, "clicking again unchecks"));
+    wait_until(cx, "clicking again unchecks", |cx| {
+        !shell.read(cx).include_transfers && shell.read(cx).row_count == 2
+    });
+}
+
+/// 3.35: the Options trigger counts its toggles — plain "Options" while
+/// none are on, "Options · 2" when two are.
+#[gpui::test]
+fn the_options_button_counts_the_toggles_that_are_on(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_two_accounts_and_a_transfer);
+    wait_until(cx, "initial rows, transfers off", |cx| {
+        shell.read(cx).row_count == 2 && shell.read(cx).accounts.len() == 2
+    });
+    let mut window = VisualTestContext::from_window(handle, cx);
+    draw_frame(cx, handle);
+    assert!(
+        window.debug_bounds("filters:options-btn:Options").is_some(),
+        "with no toggle on, the button reads just \"Options\""
+    );
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.set_include_transfers(true, window, cx);
+            s.set_uncategorized_only(true, window, cx);
+        });
+    });
+    wait_until(cx, "both toggles on", |cx| {
+        shell.read(cx).include_transfers && shell.read(cx).uncategorized_only
+    });
+    draw_frame(cx, handle);
+    assert!(
+        window
+            .debug_bounds("filters:options-btn:Options \u{b7} 2")
+            .is_some(),
+        "with two toggles on, the button reads \"Options \u{b7} 2\""
+    );
 }
 
 #[gpui::test]
