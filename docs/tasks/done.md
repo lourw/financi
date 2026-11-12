@@ -797,6 +797,24 @@ the UI; tests cover 2.1–2.9.
   subcategories, and the one that stays on a parent lists short child
   names. Its menu-width and fit requirements moved there.
 
+- [x] **3.42 The regex switch lines up with the rule fields.** In the
+  add-rule row (`cat:add-rule-row`) and the rule editor row, the
+  **regex** `Switch` sits lower than the Pattern input, the Category
+  picker and the buttons (user report, 2026-11-11). Cause: both rows are
+  `h_flex().items_end()`, the labelled fields are a label line over a
+  32 px control, and the Switch (no label line, shorter than 32 px) is a
+  bare child, so its bottom edge, not its centre, lines up with the
+  controls.
+  - Wrap the Switch in a box the height of a control: `h_flex().h(px(32.))
+    .items_center().flex_shrink_0()`, in both rows, so its centre matches
+    the controls' centre while the row stays `items_end`. Better: factor
+    a small `control_slot(el)` helper used by both rows, so they can't
+    drift apart.
+  - Tests: in both rows the Switch's vertical centre equals the Pattern
+    input's centre within 1 px, and the Save / Add rule button's centre
+    too. Note the rule in `ui-conventions.md` (*Forms*: an unlabelled
+    control in a labelled row sits in a 32 px slot, centred).
+
 - [x] **3.44 Every transactions-table column sorts.** On the dashboard
   only Date and Amount sort (3.4); Account, Description and Category
   don't (user request, 2026-11-11).
@@ -823,6 +841,45 @@ the UI; tests cover 2.1–2.9.
     date); a UI test that clicking each header re-sorts the rows and the
     header shows the direction; the 3.4 sort tests still pass. Update
     the *Dashboard* row of `ui-conventions.md` ("every column sorts").
+
+- [x] **3.53 No category picker where the page already says it.** The
+  Categories page's add-rule row and rule editor each carry a Category
+  picker, but the rule list sits inside a selected category, so the
+  picker mostly repeats the selection (user request, 2026-11-11).
+  Replaces 3.41.
+  - **Subcategory selected:** the add-rule row has no picker. `add_rule`
+    targets the selected subcategory. The row is Pattern, regex switch,
+    Add rule.
+  - **Parent selected:** rules must target a child (`ensure_assignable`),
+    so the add-rule row keeps a picker. It lists **only that parent's
+    subcategories by their own names** (no "Parent › Child"), placeholder
+    "Subcategory…", no default pick. The trigger is wide enough for the
+    longest child name up to 200 px; names past that ellipsize with a
+    tooltip, and the open menu is at least as wide as the longest name
+    (`menu_width`, max 320 px), so no item is cut off. A parent with no
+    subcategories shows "Add a subcategory first" (muted) in place of the
+    add-rule row.
+  - **Rule editor:** no picker on either. Edit changes pattern and regex
+    only; `update_rule` keeps the rule's `category_id`. Moving a rule to
+    another category is the Rules page's job (3.28's Move bar). Add a
+    muted one-line hint under the rule list on this page: "To move rules
+    to another category, use the Rules page."
+  - Drop the now-unused `rule_edit_target`. Keep `child_choices` for the
+    places that still list every child (transactions, queue, Rules page).
+  - Fits 1200 × 720 and 1600 × 900 with a long subcategory name; Add
+    rule / Save / Cancel paint inside the detail panel (3.23's fit rule).
+  - Tests:
+    - on a subcategory, no picker paints and Add rule creates a rule
+      targeting it;
+    - on a parent, the picker lists only its children by short name, and
+      Add rule without a pick shows "Choose the subcategory the rule
+      assigns.";
+    - with a 40-character child name, the menu item paints unclipped;
+    - a parent with no children shows the hint;
+    - Edit has no picker and Save keeps the category;
+    - 3.24's add/edit tests are updated, not deleted.
+
+    Update the *Categories* row of `ui-conventions.md`.
 
 ---
 
