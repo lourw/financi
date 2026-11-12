@@ -821,7 +821,7 @@ the order above (3.28 → 3.29 → 3.26).
     on the dev-seed DB before and after and put both numbers in the
     commit message.
 
-- [ ] **3.41 Rule category pickers show the full name.** On the
+- [x] **3.41 Rule category pickers show the full name.** On the
   Categories page the add-rule **Category** picker (`Select::new(&self.
   rule_target)`, in a `div().w(px(160.))`) is too narrow: the items are
   "Parent › Child" (`child_choices`), so both the closed trigger and the

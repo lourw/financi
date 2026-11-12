@@ -5071,6 +5071,212 @@ fn the_categories_page_fits_the_minimum_window(cx: &mut TestAppContext) {
     );
 }
 
+/// 3.41: a child category whose full label "Drinks › …" is exactly 40
+/// characters — too wide for the 200 px trigger (it ellipsizes), but it
+/// fits the 320 px open menu.
+const LONG_CHILD: &str = "international subscriptions ltd";
+
+fn long_label() -> String {
+    format!("Drinks › {LONG_CHILD}")
+}
+
+/// 3.41: like `seed_rule_fixture`, but the rule targets the long-named
+/// child, so the editor's picker opens with the long selection and the
+/// trigger needs its tooltip. Returns `(rule, long child, short child)`.
+fn seed_long_name_rule_fixture(conn: &financi_db::rusqlite::Connection) -> (i64, i64, i64) {
+    let acct = create_account(conn, "amex", "Cobalt", AccountKind::CreditCard).unwrap();
+    conn.execute(
+        "INSERT INTO imports (account_id, parser_id, file_name, imported_at, header_raw,
+                              encoding, has_bom, line_ending, trailing_newline, row_count)
+         VALUES (?1, 'amex', 'seed.csv', '2026-11-01', X'00', 'utf-8', 0, 'lf', 0, 0)",
+        [acct],
+    )
+    .unwrap();
+    let import = conn.last_insert_rowid();
+    let drinks =
+        financi_db::categories::create_parent(conn, "Drinks", CategoryKind::Expense).unwrap();
+    let long = financi_db::categories::create_child(conn, drinks, LONG_CHILD).unwrap();
+    let short = financi_db::categories::create_child(conn, drinks, "Second").unwrap();
+    conn.execute(
+        "INSERT INTO transactions (account_id, import_id, source_line, raw_bytes,
+                                   row_hash, posted_date, amount_cents, description_raw)
+         VALUES (?1, ?2, 0, X'00', 'long-name-hash', '2026-11-01', -1000, 'COFFEE MART')",
+        (acct, import),
+    )
+    .unwrap();
+    let rule = financi_db::rules::add_rule(conn, "COFFEE", false, long).unwrap();
+    (rule, long, short)
+}
+
+/// 3.41: open the shell over the long-name fixture and select the parent,
+/// so the Categories detail panel paints its add-rule row. Returns
+/// `(handle, shell, rule, long child, short child)`.
+fn open_long_name_rule_fixture(
+    cx: &mut TestAppContext,
+) -> (AnyWindowHandle, Entity<Shell>, i64, i64, i64) {
+    let mut ids = (0i64, 0i64, 0i64);
+    let (handle, shell) = open_shell(cx, |c| ids = seed_long_name_rule_fixture(c));
+    let (rule, long, short) = ids;
+    wait_until(cx, "the long-name fixture loaded", |cx| {
+        let s = shell.read(cx);
+        s.rules.len() == 1 && s.child_choices.iter().any(|(_, n)| n == &long_label())
+    });
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Categories, cx)));
+    select_parent(cx, handle, &shell, "Drinks");
+    (handle, shell, rule, long, short)
+}
+
+/// 3.41: open a rule picker the way a user does — a click on the middle
+/// of the trigger — and paint until the (deferred) menu is up.
+fn open_picker_menu(
+    cx: &mut TestAppContext,
+    window: &mut VisualTestContext,
+    handle: AnyWindowHandle,
+    sel: &'static str,
+) {
+    let b = window
+        .debug_bounds(sel)
+        .unwrap_or_else(|| panic!("{sel} paints"));
+    window.simulate_click(b.center(), Modifiers::default());
+    cx.run_until_parked();
+    draw_frame(cx, handle);
+    draw_frame(cx, handle);
+}
+
+/// 3.41: click outside an open menu to dismiss it (the popup closes on
+/// any press that misses it).
+fn click_past_anything(cx: &mut TestAppContext, window: &mut VisualTestContext) {
+    window.simulate_click(point(px(2.), px(2.)), Modifiers::default());
+    cx.run_until_parked();
+}
+
+/// 3.41: assert a menu row paints with its text unclipped — the natural
+/// (nowrap, absolutely positioned) probe copy fits inside the drawn row
+/// — and that the row sits inside the window.
+fn assert_menu_item_unclipped(window: &mut VisualTestContext, label: &str, win_w: f32) {
+    let item = window
+        .debug_bounds(leaked(format!("rule-choice:{label}")))
+        .unwrap_or_else(|| panic!("{label:?} paints in the open menu"));
+    let natural = window
+        .debug_bounds(leaked(format!("rule-choice-natural:{label}")))
+        .expect("the natural-width probe paints beside the menu row");
+    assert!(
+        f32::from(natural.size.width) <= f32::from(item.size.width) + 1.,
+        "{label:?} is clipped in the menu: the text wants {:?}, the row is {:?}",
+        natural.size.width,
+        item.size.width,
+    );
+    // The 320 px menu minus the list and row padding; a menu as narrow
+    // as the old trigger (160 px) fails this.
+    assert!(
+        f32::from(item.size.width) >= 250.,
+        "the menu row is {:?} wide, not the wide (320 px) menu",
+        item.size.width,
+    );
+    assert!(
+        f32::from(item.origin.x) + f32::from(item.size.width) <= win_w,
+        "the open menu runs past the window's right edge: row ends at {:?}, window is {win_w} px wide",
+        f32::from(item.origin.x) + f32::from(item.size.width),
+    );
+}
+
+/// 3.41: with a 40-character "Parent › Child" name, the open menu of both
+/// rule pickers — the add-rule row's on each page — paints the name
+/// unclipped inside a menu that stays in the window, and typing in the
+/// search box narrows the list to the matches.
+#[gpui::test]
+fn rule_category_picker_menus_show_the_full_name(cx: &mut TestAppContext) {
+    let (handle, shell, _rule, _long, _short) = open_long_name_rule_fixture(cx);
+    resize_and_draw(cx, handle, 1200., 720.);
+    let mut window = VisualTestContext::from_window(handle, cx);
+    let label = long_label();
+
+    // The Categories page's add-rule picker: the trigger is the rule
+    // list's Category column (200 px), not the old 160 px.
+    let trigger = window
+        .debug_bounds("rule:category-select:cat-add")
+        .expect("the Categories page paints the add-rule picker");
+    assert!(
+        (f32::from(trigger.size.width) - 200.).abs() <= 1.,
+        "the add-rule picker's trigger is {:?} wide, not 200 px",
+        trigger.size.width,
+    );
+
+    open_picker_menu(cx, &mut window, handle, "rule:category-select:cat-add");
+    assert_menu_item_unclipped(&mut window, &label, 1200.);
+
+    // Typing narrows the list (the state is `searchable`): the long name
+    // drops out, the match stays.
+    window.simulate_input("second");
+    draw_frame(cx, handle);
+    assert!(
+        !paints(&mut window, format!("rule-choice:{label}")),
+        "the search narrowed the list: only matches paint",
+    );
+    assert!(
+        paints(&mut window, "rule-choice:Drinks › Second".into()),
+        "the matching entry stays in the list"
+    );
+    click_past_anything(cx, &mut window);
+    draw_frame(cx, handle);
+
+    // The Rules page's add-rule picker: same row, same menu.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Rules, cx)));
+    cx.update(|cx| {
+        shell.update(cx, |s, _cx| s.new_rule_open = true);
+    });
+    draw_frame(cx, handle);
+    open_picker_menu(cx, &mut window, handle, "rule:category-select:add");
+    assert_menu_item_unclipped(&mut window, &label, 1200.);
+}
+
+/// 3.41: the rule editor's picker is the same 200 px column with the wide
+/// searchable menu, and the trigger — which ellipsizes the selected
+/// long name — shows the full "Parent › Child" on hover.
+#[gpui::test]
+fn the_rule_editor_picker_shows_the_full_name(cx: &mut TestAppContext) {
+    let (handle, shell, rule, _long, _short) = open_long_name_rule_fixture(cx);
+    start_rule_edit(cx, handle, &shell, rule);
+    resize_and_draw(cx, handle, 1200., 720.);
+    let mut window = VisualTestContext::from_window(handle, cx);
+    let label = long_label();
+
+    let trigger = window
+        .debug_bounds("rule:category-select:edit")
+        .expect("the rule editor paints its category picker");
+    assert!(
+        (f32::from(trigger.size.width) - 200.).abs() <= 1.,
+        "the editor picker's trigger is {:?} wide, not 200 px",
+        trigger.size.width,
+    );
+
+    // The ellipsized selection shows in full on hover.
+    window.simulate_mouse_move(trigger.center(), None, Modifiers::default());
+    cx.executor().advance_clock(Duration::from_millis(600));
+    cx.run_until_parked();
+    draw_frame(cx, handle);
+    assert!(
+        window
+            .debug_bounds(leaked(format!("rule:category-tooltip:{label}")))
+            .is_some(),
+        "hovering the editor picker shows the full name {label:?} in a tooltip",
+    );
+    window.simulate_mouse_move(point(px(2.), px(2.)), None, Modifiers::default());
+    cx.run_until_parked();
+    draw_frame(cx, handle);
+
+    // And the open menu paints the full name unclipped, with the search
+    // box narrowing the list.
+    open_picker_menu(cx, &mut window, handle, "rule:category-select:edit");
+    assert_menu_item_unclipped(&mut window, &label, 1200.);
+    window.simulate_input("second");
+    draw_frame(cx, handle);
+    assert!(
+        !paints(&mut window, format!("rule-choice:{label}")),
+        "the editor picker's search narrowed the list",
+    );
+}
+
 /// 3.23: the rule-list headings use the rows' widths, and the Actions
 /// label sits on the same line as the others, right-aligned over the
 /// rows' buttons (3.24 MUST-KEEP). A stacked label-plus-buttons column
