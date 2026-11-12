@@ -6,7 +6,7 @@ Runs beside the UI queue, in the order listed. Backend only: don't read the UI d
 
 Runs beside the UI queue. 5.1 and 5.2 (in M5) follow 3.90.
 
-- [ ] **3.77 A DbWorker that keeps reads fast.** (Architecture, code
+- [x] **3.77 A DbWorker that keeps reads fast.** (Architecture, code
   review 2026-11-11.) Backend only (`financi-db/src/worker.rs`, `lib.rs`);
   runs in a free slot any time after the Fixes lane. Today it is one FIFO
   thread with one connection: queued stale jobs still run, and a slow
