@@ -779,8 +779,8 @@ out.
     rendered text with a long-named tree, a subcategory selected, and each
     validation error triggered); the renamed buttons still work.
 
-**Bugs reported by the user on 2026-11-11** (3.34–3.52, plus a fix folded
-into 3.23). Order: **3.40 → 3.23 → 3.41/3.42/3.48/3.49/3.50/3.51 → 3.43 → 3.44 → 3.47 → 3.35 → 3.36 → 3.45 → 3.46 → 3.37 → 3.38/3.39 → 3.34 → 3.52**, then the rest of
+**Bugs reported by the user on 2026-11-11** (3.34–3.53, plus a fix folded
+into 3.23). Order: **3.40 → 3.23 → 3.53/3.42/3.48/3.49/3.50/3.51 → 3.43 → 3.44 → 3.47 → 3.35 → 3.36 → 3.45 → 3.46 → 3.37 → 3.38/3.39 → 3.34 → 3.52**, then the rest of
 the order above (3.28 → 3.29 → 3.26).
 
 - 3.23 also fixes: **the rule list overflows the page.** Today each rule
@@ -821,32 +821,10 @@ the order above (3.28 → 3.29 → 3.26).
     on the dev-seed DB before and after and put both numbers in the
     commit message.
 
-- [ ] **3.41 Rule category pickers show the full name.** On the
-  Categories page the add-rule **Category** picker (`Select::new(&self.
-  rule_target)`, in a `div().w(px(160.))`) is too narrow: the items are
-  "Parent › Child" (`child_choices`), so both the closed trigger and the
-  open menu cut the name off and the right subcategory is hard to pick
-  (user report, 2026-11-11). The rule editor's picker (`rule_edit_target`,
-  also 160 px) has the same problem. Do this after 3.23 (same row
-  layout):
-  - **Menu:** give both selects `.menu_width(px(320.))` (gpui-component
-    `Select::menu_width`; today `Length::Auto` makes the menu as narrow as
-    the trigger), so the open list shows full "Parent › Child" names, and
-    make them `.searchable(true)` (gpui-component `SelectState::searchable`)
-    so a subcategory can be typed. The menu must stay inside the window
-    at 1200 × 720 (it opens from a trigger near the panel's right edge).
-  - **Trigger:** widen both to `RULE_CATEGORY_W` (200 px), the width of
-    the rule list's Category column, taking the room from the flex
-    Pattern field (keep its `min_w_0`). The selected text ellipsizes and
-    the trigger gets a hover tooltip with the full "Parent › Child".
-  - Must still meet 3.23's fit rule: the Add rule / Save / Cancel buttons
-    paint fully inside the detail panel at 1200 × 720 and 1600 × 900 with
-    long category names.
-  - Tests: with a 40-character "Parent › Child" name, the open menu item's
-    text paints unclipped (its bounds fit inside the menu) for both
-    pickers; typing in the search narrows the list; the trigger is 200 px
-    and shows the tooltip; 3.23's fit tests pass. Update the *Categories*
-    row of `ui-conventions.md`.
+- **3.41 Rule category pickers show the full name** — folded into
+  **3.53** (user request, 2026-11-11): the pickers it widened go away on
+  subcategories, and the one that stays on a parent lists short child
+  names. Its menu-width and fit requirements moved there.
 
 - [ ] **3.42 The regex switch lines up with the rule fields.** In the
   add-rule row (`cat:add-rule-row`) and the rule editor row, the
@@ -874,13 +852,12 @@ the order above (3.28 → 3.29 → 3.26).
   `min_w_0` and, after it, the regex switch, a 160 px Category picker,
   Save and Cancel. In the detail panel (page minus the 210 px sidebar
   and the 300 px tree panel) the fixed controls take ~400 px of ~600, and
-  3.41 widens the picker to 200 px, which makes it worse. The user also
+  3.53 removes the editor's picker, which frees most of that. The user also
   saw the editor's regex switch sit off the row's line (3.42's cause).
   - **Two lines:** line 1 is the "Pattern" label over the input at the
     editor's **full width**. Line 2 is one `h_flex().items_center()` of
-    32 px controls, with no label line: the regex switch, the Category
-    picker (3.41's 200 px trigger / 320 px menu, placeholder
-    "Category…"), then `ml_auto` Save and Cancel. Line 2 has no labels,
+    32 px controls, with no label line: the regex switch, then `ml_auto`
+    Save and Cancel (no Category picker, 3.53). Line 2 has no labels,
     so the switch lines up without 3.42's slot (3.42 still applies to
     the add-rule row). The preview count and error line stay under both
     lines.
@@ -890,10 +867,10 @@ the order above (3.28 → 3.29 → 3.26).
   - Enter saves, Escape cancels, focus lands in the pattern input with
     the caret at the end (check it does today; if not, add it).
   - The add-rule row: if its Pattern input is < 240 px wide at
-    1200 × 720 after 3.41, give it the same two-line shape; otherwise
+    1200 × 720 after 3.53, give it the same two-line shape; otherwise
     leave it on one line.
   - Tests: at 1200 × 720 the editor's pattern input is at least 90 % of
-    the detail panel's inner width; the switch, picker, Save and Cancel
+    the detail panel's inner width; the switch, Save and Cancel
     share a vertical centre within 1 px; the row below the editor doesn't
     overlap it (bounds); Save/Cancel/Enter/Escape tests from 3.24 pass.
     Update the *Categories* row of `ui-conventions.md`.
@@ -915,9 +892,6 @@ the order above (3.28 → 3.29 → 3.26).
     subcategory also shows: a muted `text_xs` tag with the child's name
     (not "Parent › Child") after the pattern, inside the Pattern column,
     ellipsized first. A subcategory selection shows no tag.
-  - The editor keeps its Category picker (it's how a rule moves to
-    another category); a rule saved to a category outside the selection
-    leaves the list.
   - Clicking the Uses heading sorts by it (descending), clicking Pattern
     goes back, as on the Rules page. Reuse its sort state if it fits;
     otherwise a separate `cat_rules_sort_by_uses`.
@@ -1000,6 +974,45 @@ the order above (3.28 → 3.29 → 3.26).
     - system categories have no Delete button;
     - at 1200 × 720 the buttons paint inside the panel with a 60-character
       name.
+
+    Update the *Categories* row of `ui-conventions.md`.
+
+- [ ] **3.53 No category picker where the page already says it.** The
+  Categories page's add-rule row and rule editor each carry a Category
+  picker, but the rule list sits inside a selected category, so the
+  picker mostly repeats the selection (user request, 2026-11-11).
+  Replaces 3.41.
+  - **Subcategory selected:** the add-rule row has no picker. `add_rule`
+    targets the selected subcategory. The row is Pattern, regex switch,
+    Add rule.
+  - **Parent selected:** rules must target a child (`ensure_assignable`),
+    so the add-rule row keeps a picker. It lists **only that parent's
+    subcategories by their own names** (no "Parent › Child"), placeholder
+    "Subcategory…", no default pick. The trigger is wide enough for the
+    longest child name up to 200 px; names past that ellipsize with a
+    tooltip, and the open menu is at least as wide as the longest name
+    (`menu_width`, max 320 px), so no item is cut off. A parent with no
+    subcategories shows "Add a subcategory first" (muted) in place of the
+    add-rule row.
+  - **Rule editor:** no picker on either. Edit changes pattern and regex
+    only; `update_rule` keeps the rule's `category_id`. Moving a rule to
+    another category is the Rules page's job (3.28's Move bar). Add a
+    muted one-line hint under the rule list on this page: "To move rules
+    to another category, use the Rules page."
+  - Drop the now-unused `rule_edit_target`. Keep `child_choices` for the
+    places that still list every child (transactions, queue, Rules page).
+  - Fits 1200 × 720 and 1600 × 900 with a long subcategory name; Add
+    rule / Save / Cancel paint inside the detail panel (3.23's fit rule).
+  - Tests:
+    - on a subcategory, no picker paints and Add rule creates a rule
+      targeting it;
+    - on a parent, the picker lists only its children by short name, and
+      Add rule without a pick shows "Choose the subcategory the rule
+      assigns.";
+    - with a 40-character child name, the menu item paints unclipped;
+    - a parent with no children shows the hint;
+    - Edit has no picker and Save keeps the category;
+    - 3.24's add/edit tests are updated, not deleted.
 
     Update the *Categories* row of `ui-conventions.md`.
 
@@ -1365,7 +1378,7 @@ the order above (3.28 → 3.29 → 3.26).
 
 
 **Done when:** on the demo data the dashboard totals match
-`expected.json`, filters compose, tests cover 3.1–3.52.
+`expected.json`, filters compose, tests cover 3.1–3.53.
 
 ---
 
