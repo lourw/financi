@@ -438,6 +438,65 @@ fn card_payment_beats_conflicting_user_rules_and_locks_the_row() {
 }
 
 #[test]
+fn simplii_chequing_income_containing_payment_is_not_a_card_payment() {
+    // 3.66: the Visa marker rule must not run on chequing imports — a
+    // ` GST PAYMENT CANADA` deposit is income, not a locked transfer.
+    let conn = open_in_memory().unwrap();
+    let chequing =
+        create_account(&conn, "simplii", "No Fee Chequing", AccountKind::Chequing).unwrap();
+    let mut conn = conn;
+
+    import_simplii(
+        &mut conn,
+        chequing,
+        &simplii_csv(&[
+            "10/20/2026, GST PAYMENT CANADA,,100.00",
+            "10/21/2026, PAYMENT REVERSAL,,75.00",
+            "10/09/2026, BILL SEND SAMPLE CO LTD,25.00,",
+        ]),
+    );
+
+    let card = card_payment_category(&conn).unwrap();
+    for description in [" GST PAYMENT CANADA", " PAYMENT REVERSAL"] {
+        let (cat, locked) = stored(&conn, description);
+        assert_ne!(cat, Some(card), "{description} is not a card payment");
+        assert!(!locked, "{description} stays open to rules");
+    }
+    // Money in, visible and uncategorized: income the totals include and
+    // the To-categorize queue surfaces (locked transfers were invisible).
+    let rows = list_transactions(&conn, Some(chequing)).unwrap();
+    let income: i64 = rows
+        .iter()
+        .filter(|r| r.category_id != Some(card))
+        .map(|r| r.amount_cents)
+        .sum();
+    assert_eq!(income, 10_000 + 7_500 - 2_500);
+}
+
+#[test]
+fn simplii_visa_payment_shape_decides_card_payment() {
+    // 3.66 on the Visa side: `PAYMENT RECEIVED THANK YOU` is still a card
+    // payment, but a refund from a merchant named PAYMENT is income.
+    let conn = open_in_memory().unwrap();
+    let visa = create_account(&conn, "simplii", "Visa", AccountKind::CreditCard).unwrap();
+    let mut conn = conn;
+
+    import_simplii(
+        &mut conn,
+        visa,
+        &simplii_csv(&[
+            "10/12/2026, PAYMENT RECEIVED THANK YOU,,250.00",
+            "10/22/2026, PAYPAL *PAYMENTS REFUND,,42.00",
+        ]),
+    );
+
+    let (cat, locked) = stored(&conn, " PAYMENT RECEIVED THANK YOU");
+    assert_eq!(cat, Some(card_payment_category(&conn).unwrap()));
+    assert!(locked, "the real payment into the card keeps its lock");
+    assert_eq!(stored(&conn, " PAYPAL *PAYMENTS REFUND"), (None, false));
+}
+
+#[test]
 fn history_lists_imports_newest_first_with_their_rows() {
     use financi_db::import::list_imports;
 

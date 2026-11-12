@@ -89,9 +89,11 @@ impl StatementParser for Amex {
         true
     }
 
-    fn is_card_payment(&self, txn: &RawTransaction) -> bool {
-        // Amex exports the marker in upper case; fold like the rule engine
-        // does, and match only as a prefix of the description.
+    fn is_card_payment(&self, txn: &RawTransaction, _kind: AccountKind) -> bool {
+        // Amex only exports credit-card activity, so `kind` is always
+        // CreditCard and can be ignored. The marker appears in the export
+        // in upper case; fold like the rule engine does, and match only as
+        // a prefix of the description.
         txn.description_raw
             .get(..CARD_PAYMENT_PREFIX.len())
             .is_some_and(|prefix| prefix.eq_ignore_ascii_case(CARD_PAYMENT_PREFIX))
@@ -157,24 +159,43 @@ mod tests {
 
     #[test]
     fn card_payment_is_a_case_insensitive_prefix_match() {
-        assert!(Amex.is_card_payment(&mapped("PAYMENT RECEIVED - THANK YOU")));
+        assert!(Amex.is_card_payment(
+            &mapped("PAYMENT RECEIVED - THANK YOU"),
+            AccountKind::CreditCard
+        ));
         assert!(
-            Amex.is_card_payment(&mapped("payment received - thank you")),
+            Amex.is_card_payment(
+                &mapped("payment received - thank you"),
+                AccountKind::CreditCard
+            ),
             "case-insensitive like the rule engine"
         );
-        assert!(!Amex.is_card_payment(&mapped("COFFEE VANCOUVER")));
+        assert!(!Amex.is_card_payment(&mapped("COFFEE VANCOUVER"), AccountKind::CreditCard));
         assert!(
-            !Amex.is_card_payment(&mapped("CREDIT PAYMENT RECEIVED")),
+            !Amex.is_card_payment(&mapped("CREDIT PAYMENT RECEIVED"), AccountKind::CreditCard),
             "only a prefix counts"
         );
-        assert!(!Amex.is_card_payment(&mapped("PAYMENT")), "too short");
+        assert!(!Amex.is_card_payment(&mapped("PAYMENT"), AccountKind::CreditCard));
     }
 
     #[test]
     fn payment_marker_is_anchored_to_the_start() {
         // The Simplii parser matches PAYMENT anywhere; Amex only as a
         // prefix, so look-alikes stay ordinary spending.
-        assert!(!Amex.is_card_payment(&mapped("THANK YOU - CARD PAYMENT 1234")));
+        assert!(!Amex.is_card_payment(
+            &mapped("THANK YOU - CARD PAYMENT 1234"),
+            AccountKind::CreditCard
+        ));
+    }
+
+    #[test]
+    fn amex_ignores_the_account_kind() {
+        // Amex only exports credit-card activity, so the rule has no
+        // per-kind branch (3.66): the marker decides on its own.
+        assert!(Amex.is_card_payment(
+            &mapped("PAYMENT RECEIVED - THANK YOU"),
+            AccountKind::Chequing
+        ));
     }
 
     #[test]

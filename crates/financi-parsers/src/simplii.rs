@@ -21,10 +21,24 @@ const DETAILS: usize = 1;
 const OUT: usize = 2;
 const IN: usize = 3;
 
-/// A Visa payment reads `... PAYMENT ...` in the description and arrives as
-/// Funds In (money towards the card); the marker matches anywhere in the
-/// description, case-insensitively.
+/// A Visa payment reads `PAYMENT RECEIVED ...` or `... PAYMENT ... THANK
+/// YOU` in the description (like Amex's `PAYMENT RECEIVED - THANK YOU`) and
+/// arrives as Funds In (money towards the card). A bare `PAYMENT` is not
+/// enough (3.66): chequing income such as ` GST PAYMENT CANADA` and Visa
+/// merchant refunds such as `PAYPAL *PAYMENTS` contain it too. All markers
+/// match anywhere in the description, case-insensitively.
 const CARD_PAYMENT_MARKER: &[u8] = b"PAYMENT";
+const RECEIVED_MARKER: &[u8] = b"RECEIVED";
+const THANK_YOU_MARKER: &[u8] = b"THANK YOU";
+
+/// Case-insensitive substring test, matching how the rule engine treats
+/// descriptions.
+fn contains_ci(haystack: &str, needle: &[u8]) -> bool {
+    haystack
+        .as_bytes()
+        .windows(needle.len())
+        .any(|w| w.eq_ignore_ascii_case(needle))
+}
 
 pub struct Simplii;
 
@@ -106,17 +120,19 @@ impl StatementParser for Simplii {
         false
     }
 
-    fn is_card_payment(&self, txn: &RawTransaction) -> bool {
-        // A Funds In row (money in, from the account's own perspective)
-        // whose description contains the marker. Folding case matches how
-        // the rule engine treats descriptions; unlike Amex the marker is
-        // not anchored to the start.
-        txn.amount_cents > 0
-            && txn
-                .description_raw
-                .as_bytes()
-                .windows(CARD_PAYMENT_MARKER.len())
-                .any(|w| w.eq_ignore_ascii_case(CARD_PAYMENT_MARKER))
+    fn is_card_payment(&self, txn: &RawTransaction, kind: AccountKind) -> bool {
+        // Card payments exist on the Visa account only (3.66): chequing
+        // uses the same export format, and there a Funds In row whose
+        // description mentions PAYMENT is income — ` GST PAYMENT CANADA`,
+        // a `PAYMENT REVERSAL`, an e-transfer memo — not a transfer.
+        // Even on the Visa, `PAYMENT` alone is not enough: a merchant
+        // refund can carry it. Require `RECEIVED` or `THANK YOU`
+        // alongside, the shape of a real payment into the card.
+        kind == AccountKind::CreditCard
+            && txn.amount_cents > 0
+            && contains_ci(&txn.description_raw, CARD_PAYMENT_MARKER)
+            && (contains_ci(&txn.description_raw, RECEIVED_MARKER)
+                || contains_ci(&txn.description_raw, THANK_YOU_MARKER))
     }
 }
 
@@ -206,24 +222,74 @@ mod tests {
     }
 
     #[test]
-    fn card_payment_is_funds_in_containing_payment() {
-        assert!(Simplii.is_card_payment(&mapped("10/12/2026, PAYMENT RECEIVED THANK YOU,,250.00")));
+    fn card_payment_is_credit_card_funds_in_with_the_payment_shape() {
+        assert!(Simplii.is_card_payment(
+            &mapped("10/12/2026, PAYMENT RECEIVED THANK YOU,,250.00"),
+            AccountKind::CreditCard
+        ));
         assert!(
-            Simplii.is_card_payment(&mapped("10/12/2026, online payment received,,50.00")),
+            Simplii.is_card_payment(
+                &mapped("10/12/2026, online payment received,,50.00"),
+                AccountKind::CreditCard
+            ),
             "case-insensitive like the rule engine"
         );
         assert!(
-            Simplii.is_card_payment(&mapped("10/12/2026, CREDIT CARD PAYMENT 1234,,50.00")),
-            "unlike Amex, the marker counts anywhere in the description"
+            Simplii.is_card_payment(
+                &mapped("10/12/2026, PAYMENT THANK YOU FOR YOUR BUSINESS,,50.00"),
+                AccountKind::CreditCard
+            ),
+            "`THANK YOU` counts as well as `RECEIVED`"
         );
     }
 
     #[test]
     fn other_rows_are_not_card_payments() {
         assert!(
-            !Simplii.is_card_payment(&mapped("10/07/2026, BILL PAYMENT SAMPLE CARD,25.00,")),
+            !Simplii.is_card_payment(
+                &mapped("10/07/2026, BILL PAYMENT SAMPLE CARD,25.00,"),
+                AccountKind::CreditCard
+            ),
             "money out is the transfer's other side, not a payment into the card"
         );
-        assert!(!Simplii.is_card_payment(&mapped("10/07/2026, E-TRANSFER RECEIVE,,40.00")));
+        assert!(!Simplii.is_card_payment(
+            &mapped("10/07/2026, E-TRANSFER RECEIVE,,40.00"),
+            AccountKind::CreditCard
+        ));
+        assert!(
+            !Simplii.is_card_payment(
+                &mapped("10/12/2026, CREDIT CARD PAYMENT 1234,,50.00"),
+                AccountKind::CreditCard
+            ),
+            "`PAYMENT` alone is not enough: it needs `RECEIVED` or `THANK YOU` (3.66)"
+        );
+        assert!(
+            !Simplii.is_card_payment(
+                &mapped("10/12/2026, PAYPAL *PAYMENTS REFUND,,42.00"),
+                AccountKind::CreditCard
+            ),
+            "a merchant refund from a merchant named PAYMENT is money in, not a transfer"
+        );
+        assert!(
+            !Simplii.is_card_payment(
+                &mapped("10/12/2026, PAYMENT RECEIVED THANK YOU,,250.00"),
+                AccountKind::Chequing
+            ),
+            "on chequing even the full marker is not a card payment (3.66)"
+        );
+        assert!(
+            !Simplii.is_card_payment(
+                &mapped("10/12/2026, GST PAYMENT CANADA,,100.00"),
+                AccountKind::Chequing
+            ),
+            "chequing income containing PAYMENT stays income (3.66)"
+        );
+        assert!(
+            !Simplii.is_card_payment(
+                &mapped("10/12/2026, PAYMENT REVERSAL,,75.00"),
+                AccountKind::Chequing
+            ),
+            "a reversed bill payment lands on chequing as income"
+        );
     }
 }

@@ -24,15 +24,19 @@ fn basic_export_parses_completely() {
         .iter()
         .map(|r| parser.map(r).unwrap())
         .collect();
-    assert_eq!(txns.len(), 5);
+    assert_eq!(txns.len(), 6);
     let total: i64 = txns.iter().map(|t| t.amount_cents).sum();
-    assert_eq!(total, 10_119 - 145_000 - 25_000 - 2_500 - 2_500);
+    assert_eq!(total, 10_119 - 145_000 - 25_000 - 2_500 - 2_500 + 10_000);
     assert_eq!(txns[0].posted_date, "2026-10-07", "oldest first");
     assert_eq!(
         txns[2].merchant.as_deref(),
         Some("INTERNET BILL PAY SAMPLE CARD"),
         "row without leading space"
     );
+    // 3.66: the GST refund is income on chequing, never a card payment,
+    // even though its description contains PAYMENT.
+    assert!(txns[5].amount_cents > 0);
+    assert!(!parser.is_card_payment(&txns[5], financi_core::AccountKind::Chequing));
 }
 
 #[test]
@@ -57,27 +61,30 @@ fn visa_export_parses_with_the_same_format() {
         .iter()
         .map(|r| parser.map(r).unwrap())
         .collect();
-    assert_eq!(txns.len(), 6);
+    assert_eq!(txns.len(), 7);
     // Funds Out is money out, Funds In money in — same signs as chequing.
     let amounts: Vec<_> = txns.iter().map(|t| t.amount_cents).collect();
     assert_eq!(
         amounts,
-        [-575, -8_641, -1_200, 25_000, 4_875, -10_000],
+        [-575, -8_641, -1_200, 25_000, 4_875, 4_200, -10_000],
         "charges negative, payments and rebates positive"
     );
     assert_eq!(txns[0].posted_date, "2026-10-02", "oldest first");
 
+    let kind = financi_core::AccountKind::CreditCard;
     let payments: Vec<_> = txns
         .iter()
         .enumerate()
-        .filter(|(_, t)| parser.is_card_payment(t))
+        .filter(|(_, t)| parser.is_card_payment(t, kind))
         .map(|(i, _)| i)
         .collect();
     assert_eq!(
         payments,
         [3],
-        "only the Funds In row containing PAYMENT; the money-out row with \
-         PAYMENT in its name and the marker-free rebate stay spending"
+        "only the Funds In row shaped like a payment (`PAYMENT RECEIVED \
+         THANK YOU`); the money-out row with PAYMENT in its name, the \
+         marker-free rebate and the `PAYPAL *PAYMENTS` refund (3.66) all \
+         stay spending or income"
     );
 }
 
