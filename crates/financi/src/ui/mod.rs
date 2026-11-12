@@ -7973,5 +7973,4 @@ impl Render for Shell {
 }
 
 #[cfg(test)]
-#[path = "../ui_tests.rs"]
 mod tests;
