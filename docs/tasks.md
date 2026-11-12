@@ -791,7 +791,7 @@ the order above (3.28 → 3.29 → 3.26).
   detail panel at 1200 × 720 and at 1600 × 900, with long patterns and
   long category names. Test that at both sizes.
 
-- [ ] **3.40 Saving a rule is instant.** Clicking Save on a rule edit (and
+- [x] **3.40 Saving a rule is instant.** Clicking Save on a rule edit (and
   Add / Delete…) takes ~5 s to take effect, with no sign anything is
   happening, so the button looks broken (user report, 2026-11-11). Cause:
   `financi_core::rules::rule_matches` builds the regex with

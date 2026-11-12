@@ -1631,6 +1631,18 @@ struct ToastMessage {
     is_error: bool,
 }
 
+/// 3.40: the rule-editor button currently waiting on the DB (Save on a
+/// rule edit, Add rule, or a row's Delete…). While one is pending that
+/// button renders `.loading(true)` and disabled, so a slow save can't be
+/// double-submitted; the task clears it when it finishes, on success or
+/// error.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum PendingRuleAction {
+    Add,
+    Save(i64),
+    Delete(i64),
+}
+
 pub struct Shell {
     db: DbWorker,
     db_path: PathBuf,
@@ -1745,6 +1757,9 @@ pub struct Shell {
     /// delete"). Armed per row; `select_category` and `go_page` disarm it
     /// with the page's other transient confirmations.
     armed_delete_rule: Option<i64>,
+    /// 3.40: which rule button is waiting on the DB (see
+    /// [`PendingRuleAction`]); rendered loading + disabled while set.
+    pending_rule_action: Option<PendingRuleAction>,
     /// 3.24: the editor's own controls, separate entities from the add-rule
     /// row's so the two never share an `InputState`/`SelectState` on screen
     /// at once. While the editor is open the shared `rule_match_count`
@@ -2246,6 +2261,7 @@ impl Shell {
             rule_error: None,
             editing_rule: None,
             armed_delete_rule: None,
+            pending_rule_action: None,
             rule_edit_pattern,
             rule_edit_target,
             rule_edit_regex: false,
@@ -3516,6 +3532,13 @@ impl Shell {
         }));
     }
 
+    /// 3.40: is `action` the rule button currently waiting on the DB? The
+    /// matching button renders `.loading(true)` and disabled while it is,
+    /// so a slow save can't be double-submitted.
+    fn rule_action_pending(&self, action: PendingRuleAction) -> bool {
+        self.pending_rule_action == Some(action)
+    }
+
     fn add_rule(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let pattern = self.rule_pattern.read(cx).value().trim().to_string();
         let is_regex = self.rule_regex;
@@ -3533,9 +3556,13 @@ impl Shell {
             return;
         }
         let db = self.db.clone();
+        // 3.40: the Add button shows loading, disabled, until the DB is
+        // done (a save that re-runs the rules can take seconds).
+        self.pending_rule_action = Some(PendingRuleAction::Add);
         self.task = Some(cx.spawn_in(window, async move |this, cx| {
             let result = on_db(&db, move |c| add_rule(c, &pattern, is_regex, category_id)).await;
             let _ = this.update_in(cx, |this, window, cx| {
+                this.pending_rule_action = None;
                 match result {
                     Ok(_) => {
                         this.rule_pattern
@@ -3636,12 +3663,16 @@ impl Shell {
             return;
         }
         let db = self.db.clone();
+        // 3.40: the Save button shows loading, disabled, until the DB is
+        // done; on error the editor stays open and pending clears too.
+        self.pending_rule_action = Some(PendingRuleAction::Save(id));
         self.task = Some(cx.spawn_in(window, async move |this, cx| {
             let result = on_db(&db, move |c| {
                 update_rule(c, id, &pattern, is_regex, category_id)
             })
             .await;
             let _ = this.update_in(cx, |this, window, cx| {
+                this.pending_rule_action = None;
                 match result {
                     Ok(()) => {
                         this.close_rule_editor();
@@ -3662,9 +3693,13 @@ impl Shell {
     fn arm_delete_rule(&mut self, id: i64, window: &mut Window, cx: &mut Context<Self>) {
         if self.armed_delete_rule == Some(id) {
             let db = self.db.clone();
+            // 3.40: the delete runs (and the button shows loading,
+            // disabled) while the rules re-run over the unlocked rows.
+            self.pending_rule_action = Some(PendingRuleAction::Delete(id));
             self.task = Some(cx.spawn_in(window, async move |this, cx| {
                 let result = on_db(&db, move |c| delete_rule(c, id)).await;
                 let _ = this.update_in(cx, |this, window, cx| {
+                    this.pending_rule_action = None;
                     match result {
                         Ok(()) => {
                             this.armed_delete_rule = None;
@@ -5345,6 +5380,9 @@ impl Shell {
                     .ghost()
                     .text_xs()
                     .flex_shrink_0()
+                    // 3.40: loading + disabled while the delete runs.
+                    .loading(self.rule_action_pending(PendingRuleAction::Delete(id)))
+                    .disabled(self.rule_action_pending(PendingRuleAction::Delete(id)))
                     .on_click(
                         cx.listener(move |this, _, window, cx| {
                             this.arm_delete_rule(id, window, cx)
@@ -5423,6 +5461,9 @@ impl Shell {
                             .label("Save")
                             .primary()
                             .flex_shrink_0()
+                            // 3.40: loading + disabled while the save runs.
+                            .loading(self.rule_action_pending(PendingRuleAction::Save(rule.id)))
+                            .disabled(self.rule_action_pending(PendingRuleAction::Save(rule.id)))
                             .on_click(
                                 cx.listener(|this, _, window, cx| this.save_rule_edit(window, cx)),
                             ),
@@ -5760,6 +5801,9 @@ impl Shell {
                     .ghost()
                     .text_xs()
                     .flex_shrink_0()
+                    // 3.40: loading + disabled while the delete runs.
+                    .loading(self.rule_action_pending(PendingRuleAction::Delete(id)))
+                    .disabled(self.rule_action_pending(PendingRuleAction::Delete(id)))
                     .on_click(
                         cx.listener(move |this, _, window, cx| {
                             this.arm_delete_rule(id, window, cx)
@@ -5948,6 +5992,9 @@ impl Shell {
                                         .label("Add rule")
                                         .primary()
                                         .flex_shrink_0()
+                                        // 3.40: loading + disabled while the add runs.
+                                        .loading(self.rule_action_pending(PendingRuleAction::Add))
+                                        .disabled(self.rule_action_pending(PendingRuleAction::Add))
                                         .on_click(cx.listener(|this, _, window, cx| {
                                             this.add_rule(window, cx)
                                         })),
@@ -6471,6 +6518,13 @@ impl Shell {
                                             .label("Add rule")
                                             .primary()
                                             .flex_shrink_0()
+                                            // 3.40: loading + disabled while the add runs.
+                                            .loading(
+                                                self.rule_action_pending(PendingRuleAction::Add),
+                                            )
+                                            .disabled(
+                                                self.rule_action_pending(PendingRuleAction::Add),
+                                            )
                                             .on_click(cx.listener(|this, _, window, cx| {
                                                 this.add_rule(window, cx)
                                             })),
