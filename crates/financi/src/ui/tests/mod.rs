@@ -126,12 +126,18 @@ fn with_window<R>(
 }
 
 fn panel(shell: &Entity<Shell>, cx: &App) -> Entity<ImportPanel> {
-    shell.read(cx).import.clone().expect("import panel open")
+    shell
+        .read(cx)
+        .imports
+        .import
+        .clone()
+        .expect("import panel open")
 }
 
 fn plan_ready(shell: &Entity<Shell>, cx: &App) -> bool {
     shell
         .read(cx)
+        .imports
         .import
         .as_ref()
         .is_some_and(|p| matches!(p.read(cx).plan, PlanState::Ready(_)))
@@ -248,7 +254,9 @@ fn import_demo_file(
         plan_ready(shell, cx)
     });
     click_import(cx, handle, shell);
-    wait_until(cx, "import finished", |cx| shell.read(cx).import.is_none());
+    wait_until(cx, "import finished", |cx| {
+        shell.read(cx).imports.import.is_none()
+    });
 }
 
 /// 3.25: resize to `w` × `h` and paint, so `debug_bounds` reports the
@@ -276,7 +284,7 @@ fn centre_y(window: &mut VisualTestContext, sel: &'static str) -> f32 {
 fn add_parent(cx: &mut TestAppContext, handle: AnyWindowHandle, shell: &Entity<Shell>, name: &str) {
     with_window(cx, handle, |window, cx| {
         shell.update(cx, |s, cx| {
-            s.new_parent_name.update(cx, |i, cx| {
+            s.categories_page.new_parent_name.update(cx, |i, cx| {
                 i.set_value(name, window, cx);
             });
             s.add_parent(window, cx);
@@ -292,7 +300,7 @@ fn add_parent(cx: &mut TestAppContext, handle: AnyWindowHandle, shell: &Entity<S
 fn add_child(cx: &mut TestAppContext, handle: AnyWindowHandle, shell: &Entity<Shell>, name: &str) {
     with_window(cx, handle, |window, cx| {
         shell.update(cx, |s, cx| {
-            s.new_child_name.update(cx, |i, cx| {
+            s.categories_page.new_child_name.update(cx, |i, cx| {
                 i.set_value(name, window, cx);
             });
             s.add_child(window, cx);
@@ -321,6 +329,7 @@ fn top_group(shell: &Entity<Shell>, cx: &App) -> (String, i64) {
     shell
         .read(cx)
         .queue
+        .groups
         .first()
         .map(|g| (g.merchant.clone(), g.count))
         .expect("queue has a group")
@@ -597,18 +606,21 @@ fn go_page_closes_transient_ui(cx: &mut TestAppContext) {
     });
     cx.update(|cx| {
         shell.update(cx, |s, cx| {
-            s.confirm_undo_import = Some(1);
-            s.rule_offer = Some((1, 2));
-            s.renaming = true;
-            s.confirm_delete_category = Some(1);
+            s.imports.confirm_undo_import = Some(1);
+            s.dashboard.rule_offer = Some((1, 2));
+            s.categories_page.renaming = true;
+            s.categories_page.confirm_delete_category = Some(1);
             s.go_page(Page::Categories, cx);
         });
         let s = shell.read(cx);
-        assert!(s.confirm_undo_import.is_none(), "undo confirmation cleared");
-        assert!(s.rule_offer.is_none(), "rule offer cleared");
-        assert!(!s.renaming, "rename editor closed");
         assert!(
-            s.confirm_delete_category.is_none(),
+            s.imports.confirm_undo_import.is_none(),
+            "undo confirmation cleared"
+        );
+        assert!(s.dashboard.rule_offer.is_none(), "rule offer cleared");
+        assert!(!s.categories_page.renaming, "rename editor closed");
+        assert!(
+            s.categories_page.confirm_delete_category.is_none(),
             "delete confirmation cleared"
         );
     });
@@ -630,7 +642,14 @@ fn seed_categories_fit(conn: &financi_db::rusqlite::Connection) -> (i64, i64) {
 
 /// The dashboard table's rows.
 fn table_rows(shell: &Entity<Shell>, cx: &App) -> Vec<TransactionRow> {
-    shell.read(cx).table.read(cx).delegate().rows.clone()
+    shell
+        .read(cx)
+        .dashboard
+        .table
+        .read(cx)
+        .delegate()
+        .rows
+        .clone()
 }
 
 // ---------------------------------------------------------------------------
@@ -687,8 +706,10 @@ fn import_and_top_merchant(
     );
     wait_until(cx, "plan", |cx| plan_ready(shell, cx));
     click_import(cx, handle, shell);
-    wait_until(cx, "import", |cx| shell.read(cx).row_count == 67);
-    wait_until(cx, "queue populated", |cx| !shell.read(cx).queue.is_empty());
+    wait_until(cx, "import", |cx| shell.read(cx).dashboard.row_count == 67);
+    wait_until(cx, "queue populated", |cx| {
+        !shell.read(cx).queue.groups.is_empty()
+    });
     cx.update(|cx| {
         let (m, _) = top_group(shell, cx);
         let group: Vec<i64> = table_rows(shell, cx)

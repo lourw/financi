@@ -16,7 +16,7 @@ fn creating_a_rule_categorizes_matching_rows(cx: &mut TestAppContext) {
     );
     wait_until(cx, "plan", |cx| plan_ready(&shell, cx));
     click_import(cx, handle, &shell);
-    wait_until(cx, "import", |cx| shell.read(cx).row_count == 67);
+    wait_until(cx, "import", |cx| shell.read(cx).dashboard.row_count == 67);
 
     add_parent(cx, handle, &shell, "Shopping");
     add_child(cx, handle, &shell, "Online");
@@ -426,7 +426,7 @@ fn selecting_another_category_cancels_the_rule_editor(cx: &mut TestAppContext) {
     });
     cx.update(|cx| {
         let s = shell.read(cx);
-        assert_eq!(s.selected_category, Some(first));
+        assert_eq!(s.categories_page.selected_category, Some(first));
         assert_eq!(
             s.editing_rule, None,
             "selecting a category cancels the edit"
@@ -536,9 +536,9 @@ fn rule_row_actions_are_built_only_for_visible_rows(cx: &mut TestAppContext) {
     cx.update(|cx| {
         let s = shell.read(cx);
         assert!(
-            s.rule_rows_built.get() > 0 && s.rule_rows_built.get() < 100,
+            s.categories_page.rule_rows_built.get() > 0 && s.categories_page.rule_rows_built.get() < 100,
             "the rule list built {} rows of 2000 — buttons come with each row, so it must render a window",
-            s.rule_rows_built.get()
+            s.categories_page.rule_rows_built.get()
         );
     });
     // The editor swaps one row for a taller block; the window stays small.
@@ -548,9 +548,9 @@ fn rule_row_actions_are_built_only_for_visible_rows(cx: &mut TestAppContext) {
         let s = shell.read(cx);
         assert_eq!(s.editing_rule, Some(first_rule));
         assert!(
-            s.rule_rows_built.get() < 100,
+            s.categories_page.rule_rows_built.get() < 100,
             "still a window of rows with the editor open: {}",
-            s.rule_rows_built.get()
+            s.categories_page.rule_rows_built.get()
         );
     });
 }
@@ -627,8 +627,8 @@ fn open_rules_page(
     wait_until(cx, "rules page fixture loaded", |cx| {
         let s = shell.read(cx);
         s.rules.len() == 4
-            && s.rule_uses.get(&rules[0]) == Some(&2)
-            && s.rule_uses.get(&rules[1]) == Some(&1)
+            && s.rules_page.rule_uses.get(&rules[0]) == Some(&2)
+            && s.rules_page.rule_uses.get(&rules[1]) == Some(&1)
             && s.cat_counts.get(&coffee) == Some(&3)
             && s.cat_counts.get(&games) == Some(&1)
     });
@@ -648,7 +648,8 @@ fn set_rules_search(
     let value = value.to_string();
     with_window(cx, handle, |window, cx| {
         shell.update(cx, |s, cx| {
-            s.rules_search
+            s.rules_page
+                .rules_search
                 .update(cx, |i, cx| i.set_value(value, window, cx));
         });
     });
@@ -773,7 +774,7 @@ fn rules_page_test_mode_marks_the_winner_first(cx: &mut TestAppContext) {
     let (handle, shell, _coffee, _snacks, _games, rules) = open_rules_page(cx);
     with_window(cx, handle, |_, cx| {
         shell.update(cx, |s, cx| {
-            s.rules_test_mode = true;
+            s.rules_page.rules_test_mode = true;
             cx.notify();
         });
     });
@@ -806,7 +807,7 @@ fn rules_page_test_mode_marks_the_winner_first(cx: &mut TestAppContext) {
     set_rules_search(cx, handle, &shell, "");
     with_window(cx, handle, |_, cx| {
         shell.update(cx, |s, cx| {
-            s.rules_test_mode = false;
+            s.rules_page.rules_test_mode = false;
             cx.notify();
         });
     });
@@ -822,7 +823,7 @@ fn rules_page_unused_shows_only_zero_use_rules(cx: &mut TestAppContext) {
     let (handle, shell, _coffee, _snacks, _games, rules) = open_rules_page(cx);
     with_window(cx, handle, |_, cx| {
         shell.update(cx, |s, cx| {
-            s.rules_unused_only = true;
+            s.rules_page.rules_unused_only = true;
             cx.notify();
         });
     });
@@ -850,7 +851,7 @@ fn rules_page_type_picker_filters_by_kind(cx: &mut TestAppContext) {
     let pick = |cx: &mut TestAppContext, row: Option<usize>| {
         with_window(cx, handle, |window, cx| {
             shell.update(cx, |s, cx| {
-                s.rules_type_select.update(cx, |sel, cx| {
+                s.rules_page.rules_type_select.update(cx, |sel, cx| {
                     sel.set_selected_index(
                         row.map(gpui_kit::component::IndexPath::new),
                         window,
@@ -957,7 +958,7 @@ fn rules_page_move_recategorizes_rows_and_clears_selection(cx: &mut TestAppConte
     });
     with_window(cx, handle, |window, cx| {
         shell.update(cx, |s, cx| {
-            s.move_rules_target.update(cx, |sel, cx| {
+            s.rules_page.move_rules_target.update(cx, |sel, cx| {
                 sel.set_selected_index(Some(gpui_kit::component::IndexPath::new(ix)), window, cx);
             });
             s.move_selected_rules(window, cx);
@@ -984,7 +985,10 @@ fn rules_page_move_recategorizes_rows_and_clears_selection(cx: &mut TestAppConte
         );
         assert_eq!(s.cat_counts.get(&snacks), Some(&3));
         assert_eq!(s.cat_counts.get(&games), Some(&1));
-        assert!(s.selected_rules.is_empty(), "the selection clears");
+        assert!(
+            s.rules_page.selected_rules.is_empty(),
+            "the selection clears"
+        );
     });
     draw_frame(cx, handle);
     assert!(
@@ -1003,7 +1007,7 @@ fn rules_page_builds_only_the_visible_rows(cx: &mut TestAppContext) {
     });
     cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Rules, cx)));
     draw_frame(cx, handle);
-    let built = shell.read_with(cx, |s, _| s.rules_page_rows_built.get());
+    let built = shell.read_with(cx, |s, _| s.rules_page.rules_page_rows_built.get());
     assert!(
         built > 0 && built < 200,
         "the list built {built} of 2000 rules, only the visible slice"
@@ -1071,6 +1075,7 @@ fn rules_page_opens_with_the_search_focused(cx: &mut TestAppContext) {
     let focused = with_window(cx, handle, |window, cx| {
         shell
             .read(cx)
+            .rules_page
             .rules_search
             .read(cx)
             .focus_handle(cx)
@@ -1085,6 +1090,7 @@ fn rules_page_opens_with_the_search_focused(cx: &mut TestAppContext) {
     let focused = with_window(cx, handle, |window, cx| {
         shell
             .read(cx)
+            .rules_page
             .rules_search
             .read(cx)
             .focus_handle(cx)
@@ -1117,9 +1123,9 @@ fn show_rule_from_a_row_lands_on_the_deciding_rule(cx: &mut TestAppContext) {
     wait_until(cx, "the rules and dashboard rows loaded", |cx| {
         let s = shell.read(cx);
         s.rules.len() == 34
-            && s.rule_uses.get(&r1) == Some(&2)
+            && s.rules_page.rule_uses.get(&r1) == Some(&2)
             && s.cat_counts.get(&coffee) == Some(&3)
-            && s.table.read(cx).delegate().rows.len() == 5
+            && s.dashboard.table.read(cx).delegate().rows.len() == 5
     });
     let mut window = VisualTestContext::from_window(handle, cx);
 
@@ -1165,12 +1171,21 @@ fn show_rule_from_a_row_lands_on_the_deciding_rule(cx: &mut TestAppContext) {
     );
     assert_eq!(
         with_window(cx, handle, |_, cx| {
-            shell.read(cx).rules_search.read(cx).value().to_string()
+            shell
+                .read(cx)
+                .rules_page
+                .rules_search
+                .read(cx)
+                .value()
+                .to_string()
         }),
         "COFFEE",
         "the search box takes the rule's pattern, find-in-page style"
     );
-    assert_eq!(cx.update(|cx| shell.read(cx).rules_reveal), Some(r1));
+    assert_eq!(
+        cx.update(|cx| shell.read(cx).rules_page.rules_reveal),
+        Some(r1)
+    );
     assert!(
         paints(&mut window, active.clone()),
         "the deciding rule paints highlighted"
@@ -1195,7 +1210,7 @@ fn show_rule_from_a_row_lands_on_the_deciding_rule(cx: &mut TestAppContext) {
     cx.simulate_keystrokes(handle, "backspace");
     cx.run_until_parked();
     draw_frame(cx, handle);
-    assert_eq!(cx.update(|cx| shell.read(cx).rules_reveal), None);
+    assert_eq!(cx.update(|cx| shell.read(cx).rules_page.rules_reveal), None);
     assert!(
         !paints(&mut window, active.clone()),
         "the highlight did not survive the user's own edit"
@@ -1211,7 +1226,7 @@ fn show_rule_from_a_row_lands_on_the_deciding_rule(cx: &mut TestAppContext) {
     cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
     draw_frame(cx, handle);
     assert_eq!(
-        cx.update(|cx| shell.read(cx).rules_reveal),
+        cx.update(|cx| shell.read(cx).rules_page.rules_reveal),
         None,
         "the reveal belongs to the Rules page"
     );

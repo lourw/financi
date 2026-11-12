@@ -3,6 +3,28 @@
 use super::*;
 use crate::ui::widgets::*;
 
+/// This page's state (3.74): the open transfer reviews left behind by
+/// pairing. The sidebar pill counts them; the page lists each with its
+/// candidates.
+pub(super) struct TransfersState {
+    pub(super) transfer_reviews: Vec<TransferReview>,
+}
+
+impl TransfersState {
+    pub(super) fn new(_window: &mut Window, _cx: &mut Context<Shell>) -> Self {
+        Self {
+            transfer_reviews: Vec::new(),
+        }
+    }
+}
+
+impl Shell {
+    /// Apply this page's part of a refresh result (3.74).
+    pub(super) fn apply_transfers(&mut self, reviews: Vec<TransferReview>) {
+        self.transfers.transfer_reviews = reviews;
+    }
+}
+
 impl Shell {
     /// Resolve an open transfer review by pairing its row with `candidate`
     /// (Transfers page, 4.2). The engine re-runs on the same commit, so a
@@ -84,7 +106,7 @@ impl Shell {
             let theme = cx.theme();
             (theme.muted_foreground, theme.border, theme.radius)
         };
-        let reviews = self.transfer_reviews.clone();
+        let reviews = self.transfers.transfer_reviews.clone();
         let body: AnyElement = if reviews.is_empty() {
             div()
                 .flex_1()
@@ -202,7 +224,7 @@ impl Shell {
                     )
                     .child(div().text_sm().text_color(muted).child(format!(
                         "{} to review",
-                        flow::count(self.transfer_reviews.len() as i64)
+                        flow::count(self.transfers.transfer_reviews.len() as i64)
                     ))),
             )
             .child(body)

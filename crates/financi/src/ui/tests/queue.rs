@@ -16,12 +16,14 @@ fn categorizing_a_queue_group_locks_in_a_rule(cx: &mut TestAppContext) {
     );
     wait_until(cx, "plan", |cx| plan_ready(&shell, cx));
     click_import(cx, handle, &shell);
-    wait_until(cx, "import", |cx| shell.read(cx).row_count == 67);
+    wait_until(cx, "import", |cx| shell.read(cx).dashboard.row_count == 67);
     add_parent(cx, handle, &shell, "Shopping");
     add_child(cx, handle, &shell, "Online");
     let child = cx.update(|cx| find_child(&shell, cx, "Online").unwrap());
 
-    wait_until(cx, "queue populated", |cx| !shell.read(cx).queue.is_empty());
+    wait_until(cx, "queue populated", |cx| {
+        !shell.read(cx).queue.groups.is_empty()
+    });
     let (merchant, before) = cx.update(|cx| top_group(&shell, cx));
 
     with_window(cx, handle, |window, cx| {
@@ -46,6 +48,7 @@ fn categorizing_a_queue_group_locks_in_a_rule(cx: &mut TestAppContext) {
         !shell_for_gone
             .read(cx)
             .queue
+            .groups
             .iter()
             .any(|g| g.merchant == gone)
     });
@@ -98,30 +101,30 @@ fn seed_queue_thousands(conn: &financi_db::rusqlite::Connection, groups: usize) 
 fn the_queue_page_builds_only_the_visible_rows(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, |conn| seed_queue_thousands(conn, 2_000));
     wait_until(cx, "2000 queue groups", |cx| {
-        shell.read(cx).queue.len() == 2_000
+        shell.read(cx).queue.groups.len() == 2_000
     });
     cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::ToCategorize, cx)));
     draw_frame(cx, handle);
     cx.update(|cx| {
         let s = shell.read(cx);
         assert!(
-            s.queue_rows_built.get() > 0 && s.queue_rows_built.get() < 100,
+            s.queue.rows_built.get() > 0 && s.queue.rows_built.get() < 100,
             "the queue built {} rows of 2000 — it must render a window",
-            s.queue_rows_built.get()
+            s.queue.rows_built.get()
         );
         // 3.19: pickers come with the rows that rendered, not one per group.
         assert!(
-            s.queue_pickers.len() < 100,
+            s.queue.pickers.len() < 100,
             "{} pickers for a {}-row window — pickers must be built per visible row",
-            s.queue_pickers.len(),
-            s.queue_rows_built.get()
+            s.queue.pickers.len(),
+            s.queue.rows_built.get()
         );
         assert!(
-            s.queue_pickers.contains_key("QUEUE MERCHANT 0000"),
+            s.queue.pickers.contains_key("QUEUE MERCHANT 0000"),
             "the first visible row has a picker"
         );
         assert!(
-            !s.queue_pickers.contains_key("QUEUE MERCHANT 1999"),
+            !s.queue.pickers.contains_key("QUEUE MERCHANT 1999"),
             "the last group is off-screen, so it must not have a picker"
         );
     });
@@ -134,13 +137,18 @@ fn the_queue_page_builds_only_the_visible_rows(cx: &mut TestAppContext) {
 fn a_queue_group_at_the_very_bottom_can_still_be_categorized(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, |conn| seed_queue_thousands(conn, 2_000));
     wait_until(cx, "2000 queue groups", |cx| {
-        shell.read(cx).queue.len() == 2_000
+        shell.read(cx).queue.groups.len() == 2_000
     });
     cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::ToCategorize, cx)));
     draw_frame(cx, handle);
     let last = cx.update(|cx| {
         let s = shell.read(cx);
-        s.queue.last().expect("queue has a bottom").merchant.clone()
+        s.queue
+            .groups
+            .last()
+            .expect("queue has a bottom")
+            .merchant
+            .clone()
     });
     let child = cx.update(|cx| find_child(&shell, cx, "Groceries").unwrap());
     with_window(cx, handle, |window, cx| {
@@ -163,6 +171,7 @@ fn a_queue_group_at_the_very_bottom_can_still_be_categorized(cx: &mut TestAppCon
         !shell_for_gone
             .read(cx)
             .queue
+            .groups
             .iter()
             .any(|g| g.merchant == gone)
     });
@@ -178,7 +187,7 @@ fn a_queue_group_at_the_very_bottom_can_still_be_categorized(cx: &mut TestAppCon
             "a rule was created for the bottom merchant"
         );
         assert!(
-            s.queue_rows_built.get() < 100,
+            s.queue.rows_built.get() < 100,
             "still windowed after categorizing"
         );
     });
@@ -192,44 +201,44 @@ fn a_queue_group_at_the_very_bottom_can_still_be_categorized(cx: &mut TestAppCon
 fn the_queue_keeps_its_scroll_offset(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, |conn| seed_queue_thousands(conn, 2_000));
     wait_until(cx, "2000 queue groups", |cx| {
-        shell.read(cx).queue.len() == 2_000
+        shell.read(cx).queue.groups.len() == 2_000
     });
     cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::ToCategorize, cx)));
     draw_frame(cx, handle);
     cx.update(|cx| {
         let s = shell.read(cx);
         assert_eq!(
-            s.queue_scroll.offset(),
+            s.queue.scroll.offset(),
             Point::default(),
             "starts unscrolled"
         );
-        assert_eq!(s.queue_range.get().0, 0, "the first frame shows the top");
+        assert_eq!(s.queue.range.get().0, 0, "the first frame shows the top");
         // Jump straight to the bottom; layout clamps to the scroll max.
-        s.queue_scroll.set_offset(point(px(0.), px(-1_000_000.)));
+        s.queue.scroll.set_offset(point(px(0.), px(-1_000_000.)));
     });
     draw_frame(cx, handle);
-    let scrolled = cx.update(|cx| shell.read(cx).queue_scroll.offset().y);
+    let scrolled = cx.update(|cx| shell.read(cx).queue.scroll.offset().y);
     cx.update(|cx| {
         let s = shell.read(cx);
         assert!(scrolled < px(0.), "the queue is scrolled down");
-        let (start, end) = s.queue_range.get();
+        let (start, end) = s.queue.range.get();
         assert!(
             start > 0,
             "the built window moved off the top (start {start})"
         );
         assert_eq!(
             end,
-            s.queue.len(),
+            s.queue.groups.len(),
             "the built window reached the last group"
         );
         // Pickers come with the rows that rendered: the bottom group's
         // picker is there, a middle group that was never on screen isn't.
         assert!(
-            s.queue_pickers.contains_key("QUEUE MERCHANT 1999"),
+            s.queue.pickers.contains_key("QUEUE MERCHANT 1999"),
             "the bottom group is on screen, so it has a picker"
         );
         assert!(
-            !s.queue_pickers.contains_key("QUEUE MERCHANT 1000"),
+            !s.queue.pickers.contains_key("QUEUE MERCHANT 1000"),
             "a middle group never scrolled into view, so it must not have a picker"
         );
     });
@@ -239,11 +248,11 @@ fn the_queue_keeps_its_scroll_offset(cx: &mut TestAppContext) {
     cx.update(|cx| {
         let s = shell.read(cx);
         assert_eq!(
-            s.queue_scroll.offset().y,
+            s.queue.scroll.offset().y,
             scrolled,
             "the offset survived an unrelated notify"
         );
-        assert_eq!(s.queue_range.get().1, s.queue.len());
+        assert_eq!(s.queue.range.get().1, s.queue.groups.len());
     });
 }
 
@@ -253,7 +262,9 @@ fn the_queue_keeps_its_scroll_offset(cx: &mut TestAppContext) {
 #[gpui::test]
 fn categorizing_a_queue_group_toasts_without_moving_the_page(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, |conn| seed_queue_thousands(conn, 4));
-    wait_until(cx, "4 queue groups", |cx| shell.read(cx).queue.len() == 4);
+    wait_until(cx, "4 queue groups", |cx| {
+        shell.read(cx).queue.groups.len() == 4
+    });
     cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::ToCategorize, cx)));
     draw_frame(cx, handle);
     let mut vtc = VisualTestContext::from_window(handle, cx);
@@ -278,7 +289,7 @@ fn categorizing_a_queue_group_toasts_without_moving_the_page(cx: &mut TestAppCon
         });
     });
     wait_until(cx, "toast up and queue shrinks", |cx| {
-        !shell.read(cx).toasts.is_empty() && shell.read(cx).queue.len() == 3
+        !shell.read(cx).toasts.is_empty() && shell.read(cx).queue.groups.len() == 3
     });
     cx.update(|cx| {
         assert_eq!(
@@ -433,7 +444,9 @@ fn seed_queue_fit(conn: &financi_db::rusqlite::Connection) {
 #[gpui::test]
 fn the_queue_fits_the_minimum_window(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, seed_queue_fit);
-    wait_until(cx, "3 queue groups", |cx| shell.read(cx).queue.len() == 3);
+    wait_until(cx, "3 queue groups", |cx| {
+        shell.read(cx).queue.groups.len() == 3
+    });
     cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::ToCategorize, cx)));
     cx.run_until_parked();
     with_window(cx, handle, |window, cx| {
@@ -521,7 +534,9 @@ fn the_queue_fits_the_minimum_window(cx: &mut TestAppContext) {
 #[gpui::test]
 fn the_queue_list_paints_inside_one_panel(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, |conn| seed_queue_thousands(conn, 3));
-    wait_until(cx, "3 queue groups", |cx| shell.read(cx).queue.len() == 3);
+    wait_until(cx, "3 queue groups", |cx| {
+        shell.read(cx).queue.groups.len() == 3
+    });
     cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::ToCategorize, cx)));
     cx.run_until_parked();
     let mut window = VisualTestContext::from_window(handle, cx);
@@ -565,8 +580,18 @@ fn the_queue_list_paints_inside_one_panel(cx: &mut TestAppContext) {
 #[gpui::test]
 fn the_queue_header_summarizes_transactions_and_merchants(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, |conn| seed_queue_thousands(conn, 3));
-    wait_until(cx, "3 queue groups", |cx| shell.read(cx).queue.len() == 3);
-    let txns = cx.update(|cx| shell.read(cx).queue.iter().map(|g| g.count).sum::<i64>());
+    wait_until(cx, "3 queue groups", |cx| {
+        shell.read(cx).queue.groups.len() == 3
+    });
+    let txns = cx.update(|cx| {
+        shell
+            .read(cx)
+            .queue
+            .groups
+            .iter()
+            .map(|g| g.count)
+            .sum::<i64>()
+    });
     assert_eq!(txns, 6, "3 groups of 2 transactions each");
     cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::ToCategorize, cx)));
     cx.run_until_parked();
@@ -588,7 +613,9 @@ fn the_queue_header_summarizes_transactions_and_merchants(cx: &mut TestAppContex
 #[gpui::test]
 fn the_queue_categorize_button_waits_for_its_picker(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, |conn| seed_queue_thousands(conn, 3));
-    wait_until(cx, "3 queue groups", |cx| shell.read(cx).queue.len() == 3);
+    wait_until(cx, "3 queue groups", |cx| {
+        shell.read(cx).queue.groups.len() == 3
+    });
     cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::ToCategorize, cx)));
     cx.run_until_parked();
     let mut window = VisualTestContext::from_window(handle, cx);
