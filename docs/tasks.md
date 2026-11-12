@@ -1081,14 +1081,16 @@ the order above (3.28 → 3.29 → 3.26).
   458 rows) hides scale problems. `CompiledRules::pick` loops over **every
   rule for every row**, and a rule change runs that loop twice: once in
   `reapply_rules`, and again in `rule_use_counts` inside `refresh`. At
-  1 000 rules × 50 000 rows that's ~50 M checks per pass, likely around a
+  1 000 rules × 100 000 rows (10 years at the user's ~10 000 a year)
+  that's ~100 M checks per pass, likely around a
   second or more. The live preview (`count_rule_matches`) scans every row
   on each keystroke. Do this before 3.47 / 3.54, so they measure against
   realistic data.
   - **Scale fixture:** a `seed_large` (dev-seed feature) and a
     `FINANCI_DEV_SEED=large` switch. It builds **1 000 rules** (80 %
     substring, 20 % regex, overlapping on purpose), **80 categories**
-    (15 parents), and **50 000 transactions** over 10 years with realistic
+    (15 parents), and **100 000 transactions** over 10 years (the user has ~1 800 today
+    and expects ~10 000 a year) with realistic
     merchant strings, all deterministic. It uses only synthetic data.
   - **Budgets** (release build, on the large seed), as `#[ignore]` perf
     tests runnable with `cargo test --release -- --ignored perf_`, which
@@ -1101,7 +1103,7 @@ the order above (3.28 → 3.29 → 3.26).
     - opening the Categories and Rules pages < 16 ms per frame.
 
     Debug-build versions of the DB budgets (×10) run in the normal test
-    suite on a 5 000-row / 300-rule seed so regressions fail CI.
+    suite on a 10 000-row / 300-rule seed (one year) so regressions fail CI.
   - **Matching in one pass per row:** in `CompiledRules`, replace the
     per-rule loop with an **Aho-Corasick** automaton over the lowercased
     substring patterns (`aho-corasick` crate, already in the tree via
