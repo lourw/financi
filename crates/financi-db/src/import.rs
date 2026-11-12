@@ -15,7 +15,7 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 use chrono::NaiveDate;
-use financi_core::rules::pick_category;
+use financi_core::rules::CompiledRules;
 use financi_core::{ParseError, RawFile, RawTransaction, RowHash, StatementParser, parse};
 use rusqlite::{Connection, params};
 
@@ -407,13 +407,14 @@ fn apply_replacement(
 /// The parser's built-in card-payment check runs first and beats user
 /// rules: those rows get `Transfers > Card Payment` and are locked, so
 /// re-running rules on rule changes never moves them. Every other row takes
-/// the winning rule, or stays `NULL` (Uncategorized).
+/// the winning rule, or stays `NULL` (Uncategorized). The rule set is
+/// compiled once for the whole call, not per row (3.73).
 fn categorize_new_rows(
     conn: &Connection,
     parser: &dyn StatementParser,
     rows: &[PreparedRow],
 ) -> Result<Vec<(Option<i64>, bool)>, ImportError> {
-    let rules = list_rules(conn)?;
+    let rules = CompiledRules::new(&list_rules(conn)?);
     let mut card_payment: Option<i64> = None;
     let mut out = Vec::with_capacity(rows.len());
     for row in rows {
@@ -428,7 +429,7 @@ fn categorize_new_rows(
             };
             out.push((Some(id), true));
         } else {
-            out.push((pick_category(&rules, &row.txn.description_raw), false));
+            out.push((rules.pick(&row.txn.description_raw), false));
         }
     }
     Ok(out)

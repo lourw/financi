@@ -11,7 +11,7 @@
 //! categorizes the whole matching group. [`set_hidden`] shows or hides a
 //! row for the browse table and every count.
 
-use financi_core::rules::pick_category;
+use financi_core::rules::CompiledRules;
 use financi_core::{RawTransaction, parse::merchant};
 use rusqlite::{Connection, OptionalExtension};
 
@@ -109,7 +109,7 @@ pub fn clear_override(conn: &Connection, transaction_id: i64) -> Result<()> {
         )?;
         return Ok(());
     }
-    let category_id = pick_category(&list_rules(conn)?, &row.description_raw);
+    let category_id = CompiledRules::new(&list_rules(conn)?).pick(&row.description_raw);
     conn.execute(
         "UPDATE transactions SET category_id = ?1, category_locked = 0 WHERE id = ?2",
         (category_id, transaction_id),

@@ -203,8 +203,9 @@ pub fn winning_rule(rules: &[Rule], description: &str) -> Option<i64> {
 /// Substring rules beat regex rules even when a regex pattern is longer;
 /// within each kind the longest pattern wins, ties go to the lowest id.
 ///
-/// Matching many descriptions? Build [`CompiledRules`] once and use
-/// [`CompiledRules::pick`].
+/// One-off helper for a single description: it compiles the whole rule set
+/// — every regex — on every call. Matching many descriptions against the
+/// same rules? Build [`CompiledRules`] once and use [`CompiledRules::pick`].
 pub fn pick_category(rules: &[Rule], description: &str) -> Option<i64> {
     CompiledRules::new(rules).pick(description)
 }
@@ -213,7 +214,8 @@ pub fn pick_category(rules: &[Rule], description: &str) -> Option<i64> {
 /// case-insensitive substring, or case-insensitive regex. An empty pattern
 /// or an invalid regex never matches.
 ///
-/// Matching many descriptions? Build a [`CompiledPattern`] once.
+/// One-off helper for a single description: it compiles `pattern` on every
+/// call. Matching many descriptions? Build a [`CompiledPattern`] once.
 pub fn pattern_matches(pattern: &str, is_regex: bool, description: &str) -> bool {
     CompiledPattern::new(pattern, is_regex).is_match(description)
 }
