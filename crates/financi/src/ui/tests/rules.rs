@@ -213,6 +213,104 @@ fn a_rule_save_and_a_row_hide_never_cancel_each_other(cx: &mut TestAppContext) {
     });
 }
 
+/// 3.64: `rule_error` is one line shared by the add row and the open
+/// editor, so a late add result must never repaint it for someone else.
+/// Here a failing add (an invalid regex) lands while the editor is open on
+/// another rule: the editor keeps its own state, the failure surfaces as a
+/// toast instead of under the editor's fields, and the editor's *own*
+/// failure still paints where it belongs.
+#[gpui::test]
+fn a_late_add_failure_never_paints_under_another_rules_editor(cx: &mut TestAppContext) {
+    let (handle, shell, rule, first, _second) = open_rule_fixture(cx);
+    // Select the rule's own subcategory: the add row targets it directly.
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| s.select_category(first, window, cx));
+    });
+    let toasts_before = cx.update(|cx| toasts(&shell, cx).len());
+
+    // One frame: the add goes out and the editor opens on the other rule
+    // before the write has run, so the add is late by definition.
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.rule_pattern.update(cx, |i, cx| {
+                i.set_value("(", window, cx);
+            });
+            s.rule_regex = true;
+            s.add_rule_to_selected(window, cx);
+            s.start_edit_rule(rule, window, cx);
+        });
+    });
+    cx.update(|cx| {
+        assert_eq!(
+            shell.read(cx).pending_rule_action,
+            Some(PendingRuleAction::Add),
+            "the add is in flight"
+        );
+    });
+    wait_until(cx, "the failed add lands", |cx| {
+        shell.read(cx).pending_rule_action.is_none()
+    });
+    wait_idle(cx, &shell);
+    cx.update(|cx| {
+        let s = shell.read(cx);
+        assert!(
+            s.rule_error.is_none(),
+            "the add's failure never paints under the other rule's editor: {:?}",
+            s.rule_error
+        );
+        assert_eq!(s.editing_rule, Some(rule), "the editor is left alone");
+        let (msg, is_error) = last_toast(&shell, cx).expect("the failure is reported");
+        assert!(is_error, "the add failed: {msg}");
+        assert!(
+            msg.contains("invalid regex"),
+            "the toast is the add's: {msg}"
+        );
+        assert_eq!(toasts(&shell, cx).len(), toasts_before + 1);
+    });
+    draw_frame(cx, handle);
+    assert!(
+        !paints(cx, handle, "rules:edit-error"),
+        "no error line paints under the editor"
+    );
+
+    // The line is not swallowed for its owner: the editor's *own* failure
+    // still shows under it (and no second toast appears).
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.rule_edit_regex = true;
+            s.rule_edit_pattern.update(cx, |i, cx| {
+                i.set_value("[", window, cx);
+            });
+            s.save_rule_edit(window, cx);
+        });
+    });
+    wait_until(cx, "the editor's own save fails", |cx| {
+        let s = shell.read(cx);
+        s.pending_rule_action.is_none() && s.rule_error.is_some()
+    });
+    wait_idle(cx, &shell);
+    draw_frame(cx, handle);
+    cx.update(|cx| {
+        let s = shell.read(cx);
+        assert!(
+            s.rule_error
+                .as_deref()
+                .is_some_and(|e| e.contains("invalid regex")),
+            "the editor reports its own failure: {:?}",
+            s.rule_error
+        );
+        assert_eq!(
+            toasts(&shell, cx).len(),
+            toasts_before + 1,
+            "the editor's failure paints, it does not toast"
+        );
+    });
+    assert!(
+        paints(cx, handle, "rules:edit-error"),
+        "the editor's own error line paints"
+    );
+}
+
 /// 3.53: the editor has no picker, so saving an edit — even with a new
 /// pattern — keeps the rule on its own category, and the rows follow the
 /// rule there. Moving a rule to another category is the Rules page's

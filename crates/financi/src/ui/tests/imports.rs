@@ -1,6 +1,7 @@
 //! Tests for `ui/imports.rs` (3.62 split from `ui_tests.rs`).
 
 use super::*;
+use crate::ui::imports::ImportEvent;
 #[gpui::test]
 fn drop_create_account_inline_and_import(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, |_| {});
@@ -267,6 +268,52 @@ fn opening_ten_files_leaves_one_import_subscription(cx: &mut TestAppContext) {
         assert!(
             shell.read(cx).imports.import.is_some(),
             "the tenth panel is the open one"
+        );
+    });
+}
+
+/// 3.64: the live half of the previous test — gpui cancels a `Subscription`
+/// when its handle *drops*, so replacing the panel really does unsubscribe
+/// it. A panel the shell has moved on from must stop reaching the shell:
+/// the abandoned panel cancelling itself used to close the current one.
+#[gpui::test]
+fn a_replaced_import_panel_stops_reaching_the_shell(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |_| {});
+    wait_idle(cx, &shell);
+
+    with_window(cx, handle, |window, cx| {
+        let path = demo("amex-sep-oct.csv");
+        shell.update(cx, |s, cx| s.open_file(path, window, cx));
+    });
+    cx.run_until_parked();
+    // Held here so the old entity outlives its replacement: what must go
+    // away is its subscription, not the panel.
+    let old = cx.update(|cx| panel(&shell, cx));
+
+    with_window(cx, handle, |window, cx| {
+        let path = demo("simplii-chequing.csv");
+        shell.update(cx, |s, cx| s.open_file(path, window, cx));
+    });
+    cx.run_until_parked();
+    let current = cx.update(|cx| panel(&shell, cx).entity_id());
+    assert_ne!(
+        current,
+        old.entity_id(),
+        "the second file replaced the panel"
+    );
+
+    // The abandoned panel cancels itself; the shell ignores it now.
+    old.update(cx, |_, cx| cx.emit(ImportEvent::Cancelled));
+    cx.run_until_parked();
+    cx.update(|cx| {
+        assert!(
+            shell.read(cx).imports.import.is_some(),
+            "an event from the replaced panel must not close the open one"
+        );
+        assert_eq!(
+            panel(&shell, cx).entity_id(),
+            current,
+            "and must not replace it either"
         );
     });
 }

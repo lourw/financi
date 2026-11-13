@@ -36,6 +36,85 @@ fn creates_parent_and_child(cx: &mut TestAppContext) {
     });
 }
 
+/// 3.64: an add that lands late claims the selection only while nothing
+/// newer has claimed it — and claims it through `select_category`, never by
+/// writing the field. The bare write used to jump the selection to the new
+/// row while the old row's transient UI stayed open on it: a rename editor
+/// left open then renamed the *new* category on its next Save.
+#[gpui::test]
+fn a_late_category_add_never_steals_a_newer_selection(cx: &mut TestAppContext) {
+    let mut ids = (0i64, 0i64);
+    let (handle, shell) = open_shell(cx, |c| {
+        ids = (
+            financi_db::categories::create_parent(c, "Drinks", CategoryKind::Expense).unwrap(),
+            financi_db::categories::create_parent(c, "Groceries", CategoryKind::Expense).unwrap(),
+        );
+    });
+    let (_drinks, groceries) = ids;
+    wait_until(cx, "the categories load", |cx| {
+        shell.read(cx).categories.len() == 3
+    });
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Categories, cx)));
+    select_parent(cx, handle, &shell, "Drinks");
+
+    // One frame: the add goes out, then the user selects another row while
+    // the write is still running.
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.categories_page.new_parent_name.update(cx, |i, cx| {
+                i.set_value("Late", window, cx);
+            });
+            s.add_parent(window, cx);
+            s.select_category(groceries, window, cx);
+        });
+    });
+    wait_until(cx, "the late add lands", |cx| {
+        shell.read(cx).categories.iter().any(|p| p.name == "Late")
+    });
+    wait_idle(cx, &shell);
+    cx.update(|cx| {
+        let s = shell.read(cx);
+        assert_eq!(
+            s.categories_page.selected_category,
+            Some(groceries),
+            "the click owns the selection: the late add must not take it back"
+        );
+    });
+
+    // With the selection left alone the new row still takes it, and the
+    // rename editor open on the old row closes with the move.
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.categories_page.new_parent_name.update(cx, |i, cx| {
+                i.set_value("Later", window, cx);
+            });
+            s.add_parent(window, cx);
+            s.categories_page.renaming = true;
+            s.categories_page.rename_input.update(cx, |i, cx| {
+                i.set_value("Groceries", window, cx);
+            });
+        });
+    });
+    wait_until(cx, "the second add lands", |cx| {
+        shell.read(cx).categories.iter().any(|p| p.name == "Later")
+    });
+    wait_idle(cx, &shell);
+    cx.update(|cx| {
+        let s = shell.read(cx);
+        let later = s.categories.iter().find(|p| p.name == "Later").unwrap().id;
+        assert_eq!(
+            s.categories_page.selected_category,
+            Some(later),
+            "an untouched selection still hands over to the new row"
+        );
+        assert!(
+            !s.categories_page.renaming,
+            "the rename editor closed with the selection it belonged to, so \
+             its Save can no longer rename the new category"
+        );
+    });
+}
+
 #[gpui::test]
 fn delete_category_reassigns_transactions_and_rules(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, |c| {

@@ -525,6 +525,9 @@ impl Shell {
         }
         let db = self.db.clone();
         let submitted = name.clone();
+        // 3.64: the selection this add may claim — once the user selects
+        // another row, that click owns the selection from then on.
+        let prior_selection = self.categories_page.selected_category;
         // 3.64: detached — a later action must not cancel this write's
         // continuation and swallow its refresh.
         cx.spawn_in(window, async move |this, cx| {
@@ -544,8 +547,15 @@ impl Shell {
                             // 3.23: adding closes the New category… form.
                             this.categories_page.new_category_open = false;
                         }
-                        this.categories_page.selected_category = Some(id);
-                        this.categories_page.cat_error = None;
+                        // 3.64: and the new row takes the selection only
+                        // while nothing newer claimed it. Through
+                        // `select_category`, so the selection's transient UI
+                        // (the rename editor, the delete confirm, the rule
+                        // editor) closes with the move instead of staying
+                        // open re-attached to the new category.
+                        if unchanged && this.categories_page.selected_category == prior_selection {
+                            this.select_category(id, window, cx);
+                        }
                     }
                     Err(e) => this.categories_page.cat_error = Some(e),
                 }
@@ -576,6 +586,8 @@ impl Shell {
         }
         let db = self.db.clone();
         let submitted = name.clone();
+        // 3.64: the selection this add may claim (see `add_parent`).
+        let prior_selection = self.categories_page.selected_category;
         // 3.64: detached — see `add_parent`.
         cx.spawn_in(window, async move |this, cx| {
             let result = on_db(&db, move |c| create_child(c, parent_id, &name)).await;
@@ -590,8 +602,11 @@ impl Shell {
                                 .new_child_name
                                 .update(cx, |i, cx| i.set_value("", window, cx));
                         }
-                        this.categories_page.selected_category = Some(id);
-                        this.categories_page.cat_error = None;
+                        // 3.64: nor steal a newer selection, nor leave an
+                        // open rename session on it (see `add_parent`).
+                        if unchanged && this.categories_page.selected_category == prior_selection {
+                            this.select_category(id, window, cx);
+                        }
                     }
                     Err(e) => this.categories_page.cat_error = Some(e),
                 }

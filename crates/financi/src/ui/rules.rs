@@ -259,6 +259,18 @@ impl Shell {
         self.pending_rule_action == Some(action)
     }
 
+    /// 3.64: show a rule write's failure where it can be read. `rule_error`
+    /// is the one line under the add row *and* under the open editor, so it
+    /// belongs to whichever of the two is showing: with an editor open the
+    /// failure goes out as a toast instead of painting under another rule's
+    /// fields (and the add row hides its own line then anyway).
+    fn report_rule_error(&mut self, error: String, cx: &mut Context<Self>) {
+        match self.editing_rule {
+            None => self.rule_error = Some(error),
+            Some(_) => self.notify_err(error, cx),
+        }
+    }
+
     pub(super) fn add_rule(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(ix) = self.rule_target.read(cx).selected_index(cx) else {
             self.rule_error = Some("Choose the category the rule assigns.".into());
@@ -323,7 +335,8 @@ impl Shell {
             let _ = this.update_in(cx, |this, window, cx| {
                 // 3.64: only clear the pending marker if it still marks
                 // *this* add; a newer action owns the slot now.
-                if this.pending_rule_action == Some(PendingRuleAction::Add) {
+                let own = this.pending_rule_action == Some(PendingRuleAction::Add);
+                if own {
                     this.pending_rule_action = None;
                 }
                 match result {
@@ -334,9 +347,21 @@ impl Shell {
                             this.rule_pattern
                                 .update(cx, |i, cx| i.set_value("", window, cx));
                         }
-                        this.rule_error = None;
+                        // 3.64: this add clears the shared error line only
+                        // while it still owns it — a stale add must not wipe
+                        // a genuine error another action just reported.
+                        if own && this.editing_rule.is_none() {
+                            this.rule_error = None;
+                        }
                     }
-                    Err(e) => this.rule_error = Some(e),
+                    // 3.64: and only this add reports it: a failure that
+                    // lands after the user moved on (another action owns the
+                    // badge, or an editor is open) must not paint under
+                    // someone else's fields — `report_rule_error` toasts it
+                    // while an editor is open, and a stale add's failure is
+                    // the newer action's to report.
+                    Err(e) if own => this.report_rule_error(e, cx),
+                    Err(_) => {}
                 }
                 this.refresh(window, cx);
             });
@@ -479,7 +504,10 @@ impl Shell {
                                 this.close_rule_editor();
                             }
                         }
-                        Err(e) => this.rule_error = Some(e),
+                        // 3.64: the failure of *this* delete never paints
+                        // under an editor that belongs to another rule —
+                        // `report_rule_error` toasts it while one is open.
+                        Err(e) => this.report_rule_error(e, cx),
                     }
                     this.refresh(window, cx);
                 });

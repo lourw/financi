@@ -859,9 +859,8 @@ impl Shell {
                 let db = self.db.clone();
                 let csv_root = self.csv_root.clone();
                 let panel = cx.new(|cx| ImportPanel::new(db, csv_root, file, window, cx));
-                // 3.64: the subscription is stored beside the panel, so
-                // replacing the panel drops it — ten opens leave exactly
-                // one subscription in `self._subs`.
+                // 3.64: the subscription lives beside the panel in the
+                // tuple, so replacing the panel is what ends it (below).
                 let sub =
                     cx.subscribe_in(&panel, window, |this, _, ev: &ImportEvent, window, cx| {
                         match ev {
@@ -878,16 +877,14 @@ impl Shell {
                         }
                         this.refresh(window, cx);
                     });
-                // 3.64: the subscription lives in the tuple; keeping the
-                // tuple's copy in `_subs` as well would double-unsubscribe
-                // on drop, so `_subs` only ever holds the panel *while it
-                // is open* — replaced panels drop theirs.
-                let stored = self.imports.import.replace((panel, sub));
-                if let Some((_, old_sub)) = stored {
-                    // Unsubscribe the previous panel exactly once (the
-                    // tuple's clone below stays alive until replaced).
-                    old_sub.detach();
-                }
+                // 3.64: the subscription lives in the tuple, and gpui
+                // cancels a `Subscription` when the handle *drops*
+                // (`Subscription::detach` is the opposite — it keeps the
+                // callback alive until the entities die). So replacing the
+                // tuple is what unsubscribes the old panel: the pair that
+                // `replace` hands back drops right here. Ten opens leave
+                // exactly one live subscription.
+                drop(self.imports.import.replace((panel, sub)));
                 // Opening a file switches to the Imports page with the
                 // preview open (ui-conventions, *Pages*).
                 self.page = Page::Imports;
