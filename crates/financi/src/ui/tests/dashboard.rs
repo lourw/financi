@@ -2276,6 +2276,62 @@ fn escape_clears_the_drill_and_the_selection(cx: &mut TestAppContext) {
     });
 }
 
+/// 3.65: Esc repaints in the very next frame too. With the worker held on
+/// the refresh Esc starts, one frame must already show the legend row no
+/// longer highlighted — only the filtered rows wait for the answer.
+#[gpui::test]
+fn escape_clears_the_legend_highlight_before_the_answer(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_chart_rows);
+    wait_until(cx, "table and legend loaded", |cx| {
+        shell.read(cx).dashboard.row_count == 4 && shell.read(cx).dashboard.chart_rows.len() == 3
+    });
+    // The `Uncategorized` pseudo-row carries the highlight without drilling
+    // the chart, so its selector stays visible throughout.
+    click_chart_legend(cx, handle, &shell, None);
+    wait_until(cx, "Uncategorized selected", |cx| {
+        shell.read(cx).dashboard.legend_selection == Some(LegendSelection::Uncategorized)
+            && shell.read(cx).dashboard.row_count == 1
+    });
+    let ix = cx.update(|cx| {
+        shell
+            .read(cx)
+            .dashboard
+            .chart_rows
+            .iter()
+            .position(|r| r.id.is_none())
+            .unwrap()
+    });
+    let done = block_worker(cx, &shell);
+
+    // The real Esc binding, focused like a user who clicked into the window
+    // (see `escape_clears_the_drill_and_the_selection`).
+    with_window(cx, handle, |window, cx| {
+        let input = shell
+            .read(cx)
+            .dashboard
+            .search_input
+            .read(cx)
+            .focus_handle(cx);
+        window.focus(&input, cx);
+    });
+    cx.simulate_keystrokes(handle, "escape");
+    draw_frame(cx, handle);
+    assert!(
+        !paints(cx, handle, format!("chart:legend-row:{ix}:active")),
+        "the highlight is gone in the frame right after Esc, while the \
+         refresh it started is still in flight"
+    );
+    assert_eq!(
+        cx.update(|cx| shell.read(cx).dashboard.row_count),
+        1,
+        "only the data waits for the DB"
+    );
+    drop(done);
+    wait_until(cx, "all rows back with the answer", |cx| {
+        shell.read(cx).dashboard.row_count == 4
+    });
+}
+
 // -- Responsive charts (3.15) -------------------------------------------
 
 #[test]
