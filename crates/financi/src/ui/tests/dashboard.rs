@@ -995,6 +995,43 @@ fn a_saved_custom_range_is_restored_at_launch(cx: &mut TestAppContext) {
     assert_eq!(state, (from, to));
 }
 
+/// 3.65: launch issues exactly one refresh, and that refresh already
+/// applies the saved settings — the first data frame shows the saved
+/// custom range, and nothing re-queries. `job_count` counts every job the
+/// worker accepted, so one launch query means one job.
+#[gpui::test]
+fn launch_runs_one_refresh_with_the_saved_date_range(cx: &mut TestAppContext) {
+    let (_handle, shell) = open_shell(cx, |c| {
+        seed_two_accounts_and_a_transfer(c);
+        settings::set(c, UI_DATE_RANGE, "custom:2026-11-05..2026-11-05").unwrap();
+    });
+    // The saved range keeps only the 2026-11-05 row. The default range
+    // would show two, so a table with one row proves the very first query
+    // used the saved setting — there is no second refresh fixing it up.
+    wait_until(cx, "first data uses the saved range", |cx| {
+        shell.read(cx).dashboard.row_count == 1
+    });
+    // Read the count before anything else can queue a job (`db_setting`
+    // and friends push their own).
+    let (jobs, range, from, to) = cx.update(|cx| {
+        let s = shell.read(cx);
+        (
+            s.db.job_count(),
+            s.dashboard.date_range,
+            s.dashboard.view_filter.from,
+            s.dashboard.view_filter.to,
+        )
+    });
+    assert_eq!(jobs, 1, "one launch, one query");
+    let day = NaiveDate::from_ymd_opt(2026, 11, 5).unwrap();
+    assert_eq!(range, DateRange::Custom { from: day, to: day });
+    assert_eq!(
+        (from, to),
+        (day, day),
+        "the table filter shows the saved range"
+    );
+}
+
 #[gpui::test]
 fn a_garbage_setting_falls_back_to_the_default(cx: &mut TestAppContext) {
     let (_handle, shell) = open_shell(cx, |c| {
@@ -1210,7 +1247,8 @@ fn clicking_the_include_transfers_checkbox_toggles_it(cx: &mut TestAppContext) {
     wait_until(cx, "click checks the box and shows the transfer", |cx| {
         shell.read(cx).dashboard.include_transfers && shell.read(cx).dashboard.row_count == 3
     });
-    click(cx, handle, "checkbox:include-transfers");
+    // 3.65: a checked box answers to `checkbox:<id>:checked`.
+    click(cx, handle, "checkbox:include-transfers:checked");
     wait_until(cx, "clicking again unchecks", |cx| {
         !shell.read(cx).dashboard.include_transfers && shell.read(cx).dashboard.row_count == 2
     });
@@ -1278,8 +1316,10 @@ fn unchecking_an_account_filters_the_table(cx: &mut TestAppContext) {
     });
 
     // Open the accounts popover and click the checkboxes themselves.
+    // 3.65: a checked box answers to `checkbox:account-<id>:checked`,
+    // an unchecked one to the plain selector.
     click(cx, handle, "accounts:filter");
-    click(cx, handle, format!("checkbox:account-{cobalt}"));
+    click(cx, handle, format!("checkbox:account-{cobalt}:checked"));
     wait_until(cx, "only Gold's row shows", |cx| {
         shell.read(cx).dashboard.row_count == 1
             && table_rows(&shell, cx)
@@ -1293,7 +1333,7 @@ fn unchecking_an_account_filters_the_table(cx: &mut TestAppContext) {
 
     // Unchecking every account shows no rows (empty in `ViewFilter`
     // means all, so the table must not fall back to everything).
-    click(cx, handle, format!("checkbox:account-{gold}"));
+    click(cx, handle, format!("checkbox:account-{gold}:checked"));
     wait_until(cx, "nothing selected: empty table", |cx| {
         shell.read(cx).dashboard.row_count == 0
     });
@@ -1310,6 +1350,80 @@ fn unchecking_an_account_filters_the_table(cx: &mut TestAppContext) {
             shell.read(cx).dashboard.view_filter.account_ids,
             vec![cobalt]
         );
+    });
+}
+
+/// 3.65: the click repaints before the answer. With the worker held on
+/// the refresh the click starts, a single frame shows the box checked and
+/// the Options button counting the toggle, while the table still holds the
+/// old rows; the transfer row arrives only when the answer lands.
+#[gpui::test]
+fn include_transfers_checkbox_paints_before_the_answer(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_two_accounts_and_a_transfer);
+    wait_until(cx, "initial rows, transfers off", |cx| {
+        shell.read(cx).dashboard.row_count == 2 && shell.read(cx).accounts.len() == 2
+    });
+    click(cx, handle, "filters:options");
+    let done = block_worker(cx, &shell);
+    click(cx, handle, "checkbox:include-transfers");
+    draw_frame(cx, handle);
+    assert!(
+        paints(cx, handle, "checkbox:include-transfers:checked"),
+        "the box paints checked while the refresh it started is still in flight"
+    );
+    assert!(
+        paints(cx, handle, "filters:options-btn:Options \u{b7} 1"),
+        "the button already reads \"Options \u{b7} 1\" before the answer"
+    );
+    assert_eq!(
+        cx.update(|cx| shell.read(cx).dashboard.row_count),
+        2,
+        "only the data waits for the DB"
+    );
+    drop(done);
+    wait_until(cx, "the transfer row arrives with the answer", |cx| {
+        shell.read(cx).dashboard.row_count == 3
+    });
+}
+
+/// 3.65: the same for the account checkboxes in the popover — one frame
+/// after the click the box paints unchecked (and no longer `:checked`),
+/// while the table still shows the rows of the previous answer.
+#[gpui::test]
+fn account_checkbox_paints_before_the_answer(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_two_accounts_and_a_transfer);
+    wait_until(cx, "accounts and rows loaded", |cx| {
+        shell.read(cx).accounts.len() == 2 && shell.read(cx).dashboard.row_count == 2
+    });
+    let cobalt = cx.update(|cx| {
+        shell
+            .read(cx)
+            .accounts
+            .iter()
+            .find(|a| a.name == "Cobalt")
+            .unwrap()
+            .id
+    });
+    click(cx, handle, "accounts:filter");
+    let done = block_worker(cx, &shell);
+    click(cx, handle, format!("checkbox:account-{cobalt}:checked"));
+    draw_frame(cx, handle);
+    assert!(
+        paints(cx, handle, format!("checkbox:account-{cobalt}")),
+        "the box paints (unchecked) while the refresh it started is still in flight"
+    );
+    assert!(
+        !paints(cx, handle, format!("checkbox:account-{cobalt}:checked")),
+        "the checked selector is gone the moment the click lands"
+    );
+    assert_eq!(
+        cx.update(|cx| shell.read(cx).dashboard.row_count),
+        2,
+        "only the data waits for the DB"
+    );
+    drop(done);
+    wait_until(cx, "Gold's row alone arrives with the answer", |cx| {
+        shell.read(cx).dashboard.row_count == 1
     });
 }
 
@@ -1901,18 +2015,28 @@ fn click_chart_legend(
     shell: &Entity<Shell>,
     id: Option<i64>,
 ) {
-    let ix = cx.update(|cx| {
-        shell
-            .read(cx)
-            .dashboard
-            .chart_rows
-            .iter()
-            .position(|r| r.id == id)
+    // 3.65: a selected row paints `chart:legend-row:<ix>:active` — click
+    // the selector the row answers to *now*, same rule as the checkboxes.
+    let (ix, selected) = cx.update(|cx| {
+        let s = shell.read(cx);
+        let ix = s.dashboard.chart_rows.iter().position(|r| r.id == id);
+        let selected = match (id, s.dashboard.legend_selection) {
+            (None, _) => {
+                matches!(
+                    s.dashboard.legend_selection,
+                    Some(LegendSelection::Uncategorized)
+                ) || s.dashboard.uncategorized_only
+            }
+            (Some(id), Some(LegendSelection::Category(c))) => c == id,
+            _ => false,
+        };
+        (ix, selected)
     });
     let Some(ix) = ix else {
         panic!("category {id:?} is one of the legend's rows (wait for the refresh that shows it)")
     };
-    click(cx, handle, format!("chart:legend-row:{ix}"));
+    let suffix = if selected { ":active" } else { "" };
+    click(cx, handle, format!("chart:legend-row:{ix}{suffix}"));
 }
 
 fn top_category_id(shell: &Entity<Shell>, cx: &App, name: &str) -> i64 {
@@ -2077,6 +2201,44 @@ fn uncategorized_legend_row_filters_the_table(cx: &mut TestAppContext) {
     cx.update(|cx| assert!(shell.read(cx).dashboard.legend_selection.is_none()));
 }
 
+/// 3.65: a legend click paints the row's highlight in the very next frame,
+/// while the refresh it started is still queued behind a blocked worker;
+/// only the filtered rows wait for the answer.
+#[gpui::test]
+fn legend_row_paints_selected_before_the_answer(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_chart_rows);
+    wait_until(cx, "table and legend loaded", |cx| {
+        shell.read(cx).dashboard.row_count == 4 && shell.read(cx).dashboard.chart_rows.len() == 3
+    });
+    let done = block_worker(cx, &shell);
+    let (food, ix) = cx.update(|cx| {
+        let food = top_category_id(&shell, cx, "Food");
+        let ix = shell
+            .read(cx)
+            .dashboard
+            .chart_rows
+            .iter()
+            .position(|r| r.id == Some(food))
+            .unwrap();
+        (food, ix)
+    });
+    click_chart_legend(cx, handle, &shell, Some(food));
+    draw_frame(cx, handle);
+    assert!(
+        paints(cx, handle, format!("chart:legend-row:{ix}:active")),
+        "the row paints selected while the refresh it started is still in flight"
+    );
+    assert_eq!(
+        cx.update(|cx| shell.read(cx).dashboard.row_count),
+        4,
+        "only the data waits for the DB"
+    );
+    drop(done);
+    wait_until(cx, "Food's two rows arrive with the answer", |cx| {
+        shell.read(cx).dashboard.row_count == 2
+    });
+}
+
 #[gpui::test]
 fn escape_clears_the_drill_and_the_selection(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, seed_chart_rows);
@@ -2111,6 +2273,62 @@ fn escape_clears_the_drill_and_the_selection(cx: &mut TestAppContext) {
         shell.read(cx).dashboard.chart_parent.is_none()
             && shell.read(cx).dashboard.legend_selection.is_none()
             && shell.read(cx).dashboard.row_count == 4
+    });
+}
+
+/// 3.65: Esc repaints in the very next frame too. With the worker held on
+/// the refresh Esc starts, one frame must already show the legend row no
+/// longer highlighted — only the filtered rows wait for the answer.
+#[gpui::test]
+fn escape_clears_the_legend_highlight_before_the_answer(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_chart_rows);
+    wait_until(cx, "table and legend loaded", |cx| {
+        shell.read(cx).dashboard.row_count == 4 && shell.read(cx).dashboard.chart_rows.len() == 3
+    });
+    // The `Uncategorized` pseudo-row carries the highlight without drilling
+    // the chart, so its selector stays visible throughout.
+    click_chart_legend(cx, handle, &shell, None);
+    wait_until(cx, "Uncategorized selected", |cx| {
+        shell.read(cx).dashboard.legend_selection == Some(LegendSelection::Uncategorized)
+            && shell.read(cx).dashboard.row_count == 1
+    });
+    let ix = cx.update(|cx| {
+        shell
+            .read(cx)
+            .dashboard
+            .chart_rows
+            .iter()
+            .position(|r| r.id.is_none())
+            .unwrap()
+    });
+    let done = block_worker(cx, &shell);
+
+    // The real Esc binding, focused like a user who clicked into the window
+    // (see `escape_clears_the_drill_and_the_selection`).
+    with_window(cx, handle, |window, cx| {
+        let input = shell
+            .read(cx)
+            .dashboard
+            .search_input
+            .read(cx)
+            .focus_handle(cx);
+        window.focus(&input, cx);
+    });
+    cx.simulate_keystrokes(handle, "escape");
+    draw_frame(cx, handle);
+    assert!(
+        !paints(cx, handle, format!("chart:legend-row:{ix}:active")),
+        "the highlight is gone in the frame right after Esc, while the \
+         refresh it started is still in flight"
+    );
+    assert_eq!(
+        cx.update(|cx| shell.read(cx).dashboard.row_count),
+        1,
+        "only the data waits for the DB"
+    );
+    drop(done);
+    wait_until(cx, "all rows back with the answer", |cx| {
+        shell.read(cx).dashboard.row_count == 4
     });
 }
 

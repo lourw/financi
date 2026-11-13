@@ -196,6 +196,9 @@ impl Shell {
         if self.dashboard.legend_selection.is_none() {
             self.dashboard.summary_month = None;
         }
+        // 3.65: the legend highlight paints with this click, not with the
+        // answer (the rows and totals are the only part that waits).
+        cx.notify();
         self.refresh(window, cx);
     }
     /// Click a monthly summary cell (3.6): narrow the table to that
@@ -236,6 +239,8 @@ impl Shell {
             }
             self.sync_chart_to_selection();
         }
+        // 3.65: the cell and legend highlights paint with this click.
+        cx.notify();
         self.refresh(window, cx);
     }
     /// Move the chart so a selection made outside the legend (a summary
@@ -510,9 +515,16 @@ impl Shell {
                 // the amount and share columns used to carry moves into
                 // the hover tooltip, in the bar's own tooltip text.
                 let value = chart_tooltip_value(r.cents, r.share, &parent_name);
+                // 3.65: the selector records the highlight, so a test can
+                // see the row paint selected in the frame right after the
+                // click, while the refresh is still in flight.
+                let row_selector = format!(
+                    "chart:legend-row:{ix}{}",
+                    if selected { ":active" } else { "" }
+                );
                 div()
                     .id(SharedString::from(format!("legend-{ix}")))
-                    .debug_selector(move || format!("chart:legend-row:{ix}"))
+                    .debug_selector(move || row_selector.clone())
                     .flex()
                     .items_center()
                     .gap_2()

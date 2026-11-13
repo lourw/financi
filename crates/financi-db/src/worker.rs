@@ -16,7 +16,7 @@
 use std::collections::VecDeque;
 use std::future::Future;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -69,6 +69,9 @@ struct Queue {
     /// The thread's interrupt handle, when it has one (the reader), used to
     /// cut short a running keyed job that a newer job supersedes.
     interrupt: Option<Arc<InterruptHandle>>,
+    /// Jobs this queue has accepted (`Queue::push` Ok paths). Counted for
+    /// the 3.65 test hook, `DbWorker::job_count`.
+    pushed: AtomicUsize,
 }
 
 impl Queue {
@@ -77,6 +80,7 @@ impl Queue {
             jobs: Mutex::new(Jobs::default()),
             cv: Condvar::new(),
             interrupt,
+            pushed: AtomicUsize::new(0),
         }
     }
 
@@ -89,6 +93,7 @@ impl Queue {
         if jobs.quit {
             return Err(WorkerGone);
         }
+        self.pushed.fetch_add(1, Ordering::Relaxed);
         if let Some(key) = job.key.as_deref() {
             let slot = jobs
                 .pending
@@ -313,6 +318,15 @@ impl DbWorker {
         Self {
             inner: Arc::new(Inner { writer, reader }),
         }
+    }
+
+    /// Jobs accepted by both queues since this worker started (3.65: lets
+    /// a UI test count the queries one launch or click issues — exactly
+    /// one refresh means exactly one job). Debug builds only.
+    #[cfg(debug_assertions)]
+    pub fn job_count(&self) -> usize {
+        let count = |q: &Queue| q.pushed.load(Ordering::Relaxed);
+        count(&self.inner.writer) + self.inner.reader.as_deref().map_or(0, count)
     }
 
     /// Run `f` on the writer thread and await its result. Writes and reads

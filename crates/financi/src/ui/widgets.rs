@@ -14,6 +14,24 @@ pub(super) fn checkbox(id: impl Into<SharedString>) -> Checkbox {
     Checkbox::new(id).debug_selector(move || selector.clone())
 }
 
+/// 3.65: a filter checkbox whose state is Shell state (the filter row and
+/// the Options popover). Same widget as [`checkbox`], but the debug
+/// selector records the checked state — `checkbox:<id>:checked` when the
+/// box is checked — so a headless test can see the box paint *checked* in
+/// the one frame right after the click, while the refresh it triggered is
+/// still in flight.
+pub(super) fn filter_checkbox(id: impl Into<SharedString>, checked: bool) -> Checkbox {
+    let id = id.into();
+    let selector = if checked {
+        format!("checkbox:{id}:checked")
+    } else {
+        format!("checkbox:{id}")
+    };
+    Checkbox::new(id)
+        .checked(checked)
+        .debug_selector(move || selector.clone())
+}
+
 /// Field label for a control (3.16, ui-conventions *Numbers, dates and
 /// labels*): every input, dropdown and date picker carries a visible label
 /// — never a placeholder alone. `text_xs` `muted_foreground` (secondary
