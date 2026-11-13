@@ -167,7 +167,11 @@ pub struct ImportPanel {
     pub(super) db: DbWorker,
     csv_root: PathBuf,
     pub(super) file: Arc<LoadedFile>,
-    pub(super) format: String,
+    /// 3.61: the detected institution's display name ("American Express"),
+    /// painted as an outline tag on line one of the preview — the picker's
+    /// "Institution · Account" name, not the parser id. Empty only when the
+    /// parser id resolved to nothing (the error case).
+    pub(super) institution: SharedString,
     pub(super) accounts: Vec<Account>,
     pub(super) names: Names,
     account_select: Entity<SelectState<Names>>,
@@ -241,8 +245,8 @@ impl ImportPanel {
         Self {
             db,
             csv_root,
-            format: parser
-                .map(|p| flow::format_label(p.as_ref()))
+            institution: parser
+                .map(|p| flow::institution_label(p.as_ref()).into())
                 .unwrap_or_default(),
             file: Arc::new(file),
             accounts,
@@ -655,14 +659,26 @@ impl Render for ImportPanel {
                         div()
                             .font_weight(FontWeight::SEMIBOLD)
                             .min_w_0()
+                            .debug_selector(|| "imports:file-name".to_string())
                             .child(self.file.file_name.clone()),
                     )
-                    .child(
+                    // 3.61: the institution in an outline `TypeTag`
+                    // (ui-conventions, *Import preview*), replacing the
+                    // muted "Detected format: …" that was easy to miss.
+                    .children((!self.institution.is_empty()).then(|| {
+                        let institution = self.institution.clone();
+                        let sel = institution.clone();
                         div()
-                            .text_xs()
-                            .text_color(muted)
-                            .child(format!("Detected format: {}", self.format)),
-                    )
+                            .flex_shrink_0()
+                            .text_sm()
+                            .px_2()
+                            .py_0p5()
+                            .border_1()
+                            .border_color(theme.border)
+                            .rounded(theme.radius)
+                            .debug_selector(move || format!("imports:institution:{sel}"))
+                            .child(institution)
+                    }))
                     .child(div().flex_1())
                     .child(
                         Button::new("cancel-import")

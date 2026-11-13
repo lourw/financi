@@ -255,7 +255,7 @@ Open:
 - [ ] **Show a scrollbar on everything that scrolls.** *(Task 3.26, last in M3.)* Every scrollable region shows a scrollbar whenever its content overflows, visible without having to scroll first, and none when the content fits.
 - [ ] **Make category dropdowns usable with thousands of categories.** *(Task 3.59.)* Every dropdown that picks a category becomes searchable: type to filter, match on both category and subcategory names, and show each result with its category so same-named subcategories can be told apart. Works from the keyboard and renders only the visible options.
 - [ ] **Label the category type dropdown** with a visible "Category type" label. *(Task 3.60.)*
-- [ ] **Make account selection on import clearer.** *(Task 3.61.)* Show the detected institution prominently next to the account selection. Account names exclude the institution, so the picker shows "Amex · Cobalt" from institution and name.
+- [x] **Make account selection on import clearer.** *(Task 3.61.)* Show the detected institution prominently next to the account selection. Account names exclude the institution, so the picker shows "Amex · Cobalt" from institution and name.
 - [ ] **An app icon** instead of the default one. *(Added 2026-11-11; task 3.63.)*
 - The user's 2026-11-11 layout and polish requests (dashboard layout, Categories and Rules page clean-ups, button icons) are tasks 3.34–3.58 under `docs/tasks/`.
 
