@@ -964,7 +964,7 @@ impl Shell {
                             .icon(IconName::FileUp)
                             .primary()
                             .debug_selector(|| {
-                                "imports:header:Import CSV:icons/file-up.svg".to_string()
+                                format!("imports:header:{}:{}", "Import CSV", "icons/file-up.svg")
                             })
                             .on_click(
                                 cx.listener(|this, _, window, cx| this.pick_file(window, cx)),
@@ -976,7 +976,7 @@ impl Shell {
                             .icon(IconName::Undo2)
                             .disabled(latest_undo_id.is_none())
                             .debug_selector(move || {
-                                format!("imports:header:{undo_label}:icons/undo-2.svg")
+                                format!("imports:header:{}:{}", undo_label, "icons/undo-2.svg")
                             })
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.undo_last_import(window, cx);
@@ -987,7 +987,7 @@ impl Shell {
                             .label("Export")
                             .icon(IconName::Download)
                             .debug_selector(|| {
-                                "imports:header:Export:icons/download.svg".to_string()
+                                format!("imports:header:{}:{}", "Export", "icons/download.svg")
                             })
                             .on_click(cx.listener(|this, _, _, cx| this.export_data(cx))),
                     )
@@ -996,7 +996,10 @@ impl Shell {
                             .label("Restore")
                             .icon(IconName::ArchiveRestore)
                             .debug_selector(|| {
-                                "imports:header:Restore:icons/archive-restore.svg".to_string()
+                                format!(
+                                    "imports:header:{}:{}",
+                                    "Restore", "icons/archive-restore.svg"
+                                )
                             })
                             .on_click(cx.listener(|this, _, _, cx| this.restore_backup(cx))),
                     ),

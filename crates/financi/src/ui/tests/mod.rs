@@ -306,6 +306,109 @@ fn resize_and_draw(cx: &mut TestAppContext, handle: AnyWindowHandle, w: f32, h: 
     draw_frame(cx, handle);
 }
 
+/// 3.75: every debug selector the app emits follows `page:thing[:id]`.
+/// gpui keeps a rendered frame's selector map private (`Window`'s
+/// `debug_bounds` field is `pub(crate)`), so the walk runs over the source
+/// the frames are built from: every string literal in a `.debug_selector(…)`
+/// call in the view code (`ui/*.rs`; test-only selectors are the tests'
+/// business). A selector is at least two colon-separated segments,
+/// lowercase kebab-case, with `{…}` marking an interpolated id.
+#[test]
+fn selectors_follow_the_page_thing_id_pattern() {
+    let ui_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src")
+        .join("ui");
+    let mut files: Vec<_> = std::fs::read_dir(&ui_dir)
+        .expect("the view directory")
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|x| x == "rs"))
+        .collect();
+    files.sort();
+    let mut checked = 0usize;
+    let mut bad: Vec<String> = Vec::new();
+    for path in files {
+        let text = std::fs::read_to_string(&path).unwrap();
+        let mut rest = text.as_str();
+        while let Some(at) = rest.find(".debug_selector(") {
+            rest = &rest[at + ".debug_selector(".len()..];
+            // The selector is the first string literal of the call; the
+            // closures around it (`move || format!(…)`, `|| "…".into()`)
+            // hold no other literal.
+            let Some(q1) = rest.find('"') else { break };
+            rest = &rest[q1 + 1..];
+            let Some(q2) = rest.find('"') else { break };
+            let sel = &rest[..q2];
+            rest = &rest[q2 + 1..];
+            checked += 1;
+            if !selector_ok(sel) {
+                let line = text[..text.len() - rest.len()][..text.len() - rest.len()]
+                    .matches('\n')
+                    .count()
+                    + 1;
+                bad.push(format!(
+                    "{}:{line}: {sel}",
+                    path.file_name().unwrap().to_string_lossy()
+                ));
+            }
+        }
+    }
+    assert!(
+        bad.is_empty(),
+        "selectors must follow page:thing[:id], fix:\n{}",
+        bad.join("\n")
+    );
+    assert!(
+        checked > 50,
+        "the walk found only {checked} selectors — did it parse the view at all?"
+    );
+}
+
+/// `page:thing[:id]`: two or more colon-separated segments of lowercase
+/// kebab-case letters, digits and hyphens, where `{…}` stands for an
+/// interpolated id. The namespace segment (the page) never interpolates.
+fn selector_ok(sel: &str) -> bool {
+    let mut parts = sel.split(':');
+    let Some(namespace) = parts.next() else {
+        return false;
+    };
+    let ns_ok = !namespace.is_empty()
+        && namespace.starts_with(|c: char| c.is_ascii_lowercase())
+        && namespace
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+    if !ns_ok {
+        return false;
+    }
+    let mut saw_segment = false;
+    for part in parts {
+        saw_segment = true;
+        if part.is_empty() {
+            return false;
+        }
+        let mut chars = part.char_indices().peekable();
+        while let Some((ix, c)) = chars.next() {
+            if c == '{' {
+                let Some(close) = part[ix..].find('}') else {
+                    return false;
+                };
+                if !part[ix + 1..ix + close]
+                    .chars()
+                    .all(|c| c.is_ascii_alphabetic() || c == '_')
+                {
+                    return false;
+                }
+                // `{` was consumed above; skip the placeholder body and `}`.
+                for _ in 0..close {
+                    chars.next();
+                }
+            } else if !(c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') {
+                return false;
+            }
+        }
+    }
+    saw_segment
+}
+
 /// 3.75: the painted bounds of a debug selector, panicking with its name
 /// when the element did not paint at all. The one bounds helper — call
 /// this instead of reaching for `debug_bounds` per test.

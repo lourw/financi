@@ -493,13 +493,13 @@ fn the_queue_fits_the_minimum_window(cx: &mut TestAppContext) {
     // The Transactions cell shows the bare number, not "N transactions".
     assert!(
         window
-            .debug_bounds(leaked(format!("queue:txns-text:{long}=1")))
+            .debug_bounds(leaked(format!("queue:txns-text:{long}:1")))
             .is_some(),
         "the Transactions cell shows the bare count"
     );
     assert!(
         window
-            .debug_bounds(leaked(format!("queue:txns-text:{long}=1 transactions")))
+            .debug_bounds(leaked(format!("queue:txns-text:{long}:1 transactions")))
             .is_none(),
         "the old \"N transactions\" text is gone"
     );
@@ -624,7 +624,7 @@ fn the_queue_categorize_button_waits_for_its_picker(cx: &mut TestAppContext) {
     assert!(
         window
             .debug_bounds(leaked(format!(
-                "queue:categorize-state:{merchant}=disabled"
+                "queue:categorize-state:{merchant}:disabled"
             )))
             .is_some(),
         "with no pick the row's Categorize is disabled",
@@ -650,14 +650,14 @@ fn the_queue_categorize_button_waits_for_its_picker(cx: &mut TestAppContext) {
     draw_frame(cx, handle);
     assert!(
         window
-            .debug_bounds(leaked(format!("queue:categorize-state:{merchant}=enabled")))
+            .debug_bounds(leaked(format!("queue:categorize-state:{merchant}:enabled")))
             .is_some(),
         "after picking a category the row's Categorize is enabled",
     );
     assert!(
         window
             .debug_bounds(leaked(format!(
-                "queue:categorize-state:{merchant}=disabled"
+                "queue:categorize-state:{merchant}:disabled"
             )))
             .is_none(),
         "the disabled variant is gone",
@@ -665,7 +665,7 @@ fn the_queue_categorize_button_waits_for_its_picker(cx: &mut TestAppContext) {
     assert!(
         window
             .debug_bounds(leaked(
-                "queue:categorize-state:QUEUE MERCHANT 0001=disabled".to_string()
+                "queue:categorize-state:QUEUE MERCHANT 0001:disabled".to_string()
             ))
             .is_some(),
         "a row whose picker has no pick stays disabled",

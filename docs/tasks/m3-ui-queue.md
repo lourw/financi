@@ -6,7 +6,7 @@ Do these in the order listed (`docs/tasks.md` → *Picking the next task*). Each
 
 Steps 1–15 of `docs/tasks/gpui.md` → *GPUI best practices*, task by task.
 
-- [ ] **3.75 A reliable UI test harness.** (Code review, 2026-11-11.)
+- [x] **3.75 A reliable UI test harness.** (Code review, 2026-11-11.)
   Tests only; rename selectors in the UI code where needed.
   - **Wait for real idleness.** 11 tests wait for "initial load" with
     `refresh_task.is_some()`, which is already true when `Shell::new`

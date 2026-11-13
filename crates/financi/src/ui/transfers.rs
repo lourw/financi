@@ -132,7 +132,7 @@ impl Shell {
                         .rounded(radius)
                         .border_1()
                         .border_color(border)
-                        .debug_selector(move || format!("transfer-review:{txn}"))
+                        .debug_selector(move || format!("transfers:review:{txn}"))
                         // The row under review.
                         .child(
                             h_flex()
@@ -161,7 +161,7 @@ impl Shell {
                             h_flex()
                                 .gap_3()
                                 .items_center()
-                                .debug_selector(move || format!("transfer-candidate:{txn}:{cand}"))
+                                .debug_selector(move || format!("transfers:candidate:{txn}:{cand}"))
                                 .child(div().flex_none().w(px(110.)).child(c.posted_date))
                                 .child(
                                     div()

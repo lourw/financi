@@ -379,7 +379,7 @@ impl Shell {
                                                             let n = g.count;
                                                             move || {
                                                                 format!(
-                                                                    "queue:txns-text:{m}={}",
+                                                                    "queue:txns-text:{m}:{}",
                                                                     flow::count(n)
                                                                 )
                                                             }
@@ -469,7 +469,7 @@ impl Shell {
                                                     .disabled(!picked)
                                                     .debug_selector(move || {
                                                         format!(
-                                                            "queue:categorize-state:{m}={}",
+                                                            "queue:categorize-state:{m}:{}",
                                                             if picked { "enabled" } else { "disabled" }
                                                         )
                                                     })

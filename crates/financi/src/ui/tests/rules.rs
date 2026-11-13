@@ -90,8 +90,8 @@ fn the_rule_editor_is_prefilled_from_the_rule(cx: &mut TestAppContext) {
     // test), so there is no picker here.
     let mut window = VisualTestContext::from_window(handle, cx);
     assert!(
-        window.debug_bounds("rule:edit-pattern-input").is_some()
-            && window.debug_bounds("rule:edit-save-btn").is_some(),
+        window.debug_bounds("rules:edit-pattern-input").is_some()
+            && window.debug_bounds("rules:edit-save-btn").is_some(),
         "the editor paints its pattern field and Save"
     );
     wait_until(cx, "live match count for the edit", |cx| {
@@ -315,10 +315,10 @@ fn the_editor_error_stays_inside_its_row(cx: &mut TestAppContext) {
     draw_frame(cx, handle);
     let mut window = VisualTestContext::from_window(handle, cx);
     let err = window
-        .debug_bounds("rule-edit-error")
+        .debug_bounds("rules:edit-error")
         .expect("the error paints under the editor");
     let next = window
-        .debug_bounds(format!("rule-row-{toast}").leak())
+        .debug_bounds(format!("cat:rule-row:{toast}").leak())
         .expect("the row below still paints");
     assert!(
         err.bottom() <= next.top(),
@@ -346,11 +346,11 @@ fn the_add_rule_preview_stays_hidden_while_editing(cx: &mut TestAppContext) {
     draw_frame(cx, handle);
     let mut window = VisualTestContext::from_window(handle, cx);
     assert!(
-        window.debug_bounds("rule-edit-preview").is_some(),
+        window.debug_bounds("rules:edit-preview").is_some(),
         "the editor shows the live count"
     );
     assert!(
-        window.debug_bounds("add-rule-preview").is_none(),
+        window.debug_bounds("cat:add-rule-preview").is_none(),
         "the add-rule row shows none of it"
     );
     // Not merely never painted: with the editor closed and the add-rule
@@ -368,7 +368,7 @@ fn the_add_rule_preview_stays_hidden_while_editing(cx: &mut TestAppContext) {
     });
     draw_frame(cx, handle);
     assert!(
-        window.debug_bounds("add-rule-preview").is_some(),
+        window.debug_bounds("cat:add-rule-preview").is_some(),
         "the add-rule row shows its own count once not editing"
     );
 }
@@ -670,7 +670,7 @@ fn rules_page_groups_rows_by_target_category(cx: &mut TestAppContext) {
     );
     for id in [coffee, snacks, games] {
         assert!(
-            paints(cx, handle, format!("rules:group-{id}")),
+            paints(cx, handle, format!("rules:group:{id}")),
             "a group header for category {id}"
         );
     }
@@ -683,15 +683,15 @@ fn rules_page_groups_rows_by_target_category(cx: &mut TestAppContext) {
     // Groups sorted by label: Food › Coffee before Food › Snacks before
     // Fun › Games.
     assert!(
-        centre_y(cx, handle, format!("rules:group-{coffee}")) < {
+        centre_y(cx, handle, format!("rules:group:{coffee}")) < {
             draw_frame(cx, handle);
-            centre_y(cx, handle, format!("rules:group-{snacks}"))
+            centre_y(cx, handle, format!("rules:group:{snacks}"))
         }
     );
     assert!(
-        centre_y(cx, handle, format!("rules:group-{snacks}")) < {
+        centre_y(cx, handle, format!("rules:group:{snacks}")) < {
             draw_frame(cx, handle);
-            centre_y(cx, handle, format!("rules:group-{games}"))
+            centre_y(cx, handle, format!("rules:group:{games}"))
         }
     );
     // Within the Coffee group the rows are by Pattern: "COFFEE" above
@@ -883,13 +883,13 @@ fn rules_page_collapse_hides_a_groups_rows(cx: &mut TestAppContext) {
     draw_frame(cx, handle);
 
     let header = window
-        .debug_bounds(leaked(format!("rules:group-{coffee}")))
+        .debug_bounds(leaked(format!("rules:group:{coffee}")))
         .expect("the Coffee group header paints");
     window.simulate_click(header.center(), Modifiers::default());
     cx.run_until_parked();
     draw_frame(cx, handle);
     assert!(
-        paints(cx, handle, format!("rules:group-{coffee}")),
+        paints(cx, handle, format!("rules:group:{coffee}")),
         "the collapsed group keeps its header"
     );
     for id in [rules[0], rules[1]] {
@@ -904,7 +904,7 @@ fn rules_page_collapse_hides_a_groups_rows(cx: &mut TestAppContext) {
     );
 
     let header = window
-        .debug_bounds(leaked(format!("rules:group-{coffee}")))
+        .debug_bounds(leaked(format!("rules:group:{coffee}")))
         .expect("the header still paints");
     window.simulate_click(header.center(), Modifiers::default());
     cx.run_until_parked();
@@ -1020,7 +1020,7 @@ fn the_rules_page_fits_the_minimum_window(cx: &mut TestAppContext) {
     let page_right = px(1200. - PAGE_PAD);
     for (what, sel) in [
         ("the filter row", "rules:filter-row".to_string()),
-        ("the group header", format!("rules:group-{child}")),
+        ("the group header", format!("rules:group:{child}")),
         ("the rule row", format!("rules:row-{rule}")),
         ("the New rule… button", format!("label:{NEW_RULE}")),
     ] {

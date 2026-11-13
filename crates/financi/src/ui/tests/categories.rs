@@ -819,13 +819,13 @@ fn selecting_a_category_lists_only_its_own_rules(cx: &mut TestAppContext) {
     draw_frame(cx, handle);
     assert!(
         window
-            .debug_bounds(leaked(format!("rule-row-{coffee_rule}")))
+            .debug_bounds(leaked(format!("cat:rule-row:{coffee_rule}")))
             .is_some(),
         "a parent's list holds its subcategories' rules"
     );
     assert!(
         window
-            .debug_bounds(leaked(format!("rule-row-{fuel_rule}")))
+            .debug_bounds(leaked(format!("cat:rule-row:{fuel_rule}")))
             .is_none(),
         "another category's rule is not listed"
     );
@@ -834,13 +834,13 @@ fn selecting_a_category_lists_only_its_own_rules(cx: &mut TestAppContext) {
     draw_frame(cx, handle);
     assert!(
         window
-            .debug_bounds(leaked(format!("rule-row-{fuel_rule}")))
+            .debug_bounds(leaked(format!("cat:rule-row:{fuel_rule}")))
             .is_some(),
         "the other parent's rule lists after switching"
     );
     assert!(
         window
-            .debug_bounds(leaked(format!("rule-row-{coffee_rule}")))
+            .debug_bounds(leaked(format!("cat:rule-row:{coffee_rule}")))
             .is_none(),
         "the first parent's rule is gone after switching"
     );
@@ -854,10 +854,10 @@ fn selecting_a_category_lists_only_its_own_rules(cx: &mut TestAppContext) {
     );
     assert!(
         window
-            .debug_bounds(leaked(format!("rule-row-{coffee_rule}")))
+            .debug_bounds(leaked(format!("cat:rule-row:{coffee_rule}")))
             .is_none()
             && window
-                .debug_bounds(leaked(format!("rule-row-{fuel_rule}")))
+                .debug_bounds(leaked(format!("cat:rule-row:{fuel_rule}")))
                 .is_none(),
         "no rule rows paint for the ruleless category"
     );
@@ -888,7 +888,7 @@ fn a_selected_subcategory_adds_a_rule_without_a_picker(cx: &mut TestAppContext) 
     );
     assert!(
         window
-            .debug_bounds("rule:subcategory-select:cat-add")
+            .debug_bounds("cat:rule-subcategory-select:cat-add")
             .is_none(),
         "the row carries no category picker — the selection names the target"
     );
@@ -933,7 +933,7 @@ fn the_add_rule_picker_lists_the_selected_parents_children(cx: &mut TestAppConte
     select_parent(cx, handle, &shell, "Drinks");
     draw_frame(cx, handle);
     assert!(
-        paints(cx, handle, "rule:subcategory-select:cat-add"),
+        paints(cx, handle, "cat:rule-subcategory-select:cat-add"),
         "under a parent the row paints its subcategory picker"
     );
     assert!(
@@ -952,17 +952,17 @@ fn the_add_rule_picker_lists_the_selected_parents_children(cx: &mut TestAppConte
         );
     });
     // The open menu holds this parent's children, by their own names.
-    open_picker_menu(cx, handle, "rule:subcategory-select:cat-add");
+    open_picker_menu(cx, handle, "cat:rule-subcategory-select:cat-add");
     assert!(
-        paints(cx, handle, "rule-choice:Coffee"),
+        paints(cx, handle, "cat:rule-choice:Coffee"),
         "the parent's own child is listed by its own name"
     );
     assert!(
-        !paints(cx, handle, "rule-choice:Fuel"),
+        !paints(cx, handle, "cat:rule-choice:Fuel"),
         "another parent's child is not in the list"
     );
     assert!(
-        !paints(cx, handle, "rule-choice:Drinks › Coffee"),
+        !paints(cx, handle, "cat:rule-choice:Drinks › Coffee"),
         "the names are bare, not \"Parent › Child\""
     );
     // Add rule with a pattern but no pick: the error explains, nothing
@@ -1150,8 +1150,8 @@ fn the_categories_page_fits_the_minimum_window(cx: &mut TestAppContext) {
         ("the new-category form", "cat:new-form".to_string()),
         ("the tree panel", "cat:tree-panel".to_string()),
         ("the detail panel", "cat:detail-panel".to_string()),
-        ("the selected tree row", format!("cat-tree-row-{child}")),
-        ("the rule row", format!("rule-row-{rule}")),
+        ("the selected tree row", format!("cat:tree-row:{child}")),
+        ("the rule row", format!("cat:rule-row:{rule}")),
     ] {
         let b = window
             .debug_bounds(leaked(sel))
@@ -1166,7 +1166,7 @@ fn the_categories_page_fits_the_minimum_window(cx: &mut TestAppContext) {
     // The rule pattern truncates: its column is far narrower than the
     // full text needs at 14 px.
     let col = window
-        .debug_bounds(leaked(format!("rule:pattern-col:{rule}")))
+        .debug_bounds(leaked(format!("cat:rule-pattern-col:{rule}")))
         .expect("the rule row paints its pattern column");
     let full_w = TEXT_SM_CHAR_PX * CAT_FIT_PATTERN.chars().count() as f32;
     assert!(
@@ -1197,7 +1197,7 @@ fn the_categories_page_fits_the_minimum_window(cx: &mut TestAppContext) {
         .debug_bounds("cat:tree-panel")
         .expect("the tree panel");
     let row = window
-        .debug_bounds(leaked(format!("cat-tree-row-{child}")))
+        .debug_bounds(leaked(format!("cat:tree-row:{child}")))
         .expect("the tree paints the selected row");
     let tree_content_right = tree.origin.x + tree.size.width - px(9.);
     assert!(
@@ -1299,7 +1299,7 @@ fn click_past_anything(cx: &mut TestAppContext, window: &mut VisualTestContext) 
 /// — and that the row sits inside the window.
 fn assert_menu_item_unclipped(window: &mut VisualTestContext, label: &str, win_w: f32) {
     let item = window
-        .debug_bounds(leaked(format!("rule-choice:{label}")))
+        .debug_bounds(leaked(format!("cat:rule-choice:{label}")))
         .unwrap_or_else(|| panic!("{label:?} paints in the open menu"));
     let natural = window
         .debug_bounds(leaked(format!("rule-choice-natural:{label}")))
@@ -1336,7 +1336,7 @@ fn the_subcategory_menu_shows_a_forty_character_name(cx: &mut TestAppContext) {
     let name = LONG_CHILD;
 
     let trigger = window
-        .debug_bounds("rule:subcategory-select:cat-add")
+        .debug_bounds("cat:rule-subcategory-select:cat-add")
         .expect("the Categories page paints the add-rule picker");
     assert!(
         (f32::from(trigger.size.width) - 200.).abs() <= 1.,
@@ -1344,11 +1344,11 @@ fn the_subcategory_menu_shows_a_forty_character_name(cx: &mut TestAppContext) {
         trigger.size.width,
     );
 
-    open_picker_menu(cx, handle, "rule:subcategory-select:cat-add");
+    open_picker_menu(cx, handle, "cat:rule-subcategory-select:cat-add");
     assert_menu_item_unclipped(&mut window, name, 1200.);
 
     // Pick the long child; the trigger then holds the ellipsized name…
-    click(cx, handle, format!("rule-choice:{name}"));
+    click(cx, handle, format!("cat:rule-choice:{name}"));
     cx.update(|cx| {
         let s = shell.read(cx);
         assert_eq!(
@@ -1364,7 +1364,7 @@ fn the_subcategory_menu_shows_a_forty_character_name(cx: &mut TestAppContext) {
 
     // …and hovering it shows the full name in a tooltip.
     let trigger = window
-        .debug_bounds("rule:subcategory-select:cat-add")
+        .debug_bounds("cat:rule-subcategory-select:cat-add")
         .expect("the picker trigger");
     window.simulate_mouse_move(trigger.center(), None, Modifiers::default());
     cx.executor().advance_clock(Duration::from_millis(600));
@@ -1433,8 +1433,8 @@ fn the_regex_switch_lines_up_with_the_rule_fields(cx: &mut TestAppContext) {
         "rule editor",
         "rule:switch:edit",
         "rule:regex-slot:edit",
-        "rule:edit-pattern-input",
-        "rule:edit-save-btn",
+        "rules:edit-pattern-input",
+        "rules:edit-save-btn",
     );
 
     // The Rules page's add-rule row.
@@ -1448,8 +1448,8 @@ fn the_regex_switch_lines_up_with_the_rule_fields(cx: &mut TestAppContext) {
         "Rules page add-rule",
         "rule:switch:add",
         "rule:regex-slot:add",
-        "rule:pattern-input:add",
-        "rule:add-rule-btn:add",
+        "rules:pattern-input:add",
+        "rules:add-rule-btn:add",
     );
 }
 
@@ -1471,14 +1471,18 @@ fn the_rule_list_headings_sit_over_their_columns(cx: &mut TestAppContext) {
     for (label, heading_sel, column_sel) in [
         (
             "Pattern",
-            "rule:heading-pattern",
-            format!("rule:pattern-col:{rule}"),
+            "cat:rule-heading-pattern",
+            format!("cat:rule-pattern-col:{rule}"),
         ),
-        ("Type", "rule:heading-type", format!("rule:type-col:{rule}")),
+        (
+            "Type",
+            "cat:rule-heading-type",
+            format!("cat:rule-type-col:{rule}"),
+        ),
         (
             "Category",
-            "rule:heading-category",
-            format!("rule:category-col:{rule}"),
+            "cat:rule-heading-category",
+            format!("cat:rule-category-col:{rule}"),
         ),
     ] {
         let heading = window
@@ -1498,10 +1502,10 @@ fn the_rule_list_headings_sit_over_their_columns(cx: &mut TestAppContext) {
     // The Actions label is right-aligned over the buttons: its right
     // edge is the row's right edge (the Delete… button ends there).
     let actions = window
-        .debug_bounds("rule:heading-actions")
+        .debug_bounds("cat:rule-heading-actions")
         .expect("the rules list paints the Actions heading");
     let row = window
-        .debug_bounds(leaked(format!("rule-row-{rule}")))
+        .debug_bounds(leaked(format!("cat:rule-row:{rule}")))
         .expect("the rules list paints the fixture's row");
     assert!(
         (actions.origin.x + actions.size.width - (row.origin.x + row.size.width)).abs() < px(1.),
@@ -1513,7 +1517,7 @@ fn the_rule_list_headings_sit_over_their_columns(cx: &mut TestAppContext) {
     // A single line: every heading label shares one line, and the whole
     // heading is no taller than a line of labels.
     let type_heading = window
-        .debug_bounds("rule:heading-type")
+        .debug_bounds("cat:rule-heading-type")
         .expect("the rules list paints the Type heading");
     assert!(
         (actions.origin.y - type_heading.origin.y).abs() < px(1.),
@@ -1523,7 +1527,7 @@ fn the_rule_list_headings_sit_over_their_columns(cx: &mut TestAppContext) {
         type_heading.origin.y,
     );
     let heading = window
-        .debug_bounds("rule:heading-row")
+        .debug_bounds("cat:rule-heading-row")
         .expect("the rules list paints its heading row");
     assert!(
         heading.size.height < px(24.),

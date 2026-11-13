@@ -2398,14 +2398,14 @@ fn the_legend_is_just_a_key(cx: &mut TestAppContext) {
     for (ix, (name, cents, share)) in rows.iter().enumerate() {
         assert!(
             window
-                .debug_bounds(leaked(format!("chart:legend-text:{ix}={name}")))
+                .debug_bounds(leaked(format!("chart:legend-text:{ix}:{name}")))
                 .is_some(),
             "legend row {ix} draws its name"
         );
         for gone in [crate::flow::money(*cents), format!("{:.1}%", share * 100.)] {
             assert!(
                 window
-                    .debug_bounds(leaked(format!("chart:legend-text:{ix}={gone}")))
+                    .debug_bounds(leaked(format!("chart:legend-text:{ix}:{gone}")))
                     .is_none(),
                 "legend row {ix} no longer draws {gone:?}"
             );
@@ -2795,7 +2795,7 @@ fn click_summary_cell(
              `expand_summary_parent`) and month {month:?} is a column"
         )
     };
-    click(cx, handle, format!("summary:cell-{ix}-{col}"));
+    click(cx, handle, format!("summary:cell:{ix}:{col}"));
 }
 
 /// Expand a collapsed summary parent by clicking its name cell, so its
@@ -3242,7 +3242,7 @@ fn summary_months_scroll_under_pinned_name_and_total(cx: &mut TestAppContext) {
 
     let panel = bounds(cx, handle, "panel:summary");
     let name = bounds(cx, handle, "summary:name-0");
-    let total = bounds(cx, handle, "summary:cell-0-24");
+    let total = bounds(cx, handle, "summary:cell:0:24");
     let zone = bounds(cx, handle, "summary:months-0");
     // Both pinned columns paint inside the panel…
     assert!(
@@ -3264,7 +3264,7 @@ fn summary_months_scroll_under_pinned_name_and_total(cx: &mut TestAppContext) {
     // or the Total), so no cell's visible part can leave the zone.
     let mut whole = 0;
     for col in 0..24 {
-        let cell = bounds(cx, handle, leaked(format!("summary:cell-0-{col}")));
+        let cell = bounds(cx, handle, leaked(format!("summary:cell:0:{col}")));
         if cell.origin.x >= zone.origin.x - px(1.) && cell.right() <= zone.right() + px(1.) {
             whole += 1;
         } else {
@@ -3283,12 +3283,12 @@ fn summary_months_scroll_under_pinned_name_and_total(cx: &mut TestAppContext) {
     // scrolled away to the left.
     let off0 = cx.update(|cx| shell.read(cx).dashboard.summary_scroll.offset().x);
     assert!(off0 < px(0.), "the 24-month strip is scrolled sideways");
-    let newest = bounds(cx, handle, "summary:cell-0-23");
+    let newest = bounds(cx, handle, "summary:cell:0:23");
     assert!(
         newest.right() > zone.origin.x && newest.origin.x < zone.right(),
         "the latest month is on screen"
     );
-    let oldest = bounds(cx, handle, "summary:cell-0-0");
+    let oldest = bounds(cx, handle, "summary:cell:0:0");
     assert!(
         oldest.right() <= zone.origin.x + px(1.),
         "the oldest month is scrolled out to the left"
@@ -3297,9 +3297,9 @@ fn summary_months_scroll_under_pinned_name_and_total(cx: &mut TestAppContext) {
     // Shift+wheel over the month zone scrolls it, and the header moves by
     // exactly the same amount as the body cells.
     let before_label = bounds(cx, handle, "summary:month-label-12").origin.x;
-    let before_cell = bounds(cx, handle, "summary:cell-0-12").origin.x;
+    let before_cell = bounds(cx, handle, "summary:cell:0:12").origin.x;
     let before_name = bounds(cx, handle, "summary:name-0").origin.x;
-    let before_total = bounds(cx, handle, "summary:cell-0-24").origin.x;
+    let before_total = bounds(cx, handle, "summary:cell:0:24").origin.x;
     wheel(cx, handle, viewport_centre(zone), 240., 0.);
     draw_frame(cx, handle);
     let off1 = cx.update(|cx| shell.read(cx).dashboard.summary_scroll.offset().x);
@@ -3307,7 +3307,7 @@ fn summary_months_scroll_under_pinned_name_and_total(cx: &mut TestAppContext) {
     let moved = f32::from(off1 - off0);
     assert!(moved > 0.);
     let after_label = f32::from(bounds(cx, handle, "summary:month-label-12").origin.x);
-    let after_cell = f32::from(bounds(cx, handle, "summary:cell-0-12").origin.x);
+    let after_cell = f32::from(bounds(cx, handle, "summary:cell:0:12").origin.x);
     assert!(
         (after_label - f32::from(before_label) - moved).abs() < 1.,
         "the header months moved with the handle"
@@ -3323,7 +3323,7 @@ fn summary_months_scroll_under_pinned_name_and_total(cx: &mut TestAppContext) {
         "the name column stays pinned"
     );
     assert_eq!(
-        bounds(cx, handle, "summary:cell-0-24").origin.x,
+        bounds(cx, handle, "summary:cell:0:24").origin.x,
         before_total,
         "the Total column stays pinned"
     );
@@ -3427,7 +3427,7 @@ fn changing_the_summary_range_lands_on_the_latest_month(cx: &mut TestAppContext)
         "the new range lands scrolled to the last month"
     );
     let zone = bounds(cx, handle, "summary:months-0");
-    let newest = bounds(cx, handle, "summary:cell-0-23");
+    let newest = bounds(cx, handle, "summary:cell:0:23");
     assert!(
         newest.right() > zone.origin.x && newest.origin.x < zone.right(),
         "the latest month is on screen"
@@ -3466,8 +3466,8 @@ fn a_short_summary_range_shows_no_horizontal_scrollbar(cx: &mut TestAppContext) 
     assert_eq!(offset, px(0.), "and nothing is scrolled");
     // The strip still reads as today: the newest month sits flush against
     // `Total`.
-    let total = bounds(cx, handle, "summary:cell-0-3");
-    let newest = bounds(cx, handle, "summary:cell-0-2");
+    let total = bounds(cx, handle, "summary:cell:0:3");
+    let newest = bounds(cx, handle, "summary:cell:0:2");
     assert!(
         (total.origin.x - newest.right()).abs() < px(9.),
         "the months sit right-aligned beside the Total column"

@@ -112,17 +112,17 @@ fn the_transfers_page_offers_every_candidate_for_a_tie_and_pairs_the_chosen_one(
     assert!(window.debug_bounds("page:page-transfers").is_some());
     assert!(
         window
-            .debug_bounds(leaked(format!("transfer-review:{debit}")))
+            .debug_bounds(leaked(format!("transfers:review:{debit}")))
             .is_some()
     );
     assert!(
         window
-            .debug_bounds(leaked(format!("transfer-candidate:{debit}:{credit_a}")))
+            .debug_bounds(leaked(format!("transfers:candidate:{debit}:{credit_a}")))
             .is_some()
     );
     assert!(
         window
-            .debug_bounds(leaked(format!("transfer-candidate:{debit}:{credit_b}")))
+            .debug_bounds(leaked(format!("transfers:candidate:{debit}:{credit_b}")))
             .is_some()
     );
 

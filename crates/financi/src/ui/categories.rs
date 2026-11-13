@@ -28,7 +28,7 @@ impl SearchableListItem for RuleChoice {
         let probe = self.0.clone();
         div()
             .id("rule-choice")
-            .debug_selector(move || format!("rule-choice:{full}"))
+            .debug_selector(move || format!("cat:rule-choice:{full}"))
             .w_full()
             .min_w_0()
             .relative()
@@ -68,7 +68,7 @@ pub(super) fn rule_choices(names: &[(i64, String)]) -> RuleChoices {
 /// trigger carries a hover tooltip with the full name (ui-conventions
 /// *Interaction*) — and the open menu is `menu_w` wide (at least the
 /// longest name, max [`RULE_CATEGORY_MENU_W`]), so no item is cut off.
-/// `id` tells the rows apart (`rule:subcategory-select:<id>`).
+/// `id` tells the rows apart (`cat:rule-subcategory-select:<id>`).
 fn subcategory_select(
     target: &Entity<SelectState<RuleChoices>>,
     id: &'static str,
@@ -81,7 +81,7 @@ fn subcategory_select(
         .id(SharedString::from(id))
         .w(px(trigger_w))
         .flex_shrink_0()
-        .debug_selector(move || format!("rule:subcategory-select:{id}"));
+        .debug_selector(move || format!("cat:rule-subcategory-select:{id}"));
     let tip = target.read(cx).selected_value().cloned();
     let wrapper = match tip {
         Some(fallback) => wrapper.tooltip(move |window, cx| {
@@ -739,7 +739,7 @@ impl Shell {
             .gap_2()
             .rounded(radius)
             .cursor_pointer()
-            .debug_selector(move || format!("cat-tree-row-{id}"))
+            .debug_selector(move || format!("cat:tree-row:{id}"))
             .when(selected, |d| d.bg(list_active))
             // A selected row keeps its `list_active` under the pointer.
             .hover(move |s| if selected { s } else { s.bg(list_hover) })
@@ -911,7 +911,7 @@ impl Shell {
             Some(n) => div()
                 .text_sm()
                 .text_color(muted)
-                .debug_selector(|| "add-rule-preview".into())
+                .debug_selector(|| "cat:add-rule-preview".into())
                 .child(format!("matches {} transactions", flow::count(n)))
                 .into_any_element(),
             None => div().into_any_element(),
@@ -1240,23 +1240,23 @@ impl Shell {
                                 let heading = h_flex()
                                     .gap_2()
                                     .items_end()
-                                    .debug_selector(|| "rule:heading-row".into())
+                                    .debug_selector(|| "cat:rule-heading-row".into())
                                     .child(
                                         div().flex_1().min_w_0().child(
                                             field_label(muted, "Pattern")
-                                                .debug_selector(|| "rule:heading-pattern".into()),
+                                                .debug_selector(|| "cat:rule-heading-pattern".into()),
                                         ),
                                     )
                                     .child(
                                         div().w(px(RULE_TYPE_W)).flex_shrink_0().child(
                                             field_label(muted, "Type")
-                                                .debug_selector(|| "rule:heading-type".into()),
+                                                .debug_selector(|| "cat:rule-heading-type".into()),
                                         ),
                                     )
                                     .child(
                                         div().w(px(RULE_CATEGORY_W)).flex_shrink_0().child(
                                             field_label(muted, "Category")
-                                                .debug_selector(|| "rule:heading-category".into()),
+                                                .debug_selector(|| "cat:rule-heading-category".into()),
                                         ),
                                     )
                                     .child(
@@ -1266,7 +1266,7 @@ impl Shell {
                                                 field_label(muted, "Actions")
                                                     .text_right()
                                                     .debug_selector(|| {
-                                                        "rule:heading-actions".into()
+                                                        "cat:rule-heading-actions".into()
                                                     }),
                                             )
                                             .child(
