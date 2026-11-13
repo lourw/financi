@@ -267,10 +267,7 @@ fn categorizing_a_queue_group_toasts_without_moving_the_page(cx: &mut TestAppCon
     });
     cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::ToCategorize, cx)));
     draw_frame(cx, handle);
-    let mut vtc = VisualTestContext::from_window(handle, cx);
-    let top = vtc
-        .debug_bounds(leaked("queue:merchant-col:QUEUE MERCHANT 0000".to_string()))
-        .expect("the first queue row is painted");
+    let top = bounds(cx, handle, "queue:merchant-col:QUEUE MERCHANT 0000");
     let child = cx.update(|cx| find_child(&shell, cx, "Groceries").unwrap());
 
     with_window(cx, handle, |window, cx| {
@@ -298,16 +295,12 @@ fn categorizing_a_queue_group_toasts_without_moving_the_page(cx: &mut TestAppCon
         );
     });
     draw_frame(cx, handle);
-    let after = vtc
-        .debug_bounds(leaked("queue:merchant-col:QUEUE MERCHANT 0000".to_string()))
-        .expect("the first queue row is still painted");
+    let after = bounds(cx, handle, "queue:merchant-col:QUEUE MERCHANT 0000");
     assert_eq!(
         after.origin, top.origin,
         "the page did not move while the toast shows"
     );
-    let card = vtc
-        .debug_bounds(leaked("toast:Categorized QUEUE MERCHANT 0001".to_string()))
-        .expect("the toast card is painted");
+    let card = bounds(cx, handle, "toast:Categorized QUEUE MERCHANT 0001");
     assert!(
         card.center().x > px(550.) && card.center().y > px(360.),
         "the toast sits in the bottom-right of the 1200 × 720 window, at {card:?}"
@@ -323,8 +316,8 @@ fn the_queue_page_labels_its_columns(cx: &mut TestAppContext) {
     });
     import_and_top_merchant(cx, handle, &shell);
     cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::ToCategorize, cx)));
-    cx.run_until_parked();
     let mut window = VisualTestContext::from_window(handle, cx);
+    cx.run_until_parked();
     draw_frame(cx, handle);
     for sel in [
         "label:Merchant",
@@ -356,8 +349,8 @@ fn the_queue_category_heading_sits_over_the_picker_column(cx: &mut TestAppContex
         window.resize(size(px(1200.), px(720.)));
         window.bounds_changed(cx);
     });
-    cx.run_until_parked();
     let mut window = VisualTestContext::from_window(handle, cx);
+    cx.run_until_parked();
     draw_frame(cx, handle);
     for (label, sel) in [
         ("Merchant", format!("queue:merchant-col:{merchant}")),
@@ -366,12 +359,8 @@ fn the_queue_category_heading_sits_over_the_picker_column(cx: &mut TestAppContex
         ("Dates", format!("queue:dates-col:{merchant}")),
         ("Category", format!("queue:picker-col:{merchant}")),
     ] {
-        let heading = window
-            .debug_bounds(leaked(format!("label:{label}")))
-            .unwrap_or_else(|| panic!("the queue paints the {label:?} heading"));
-        let column = window
-            .debug_bounds(leaked(sel))
-            .unwrap_or_else(|| panic!("the queue paints the {label:?} column"));
+        let heading = bounds(cx, handle, format!("label:{label}"));
+        let column = bounds(cx, handle, sel);
         assert!(
             (heading.origin.x - column.origin.x).abs() < px(1.),
             "the {label:?} heading starts where its column starts: \
@@ -383,9 +372,7 @@ fn the_queue_category_heading_sits_over_the_picker_column(cx: &mut TestAppContex
     let heading = window
         .debug_bounds("label:Category")
         .expect("the queue paints a Category heading");
-    let picker = window
-        .debug_bounds(leaked(format!("queue:picker-col:{merchant}")))
-        .expect("the queue paints a picker column");
+    let picker = bounds(cx, handle, format!("queue:picker-col:{merchant}"));
     assert!(
         (heading.size.width - picker.size.width).abs() < px(1.),
         "the Category heading is as wide as the picker column: \
@@ -453,8 +440,8 @@ fn the_queue_fits_the_minimum_window(cx: &mut TestAppContext) {
         window.resize(size(px(1200.), px(720.)));
         window.bounds_changed(cx);
     });
-    cx.run_until_parked();
     let mut window = VisualTestContext::from_window(handle, cx);
+    cx.run_until_parked();
     draw_frame(cx, handle);
 
     // The row's right edge — its Categorize button — ends inside the page
@@ -465,9 +452,7 @@ fn the_queue_fits_the_minimum_window(cx: &mut TestAppContext) {
             ("category picker", format!("queue:picker-col:{m}")),
             ("Categorize button", format!("queue:categorize-col:{m}")),
         ] {
-            let b = window
-                .debug_bounds(leaked(sel))
-                .unwrap_or_else(|| panic!("the row for {m:?} draws its {what}"));
+            let b = bounds(cx, handle, sel);
             assert!(
                 b.origin.x + b.size.width <= page_right + px(1.),
                 "the {what} of {m:?} ends at x {:?}, past the page edge {page_right:?}",
@@ -479,9 +464,7 @@ fn the_queue_fits_the_minimum_window(cx: &mut TestAppContext) {
     // The 120-character name truncates: the Merchant cell is far narrower
     // than the full text needs at 14 px.
     let long = QUEUE_FIT_MERCHANTS[0];
-    let cell = window
-        .debug_bounds(leaked(format!("queue:merchant-col:{long}")))
-        .expect("the long merchant's row draws its cell");
+    let cell = bounds(cx, handle, format!("queue:merchant-col:{long}"));
     let full_w = TEXT_SM_CHAR_PX * long.chars().count() as f32;
     assert!(
         cell.size.width < px(full_w / 2.),
@@ -492,23 +475,17 @@ fn the_queue_fits_the_minimum_window(cx: &mut TestAppContext) {
 
     // The Transactions cell shows the bare number, not "N transactions".
     assert!(
-        window
-            .debug_bounds(leaked(format!("queue:txns-text:{long}:1")))
-            .is_some(),
+        paints(cx, handle, format!("queue:txns-text:{long}:1")),
         "the Transactions cell shows the bare count"
     );
     assert!(
-        window
-            .debug_bounds(leaked(format!("queue:txns-text:{long}:1 transactions")))
-            .is_none(),
+        !paints(cx, handle, format!("queue:txns-text:{long}:1 transactions")),
         "the old \"N transactions\" text is gone"
     );
 
     // Hovering the truncated name shows the tooltip with the full text.
     assert!(
-        window
-            .debug_bounds(leaked(format!("queue:merchant-tooltip:{long}")))
-            .is_none(),
+        !paints(cx, handle, format!("queue:merchant-tooltip:{long}")),
         "nothing hovers the row, so no tooltip is drawn yet"
     );
     let centre = point(
@@ -521,9 +498,7 @@ fn the_queue_fits_the_minimum_window(cx: &mut TestAppContext) {
     cx.run_until_parked();
     draw_frame(cx, handle);
     assert!(
-        window
-            .debug_bounds(leaked(format!("queue:merchant-tooltip:{long}")))
-            .is_some(),
+        paints(cx, handle, format!("queue:merchant-tooltip:{long}")),
         "hovering the truncated merchant name shows a tooltip with the full name",
     );
 }
@@ -538,8 +513,8 @@ fn the_queue_list_paints_inside_one_panel(cx: &mut TestAppContext) {
         shell.read(cx).queue.groups.len() == 3
     });
     cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::ToCategorize, cx)));
-    cx.run_until_parked();
     let mut window = VisualTestContext::from_window(handle, cx);
+    cx.run_until_parked();
     draw_frame(cx, handle);
     let panel = window
         .debug_bounds("queue:panel")
@@ -557,9 +532,7 @@ fn the_queue_list_paints_inside_one_panel(cx: &mut TestAppContext) {
     let heading = window
         .debug_bounds("label:Merchant")
         .expect("the panel's heading row paints");
-    let row = window
-        .debug_bounds(leaked("queue:row:QUEUE MERCHANT 0000".to_string()))
-        .expect("the panel paints the queue's rows");
+    let row = bounds(cx, handle, "queue:row:QUEUE MERCHANT 0000");
     assert!(
         heading.origin.x >= panel.origin.x
             && heading.origin.y >= panel.origin.y
@@ -595,14 +568,9 @@ fn the_queue_header_summarizes_transactions_and_merchants(cx: &mut TestAppContex
     assert_eq!(txns, 6, "3 groups of 2 transactions each");
     cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::ToCategorize, cx)));
     cx.run_until_parked();
-    let mut window = VisualTestContext::from_window(handle, cx);
     draw_frame(cx, handle);
     assert!(
-        window
-            .debug_bounds(leaked(
-                "queue:summary:6 transactions · 3 merchants".to_string()
-            ))
-            .is_some(),
+        paints(cx, handle, "queue:summary:6 transactions · 3 merchants"),
         "the header shows the muted \"6 transactions · 3 merchants\" summary",
     );
 }
@@ -618,15 +586,14 @@ fn the_queue_categorize_button_waits_for_its_picker(cx: &mut TestAppContext) {
     });
     cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::ToCategorize, cx)));
     cx.run_until_parked();
-    let mut window = VisualTestContext::from_window(handle, cx);
     draw_frame(cx, handle);
     let merchant = "QUEUE MERCHANT 0000".to_string();
     assert!(
-        window
-            .debug_bounds(leaked(format!(
-                "queue:categorize-state:{merchant}:disabled"
-            )))
-            .is_some(),
+        paints(
+            cx,
+            handle,
+            format!("queue:categorize-state:{merchant}:disabled")
+        ),
         "with no pick the row's Categorize is disabled",
     );
     let child = cx.update(|cx| find_child(&shell, cx, "Groceries").unwrap());
@@ -649,25 +616,27 @@ fn the_queue_categorize_button_waits_for_its_picker(cx: &mut TestAppContext) {
     });
     draw_frame(cx, handle);
     assert!(
-        window
-            .debug_bounds(leaked(format!("queue:categorize-state:{merchant}:enabled")))
-            .is_some(),
+        paints(
+            cx,
+            handle,
+            format!("queue:categorize-state:{merchant}:enabled")
+        ),
         "after picking a category the row's Categorize is enabled",
     );
     assert!(
-        window
-            .debug_bounds(leaked(format!(
-                "queue:categorize-state:{merchant}:disabled"
-            )))
-            .is_none(),
+        !paints(
+            cx,
+            handle,
+            format!("queue:categorize-state:{merchant}:disabled")
+        ),
         "the disabled variant is gone",
     );
     assert!(
-        window
-            .debug_bounds(leaked(
-                "queue:categorize-state:QUEUE MERCHANT 0001:disabled".to_string()
-            ))
-            .is_some(),
+        paints(
+            cx,
+            handle,
+            "queue:categorize-state:QUEUE MERCHANT 0001:disabled"
+        ),
         "a row whose picker has no pick stays disabled",
     );
 }

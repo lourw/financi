@@ -501,7 +501,7 @@ impl Shell {
                                 div()
                                     .debug_selector({
                                         let p = tip.clone();
-                                        move || format!("rule:pattern-tooltip:{p}")
+                                        move || format!("cat:rule-pattern-tooltip:{p}")
                                     })
                                     .child(tip.clone())
                             })
@@ -619,8 +619,8 @@ impl Shell {
                         // slot so its centre matches the input, picker and
                         // buttons.
                         control_slot(
-                            "rule:regex-slot:edit".into(),
-                            "rule:switch:edit".into(),
+                            "rules:regex-slot:edit".into(),
+                            "rules:switch:edit".into(),
                             Switch::new(SharedString::from(format!("rule-edit-regex-{}", rule.id)))
                                 .label("regex")
                                 .checked(self.rule_edit_regex)
@@ -1227,8 +1227,8 @@ impl Shell {
                                 .child(
                                     // 3.42: control-height slot, centred.
                                     control_slot(
-                                        "rule:regex-slot:add".into(),
-                                        "rule:switch:add".into(),
+                                        "rules:regex-slot:add".into(),
+                                        "rules:switch:add".into(),
                                         Switch::new("rule-regex")
                                             .label("regex")
                                             .checked(self.rule_regex)

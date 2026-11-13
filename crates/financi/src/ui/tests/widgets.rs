@@ -59,9 +59,7 @@ fn an_error_toast_stays_until_the_user_closes_it(cx: &mut TestAppContext) {
     // A click on the card closes it, once the exit animation runs out.
     draw_frame(cx, handle);
     let mut vtc = VisualTestContext::from_window(handle, cx);
-    let card = vtc
-        .debug_bounds(leaked(format!("toast:{msg}")))
-        .expect("the toast card is painted");
+    let card = bounds(cx, handle, format!("toast:{msg}"));
     vtc.simulate_click(card.center(), Modifiers::default());
     cx.run_until_parked();
     tick_toasts(cx, 5);

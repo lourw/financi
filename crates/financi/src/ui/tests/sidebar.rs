@@ -35,9 +35,7 @@ fn sidebar_db_path_shows_the_full_path_on_hover(cx: &mut TestAppContext) {
     let mut window = VisualTestContext::from_window(handle, cx);
     draw_frame(cx, handle);
 
-    let cell = window
-        .debug_bounds(leaked(format!("sidebar:db-path:{path}")))
-        .expect("the footer draws the database path");
+    let cell = bounds(cx, handle, format!("sidebar:db-path:{path}"));
     assert!(
         cell.size.width < px(path.chars().count() as f32 * 4.5),
         "the path truncates: the cell is {:?} wide, the full text needs at \
@@ -48,9 +46,9 @@ fn sidebar_db_path_shows_the_full_path_on_hover(cx: &mut TestAppContext) {
 
     // The tooltip carries the full path, prefixed "Database: "; it only
     // exists while the path is hovered.
-    let tip = leaked(format!("sidebar:db-path-tooltip:Database: {path}"));
+    let tip = format!("sidebar:db-path-tooltip:Database: {path}");
     assert!(
-        window.debug_bounds(tip).is_none(),
+        !paints(cx, handle, tip.clone()),
         "nothing hovers the path, so no tooltip is drawn yet"
     );
     window.simulate_mouse_move(
@@ -66,7 +64,7 @@ fn sidebar_db_path_shows_the_full_path_on_hover(cx: &mut TestAppContext) {
     cx.run_until_parked();
     draw_frame(cx, handle);
     assert!(
-        window.debug_bounds(tip).is_some(),
+        paints(cx, handle, tip.clone()),
         "hovering the path shows a tooltip with the full path",
     );
 }
@@ -83,10 +81,8 @@ fn sidebar_footer_shows_the_app_version(cx: &mut TestAppContext) {
     // The selector embeds the label, so a match proves the footer paints
     // exactly the const's text.
     let label = crate::version::version_label();
-    let text_sel = leaked(format!("sidebar:version-text:{label}"));
-    let cell = window
-        .debug_bounds(text_sel)
-        .unwrap_or_else(|| panic!("the footer paints the version text {label:?}"));
+    let text_sel = format!("sidebar:version-text:{label}");
+    let cell = bounds(cx, handle, text_sel.clone());
     assert!(
         label.starts_with('v'),
         "the version label is \"v\"-prefixed: {label:?}"
@@ -98,9 +94,9 @@ fn sidebar_footer_shows_the_app_version(cx: &mut TestAppContext) {
     );
 
     // Hovering shows the full version, as with the path (3.38).
-    let tip = leaked(format!("sidebar:version-tooltip:{label}"));
+    let tip = format!("sidebar:version-tooltip:{label}");
     assert!(
-        window.debug_bounds(tip).is_none(),
+        !paints(cx, handle, tip.clone()),
         "nothing hovers the version, so no tooltip is drawn yet"
     );
     window.simulate_mouse_move(
@@ -115,7 +111,7 @@ fn sidebar_footer_shows_the_app_version(cx: &mut TestAppContext) {
     cx.run_until_parked();
     draw_frame(cx, handle);
     assert!(
-        window.debug_bounds(tip).is_some(),
+        paints(cx, handle, tip.clone()),
         "hovering the version shows a tooltip with the full version",
     );
 }

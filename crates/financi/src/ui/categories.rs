@@ -38,7 +38,7 @@ impl SearchableListItem for RuleChoice {
                     .id("rule-choice-natural")
                     .debug_selector({
                         let probe = probe.clone();
-                        move || format!("rule-choice-natural:{probe}")
+                        move || format!("cat:rule-choice-natural:{probe}")
                     })
                     .absolute()
                     .whitespace_nowrap()
@@ -95,7 +95,7 @@ fn subcategory_select(
                 div()
                     .debug_selector({
                         let for_sel = shown.clone();
-                        move || format!("rule:category-tooltip:{for_sel}")
+                        move || format!("cat:category-tooltip:{for_sel}")
                     })
                     .child(for_text.clone())
             })
@@ -1157,15 +1157,15 @@ impl Shell {
                                                     .child(field_label(muted, "Pattern"))
                                                     .child(
                                                         div().w_full().debug_selector(|| {
-                                                            "rule:pattern-input:cat-add".into()
+                                                            "cat:pattern-input:add".into()
                                                         }).child(Input::new(&self.rule_pattern)),
                                                     ),
                                             )
                                             .child(
                                                 // 3.42: control-height slot, centred.
                                                 control_slot(
-                                                    "rule:regex-slot:cat-add".into(),
-                                                    "rule:switch:cat-add".into(),
+                                                    "cat:regex-slot:add".into(),
+                                                    "cat:switch:add".into(),
                                                     Switch::new("rule-regex")
                                                         .label("regex")
                                                         .checked(self.rule_regex)
@@ -1191,7 +1191,7 @@ impl Shell {
                                                     .flex_shrink_0()
                                                     // 3.42: the alignment test measures its centre.
                                                     .debug_selector(|| {
-                                                        "rule:add-rule-btn:cat-add".into()
+                                                        "cat:add-rule-btn:add".into()
                                                     })
                                                     // 3.40: loading + disabled while the add runs.
                                                     .loading(

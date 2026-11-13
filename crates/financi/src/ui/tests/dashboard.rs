@@ -284,7 +284,7 @@ fn the_unlabelled_filter_controls_show_their_names_on_hover(cx: &mut TestAppCont
         cx.run_until_parked();
         draw_frame(cx, handle);
         assert!(
-            window.debug_bounds(tip).is_some(),
+            paints(cx, handle, tip),
             "hovering {sel} shows the tooltip {tip:?}"
         );
         // Move off so no stale tooltip lingers into the next hover.
@@ -2397,16 +2397,12 @@ fn the_legend_is_just_a_key(cx: &mut TestAppContext) {
     // Each row draws its name and nothing else: no amount, no percentage.
     for (ix, (name, cents, share)) in rows.iter().enumerate() {
         assert!(
-            window
-                .debug_bounds(leaked(format!("chart:legend-text:{ix}:{name}")))
-                .is_some(),
+            paints(cx, handle, format!("chart:legend-text:{ix}:{name}")),
             "legend row {ix} draws its name"
         );
         for gone in [crate::flow::money(*cents), format!("{:.1}%", share * 100.)] {
             assert!(
-                window
-                    .debug_bounds(leaked(format!("chart:legend-text:{ix}:{gone}")))
-                    .is_none(),
+                !paints(cx, handle, format!("chart:legend-text:{ix}:{gone}")),
                 "legend row {ix} no longer draws {gone:?}"
             );
         }
@@ -2429,9 +2425,9 @@ fn hovering_a_legend_row_shows_amount_and_share(cx: &mut TestAppContext) {
         chart_tooltip_value(r.spend_cents, r.share, "")
     });
     assert_eq!(value, "$15.00 · 75.0%");
-    let tip_sel = leaked(format!("chart:legend-tooltip:Food={value}"));
+    let tip_sel = format!("chart:legend-tooltip:Food:{value}");
     assert!(
-        window.debug_bounds(tip_sel).is_none(),
+        !paints(cx, handle, tip_sel.clone()),
         "nothing hovers a row, so no tooltip is drawn yet"
     );
 
@@ -2448,7 +2444,7 @@ fn hovering_a_legend_row_shows_amount_and_share(cx: &mut TestAppContext) {
     cx.run_until_parked();
     draw_frame(cx, handle);
     assert!(
-        window.debug_bounds(tip_sel).is_some(),
+        paints(cx, handle, tip_sel.clone()),
         "hovering the legend row shows a tooltip with the amount and share",
     );
 }
@@ -3264,7 +3260,7 @@ fn summary_months_scroll_under_pinned_name_and_total(cx: &mut TestAppContext) {
     // or the Total), so no cell's visible part can leave the zone.
     let mut whole = 0;
     for col in 0..24 {
-        let cell = bounds(cx, handle, leaked(format!("summary:cell:0:{col}")));
+        let cell = bounds(cx, handle, format!("summary:cell:0:{col}"));
         if cell.origin.x >= zone.origin.x - px(1.) && cell.right() <= zone.right() + px(1.) {
             whole += 1;
         } else {
@@ -3349,6 +3345,7 @@ fn a_horizontal_swipe_does_not_jump_the_summary_rows_vertically(cx: &mut TestApp
     let (handle, shell) = open_shell(cx, |conn| seed_summary_months(conn, 24));
     resize_and_draw(cx, handle, 1200., 720.);
     set_all_time_covering(cx, handle, &shell, 24);
+    wait_idle(cx, &shell);
     draw_frame(cx, handle);
     let zone = bounds(cx, handle, "summary:months-0");
 
@@ -3414,6 +3411,7 @@ fn changing_the_summary_range_lands_on_the_latest_month(cx: &mut TestAppContext)
     wait_until(cx, "24 months in the grid", |cx| {
         shell.read(cx).dashboard.summary.months.len() == 24
     });
+    wait_idle(cx, &shell);
     draw_frame(cx, handle);
     let (offset, max) = cx.update(|cx| {
         let s = shell.read(cx);
@@ -3447,6 +3445,10 @@ fn a_short_summary_range_shows_no_horizontal_scrollbar(cx: &mut TestAppContext) 
     let (handle, shell) = open_shell(cx, |conn| seed_summary_months(conn, 3));
     resize_and_draw(cx, handle, 1600., 900.);
     set_all_time_covering(cx, handle, &shell, 3);
+    // 3.75: let every in-flight refresh land before the clamp frames — a
+    // late summary result would re-stamp the stick-to-end sentinel and the
+    // frames below would read it half-clamped.
+    wait_idle(cx, &shell);
     // Two frames: the scroll handle clamps the app's stick-to-end sentinel
     // only on the pass after the new months first paint.
     draw_frame(cx, handle);

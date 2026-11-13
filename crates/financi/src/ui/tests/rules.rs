@@ -87,8 +87,8 @@ fn the_rule_editor_is_prefilled_from_the_rule(cx: &mut TestAppContext) {
     });
     // 3.53: the editor draws its own controls and nothing that picks a
     // category — saving keeps the rule's category (pinned by the next
-    // test), so there is no picker here.
     let mut window = VisualTestContext::from_window(handle, cx);
+    // test), so there is no picker here.
     assert!(
         window.debug_bounds("rules:edit-pattern-input").is_some()
             && window.debug_bounds("rules:edit-save-btn").is_some(),
@@ -312,8 +312,8 @@ fn the_editor_error_stays_inside_its_row(cx: &mut TestAppContext) {
     wait_until(cx, "the editor error", |cx| {
         shell.read(cx).rule_error.is_some()
     });
-    draw_frame(cx, handle);
     let mut window = VisualTestContext::from_window(handle, cx);
+    draw_frame(cx, handle);
     let err = window
         .debug_bounds("rules:edit-error")
         .expect("the error paints under the editor");
@@ -343,8 +343,8 @@ fn the_add_rule_preview_stays_hidden_while_editing(cx: &mut TestAppContext) {
     wait_until(cx, "the editor preview", |cx| {
         shell.read(cx).rule_match_count.is_some()
     });
-    draw_frame(cx, handle);
     let mut window = VisualTestContext::from_window(handle, cx);
+    draw_frame(cx, handle);
     assert!(
         window.debug_bounds("rules:edit-preview").is_some(),
         "the editor shows the live count"
@@ -882,9 +882,7 @@ fn rules_page_collapse_hides_a_groups_rows(cx: &mut TestAppContext) {
     let mut window = VisualTestContext::from_window(handle, cx);
     draw_frame(cx, handle);
 
-    let header = window
-        .debug_bounds(leaked(format!("rules:group:{coffee}")))
-        .expect("the Coffee group header paints");
+    let header = bounds(cx, handle, format!("rules:group:{coffee}"));
     window.simulate_click(header.center(), Modifiers::default());
     cx.run_until_parked();
     draw_frame(cx, handle);
@@ -903,9 +901,7 @@ fn rules_page_collapse_hides_a_groups_rows(cx: &mut TestAppContext) {
         "other groups stay open"
     );
 
-    let header = window
-        .debug_bounds(leaked(format!("rules:group:{coffee}")))
-        .expect("the header still paints");
+    let header = bounds(cx, handle, format!("rules:group:{coffee}"));
     window.simulate_click(header.center(), Modifiers::default());
     cx.run_until_parked();
     draw_frame(cx, handle);
@@ -1014,7 +1010,6 @@ fn the_rules_page_fits_the_minimum_window(cx: &mut TestAppContext) {
         window.bounds_changed(cx);
     });
     cx.run_until_parked();
-    let mut window = VisualTestContext::from_window(handle, cx);
     draw_frame(cx, handle);
 
     let page_right = px(1200. - PAGE_PAD);
@@ -1024,9 +1019,7 @@ fn the_rules_page_fits_the_minimum_window(cx: &mut TestAppContext) {
         ("the rule row", format!("rules:row-{rule}")),
         ("the New rule… button", format!("label:{NEW_RULE}")),
     ] {
-        let b = window
-            .debug_bounds(leaked(sel))
-            .unwrap_or_else(|| panic!("the page paints {what}"));
+        let b = bounds(cx, handle, sel);
         assert!(
             b.origin.x + b.size.width <= page_right + px(1.),
             "{what} ends at x {:?}, past the page edge {page_right:?}",
@@ -1034,9 +1027,7 @@ fn the_rules_page_fits_the_minimum_window(cx: &mut TestAppContext) {
         );
     }
     // The pattern truncates inside its column, like on Categories.
-    let col = window
-        .debug_bounds(leaked(format!("rules:pattern-col:{rule}")))
-        .expect("the rule row paints its pattern column");
+    let col = bounds(cx, handle, format!("rules:pattern-col:{rule}"));
     let full_w = TEXT_SM_CHAR_PX * CAT_FIT_PATTERN.chars().count() as f32;
     assert!(
         col.size.width < px(full_w),

@@ -308,11 +308,17 @@ fn resize_and_draw(cx: &mut TestAppContext, handle: AnyWindowHandle, w: f32, h: 
 
 /// 3.75: every debug selector the app emits follows `page:thing[:id]`.
 /// gpui keeps a rendered frame's selector map private (`Window`'s
-/// `debug_bounds` field is `pub(crate)`), so the walk runs over the source
-/// the frames are built from: every string literal in a `.debug_selector(…)`
-/// call in the view code (`ui/*.rs`; test-only selectors are the tests'
-/// business). A selector is at least two colon-separated segments,
-/// lowercase kebab-case, with `{…}` marking an interpolated id.
+/// `debug_bounds` field is `pub(crate)`), so the walk runs over the
+/// source the frames are built from: every string literal inside a
+/// `.debug_selector(…)` call in the view code (`ui/*.rs`; test-only
+/// selectors are the tests' business). Selectors that reach a widget
+/// through a helper (`control_slot`, `month_viewport`) carry no literal
+/// at the `debug_selector` — the walk checks the literals those helpers
+/// receive at their call sites instead. A selector is at least two
+/// colon-separated segments, lowercase kebab-case with `{…}` marking an
+/// interpolated id, and its first segment must be one of the page (or
+/// shared-chrome) namespaces below — a stray `rule:`, a typo or a
+/// widget id mistaken for a selector fails the walk.
 #[test]
 fn selectors_follow_the_page_thing_id_pattern() {
     let ui_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -328,27 +334,28 @@ fn selectors_follow_the_page_thing_id_pattern() {
     let mut bad: Vec<String> = Vec::new();
     for path in files {
         let text = std::fs::read_to_string(&path).unwrap();
-        let mut rest = text.as_str();
-        while let Some(at) = rest.find(".debug_selector(") {
-            rest = &rest[at + ".debug_selector(".len()..];
-            // The selector is the first string literal of the call; the
-            // closures around it (`move || format!(…)`, `|| "…".into()`)
-            // hold no other literal.
-            let Some(q1) = rest.find('"') else { break };
-            rest = &rest[q1 + 1..];
-            let Some(q2) = rest.find('"') else { break };
-            let sel = &rest[..q2];
-            rest = &rest[q2 + 1..];
-            checked += 1;
-            if !selector_ok(sel) {
-                let line = text[..text.len() - rest.len()][..text.len() - rest.len()]
-                    .matches('\n')
-                    .count()
-                    + 1;
-                bad.push(format!(
-                    "{}:{line}: {sel}",
-                    path.file_name().unwrap().to_string_lossy()
-                ));
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        // `.debug_selector(` contributes one selector; the helpers take
+        // their selectors as literal arguments at the call site.
+        for (needle, expect) in [
+            (".debug_selector(", 1),
+            ("control_slot(", 2),
+            ("month_viewport(", 1),
+        ] {
+            let mut at = 0usize;
+            while let Some(found) = text[at..].find(needle) {
+                let open = at + found + needle.len();
+                let lits = call_literals(&text, open, expect);
+                for (sel, pos) in lits {
+                    checked += 1;
+                    if !selector_ok(&sel) {
+                        let line = text[..pos].matches('\n').count() + 1;
+                        bad.push(format!("{name}:{line}: {sel}"));
+                    }
+                }
+                // Keep scanning inside the call: arguments nest their own
+                // `debug_selector` calls (tooltips, slot controls).
+                at = open;
             }
         }
     }
@@ -358,25 +365,80 @@ fn selectors_follow_the_page_thing_id_pattern() {
         bad.join("\n")
     );
     assert!(
-        checked > 50,
+        checked > 100,
         "the walk found only {checked} selectors — did it parse the view at all?"
     );
 }
 
+/// The namespaces the view's selectors live in: one per page, plus the
+/// shared chrome (`label` region/field titles, `panel` wrappers, `page`
+/// content root, `toast` popups). New pages register here.
+const PAGE_NAMESPACES: &[&str] = &[
+    "accounts",
+    "cat",
+    "chart",
+    "filters",
+    "history",
+    "imports",
+    "label",
+    "page",
+    "panel",
+    "queue",
+    "rules",
+    "sidebar",
+    "summary",
+    "toast",
+    "transfers",
+];
+
+/// The first `max` string literals written inside the call whose open
+/// paren ends at `open`, paired with their source positions. String- and
+/// escape-aware: parens and quotes inside strings do not count, and a
+/// call with no literal (`debug_selector(move || selector.clone())`)
+/// yields nothing instead of grabbing a literal from later code.
+fn call_literals(text: &str, open: usize, max: usize) -> Vec<(String, usize)> {
+    let bytes = text.as_bytes();
+    let mut out = Vec::new();
+    let mut depth = 1usize;
+    let mut i = open;
+    while i < bytes.len() && depth > 0 && out.len() < max {
+        match bytes[i] {
+            b'"' => {
+                let start = i + 1;
+                let mut j = start;
+                while j < bytes.len() && bytes[j] != b'"' {
+                    if bytes[j] == b'\\' {
+                        j += 1;
+                    }
+                    j += 1;
+                }
+                out.push((text[start..j.min(text.len())].to_string(), start));
+                i = j + 1;
+            }
+            b'(' => {
+                depth += 1;
+                i += 1;
+            }
+            b')' => {
+                depth -= 1;
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+    out
+}
+
 /// `page:thing[:id]`: two or more colon-separated segments of lowercase
 /// kebab-case letters, digits and hyphens, where `{…}` stands for an
-/// interpolated id. The namespace segment (the page) never interpolates.
+/// interpolated id. The first segment is the namespace and must be a
+/// registered page (or shared-chrome) namespace, never interpolated.
 fn selector_ok(sel: &str) -> bool {
     let mut parts = sel.split(':');
     let Some(namespace) = parts.next() else {
         return false;
     };
-    let ns_ok = !namespace.is_empty()
-        && namespace.starts_with(|c: char| c.is_ascii_lowercase())
-        && namespace
-            .chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
-    if !ns_ok {
+    if !PAGE_NAMESPACES.contains(&namespace) {
         return false;
     }
     let mut saw_segment = false;

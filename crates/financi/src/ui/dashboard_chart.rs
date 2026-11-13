@@ -543,10 +543,12 @@ impl Shell {
                         move |window, cx| {
                             let (name, value) = (name.clone(), value.clone());
                             Tooltip::element(move |_, _| {
-                                let sel = format!("chart:legend-tooltip:{name}={value}");
                                 v_flex()
                                     .gap_0p5()
-                                    .debug_selector(move || sel)
+                                    .debug_selector({
+                                        let (name, value) = (name.clone(), value.clone());
+                                        move || format!("chart:legend-tooltip:{name}:{value}")
+                                    })
                                     .child(
                                         div().font_weight(FontWeight::SEMIBOLD).child(name.clone()),
                                     )

@@ -517,10 +517,8 @@ fn the_in_row_undo_button_stays_inside_its_row(cx: &mut TestAppContext) {
     // gpui-kit `Size::Medium` defaults the width constants already assume.
     const ROW_H: f32 = 32.;
     const CELL_PAD_Y: f32 = 4.;
-    let cell = |window: &mut VisualTestContext, row: usize| {
-        window
-            .debug_bounds(leaked(format!("history:undo-cell:{row}")))
-            .unwrap_or_else(|| panic!("row {row} draws its Undo cell"))
+    let cell = |cx: &mut TestAppContext, handle: AnyWindowHandle, row: usize| {
+        bounds(cx, handle, format!("history:undo-cell:{row}"))
     };
     let btn = |window: &mut VisualTestContext| {
         window
@@ -540,7 +538,7 @@ fn the_in_row_undo_button_stays_inside_its_row(cx: &mut TestAppContext) {
     };
 
     // Every row is one row height and every Undo cell the same height.
-    let cells: Vec<_> = (0..3).map(|r| cell(&mut window, r)).collect();
+    let cells: Vec<_> = (0..3).map(|r| cell(cx, handle, r)).collect();
     for (above, below) in cells.iter().zip(cells[1..].iter()) {
         assert_eq!(
             above.size.height, below.size.height,
@@ -592,12 +590,12 @@ fn the_in_row_undo_button_stays_inside_its_row(cx: &mut TestAppContext) {
     });
     cx.run_until_parked();
     draw_frame(cx, handle);
-    let (above, below) = clearance(btn(&mut window), cell(&mut window, 0));
+    let (above, below) = clearance(btn(&mut window), cell(cx, handle, 0));
     assert!(
         above >= 4. && below >= 4.,
         "armed: {above} above, {below} below"
     );
-    let cells: Vec<_> = (0..3).map(|r| cell(&mut window, r)).collect();
+    let cells: Vec<_> = (0..3).map(|r| cell(cx, handle, r)).collect();
     assert_eq!(
         cells[0].size.height, cells[1].size.height,
         "the armed newest row is no taller than the others"
