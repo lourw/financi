@@ -198,7 +198,12 @@ impl ImportPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        // file.parser_id comes from detection, so it always resolves; if it
+        // ever didn't, the panel shows an error instead of panicking (3.90).
         let parser = flow::parser(file.parser_id);
+        let error = parser
+            .is_none()
+            .then(|| format!("Unknown import format {:?}.", file.parser_id));
         let accounts = Vec::new();
         let names = Self::names_for(&accounts);
         // Never pre-select: the account is always confirmed by the user.
@@ -228,7 +233,9 @@ impl ImportPanel {
         Self {
             db,
             csv_root,
-            format: flow::format_label(parser.as_ref()),
+            format: parser
+                .map(|p| flow::format_label(p.as_ref()))
+                .unwrap_or_default(),
             file: Arc::new(file),
             accounts,
             names,
@@ -240,7 +247,7 @@ impl ImportPanel {
             override_overlap: false,
             same_charges: HashSet::new(),
             busy: false,
-            error: None,
+            error,
             task: Some(load),
             _subs: vec![sub],
         }
@@ -254,7 +261,10 @@ impl ImportPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.accounts = flow::eligible_accounts(&all, flow::parser(self.file.parser_id).as_ref());
+        self.accounts = match flow::parser(self.file.parser_id) {
+            Some(p) => flow::eligible_accounts(&all, p.as_ref()),
+            None => Vec::new(),
+        };
         self.names = Self::names_for(&self.accounts);
         let ix = select.and_then(|id| self.accounts.iter().position(|a| a.id == id));
         let names = self.names.clone();
@@ -296,9 +306,12 @@ impl ImportPanel {
         let (db, file) = (self.db.clone(), self.file.clone());
         self.task = Some(cx.spawn(async move |this, cx| {
             let result = on_db(&db, move |c| {
-                let parser = flow::parser(file.parser_id);
+                let Some(parser) = flow::parser(file.parser_id) else {
+                    return Err(format!("unknown import format {:?}", file.parser_id));
+                };
                 plan_import(c, account_id, parser.as_ref(), &file.raw, &file.file_name)
                     .map(|p| PlanSummary::from_plan(&p))
+                    .map_err(|e| e.to_string())
             })
             .await;
             let _ = this.update(cx, |this, cx| {
@@ -319,8 +332,19 @@ impl ImportPanel {
             cx.notify();
             return;
         }
-        let (institution, kind) =
-            flow::new_account_defaults(flow::parser(self.file.parser_id).as_ref());
+        let Some(parser) = flow::parser(self.file.parser_id) else {
+            self.error = Some(format!("Unknown import format {:?}.", self.file.parser_id));
+            cx.notify();
+            return;
+        };
+        let Some((institution, kind)) = flow::new_account_defaults(parser.as_ref()) else {
+            self.error = Some(format!(
+                "The {:?} format has no account type.",
+                self.file.parser_id
+            ));
+            cx.notify();
+            return;
+        };
         let db = self.db.clone();
         self.busy = true;
         self.task = Some(cx.spawn_in(window, async move |this, cx| {
@@ -362,7 +386,9 @@ impl ImportPanel {
         self.task = Some(cx.spawn(async move |this, cx| {
             let name = file.file_name.clone();
             let result = on_db(&db, move |c| {
-                let parser = flow::parser(file.parser_id);
+                let Some(parser) = flow::parser(file.parser_id) else {
+                    return Err(format!("unknown import format {:?}", file.parser_id));
+                };
                 let out = commit_import(
                     c,
                     account_id,
@@ -371,7 +397,8 @@ impl ImportPanel {
                     &file.file_name,
                     &now_iso(),
                     options,
-                )?;
+                )
+                .map_err(|e| e.to_string())?;
                 let csv_error = if out.import_id.is_some() {
                     let years: Vec<i32> = out.affected_years.iter().copied().collect();
                     financi_db::master_csv::rewrite_years(c, &csv_root, account_id, &years)
@@ -380,7 +407,7 @@ impl ImportPanel {
                 } else {
                     None
                 };
-                Ok::<_, financi_db::import::ImportError>((out, csv_error))
+                Ok::<_, String>((out, csv_error))
             })
             .await;
             let _ = this.update(cx, |this, cx| {

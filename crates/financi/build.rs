@@ -26,11 +26,13 @@ fn git(args: &[&str]) -> Option<String> {
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
-    // Re-run when a commit or tag moves `git describe`. `.git` may be a
-    // file, not a directory (a linked worktree), so ask git itself where
-    // HEAD and the refs live and fall back to the in-tree paths. A path
-    // that doesn't exist only means fewer rebuild triggers, never an error.
-    for key in ["HEAD", "refs"] {
+    // Re-run when a commit or tag moves `git describe`, or when staging
+    // changes what `--dirty` reports. `.git` may be a file, not a directory
+    // (a linked worktree), so ask git itself where each path lives and fall
+    // back to the in-tree paths. A path that doesn't exist (no `index` in a
+    // clean source tree, no `packed-refs` with only loose refs) only means
+    // fewer rebuild triggers, never an error.
+    for key in ["HEAD", "refs", "packed-refs", "index"] {
         let path = git(&["rev-parse", "--git-path", key]).unwrap_or_else(|| format!(".git/{key}"));
         let path = Path::new(&path);
         let path = if path.is_absolute() {

@@ -28,7 +28,7 @@ Runs beside the UI queue. 5.1 and 5.2 (in M5) follow 3.90.
     a clean UTF-8 file and in a file with one stray invalid byte hashes
     the same; two rows differing only in invalid bytes hash differently.
 
-- [ ] **3.90 Build and tooling.** (Code review, 2026-11-11.) A `chore:`
+- [x] **3.90 Build and tooling.** (Code review, 2026-11-11.) A `chore:`
   filler for any free slot.
   - Drop `spikes/*` from the workspace `members` (keep the directory, as
     `CLAUDE.md` says): every build, clippy and clean-checkout verify

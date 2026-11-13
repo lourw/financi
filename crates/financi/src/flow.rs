@@ -77,8 +77,10 @@ fn truncate_header(header: &str) -> String {
     }
 }
 
-pub fn parser(id: &str) -> Parser {
-    financi_parsers::by_id(id).unwrap_or_else(|| panic!("no parser with id {id:?}"))
+/// The parser registered under a stable id (as stored in `imports.parser_id`).
+/// `None` for an unknown id: callers show an error, they never panic (3.90).
+pub fn parser(id: &str) -> Option<Parser> {
+    financi_parsers::by_id(id)
 }
 
 /// A human name for a parser's format, e.g. "American Express credit card".
@@ -111,9 +113,12 @@ pub fn eligible_accounts(accounts: &[Account], parser: &dyn StatementParser) -> 
 }
 
 /// Institution key and account type for a new account created from the
-/// import preview: both follow from the detected format.
-pub fn new_account_defaults(parser: &dyn StatementParser) -> (&'static str, AccountKind) {
-    (parser.institution(), parser.account_kinds()[0])
+/// import preview: both follow from the detected format. `None` if the
+/// parser lists no account kind — a registry bug, guarded by the registry
+/// test (3.90), not something the user can trigger.
+pub fn new_account_defaults(parser: &dyn StatementParser) -> Option<(&'static str, AccountKind)> {
+    let kind = *parser.account_kinds().first()?;
+    Some((parser.institution(), kind))
 }
 
 /// What the preview shows for a plan.
@@ -263,7 +268,7 @@ mod tests {
         commit_import(
             conn,
             account,
-            parser(file.parser_id).as_ref(),
+            parser(file.parser_id).unwrap().as_ref(),
             &file.raw,
             &file.file_name,
             "2026-11-07T12:00:00",
@@ -281,7 +286,7 @@ mod tests {
         let simplii = load_file(&demo("simplii-chequing.csv")).unwrap();
         assert_eq!(simplii.parser_id, "simplii");
         assert_eq!(
-            format_label(parser(simplii.parser_id).as_ref()),
+            format_label(parser(simplii.parser_id).unwrap().as_ref()),
             "Simplii Financial chequing / credit card"
         );
     }
@@ -362,7 +367,7 @@ mod tests {
         let accounts = list_accounts(&conn).unwrap();
 
         let names = |p: &str| -> Vec<String> {
-            eligible_accounts(&accounts, parser(p).as_ref())
+            eligible_accounts(&accounts, parser(p).unwrap().as_ref())
                 .into_iter()
                 .map(|a| a.name)
                 .collect()
@@ -374,10 +379,17 @@ mod tests {
             "one format feeds both account kinds (task 4.1)"
         );
         assert_eq!(
-            new_account_defaults(parser("simplii").as_ref()),
+            new_account_defaults(parser("simplii").unwrap().as_ref()).unwrap(),
             ("simplii", AccountKind::Chequing),
             "chequing is listed first, so it stays the default"
         );
+    }
+
+    #[test]
+    fn unknown_parser_id_is_none_not_a_panic() {
+        assert!(parser("no-such-format").is_none());
+        // Retired ids keep resolving through the registry (task 4.1).
+        assert_eq!(parser("simplii-chequing").unwrap().id(), "simplii");
     }
 
     #[test]
@@ -397,7 +409,7 @@ mod tests {
         let plan = plan_import(
             &conn,
             cobalt,
-            parser("amex").as_ref(),
+            parser("amex").unwrap().as_ref(),
             &file.raw,
             &file.file_name,
         )
@@ -441,7 +453,7 @@ mod tests {
         let plan = plan_import(
             &conn,
             gold,
-            parser("amex").as_ref(),
+            parser("amex").unwrap().as_ref(),
             &file.raw,
             &file.file_name,
         )

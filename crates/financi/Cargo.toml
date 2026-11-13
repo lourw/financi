@@ -3,6 +3,7 @@ name = "financi"
 description = "Personal finance: import bank CSV exports into SQLite and see where the money goes."
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 publish = false
 
 [dependencies]

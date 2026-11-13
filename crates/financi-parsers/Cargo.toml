@@ -3,6 +3,7 @@ name = "financi-parsers"
 description = "One StatementParser per institution export format."
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 publish = false
 
 [dependencies]
@@ -10,3 +11,7 @@ financi-core.workspace = true
 
 [dev-dependencies]
 sha2.workspace = true
+# Registry guard-rail test (3.90) checks the parsers against the DB's
+# institutions table. Dev-dependency cycles are allowed, and financi-db
+# already depends on this crate.
+financi-db.workspace = true
