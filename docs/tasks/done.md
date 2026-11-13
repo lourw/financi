@@ -989,6 +989,32 @@ the UI; tests cover 2.1–2.9.
     `ui/imports.rs`, owned by in-flight 3.74). The review's note that the
     50 MB check runs after `std::fs::read` went to 3.91 too.
 
+- [x] **3.68 Near-match review asks only about changed charges.** (Code
+  review, 2026-11-11.) In `financi-db/src/import.rs`:
+  - **Repeat purchases aren't "changed charges."** `find_near_matches`
+    compares new rows with existing rows that the same file still
+    contains unchanged. A re-export holding yesterday's $4.50 coffee
+    plus today's $5.00 one offers today's as "Same charge?" against
+    yesterday's. Exclude existing rows whose hash (or alias) the file
+    already contains. Test: two coffees on consecutive days, the earlier
+    still in the file → no near-match.
+  - **Bounded scan.** It loads every visible row of the account and
+    allocates the cleaned merchant twice per pair. Limit the SQL to
+    `posted_date` between the file's min date − 3 days and max date + 3
+    days, compute each existing row's lowercased merchant once, and look
+    candidates up in a `HashMap<merchant, Vec<row>>`.
+  - **A replacement keeps a valid master CSV.** "Same charge" puts the
+    new export's bytes on a row whose `import_id` is the old import, so
+    the master CSV writes them under the old import's header and
+    encoding. Don't offer a near-match when the two imports' header /
+    encoding variant differs (the row imports as new). Test with a
+    changed header.
+  - **FX columns follow the replacement.** `apply_replacement` doesn't
+    update `original_currency` / `original_amount_cents`, and
+    `replacements` can't restore them. Add both `old_…` columns to
+    `replacements` in a new migration; update on replace, restore on
+    undo; test it.
+
 - [x] **3.73 Imports and undo stay fast as data grows.** (Code review,
   2026-11-11; cheap fixes now, timed budgets in 3.55.)
   - **Compile rules once per import.** `categorize_new_rows`
