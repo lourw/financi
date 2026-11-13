@@ -1453,3 +1453,26 @@ the UI; tests cover 2.1–2.9.
     schema is refused; an older one migrates; the `.bak` copies exist
     after a restore; a failure part-way leaves the live database usable.
 
+
+- [x] **5.3 Export and restore in the app.**
+  - **Hardening from the 5.2 review (do these backend fixes first):**
+    1. `verify_zip` must reject any zip entry whose `csv/` path fails
+       `csv_target` (walk `zip.file_names()`, name check only) so a stray
+       `csv/../../` entry can't pass the Restore button's gate and only
+       fail after the DB is replaced (export.rs:341).
+    2. `back_up_csv_root` must extract to `<root>.tmp-<uuid>` before moving
+       `root`→`csv.bak`, so a retry after a part-way failure cannot clobber
+       the only good backup (export.rs:~520).
+    3. Round-trip test: assert the reader connection sees restored data via
+       `worker.call_read` after `restore_job` (tests/restore.rs:176).
+  - **Review update (2026-11-11):** After a restore, `Catalog` emits `DataChanged(all)`, every page resets its transient state (selection, open editors, armed confirms, queue pickers), and pending keyed jobs against the old data are superseded. Test: start a dashboard load, restore, and the late result is dropped.
+  - File → Export… (⌘E) and the Imports page's **Export** button open a
+    save dialog defaulting to `~/Desktop/financi-export-YYYY-MM-DD.zip`.
+  - File → Restore…, the Imports page's **Restore** button and a
+    "Restore from export…" link on the empty-state screen open a file
+    dialog, then restore and refresh every view. Both say what happened in
+    a toast; errors stay until closed.
+  - Remove the "… is not available yet." toasts (`Shell::export_data`
+    and its Restore twin). UI tests for both flows
+    (stub the dialogs), and update the *Imports* row of
+    `ui-conventions.md`.
