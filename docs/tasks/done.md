@@ -737,6 +737,17 @@ the UI; tests cover 2.1–2.9.
     Update the *Dashboard* row and the *Dashboard filter rows* bullet of
     `ui-conventions.md`.
 
+- [x] **3.37 In-row Undo says "Undo".** 3.32 made the newest history
+  row's Undo an icon-only button, which the user finds unclear. Make it
+  the `undo-2` icon **plus the label "Undo"** (still `.xsmall().ghost()`,
+  vertically centered with ≥ 4 px above and below); armed it still reads
+  "Click again to undo" in `danger`. Keep the "Undo this import" tooltip.
+  Recompute `history_undo_col_w` so both labels show in full and the
+  column is no wider than needed. Tests: the idle button's text is
+  "Undo" and it paints an icon; 3.32's bounds and fit tests still pass
+  in both states. Update the *Imports* row of `ui-conventions.md`.
+  - **Review update (2026-11-11):** The history row's Undo keeps its text label: an explicit exception to the icon-only `row_action_button` (user request). Note it in `ui-conventions.md` → *Pages* (Imports).
+
 - [x] **3.38 Tooltip on the sidebar's database path.** The sidebar footer
   (`Shell::sidebar`, `.footer(...)`) shows the DB path in `text_xs` muted
   with an ellipsis, so on a normal path most of it is cut off by the
