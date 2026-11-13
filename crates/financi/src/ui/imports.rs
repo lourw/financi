@@ -876,6 +876,21 @@ impl Shell {
                 if this.imports.load_generation != generation {
                     return; // a newer open (or test reset) owns the panel now
                 }
+                // 3.64 guard re-applied inside the hop (the db93a52
+                // pattern in this file): while this load ran, the user may
+                // have clicked Import on the panel open now, and that
+                // commit's result is tied to that panel — replacing the
+                // tuple here would drop it and strand the result with no
+                // toast and no refresh. Ignore the load silently, exactly
+                // as the synchronous guard in `open_file` does.
+                if this
+                    .imports
+                    .import
+                    .as_ref()
+                    .is_some_and(|(p, _)| p.read(cx).busy)
+                {
+                    return;
+                }
                 match file {
                     Ok(file) => {
                         let db = this.db.clone();

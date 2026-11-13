@@ -234,6 +234,72 @@ fn a_committing_import_disables_cancel_and_ignores_new_files(cx: &mut TestAppCon
     assert_eq!(shell.update(cx, |s, _| s.dashboard.row_count), 67);
 }
 
+/// 3.94 regression: the reverse order of the test above — a file is
+/// dropped while the open panel is idle, then Import is clicked on that
+/// panel while the load is still in flight. The load's update hop passes
+/// the generation check (it *is* the newest open) and must re-apply the
+/// 3.64 busy guard before building a panel: replacing the committing
+/// panel would strand the commit's result on the dropped entity — the DB
+/// import would finish with no toast and no refresh.
+#[gpui::test]
+fn a_load_landing_mid_commit_never_replaces_the_committing_panel(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |c| {
+        create_account(c, "amex", "Cobalt", AccountKind::CreditCard).unwrap();
+    });
+    wait_until(cx, "accounts loaded", |cx| {
+        shell.read(cx).accounts.len() == 1
+    });
+    open_and_choose(
+        cx,
+        handle,
+        &shell,
+        "amex-sep-oct.csv",
+        "American Express · Cobalt",
+    );
+    wait_until(cx, "plan", |cx| plan_ready(&shell, cx));
+    let first_panel = cx.update(|cx| panel(&shell, cx).entity_id());
+
+    // Drop a second file while the panel is idle: the synchronous guard
+    // passes and the load runs on the background executor.
+    with_window(cx, handle, |window, cx| {
+        let path = demo("simplii-chequing.csv");
+        shell.update(cx, |s, cx| s.open_file(path, window, cx));
+    });
+
+    // Import is clicked on the open panel while that load is in flight:
+    // `busy` is set synchronously, and nothing has pumped since.
+    click_import(cx, handle, &shell);
+    cx.update(|cx| {
+        assert_eq!(
+            panel(&shell, cx).entity_id(),
+            first_panel,
+            "the in-flight load has built no panel yet"
+        );
+    });
+
+    // Pumping lets the load return: its hop must see the busy panel and
+    // ignore it, and the commit must land on the panel it started from.
+    // Without the guard the hop replaces the tuple here, the commit's
+    // result lands on the dropped entity, and this never resolves.
+    wait_until(cx, "commit finished", |cx| {
+        shell.read(cx).imports.import.is_none()
+    });
+    cx.update(|cx| {
+        let (msg, is_error) = last_toast(&shell, cx).expect("import toast");
+        assert!(!is_error, "the commit succeeded: {msg}");
+        assert!(
+            msg.starts_with("Imported amex-sep-oct.csv:"),
+            "the toast names the committing file: {msg}"
+        );
+        assert!(
+            !msg.contains("simplii"),
+            "the ignored file left no trace: {msg}"
+        );
+    });
+    wait_idle(cx, &shell);
+    assert_eq!(shell.update(cx, |s, _| s.dashboard.row_count), 67);
+}
+
 /// 3.64: every opened panel subscribes the shell to it, and the
 /// subscription lives and dies with the panel. Ten files dropped in a row
 /// replace the panel ten times — the shell's subscription list must not
