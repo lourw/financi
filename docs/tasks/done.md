@@ -1060,6 +1060,28 @@ the UI; tests cover 2.1–2.9.
     survives. Add `DbError::JobPanicked`.
   - Tests for each.
 
+- [x] **3.71 Row hashes don't depend on the encoding guess.** (Code
+  review, 2026-11-11.) Parsers hash `record.fields`, which are decoded
+  strings, and the encoding is guessed once per file: one invalid UTF-8
+  byte makes the whole file Windows-1252. Then every correctly encoded
+  `É` in that file decodes as `Ã‰`, those rows hash differently from the
+  same rows imported earlier from a clean file, and they're imported
+  twice (near-match misses them too). With a BOM, `from_utf8_lossy` maps
+  different bad bytes to the same U+FFFD, so distinct rows can share a
+  hash and real rows are dropped.
+  - Keep each field's undecoded bytes on `RawRecord` (quotes removed) and
+    hash those, length-prefixed as now.
+  - This changes the hash of rows with non-ASCII characters already in
+    the database. **Stop and ask the user** with two options and the
+    count of affected rows in a copy of their DB (counts only): (a) a
+    migration that re-hashes every row from its stored `raw_bytes` and
+    rewrites `row_aliases`, or (b) keep decoded hashing for Amex and
+    Simplii and use byte hashing only for new parsers, documented in
+    `plan.md`.
+  - Tests: an all-ASCII row's hash is unchanged; the same accented row in
+    a clean UTF-8 file and in a file with one stray invalid byte hashes
+    the same; two rows differing only in invalid bytes hash differently.
+
 - [x] **3.72 Text rules ignore case for accented letters.** (Code review,
   2026-11-11.) Substring rules lowercase with `to_ascii_lowercase`
   (`financi-core/src/rules.rs`), regex rules are Unicode
