@@ -64,10 +64,10 @@ worktree from the current `main`.
      different modules).
    - **Backend queue** (`docs/tasks/m3-backend-queue.md`; scale, then
      correctness): 3.77 → 3.73 → 3.88 →
-     3.87 → 3.66 → 3.67 → 3.68 → 3.69 → 3.70 → 3.72 → 3.71 → 3.90 → 5.1
-     → 5.2. These don't touch the UI, so one always runs beside the UI
+     3.87 → 3.66 → 3.67 → 3.68 → 3.69 → 3.70 → 3.72 → 3.71 → 3.94 → 3.90 → 5.1
+     → 5.2. These don't touch the UI (except 3.94, see below), so one always runs beside the UI
      queue (or a second one when the UI queue is waiting).
-   - **Dependencies:** 3.78 needs 3.77 merged; 3.56 needs 3.77, 3.78 and
+   - **Dependencies:** 3.78 needs 3.77 merged; 3.94 edits `ui/imports.rs`, so it doesn't run beside 3.79; 3.56 needs 3.77, 3.78 and
      3.88; 3.84 needs 3.64. If the next UI task is blocked, the slot takes
      the next backend task.
 2. **Then the feature lanes** (`docs/tasks/m3-features.md`), one task from each of two lanes at a time:

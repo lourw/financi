@@ -985,9 +985,9 @@ the UI; tests cover 2.1–2.9.
   - `parse::cents` accepts commas only as thousands groups (`1,234.56`);
     `"1,2,3"` and `"12,34"` are rejected.
   - Merged at `6f4c830` (`v0.23.4`) with everything except the "background
-    executor" bullet, which was split out to 3.91 (its fix site is
+    executor" bullet, which was split out to 3.94 (its fix site is
     `ui/imports.rs`, owned by in-flight 3.74). The review's note that the
-    50 MB check runs after `std::fs::read` went to 3.91 too.
+    50 MB check runs after `std::fs::read` went to 3.94 too.
 
 - [x] **3.68 Near-match review asks only about changed charges.** (Code
   review, 2026-11-11.) In `financi-db/src/import.rs`:
