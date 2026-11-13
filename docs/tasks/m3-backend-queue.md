@@ -6,7 +6,7 @@ Runs beside the UI queue, in the order listed. Backend only: don't read the UI d
 
 Runs beside the UI queue. 5.1 and 5.2 (in M5) follow 3.90.
 
-- [ ] **3.94 CSV loading runs off the UI thread.** (Follow-up split from
+- [x] **3.94 CSV loading runs off the UI thread.** (Follow-up split from
   3.67, 2026-11-12; run after 3.74 has merged — it touches
   `ui/imports.rs`.) `Shell::open_file` calls `flow::load_file` on the UI
   thread, so a large or pathological file freezes the window while it

@@ -10,7 +10,7 @@ pub mod dates;
 pub mod parse;
 mod raw;
 pub mod rules;
-pub use raw::{ReadError, raw_record_from_bytes, read_raw_file, sniff_header};
+pub use raw::{MAX_FILE_BYTES, ReadError, raw_record_from_bytes, read_raw_file, sniff_header};
 
 /// Money in integer cents. Negative = money out.
 pub type Cents = i64;

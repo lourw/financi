@@ -164,7 +164,7 @@ pub(super) enum PlanState {
 pub struct ImportPanel {
     pub(super) db: DbWorker,
     csv_root: PathBuf,
-    file: Arc<LoadedFile>,
+    pub(super) file: Arc<LoadedFile>,
     pub(super) format: String,
     pub(super) accounts: Vec<Account>,
     pub(super) names: Names,
@@ -785,6 +785,11 @@ pub(super) struct ImportsState {
     pub(super) history_table: Entity<TableState<ImportHistoryTable>>,
     /// The import whose Undo… button is armed ("Click again to undo").
     pub(super) confirm_undo_import: Option<i64>,
+    /// 3.94: counts file opens, whose read and parse run on the
+    /// background executor. A load's result applies only while its open
+    /// is still the newest, so dropping two files quickly previews the
+    /// second exactly once — never an out-of-order pair of panels.
+    load_generation: u64,
 }
 
 impl ImportsState {
@@ -815,6 +820,7 @@ impl ImportsState {
             import_history: Vec::new(),
             history_table,
             confirm_undo_import: None,
+            load_generation: 0,
         }
     }
 }
@@ -854,44 +860,81 @@ impl Shell {
         {
             return;
         }
-        match flow::load_file(&path) {
-            Ok(file) => {
-                let db = self.db.clone();
-                let csv_root = self.csv_root.clone();
-                let panel = cx.new(|cx| ImportPanel::new(db, csv_root, file, window, cx));
-                // 3.64: the subscription lives beside the panel in the
-                // tuple, so replacing the panel is what ends it (below).
-                let sub =
-                    cx.subscribe_in(&panel, window, |this, _, ev: &ImportEvent, window, cx| {
-                        match ev {
-                            ImportEvent::Imported { message, is_error } => {
-                                if *is_error {
-                                    this.notify_err(message.clone(), cx);
-                                } else {
-                                    this.notify_ok(message.clone(), cx);
+        // 3.94: read and parse on the background executor — a large or
+        // pathological file must not freeze the window — then hop back to
+        // build the panel on the main thread, exactly as the DbWorker
+        // call sites here do. Only the newest open applies: a second
+        // drop while the first is still loading supersedes it, so two
+        // quick drops can never land their panels out of order.
+        self.imports.load_generation += 1;
+        let generation = self.imports.load_generation;
+        cx.spawn_in(window, async move |this, cx| {
+            let file = cx
+                .background_spawn(async move { flow::load_file(&path) })
+                .await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                if this.imports.load_generation != generation {
+                    return; // a newer open (or test reset) owns the panel now
+                }
+                // 3.64 guard re-applied inside the hop (the db93a52
+                // pattern in this file): while this load ran, the user may
+                // have clicked Import on the panel open now, and that
+                // commit's result is tied to that panel — replacing the
+                // tuple here would drop it and strand the result with no
+                // toast and no refresh. Ignore the load silently, exactly
+                // as the synchronous guard in `open_file` does.
+                if this
+                    .imports
+                    .import
+                    .as_ref()
+                    .is_some_and(|(p, _)| p.read(cx).busy)
+                {
+                    return;
+                }
+                match file {
+                    Ok(file) => {
+                        let db = this.db.clone();
+                        let csv_root = this.csv_root.clone();
+                        let panel = cx.new(|cx| ImportPanel::new(db, csv_root, file, window, cx));
+                        // 3.64: the subscription lives beside the panel in the
+                        // tuple, so replacing the panel is what ends it (below).
+                        let sub = cx.subscribe_in(
+                            &panel,
+                            window,
+                            |this, _, ev: &ImportEvent, window, cx| {
+                                match ev {
+                                    ImportEvent::Imported { message, is_error } => {
+                                        if *is_error {
+                                            this.notify_err(message.clone(), cx);
+                                        } else {
+                                            this.notify_ok(message.clone(), cx);
+                                        }
+                                        this.imports.import = None;
+                                    }
+                                    ImportEvent::Cancelled => this.imports.import = None,
+                                    ImportEvent::AccountsChanged => {}
                                 }
-                                this.imports.import = None;
-                            }
-                            ImportEvent::Cancelled => this.imports.import = None,
-                            ImportEvent::AccountsChanged => {}
-                        }
-                        this.refresh(window, cx);
-                    });
-                // 3.64: the subscription lives in the tuple, and gpui
-                // cancels a `Subscription` when the handle *drops*
-                // (`Subscription::detach` is the opposite — it keeps the
-                // callback alive until the entities die). So replacing the
-                // tuple is what unsubscribes the old panel: the pair that
-                // `replace` hands back drops right here. Ten opens leave
-                // exactly one live subscription.
-                drop(self.imports.import.replace((panel, sub)));
-                // Opening a file switches to the Imports page with the
-                // preview open (ui-conventions, *Pages*).
-                self.page = Page::Imports;
-            }
-            Err(e) => self.notify_err(e.to_string(), cx),
-        }
-        cx.notify();
+                                this.refresh(window, cx);
+                            },
+                        );
+                        // 3.64: the subscription lives in the tuple, and gpui
+                        // cancels a `Subscription` when the handle *drops*
+                        // (`Subscription::detach` is the opposite — it keeps the
+                        // callback alive until the entities die). So replacing the
+                        // tuple is what unsubscribes the old panel: the pair that
+                        // `replace` hands back drops right here. Ten opens leave
+                        // exactly one live subscription.
+                        drop(this.imports.import.replace((panel, sub)));
+                        // Opening a file switches to the Imports page with the
+                        // preview open (ui-conventions, *Pages*).
+                        this.page = Page::Imports;
+                    }
+                    Err(e) => this.notify_err(e.to_string(), cx),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     pub(super) fn pick_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
