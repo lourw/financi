@@ -15,39 +15,6 @@ Steps 1–15 of `docs/tasks/gpui.md` → *GPUI best practices*, task by task.
   panics in `plain_job` the same way, so a panicking UI job reports a
   job panic through `DbWorker`; test a panicking job over the UI path.
 
-- [x] **3.64 Actions never cancel each other.** (Code review, 2026-11-11.)
-  About 20 unrelated actions store their async work in one
-  `Shell::task: Option<Task<()>>` (assigned in ~21 places: pick file,
-  undo import, category edits, rule add/save/delete/move, queue
-  Categorize, change category, hide, pair, unpair, apply rule offer).
-  `ImportPanel` does the same with its own `task`. Replacing the slot drops
-  the earlier `Task`, which cancels its continuation, while the queued
-  `DbWorker` job still commits. So a second click loses the first action's
-  follow-up: e.g. Save a rule, then hide a row before it returns → the
-  rule is saved but `pending_rule_action` never clears (Save stays
-  loading and disabled), the editor never closes, errors and toasts are
-  lost, and nothing refreshes.
-  - Mutations whose result must always be applied run as
-    `cx.spawn_in(..).detach()` and update through the weak entity
-    (`this.update_in(..)` already returns `Err` once the view is gone);
-    their result handler checks the state it touches is still current
-    (e.g. the editor is still on that rule) before changing it.
-  - Only work a newer request should replace keeps an `Option<Task>`
-    slot, one per purpose: the refresh, the live preview count, settings
-    writes. Delete the shared `task` field.
-  - **Import while busy:** disable the preview's Cancel and show
-    `.loading(true)` on Import while `busy`, and ignore `open_file` (drop,
-    ⌘O) while an import is committing; today Cancel drops the panel and
-    its task while the commit still runs, so the rows are imported with no
-    toast and no master-CSV error.
-  - Store the import panel's `Subscription` with the panel
-    (`import: Option<(Entity<ImportPanel>, Subscription)>`); today every
-    open pushes a new one into `_subs` and never removes it.
-  - Tests: start a rule Save and a row Hide in the same frame, then
-    both complete (pending cleared, editor closed, row hidden, two
-    refreshes); Cancel is disabled while an import commits and a second
-    drop is ignored; opening ten files leaves one import subscription.
-
 - [ ] **3.65 Filter clicks redraw at once.** (Code review, 2026-11-11.)
   The dashboard setters (`set_account_checked`, `set_include_transfers`,
   `apply_search`, `set_uncategorized_only`, `set_show_hidden`,

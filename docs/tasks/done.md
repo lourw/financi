@@ -925,6 +925,39 @@ the UI; tests cover 2.1–2.9.
     and `ui/tests/dashboard.rs` exceeds ~1 500 lines because the spec's
     own one-file-per-page split produces that.
 
+- [x] **3.64 Actions never cancel each other.** (Code review, 2026-11-11.)
+  About 20 unrelated actions store their async work in one
+  `Shell::task: Option<Task<()>>` (assigned in ~21 places: pick file,
+  undo import, category edits, rule add/save/delete/move, queue
+  Categorize, change category, hide, pair, unpair, apply rule offer).
+  `ImportPanel` does the same with its own `task`. Replacing the slot drops
+  the earlier `Task`, which cancels its continuation, while the queued
+  `DbWorker` job still commits. So a second click loses the first action's
+  follow-up: e.g. Save a rule, then hide a row before it returns → the
+  rule is saved but `pending_rule_action` never clears (Save stays
+  loading and disabled), the editor never closes, errors and toasts are
+  lost, and nothing refreshes.
+  - Mutations whose result must always be applied run as
+    `cx.spawn_in(..).detach()` and update through the weak entity
+    (`this.update_in(..)` already returns `Err` once the view is gone);
+    their result handler checks the state it touches is still current
+    (e.g. the editor is still on that rule) before changing it.
+  - Only work a newer request should replace keeps an `Option<Task>`
+    slot, one per purpose: the refresh, the live preview count, settings
+    writes. Delete the shared `task` field.
+  - **Import while busy:** disable the preview's Cancel and show
+    `.loading(true)` on Import while `busy`, and ignore `open_file` (drop,
+    ⌘O) while an import is committing; today Cancel drops the panel and
+    its task while the commit still runs, so the rows are imported with no
+    toast and no master-CSV error.
+  - Store the import panel's `Subscription` with the panel
+    (`import: Option<(Entity<ImportPanel>, Subscription)>`); today every
+    open pushes a new one into `_subs` and never removes it.
+  - Tests: start a rule Save and a row Hide in the same frame, then
+    both complete (pending cleared, editor closed, row hidden, two
+    refreshes); Cancel is disabled while an import commits and a second
+    drop is ignored; opening ten files leaves one import subscription.
+
 - [x] **3.66 Simplii card payments only on the card.** (Code review,
   2026-11-11.) `Simplii::is_card_payment` (`financi-parsers/src/simplii.rs`)
   only sees the `RawTransaction`, so the Visa rule ("money in whose
@@ -1341,4 +1374,17 @@ the UI; tests cover 2.1–2.9.
   - Tests: the zip holds the three parts; every manifest hash and row
     count matches the file; a missing year file is rebuilt by the
     self-check before zipping; hidden rows are in the CSVs.
+
+- [x] **5.2 Restore, backend.**
+  - **Review update (2026-11-11):** Restore runs through the worker (close or reuse its connections; both have `busy_timeout`, 3.77).
+  - `verify_export(zip)` checks every file against the manifest SHA-256s
+    and refuses a schema version newer than this build. `restore(...)`
+    backs up the current database to `financi.sqlite.bak` (backup API)
+    and `csv/` to `csv.bak/`, restores into the live connection with
+    rusqlite's backup API on the worker thread (no file swapping),
+    migrates an older schema, and replaces `csv/` with the zip's tree.
+    Expose it as a `DbWorker` job.
+  - Tests: a tampered file is refused before anything changes; a newer
+    schema is refused; an older one migrates; the `.bak` copies exist
+    after a restore; a failure part-way leaves the live database usable.
 
