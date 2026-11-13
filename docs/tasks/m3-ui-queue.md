@@ -6,39 +6,6 @@ Do these in the order listed (`docs/tasks.md` → *Picking the next task*). Each
 
 Steps 1–15 of `docs/tasks/gpui.md` → *GPUI best practices*, task by task.
 
-- [x] **3.75 A reliable UI test harness.** (Code review, 2026-11-11.)
-  Tests only; rename selectors in the UI code where needed.
-  - **Wait for real idleness.** 11 tests wait for "initial load" with
-    `refresh_task.is_some()`, which is already true when `Shell::new`
-    returns, and `run_until_parked` doesn't wait for the `DbWorker`
-    thread, so "nothing happened" assertions can pass vacuously. Add a
-    loaded / applied-generation marker set in the refresh continuation
-    and a `wait_idle(shell)` helper (no DB job in flight, all results
-    applied). Use it before every negative assertion; delete the
-    `refresh_task.is_some()` waits.
-  - **Click through controls.** ~160 places call `Shell` methods or set
-    fields directly, so wiring bugs (like 3.65's missing notify) can't
-    show. Add `click(cx, window, selector)` (bounds + `simulate_click`)
-    and convert at least one test per control kind (checkbox, button,
-    select, legend row, summary cell) to use it.
-  - **One bounds helper.** `bounds_of`, `centre_y`, `rules_sel_y` and
-    `paints` are the same helper; `wheel_over` / `wheel_over_x` are near
-    copies; `leaked()` works around `&'static str` selectors. Make one
-    `bounds(window, impl Into<String>)` and one wheel helper in
-    `ui/tests/mod.rs`.
-  - **Realistic defaults.** `open_shell_at` defaults to 1100 × 720, below
-    the app's 1200 × 720 minimum; use 1200 × 720. Give each test its own
-    temp DB dir (today one per process is shared by parallel tests that
-    write master CSVs).
-  - **Selectors follow `page:thing[:id]`.** Rename the stragglers
-    (`cat-tree-row-{id}`, `rule-row-{id}`, `add-rule-preview`,
-    `rule-edit-error`, `transfer-review:{txn}`, `rules:group-{id}`,
-    `summary:cell-{ix}-{col}`, and `rule:` vs `rules:`), and add a test
-    that walks a rendered frame's selectors against the pattern.
-  - Done when: no `refresh_task.is_some()` waits remain, every negative
-    assertion follows `wait_idle`, and the test count is unchanged or
-    higher.
-
 - [ ] **3.92 UI worker calls report panics.** (Review note, 2026-11-12,
   during 3.70.) The UI still runs every job through untyped `on_db`
   (`ui/widgets.rs`), so a panicking undo or category edit still surfaces
