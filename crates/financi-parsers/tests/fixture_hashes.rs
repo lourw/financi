@@ -39,7 +39,7 @@ const PINNED: &[&str] = &[
     // added by 3.67
     "tests/fixtures/amex/crlf_bom.csv 3 dfed655661e31cee45fca8889d781682f58cc35e51f255b4a85d5ce6e74aae78",
     "tests/fixtures/amex/stray_quotes.csv 3 591ff10184e7bec701d3fae36dda74c2302b2e98dd98b2a9bc1bbf8e15e5f807",
-    "tests/fixtures/simplii/windows1252.csv 2 05bbbfeaa5a55020741488765205430f64dc8a61a6ae71a6a686573e43d6f66b",
+    "tests/fixtures/simplii/windows1252.csv 2 c21860668bcfe14208e38c11231bad87c1bdbb65d9a97e43c4412fdf859bf18a", // re-pinned by 3.71: byte hashing
 ];
 
 #[test]

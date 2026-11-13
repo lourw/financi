@@ -1,6 +1,6 @@
 //! Import pipeline tests through the real Amex parser.
 
-use financi_core::{AccountKind, CategoryKind, RawFile, StatementParser, read_raw_file};
+use financi_core::{AccountKind, CategoryKind, RawFile, StatementParser, read_raw_file, row_hash};
 use financi_db::categories::{
     between_accounts_category, card_payment_category, create_child, create_parent,
 };
@@ -9,6 +9,7 @@ use financi_db::import::{
     undo_last_import,
 };
 use financi_db::master_csv::rewrite_years;
+use financi_db::repair::repair_row_hashes_from_bytes;
 use financi_db::{
     DbError, add_rule, create_account, get_account, open_in_memory, rusqlite::Connection,
 };
@@ -216,6 +217,70 @@ fn aliases_count_as_already_present() {
     .unwrap();
 
     assert_eq!(import(&mut conn, acct, &tipped).inserted, 0);
+}
+
+#[test]
+fn rehash_from_bytes_makes_bug_era_duplicates_reconcile() {
+    // 3.71: before rows hashed over exported bytes, the same accented row
+    // imported under two encoding guesses got two different hashes, and
+    // both copies were stored. Stage that state, run the repair, and the
+    // rows converge on the hash their bytes give — so re-importing the
+    // same file adds nothing.
+    let mut conn = open_in_memory().unwrap();
+    let acct = create_account(&conn, "simplii", "Chequing", AccountKind::Chequing).unwrap();
+    let account = get_account(&conn, acct).unwrap();
+    let bytes = [SIMPLII_HEADER.as_bytes(), b"\n10/07/2026,CAF\xC9,,12.34\n"].concat();
+    let file = read_raw_file(&bytes).unwrap();
+    let raw = file.records[0].bytes.clone();
+    // The two decoded hashes the old parser produced for these bytes: the
+    // description read as Windows-1252, and as lossy UTF-8.
+    let h1 = row_hash(
+        &account.account_key,
+        &[b"10/07/2026", "CAFÉ".as_bytes(), b"", b"12.34"],
+    )
+    .0;
+    let h2 = row_hash(
+        &account.account_key,
+        &[b"10/07/2026", "CAF\u{FFFD}".as_bytes(), b"", b"12.34"],
+    )
+    .0;
+    assert_ne!(h1, h2, "the bug's two guesses hashed apart");
+    for hash in [h1, h2] {
+        conn.execute(
+            "INSERT INTO imports (account_id, parser_id, file_name, imported_at, header_raw,
+                                  encoding, has_bom, line_ending, trailing_newline, row_count)
+             VALUES (?1, 'simplii', 'chequing.csv', '2026-11-01', ?2, 'windows-1252', 0, 'lf', 0, 1)",
+            rusqlite::params![acct, SIMPLII_HEADER.as_bytes()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO transactions (account_id, import_id, source_line, raw_bytes,
+                                       row_hash, posted_date, amount_cents, description_raw)
+             VALUES (?1, ?2, 0, ?3, ?4, '2026-07-10', -1234, 'CAFÉ')",
+            rusqlite::params![acct, conn.last_insert_rowid(), raw, hash],
+        )
+        .unwrap();
+    }
+
+    repair_row_hashes_from_bytes(&mut conn).unwrap();
+    assert_eq!(count(&conn, acct), 2, "the repair never deletes");
+    let want = Simplii.row_hash(&account.account_key, &file.records[0]).0;
+    let hashes: Vec<String> = {
+        let mut stmt = conn
+            .prepare("SELECT row_hash FROM transactions ORDER BY id")
+            .unwrap();
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0)).unwrap();
+        rows.collect::<Result<_, _>>().unwrap()
+    };
+    assert_eq!(
+        hashes,
+        vec![want.clone(), want],
+        "both rows answer to their bytes"
+    );
+
+    let out = import_simplii(&mut conn, acct, &file);
+    assert_eq!(out.inserted, 0, "the file is now recognised as already in");
+    assert_eq!(out.already_present, 1);
 }
 
 #[test]

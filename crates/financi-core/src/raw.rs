@@ -63,6 +63,7 @@ pub fn read_raw_file(bytes: &[u8]) -> Result<RawFile, ReadError> {
         .enumerate()
         .map(|(source_line, (bytes, file_line))| RawRecord {
             fields: split_fields(bytes, encoding),
+            raw_fields: split_field_bytes(bytes),
             bytes: bytes.to_vec(),
             source_line,
             file_line,
@@ -116,6 +117,22 @@ pub fn sniff_header(bytes: &[u8]) -> Vec<String> {
         line = &line[..line.len() - 1];
     }
     split_fields(line, detect_encoding(body, has_bom))
+}
+
+/// Rebuild a [`RawRecord`] from one stored record's bytes (3.71): the same
+/// field split and decoding [`read_raw_file`] applies to a record inside a
+/// file, so a row re-hashed from `transactions.raw_bytes` gets exactly the
+/// hash a re-import of that row would get. `source_line` and `file_line`
+/// carry no meaning for a lone stored record and are `0` and `1`.
+pub fn raw_record_from_bytes(bytes: &[u8], encoding: Encoding) -> RawRecord {
+    let raw_fields = split_field_bytes(bytes);
+    RawRecord {
+        fields: raw_fields.iter().map(|b| decode(b, encoding)).collect(),
+        raw_fields,
+        bytes: bytes.to_vec(),
+        source_line: 0,
+        file_line: 1,
+    }
 }
 
 /// True when the `"` at `i` closes a quoted field: the next byte is the
@@ -183,10 +200,20 @@ fn push_record<'a>(out: &mut Vec<(&'a [u8], usize)>, record: &'a [u8], file_line
     }
 }
 
-/// RFC 4180 field split of one record, decoding each field. A quote opens
-/// a quoted field only at the field's start; elsewhere it is literal, so a
+/// RFC 4180 field split of one record, decoded. A quote opens a quoted
+/// field only at the field's start; elsewhere it is literal, so a
 /// description like `BEST BUY 55" TV` survives intact.
 fn split_fields(record: &[u8], encoding: Encoding) -> Vec<String> {
+    split_field_bytes(record)
+        .into_iter()
+        .map(|b| decode(&b, encoding))
+        .collect()
+}
+
+/// The same split as [`split_fields`], but each field stays its undecoded
+/// bytes with the quotes removed (3.71): the row hash is computed over
+/// these, so a file's encoding guess can never change a row's identity.
+fn split_field_bytes(record: &[u8]) -> Vec<Vec<u8>> {
     let mut fields = Vec::new();
     let mut field = Vec::new();
     let mut in_quotes = false;
@@ -209,7 +236,7 @@ fn split_fields(record: &[u8], encoding: Encoding) -> Vec<String> {
                 at_field_start = false;
             }
             b',' if !in_quotes => {
-                fields.push(decode(&std::mem::take(&mut field), encoding));
+                fields.push(std::mem::take(&mut field));
                 at_field_start = true;
             }
             b => {
@@ -219,7 +246,7 @@ fn split_fields(record: &[u8], encoding: Encoding) -> Vec<String> {
         }
         i += 1;
     }
-    fields.push(decode(&field, encoding));
+    fields.push(field);
     fields
 }
 
@@ -291,6 +318,43 @@ mod tests {
             r.bytes, b"\"SHOP, INC\",\"say \"\"hi\"\"\"",
             "raw bytes keep the quotes"
         );
+    }
+
+    #[test]
+    fn raw_fields_strip_quotes_but_keep_every_other_byte() {
+        let f = read_raw_file(b"A,B\n\"SHOP, INC\",\"say \"\"hi\"\"\"\n").unwrap();
+        assert_eq!(
+            f.records[0].raw_fields,
+            [b"SHOP, INC".to_vec(), b"say \"hi\"".to_vec()],
+            "quotes removed, escaped quotes resolved, nothing else touched"
+        );
+        // For an ASCII field the raw bytes are the decoded string's bytes.
+        assert_eq!(
+            f.records[0].raw_fields[0],
+            f.records[0].fields[0].as_bytes()
+        );
+    }
+
+    #[test]
+    fn raw_fields_stay_undecoded_under_windows_1252() {
+        // 3.71: `fields` depends on the file's encoding guess; `raw_fields`
+        // never does — the hash is computed over these bytes.
+        let f = read_raw_file(b"Desc,Amount\nCAF\xC9 \x80,1.00").unwrap();
+        assert_eq!(f.encoding, Encoding::Windows1252);
+        assert_eq!(f.records[0].fields[0], "CAFÉ €");
+        assert_eq!(f.records[0].raw_fields[0], b"CAF\xC9 \x80");
+    }
+
+    #[test]
+    fn raw_record_from_bytes_splits_and_decodes_like_a_file_record() {
+        // 3.71: the re-hash path rebuilds stored records this way, so both
+        // field lists must match what reading the whole file produced.
+        let bytes = b"\xEF\xBB\xBFDate,Amount\n\"CAF\xc9, INC\",1.00";
+        let f = read_raw_file(bytes).unwrap();
+        let rebuilt = raw_record_from_bytes(&f.records[0].bytes, f.encoding);
+        assert_eq!(rebuilt.fields, f.records[0].fields);
+        assert_eq!(rebuilt.raw_fields, f.records[0].raw_fields);
+        assert_eq!(rebuilt.bytes, f.records[0].bytes);
     }
 
     #[test]

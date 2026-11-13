@@ -32,7 +32,7 @@ pub mod queue;
 pub use queue::{UncategorizedGroup, categorize_group, uncategorized_by_merchant};
 
 pub mod repair;
-pub use repair::repair_misclassified_card_payments;
+pub use repair::{repair_misclassified_card_payments, repair_row_hashes_from_bytes};
 
 pub mod rules;
 pub use rules::{add_rule, delete_rule, list_rules, update_rule};
@@ -165,6 +165,7 @@ pub fn open(path: &Path) -> Result<Connection> {
     // One-time data repairs recorded in settings; they need the migrated
     // schema and run before anything else touches the data (3.66).
     repair::repair_misclassified_card_payments(&mut conn)?;
+    repair::repair_row_hashes_from_bytes(&mut conn)?;
     optimize(&conn)?;
     Ok(conn)
 }
@@ -439,6 +440,64 @@ mod tests {
             .unwrap();
         assert_eq!(category, None, "the locked income row is uncategorized");
         assert!(!locked, "and free for the rules again");
+        drop(conn);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn open_rehashes_stored_row_hashes() {
+        // 3.71: the first open after the upgrade rewrites stored row
+        // hashes from the rows' own bytes.
+        let dir = std::env::temp_dir().join(format!("financi-test-{}", uuid::Uuid::new_v4()));
+        let path = dir.join("financi.sqlite");
+        const RAW: &[u8] = b"10/07/2026,CAF\xC9,,12.34";
+        {
+            let conn = open(&path).unwrap();
+            let account = crate::accounts::create_account(
+                &conn,
+                "simplii",
+                "Chequing",
+                financi_core::AccountKind::Chequing,
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO imports (account_id, parser_id, file_name, imported_at, header_raw,
+                                      encoding, has_bom, line_ending, trailing_newline, row_count)
+                 VALUES (?1, 'simplii', 'chequing.csv', '2026-11-01', X'00',
+                         'windows-1252', 0, 'lf', 0, 1)",
+                [account],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO transactions (account_id, import_id, source_line, raw_bytes,
+                                           row_hash, posted_date, amount_cents, description_raw)
+                 VALUES (?1, ?2, 0, ?3, 'decoded', '2026-07-10', -1234, 'CAFÉ')",
+                rusqlite::params![account, conn.last_insert_rowid(), RAW],
+            )
+            .unwrap();
+            // Make the database look like one written before the repair
+            // existed (fresh opens record the key immediately).
+            conn.execute(
+                "DELETE FROM settings WHERE key = ?1",
+                [repair::ROW_HASH_BYTES],
+            )
+            .unwrap();
+        }
+        let conn = open(&path).unwrap();
+        let hash: String = conn
+            .query_row("SELECT row_hash FROM transactions", [], |r| r.get(0))
+            .unwrap();
+        let account_key: String = conn
+            .query_row("SELECT account_key FROM accounts", [], |r| r.get(0))
+            .unwrap();
+        let want = financi_parsers::by_id("simplii")
+            .unwrap()
+            .row_hash(
+                &financi_core::AccountKey(account_key),
+                &financi_core::raw_record_from_bytes(RAW, financi_core::Encoding::Windows1252),
+            )
+            .0;
+        assert_eq!(hash, want, "the row now answers to its own bytes");
         drop(conn);
         std::fs::remove_dir_all(dir).unwrap();
     }

@@ -10,7 +10,7 @@ pub mod dates;
 pub mod parse;
 mod raw;
 pub mod rules;
-pub use raw::{ReadError, read_raw_file, sniff_header};
+pub use raw::{ReadError, raw_record_from_bytes, read_raw_file, sniff_header};
 
 /// Money in integer cents. Negative = money out.
 pub type Cents = i64;
@@ -30,6 +30,10 @@ pub struct RowHash(pub String);
 ///
 /// Each part is length-prefixed (u64 little-endian) so a separator character
 /// inside a field can never make two different rows collide.
+///
+/// The parts must be the field's raw exported bytes — a [`RawRecord`]'s
+/// `raw_fields`, not the decoded `fields` — so a file's encoding guess can
+/// never change a row's identity (3.71).
 pub fn row_hash(account_key: &AccountKey, identity_fields: &[&[u8]]) -> RowHash {
     let mut hasher = Sha256::new();
     let mut part = |bytes: &[u8]| {
@@ -55,6 +59,15 @@ impl Encoding {
         match self {
             Encoding::Utf8 => "utf-8",
             Encoding::Windows1252 => "windows-1252",
+        }
+    }
+
+    /// Inverse of [`Self::as_str`], for the value stored in `imports.encoding`.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "utf-8" => Some(Encoding::Utf8),
+            "windows-1252" => Some(Encoding::Windows1252),
+            _ => None,
         }
     }
 }
@@ -98,7 +111,13 @@ pub struct RawRecord {
     /// quoted fields, so error messages can point the user at their file.
     pub file_line: usize,
     /// Fields exactly as exported, decoded to text but not trimmed or parsed.
+    /// Decoding depends on the file's encoding guess, so this is display
+    /// text only — never hash it (3.71).
     pub fields: Vec<String>,
+    /// The same fields undecoded, quotes removed (3.71). The row hash is
+    /// computed over these bytes, so the same row hashes the same whatever
+    /// the file's encoding was or how it was guessed.
+    pub raw_fields: Vec<Vec<u8>>,
 }
 
 /// The type of an account within its institution. Stored as
@@ -237,6 +256,14 @@ mod tests {
             assert_eq!(AccountKind::parse(k.as_str()), Some(k));
         }
         assert_eq!(AccountKind::parse("credit"), None);
+    }
+
+    #[test]
+    fn encoding_parses_its_own_stored_name() {
+        for e in [Encoding::Utf8, Encoding::Windows1252] {
+            assert_eq!(Encoding::parse(e.as_str()), Some(e));
+        }
+        assert_eq!(Encoding::parse("latin-1"), None);
     }
 
     #[test]
