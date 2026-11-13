@@ -6,7 +6,7 @@ Runs beside the UI queue, in the order listed. Backend only: don't read the UI d
 
 Runs beside the UI queue. 5.1 and 5.2 (in M5) follow 3.90.
 
-- [ ] **3.68 Near-match review asks only about changed charges.** (Code
+- [x] **3.68 Near-match review asks only about changed charges.** (Code
   review, 2026-11-11.) In `financi-db/src/import.rs`:
   - **Repeat purchases aren't "changed charges."** `find_near_matches`
     compares new rows with existing rows that the same file still

@@ -21,6 +21,15 @@ fn csv(rows: &[&str]) -> RawFile {
     read_raw_file(text.as_bytes()).unwrap()
 }
 
+/// Same rows under a different header — e.g. the bank added a column (3.68).
+fn csv_with_header(header: &str, rows: &[&str]) -> RawFile {
+    let text = std::iter::once(header)
+        .chain(rows.iter().copied())
+        .collect::<Vec<_>>()
+        .join("\n");
+    read_raw_file(text.as_bytes()).unwrap()
+}
+
 /// A Simplii chequing export: `Date, Transaction Details, Funds Out, Funds In `
 /// with mm/dd/yyyy dates.
 const SIMPLII_HEADER: &str = "Date, Transaction Details, Funds Out, Funds In ";
@@ -762,6 +771,15 @@ fn row_values(conn: &Connection, id: i64) -> (String, i64, String, Vec<u8>, Stri
     .unwrap()
 }
 
+fn fx_values(conn: &Connection, id: i64) -> (Option<String>, Option<i64>) {
+    conn.query_row(
+        "SELECT original_currency, original_amount_cents FROM transactions WHERE id = ?1",
+        [id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+    .unwrap()
+}
+
 const COFFEE: &str = "05 Nov 2026,08 Nov 2026,COFFEE SHOP    VANCOUVER,15.74";
 const COFFEE_TIP: &str = "06 Nov 2026,08 Nov 2026,COFFEE SHOP    VANCOUVER,18.74";
 
@@ -907,6 +925,95 @@ fn an_existing_row_matches_only_one_new_row() {
 }
 
 #[test]
+fn repeat_purchase_still_in_the_file_is_not_a_near_match() {
+    let (mut conn, acct) = setup();
+    import(&mut conn, acct, &csv(&[COFFEE]));
+
+    // A re-export holding yesterday's coffee plus today's bigger one: the
+    // earlier row is still in the file unchanged, so it is a repeat
+    // purchase, not a changed charge — today's coffee must not be offered
+    // against it as "Same charge?" (3.68).
+    let reexport = csv(&[COFFEE_TIP, COFFEE]);
+    let p = plan(&conn, acct, &reexport);
+    assert_eq!(p.already_present, 1, "yesterday's coffee reconciles");
+    assert_eq!(p.new_rows.len(), 1, "today's coffee is new");
+    assert_eq!(
+        p.near_matches.len(),
+        0,
+        "the repeat is not a changed charge"
+    );
+
+    // The exclusion follows the file: without yesterday's row, the very
+    // same charge is offered against the existing coffee again.
+    assert_eq!(plan(&conn, acct, &csv(&[COFFEE_TIP])).near_matches.len(), 1);
+}
+
+#[test]
+fn an_aliased_repeat_purchase_still_in_the_file_is_not_a_near_match() {
+    let (mut conn, acct) = setup();
+    import(&mut conn, acct, &csv(&[COFFEE]));
+    let id = txn_id(&conn, "COFFEE SHOP    VANCOUVER");
+    import_marking(&mut conn, acct, &csv(&[COFFEE_TIP]), vec![(0, id)]);
+
+    // The stored row now carries the tip's hash, with the coffee's old hash
+    // aliased to it. A re-export still holding the old coffee holds that
+    // row unchanged — through the alias — so a further lookalike must not
+    // pair with it (3.68).
+    let lookalike = "07 Nov 2026,08 Nov 2026,COFFEE SHOP    VANCOUVER,16.00";
+    assert_eq!(
+        plan(&conn, acct, &csv(&[lookalike, COFFEE]))
+            .near_matches
+            .len(),
+        0,
+        "the aliased repeat is excluded"
+    );
+    assert_eq!(
+        plan(&conn, acct, &csv(&[lookalike])).near_matches.len(),
+        1,
+        "without the repeat in the file it pairs again"
+    );
+}
+
+#[test]
+fn a_changed_header_or_bom_does_not_offer_near_matches() {
+    let (mut conn, acct) = setup();
+    import(&mut conn, acct, &csv(&[COFFEE]));
+    let id = txn_id(&conn, "COFFEE SHOP    VANCOUVER");
+
+    // Control: same variant, the tip is offered…
+    let tip = csv(&[COFFEE_TIP]);
+    assert_eq!(plan(&conn, acct, &tip).near_matches.len(), 1);
+
+    // …but under a different header variant it is not (3.68): a
+    // replacement keeps the existing row's import, so its new bytes would
+    // be written to the master CSV under the old import's header.
+    let changed = csv_with_header(
+        "Date,Date Processed,Description,Amount,FX Currency",
+        &[COFFEE_TIP],
+    );
+    let p = plan(&conn, acct, &changed);
+    assert_eq!(p.new_rows.len(), 1);
+    assert_eq!(p.near_matches.len(), 0, "different header variant");
+
+    // Marking the stale pair anyway changes nothing: the row imports new,
+    // so the master CSV keeps writing it under its own header.
+    let out = import_marking(&mut conn, acct, &changed, vec![(0, id)]);
+    assert_eq!((out.inserted, out.replaced), (1, 0), "imports as new");
+    assert_eq!(count(&conn, acct), 2, "the existing row survives");
+
+    // A UTF-8 BOM changes the variant the same way.
+    let (mut conn, acct) = setup();
+    import(&mut conn, acct, &csv(&[COFFEE]));
+    let bom = read_raw_file(format!("\u{feff}{HEADER}\n{COFFEE_TIP}").as_bytes()).unwrap();
+    assert!(bom.has_bom, "the core records the BOM");
+    assert_eq!(
+        plan(&conn, acct, &bom).near_matches.len(),
+        0,
+        "different encoding variant"
+    );
+}
+
+#[test]
 fn same_charge_replaces_and_aliases_then_overlapping_export_adds_zero() {
     let (mut conn, acct) = setup();
     import(&mut conn, acct, &csv(&[COFFEE]));
@@ -1033,6 +1140,51 @@ fn undo_restores_the_replaced_transaction() {
     assert_eq!((out.inserted, out.already_present), (0, 1));
     // …and the tip file offers its near-match again.
     assert_eq!(plan(&conn, acct, &tip).near_matches.len(), 1);
+}
+
+#[test]
+fn same_charge_replaces_and_restores_the_fx_columns() {
+    let (mut conn, acct) = setup();
+    import(&mut conn, acct, &csv(&[COFFEE]));
+    let id = txn_id(&conn, "COFFEE SHOP    VANCOUVER");
+    // A foreign-currency charge: the Amex parser leaves the FX columns
+    // NULL, so set them the way an FX-aware import would (3.68).
+    conn.execute(
+        "UPDATE transactions SET original_currency = 'USD', original_amount_cents = 1234
+          WHERE id = ?1",
+        [id],
+    )
+    .unwrap();
+
+    let tip = csv(&[COFFEE_TIP]);
+    let out = import_marking(&mut conn, acct, &tip, vec![(0, id)]);
+    assert_eq!(out.replaced, 1);
+
+    // The replacement carries the new row's FX values…
+    assert_eq!(fx_values(&conn, id), (None, None));
+    // …and the old ones are recorded for undo.
+    let import_id: i64 = conn
+        .query_row("SELECT id FROM imports ORDER BY id DESC LIMIT 1", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    let recorded: (Option<String>, Option<i64>) = conn
+        .query_row(
+            "SELECT old_original_currency, old_original_amount_cents
+               FROM replacements WHERE import_id = ?1 AND transaction_id = ?2",
+            rusqlite::params![import_id, id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(recorded, (Some("USD".to_string()), Some(1234)));
+
+    // Undo puts them back.
+    undo_last_import(&mut conn, acct).unwrap().unwrap();
+    assert_eq!(
+        fx_values(&conn, id),
+        (Some("USD".to_string()), Some(1234)),
+        "undo restores the FX columns"
+    );
 }
 
 #[test]
