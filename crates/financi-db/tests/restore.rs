@@ -1,9 +1,10 @@
-//! 5.2 restore tests: `verify_export` refuses a tampered file or a newer
-//! schema before anything changes; `restore` copies the live database to
-//! `financi.sqlite.bak` and `csv/` to `csv.bak/`, writes the snapshot into
-//! the live connection (backup API), migrates an older schema, and
-//! replaces `csv/` with the zip's tree; a failure part-way leaves the live
-//! database usable.
+//! 5.2 restore tests: `verify_export` refuses a tampered file, a newer
+//! schema, or a stray `csv/` path that escapes the tree before anything
+//! changes; `restore` copies the live database to `financi.sqlite.bak`,
+//! writes the snapshot into the live connection (backup API), migrates an
+//! older schema, and replaces `csv/` with the zip's tree through a
+//! staging copy, so a failure part-way leaves the live database usable
+//! and the live tree and its `csv.bak` untouched.
 
 use std::fs::{self, File};
 use std::io::{Read, Write};
@@ -173,23 +174,48 @@ fn a_restore_replaces_the_database_and_csv_tree_after_bak_copies() {
     rewrite_years(&conn, &root, acct, &[2026]).unwrap();
     assert_eq!(count(&conn, "SELECT count(*) FROM transactions"), 3);
 
-    let manifest = export::restore(&mut conn, &root, &zip).unwrap();
+    // Through the worker, as the app runs it: the restore lands on the
+    // writer thread and the reader connection sees the restored data.
+    let worker = DbWorker::spawn(conn);
+    let manifest = block_on(export::restore_job(&worker, &root, &zip)).unwrap();
     assert_eq!(manifest.schema_version, SCHEMA_VERSION);
     assert_eq!(manifest.files.len(), 2, "the manifest the export wrote");
 
     // The database is the export's again, at this build's schema.
-    assert_eq!(count(&conn, "SELECT count(*) FROM transactions"), 2);
-    assert_eq!(
-        count(
-            &conn,
-            "SELECT count(*) FROM transactions WHERE description_raw = 'NEW'"
-        ),
-        0
-    );
-    let version: u32 = conn
-        .pragma_query_value(None, "user_version", |r| r.get(0))
-        .unwrap();
+    let (rows, new_rows, version) = block_on(worker.call(|c| {
+        let version: u32 = c
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .unwrap();
+        (
+            count(c, "SELECT count(*) FROM transactions"),
+            count(
+                c,
+                "SELECT count(*) FROM transactions WHERE description_raw = 'NEW'",
+            ),
+            version,
+        )
+    }))
+    .unwrap();
+    assert_eq!((rows, new_rows), (2, 0));
     assert_eq!(version, SCHEMA_VERSION);
+
+    // The reader connection sees the restored rows too (WAL, 3.77): a
+    // read through `call_read` after `restore_job` is the export's data.
+    let (read_rows, read_new) = block_on(worker.call_read(|c| {
+        (
+            count(c, "SELECT count(*) FROM transactions"),
+            count(
+                c,
+                "SELECT count(*) FROM transactions WHERE description_raw = 'NEW'",
+            ),
+        )
+    }))
+    .unwrap();
+    assert_eq!(
+        (read_rows, read_new),
+        (2, 0),
+        "the reader connection sees the restored data"
+    );
 
     // The csv tree is the zip's, byte for byte.
     assert_eq!(fs::read(&year_file).unwrap(), exported_csv);
@@ -210,6 +236,11 @@ fn a_restore_replaces_the_database_and_csv_tree_after_bak_copies() {
         bak_text.contains("NEW"),
         "the pre-restore tree is in csv.bak"
     );
+
+    drop(worker);
+    // The threads exit on the last handle; give them a moment to close the
+    // files before the temp dir goes away.
+    std::thread::sleep(Duration::from_millis(100));
     fs::remove_dir_all(dir).unwrap();
 }
 
@@ -462,16 +493,156 @@ fn a_failure_part_way_leaves_the_live_database_usable() {
         "the restored database is live and usable"
     );
 
-    // The `.bak` copies and the entries that did extract are on disk.
+    // The database `.bak` copy is on disk. The CSV extraction ran in a
+    // staging copy, so the failure left the live tree and its `csv.bak`
+    // exactly as they were, and cleaned the staging copy up.
     assert!(dir.join("financi.sqlite.bak").exists());
     let db_bak = Connection::open(dir.join("financi.sqlite.bak")).unwrap();
     assert_eq!(count(&db_bak, "SELECT count(*) FROM transactions"), 2);
-    assert!(root.with_file_name("csv.bak").exists());
-    assert!(root.join("amex").join(&key).join("2026.csv").exists());
+    assert!(
+        !root.with_file_name("csv.bak").exists(),
+        "a failed extraction never moves the live tree aside"
+    );
+    let live = fs::read_to_string(root.join("amex").join(&key).join("2026.csv")).unwrap();
+    assert!(live.contains("COFFEE"), "the live tree is untouched");
+    assert!(!root.join("stray.bin").exists());
+    let staging: Vec<_> = fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with("csv.tmp-"))
+        .collect();
+    assert!(
+        staging.is_empty(),
+        "the staging copy is removed: {staging:?}"
+    );
 
     drop(worker);
     // The threads exit on the last handle; give them a moment to close the
     // files before the temp dir goes away.
     std::thread::sleep(Duration::from_millis(100));
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn a_stray_escaping_csv_path_is_refused_before_anything_changes() {
+    let (mut conn, root, dir) = fixture("escape");
+    let key = account_key(&conn);
+
+    // A valid snapshot and manifest — every hash checks out — plus a
+    // stray entry the manifest never lists whose path climbs out of the
+    // csv tree. It can only be extracted to `dir/escape.txt`; the gate
+    // must refuse it on the name alone, before `restore` mutates a thing.
+    let snap = dir.join("snap.sqlite");
+    {
+        let other = open(&snap).unwrap();
+        let _ = create_account(&other, "amex", "Escape", AccountKind::CreditCard).unwrap();
+    }
+    let csv_path = format!("{CSV_DIR}/amex/{key}/2026.csv");
+    let csv_bytes = fs::read(root.join("amex").join(&key).join("2026.csv")).unwrap();
+    let escape = format!("{CSV_DIR}/../escape.txt");
+    let zip = build_zip(
+        &dir,
+        "escape.zip",
+        &[
+            (
+                MANIFEST_NAME,
+                manifest_json(SCHEMA_VERSION, &snap, &[(&csv_path, csv_bytes.clone())]),
+            ),
+            (DB_NAME, fs::read(&snap).unwrap()),
+            (&csv_path, csv_bytes),
+            (&escape, b"ESCAPED".to_vec()),
+        ],
+    );
+
+    let err = export::verify_export(&zip).unwrap_err();
+    assert!(
+        matches!(&err, DbError::InvalidExport { reason, .. }
+            if reason.contains("escapes the csv tree")),
+        "{err}"
+    );
+    assert!(matches!(
+        export::restore(&mut conn, &root, &zip),
+        Err(DbError::InvalidExport { .. })
+    ));
+
+    // Nothing changed: same rows, no `.bak` copies, nothing escaped.
+    assert_eq!(count(&conn, "SELECT count(*) FROM transactions"), 2);
+    assert!(!dir.join("financi.sqlite.bak").exists());
+    assert!(!root.with_file_name("csv.bak").exists());
+    assert!(!dir.join("escape.txt").exists());
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn a_retry_after_a_part_way_failure_keeps_the_good_backup() {
+    let (mut conn, root, dir) = fixture("retry-backup");
+    let key = account_key(&conn);
+    let year_file = root.join("amex").join(&key).join("2026.csv");
+
+    // A first, successful restore leaves `csv.bak` holding the tree that
+    // was live before it — the only good copy of those bytes.
+    let zip = dir.join("export.zip");
+    export::export(&conn, &root, &zip, APP_VERSION).unwrap();
+    let acct = list_accounts(&conn).unwrap()[0].id;
+    commit(
+        &mut conn,
+        acct,
+        &amex_file(&["06 Nov 2026,06 Nov 2026,NEW,7.00"]),
+        "new.csv",
+    );
+    rewrite_years(&conn, &root, acct, &[2026]).unwrap();
+    export::restore(&mut conn, &root, &zip).unwrap();
+    let csv_bak = root.with_file_name("csv.bak");
+    let good_bak = fs::read(csv_bak.join("amex").join(&key).join("2026.csv")).unwrap();
+    assert!(good_bak.windows(3).any(|w| w == b"NEW"));
+    let live_tree = fs::read(&year_file).unwrap();
+
+    // A second restore — a corrupt-stray zip like the part-way test's —
+    // fails during extraction. It must leave `csv.bak` and the live tree
+    // untouched, so the good backup survives a retry.
+    let snap = dir.join("snap2.sqlite");
+    {
+        let other = open(&snap).unwrap();
+        let _ = create_account(&other, "amex", "Retry", AccountKind::CreditCard).unwrap();
+    }
+    let csv_path = format!("{CSV_DIR}/amex/{key}/2026.csv");
+    let csv_bytes = b"Date,Amount\n".to_vec();
+    let stray = format!("{CSV_DIR}/stray.bin");
+    let stray_bytes = b"STRAY-PAYLOAD-PATTERN-0123456789".to_vec();
+    let bad = build_zip(
+        &dir,
+        "corrupt-again.zip",
+        &[
+            (
+                MANIFEST_NAME,
+                manifest_json(SCHEMA_VERSION, &snap, &[(&csv_path, csv_bytes.clone())]),
+            ),
+            (DB_NAME, fs::read(&snap).unwrap()),
+            (&csv_path, csv_bytes),
+            (&stray, stray_bytes.clone()),
+        ],
+    );
+    let mut raw = fs::read(&bad).unwrap();
+    let at = raw
+        .windows(stray_bytes.len())
+        .position(|w| w == &stray_bytes[..])
+        .unwrap();
+    raw[at] ^= 0xFF;
+    fs::write(&bad, &raw).unwrap();
+
+    let err = export::restore(&mut conn, &root, &bad).unwrap_err();
+    assert!(matches!(err, DbError::Io { .. }), "{err}");
+
+    assert_eq!(
+        fs::read(csv_bak.join("amex").join(&key).join("2026.csv")).unwrap(),
+        good_bak,
+        "the only good backup survived the failed retry"
+    );
+    assert_eq!(
+        fs::read(&year_file).unwrap(),
+        live_tree,
+        "the live tree was never moved aside"
+    );
+    assert!(!root.join("stray.bin").exists());
     fs::remove_dir_all(dir).unwrap();
 }
