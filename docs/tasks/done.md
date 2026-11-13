@@ -1325,3 +1325,20 @@ the UI; tests cover 2.1–2.9.
     and undo puts the old row back.
 
 **Done when:** tests cover 4.1–4.3.
+
+## M5 — Export and restore
+
+- [x] **5.1 Export, backend** (`financi-db/src/export.rs`, crates `zip`,
+  `serde_json`).
+  - **Review update (2026-11-11):** Snapshot on the reader connection or its own connection (3.77), so `VACUUM INTO` doesn't block the writer. The manifest gets an integer `format_version`; the app `VERSION` string is informational and never parsed.
+  - `export(conn, root, dest, app_version)`: run the 2.2 self-check, then
+    zip `financi.sqlite` (snapshot via `VACUUM INTO` or the backup API),
+    `manifest.json`, and the `csv/` tree copied as-is (no rebuilding).
+  - `manifest.json`: financi version (passed in by the app, from 3.39's
+    `version.rs`), schema version, exported_at, and per file:
+    account_key, institution, account name, kind, year, row count,
+    SHA-256; plus the database file's SHA-256.
+  - Tests: the zip holds the three parts; every manifest hash and row
+    count matches the file; a missing year file is rebuilt by the
+    self-check before zipping; hidden rows are in the CSVs.
+
