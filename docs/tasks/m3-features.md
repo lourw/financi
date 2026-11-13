@@ -129,6 +129,68 @@ Start these only after both queues are done (`docs/tasks.md` → *Picking the ne
     Update the *Dashboard* row and *Interaction* section of
     `ui-conventions.md` (filters are global; Clear all).
 
+- [ ] **3.93 Monthly stacked bar chart.** A new chart panel showing
+  the *Monthly summary* as a picture: one bar per month, split into
+  category segments, so the user can see how each month's spending
+  divides up (user request, 2026-11-12). It comes after 3.46 so it
+  joins the finished global filter model. It needs no new data or query.
+  - **Data:** `MonthlySummary`, which is already loaded
+    (`self.dashboard.summary`). Months are the columns (`months`). The
+    segments are the parent spend rows: one per parent category, plus
+    `Uncategorized`, plus `Transfers` when transfers are included. Leave
+    out the `Income`, `Spend` and `Net` rows and all child rows. Show
+    positive spend, like the other charts (ui-conventions → *Money*). A
+    month's bar height is that month's `Spend` row, so the bar's total
+    matches the summary. When the chart is drilled into a parent (3.5),
+    the segments become that parent's children and the bar height
+    becomes the parent's row. Put the GPUI-free shaping in a function
+    `monthly_stacks(&MonthlySummary, drill: Option<i64>) ->
+    Vec<MonthStack { month, total, segments: Vec<(Option<i64>, name,
+    cents)> }>` with unit tests.
+  - **Drawing:** gpui-kit 0.9's `BarChart` is single-series and can't
+    stack, so build a small `StackedBarChart` in `widgets.rs` from plain
+    divs, not a canvas. Each month is a column whose height is
+    `total / max_total` of the plot height. Each segment is a div sized
+    by its share of that month and filled with its category color from
+    `category_colors` (Uncategorized is `muted_foreground`). Keep the
+    segment order the same in every bar (largest total over the range at
+    the bottom, matching the summary's row order) so colors line up from
+    month to month. Show the month label under each bar (`Sep 2026`,
+    thinned with `band_label_budget` when the bars are narrow), a few
+    value gridlines with compact amounts on the left axis, and no labels
+    inside segments. Zero-spend months keep an empty slot. Name the chart
+    after its gpui-kit siblings so it can be upstreamed later.
+  - **Panel:** *Monthly spending by category*, full width, 340 px. It
+    sits in the scrolling dashboard (3.45) between the *Spending by
+    category* chart and the *Monthly summary*, directly above the table
+    it pictures. Below it goes the same chip legend as 3.36 (two lines
+    at most, "+N more"). Empty, loading and error states follow
+    ui-conventions → *States* for Chart / summary.
+  - **Interaction** (same model as a summary cell): hovering a segment
+    shows a tooltip `Shopping · Oct 2026` over `$412.30 · 22.4%` (share
+    of that month). Clicking a segment selects that category and month,
+    exactly like `click_summary_cell`. Clicking the month label selects
+    the month alone (3.46's month-heading behaviour). Clicking a legend
+    chip selects the category. Selection shows the way 3.46 shows it on
+    the bar chart: unselected segments dim to about 35 % and the selected
+    month's column gets a `list_hover` tint. Every dashboard filter
+    narrows this chart too, because it reads the same summary.
+  - **Many months:** with more months than fit at a 12 px minimum bar
+    width, the plot scrolls sideways and starts at the latest month,
+    like the summary's month scroll (a separate handle is fine).
+  - Tests: `monthly_stacks` unit tests (segments sum to the `Spend` row
+    for each month; Income, Net and child rows are excluded; drilling
+    swaps in children; Transfers appears only when included; the order
+    is stable across months). UI tests in `ui/tests/dashboard*`: the
+    panel paints between the chart and the summary at full width; with
+    3 months of seed data there are 3 bars, and the tallest month's bar
+    fills the plot height; clicking a segment sets the category and
+    month selection and filters the table; clicking a month label
+    selects the month alone; a selected category dims the other
+    segments; an empty range shows "No spending in this range". Add the
+    panel to the *Dashboard* row of `ui-conventions.md` and add a
+    `StackedBarChart` entry under *Components*.
+
 ## Lane B — Categories and Rules pages (after both queues)
 
 - [ ] **3.58 A cleaner Rules page with totals.** The Rules page (3.28)

@@ -71,7 +71,7 @@ worktree from the current `main`.
      3.88; 3.84 needs 3.64. If the next UI task is blocked, the slot takes
      the next backend task.
 2. **Then the feature lanes** (`docs/tasks/m3-features.md`), one task from each of two lanes at a time:
-   - **Lane A, dashboard:** 3.36 → 3.45 → 3.46.
+   - **Lane A, dashboard:** 3.36 → 3.45 → 3.46 → 3.93.
    - **Lane B, Categories and Rules:** 3.58 → 3.48 → 3.50 + 3.51 (one
      branch) → 3.49 → 3.43 → 3.60 → 3.52 → 3.47 + 3.54 (one branch).
    - **Lane C, small tasks:** 3.63 → 3.37 → 3.61 → 3.59 (after 3.51 and
