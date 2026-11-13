@@ -1,7 +1,9 @@
 //! Import pipeline tests through the real Amex parser.
 
 use financi_core::{AccountKind, CategoryKind, RawFile, StatementParser, read_raw_file};
-use financi_db::categories::{card_payment_category, create_child, create_parent};
+use financi_db::categories::{
+    between_accounts_category, card_payment_category, create_child, create_parent,
+};
 use financi_db::import::{
     CommitOptions, ImportError, ImportOutcome, commit_import, list_transactions, plan_import,
     undo_last_import,
@@ -721,6 +723,67 @@ fn undoing_a_paired_import_releases_the_surviving_partner() {
         "the released debit pairs with the new payment"
     );
     assert_eq!(stored(&conn, "BILL PAYMENT AMEX").0, Some(card_payment));
+}
+
+#[test]
+fn undo_re_runs_pairing_and_drops_stale_reviews() {
+    let mut conn = open_in_memory().unwrap();
+    let alpha = create_account(&conn, "simplii", "Alpha", AccountKind::Chequing).unwrap();
+    let beta = create_account(&conn, "simplii", "Beta", AccountKind::Chequing).unwrap();
+    let gamma = create_account(&conn, "simplii", "Gamma", AccountKind::Chequing).unwrap();
+
+    // Two transfer credits…
+    import_simplii(
+        &mut conn,
+        beta,
+        &simplii_csv(&["10/27/2026,TRANSFER IN,,1500.00"]),
+    );
+    import_simplii(
+        &mut conn,
+        gamma,
+        &simplii_csv(&["10/28/2026,TRANSFER IN,,1500.00"]),
+    );
+    // …and one debit ambiguous between them: a review, no pair.
+    import_simplii(
+        &mut conn,
+        alpha,
+        &simplii_csv(&["10/26/2026,TRANSFER OUT,1500.00,"]),
+    );
+    let n: i64 = conn
+        .query_row("SELECT COUNT(*) FROM transfer_reviews", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(n, 1, "the debit is ambiguous while both credits exist");
+
+    // Undoing Beta's import deletes one credit. Pairing runs at the end of
+    // the undo (3.69): the debit pairs with the surviving credit at once,
+    // and no review is left pointing at the deleted row.
+    undo_last_import(&mut conn, beta).unwrap().unwrap();
+    let gamma_row: i64 = conn
+        .query_row(
+            "SELECT id FROM transactions WHERE account_id = ?1",
+            [gamma],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let pair: Option<i64> = conn
+        .query_row(
+            "SELECT transfer_pair_id FROM transactions
+              WHERE description_raw = 'TRANSFER OUT'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        pair,
+        Some(gamma_row),
+        "the pair forms at undo, not next import"
+    );
+    let between = between_accounts_category(&conn).unwrap();
+    assert_eq!(stored(&conn, "TRANSFER OUT").0, Some(between));
+    let n: i64 = conn
+        .query_row("SELECT COUNT(*) FROM transfer_reviews", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(n, 0, "reviews are recomputed, none points at a deleted row");
 }
 
 // ---------------------------------------------------------------------------

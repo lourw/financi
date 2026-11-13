@@ -571,6 +571,10 @@ pub fn undo_last_import(
         )?;
     }
     tx.execute("DELETE FROM imports WHERE id = ?1", [import_id])?;
+    // Re-pair (3.69): partners released above may match an existing
+    // unpaired row right away, and recomputing the reviews from scratch
+    // means none is left pointing at a row this undo deleted.
+    crate::transfers::run_transfer_pairing(&tx)?;
     tx.commit()?;
     Ok(Some(UndoneImport {
         import_id,

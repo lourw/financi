@@ -6,7 +6,7 @@ Runs beside the UI queue, in the order listed. Backend only: don't read the UI d
 
 Runs beside the UI queue. 5.1 and 5.2 (in M5) follow 3.90.
 
-- [ ] **3.69 Paired transfers stay consistent.** (Code review,
+- [x] **3.69 Paired transfers stay consistent.** (Code review,
   2026-11-11.) In `financi-db` (`overrides.rs`, `transfers.rs`,
   `import.rs`):
   - **Editing one side unpairs both.** Totals exclude transfers by
