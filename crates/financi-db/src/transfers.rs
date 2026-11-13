@@ -191,8 +191,27 @@ fn write_pair(conn: &Connection, a: i64, b: i64, category_id: i64) -> Result<()>
     Ok(())
 }
 
-/// Pair every mutual singleton in `adj` (rows in id order), skipping rows
-/// `paired` already holds, and return the pairs written.
+/// The sole still-unpaired candidate of `row`, or `None` when it has none
+/// or several once rows in `paired` are removed from its list.
+fn live_only(
+    adj: &HashMap<i64, Vec<i64>>,
+    paired: &std::collections::BTreeSet<i64>,
+    row: i64,
+) -> Option<i64> {
+    let mut rest = adj.get(&row)?.iter().filter(|c| !paired.contains(c));
+    let only = *rest.next()?;
+    rest.next().is_none().then_some(only)
+}
+
+/// One pass of pairing every mutual singleton in `adj`, rows in id order,
+/// skipping rows `paired` already holds, and return the pairs written.
+///
+/// Mutual-singleton is judged against the *live* candidates: rows not yet
+/// paired this run, in either kind. A pass alone does not settle — a pair
+/// it writes can free a mutual singleton under the *other* rule — so
+/// [`run_transfer_pairing`] repeats the passes until nothing changes.
+/// Rows are visited in id order, so a pass never depends on HashMap
+/// iteration.
 fn pair_mutuals(
     conn: &Connection,
     adj: &HashMap<i64, Vec<i64>>,
@@ -206,12 +225,11 @@ fn pair_mutuals(
         if paired.contains(&id) {
             continue;
         }
-        // Mutual singleton: my only candidate, and I am theirs.
-        let Some([other]) = adj.get(&id).map(Vec::as_slice) else {
+        // Mutual singleton: my only live candidate, and I am theirs.
+        let Some(other) = live_only(adj, paired, id) else {
             continue;
         };
-        let other = *other;
-        if paired.contains(&other) || adj.get(&other).map(Vec::as_slice) != Some(&[id][..]) {
+        if live_only(adj, paired, other) != Some(id) {
             continue;
         }
         write_pair(conn, id, other, category_id)?;
@@ -308,8 +326,6 @@ pub fn run_transfer_pairing(conn: &Connection) -> Result<PairingSummary> {
             && credit.category_id == Some(card_payment)
             && within(debit.posted, credit.posted, CARD_PAYMENT_WINDOW_DAYS)
     });
-    summary.paired += pair_mutuals(conn, &card_adj, card_payment, &mut paired)?;
-
     // Own-account transfers: two different chequing/savings accounts,
     // ∓X, at least one description containing TRANSFER (case-insensitive).
     let own_adj = adjacency(
@@ -331,7 +347,18 @@ pub fn run_transfer_pairing(conn: &Connection) -> Result<PairingSummary> {
                 && within(debit.posted, credit.posted, OWN_ACCOUNT_WINDOW_DAYS)
         },
     );
-    summary.paired += pair_mutuals(conn, &own_adj, between_accounts, &mut paired)?;
+    // Settle: a pair under one rule can free a mutual singleton under
+    // either rule (3.69), so alternate passes until one changes nothing.
+    // Adjacencies are fixed, `paired` only grows, and each accepted pair
+    // adds two rows to it, so the loop terminates.
+    loop {
+        let before = paired.len();
+        summary.paired += pair_mutuals(conn, &card_adj, card_payment, &mut paired)?;
+        summary.paired += pair_mutuals(conn, &own_adj, between_accounts, &mut paired)?;
+        if paired.len() == before {
+            break;
+        }
+    }
 
     // Ambiguity: anything still unpaired with several candidates asks the
     // user — one review per row across both kinds (card first, then
@@ -365,7 +392,10 @@ pub struct TransferReview {
 
 /// Open transfer reviews, oldest transaction first. Reviews whose row was
 /// paired or excluded by another path are dropped (and disappear from the
-/// table) rather than shown.
+/// table) rather than shown, as are reviews left with fewer than two live
+/// candidates (3.69): a candidate that was paired, excluded or deleted
+/// since the review was written stops being offered, and one candidate
+/// left asks nothing.
 pub fn list_transfer_reviews(conn: &Connection) -> Result<Vec<TransferReview>> {
     let mut stmt = conn.prepare(
         "SELECT r.transaction_id, t.account_id, t.posted_date, t.description_raw,
@@ -424,6 +454,9 @@ pub fn list_transfer_reviews(conn: &Connection) -> Result<Vec<TransferReview>> {
             ) {
                 candidates.push(c);
             }
+        }
+        if candidates.len() < 2 {
+            continue;
         }
         out.push(TransferReview {
             transaction_id,
@@ -501,7 +534,8 @@ pub fn resolve_transfer_review(
 
 /// The category the pair `a`/`b` gets, or `None` when they cannot pair:
 /// both rows must exist, still be unpaired and not excluded, and be either
-/// a credit-card/chequing pair (Card Payment) or two different
+/// exactly one credit-card and one chequing row (Card Payment — two card
+/// rows, e.g. offered by a stale review, never pair, 3.69) or two different
 /// chequing/savings accounts (Between Accounts).
 fn pair_categories_for(conn: &Connection, a: i64, b: i64) -> Option<i64> {
     let kinds = |id: i64| -> Option<(String, i64, Option<i64>, bool)> {
@@ -519,8 +553,9 @@ fn pair_categories_for(conn: &Connection, a: i64, b: i64) -> Option<i64> {
     if a_pair.is_some() || b_pair.is_some() || a_excluded || b_excluded {
         return None;
     }
-    let is_card = a_kind == "credit_card" || b_kind == "credit_card";
-    if is_card {
+    let card = |k: &str| k == "credit_card";
+    let cheq = |k: &str| k == "chequing";
+    if (card(&a_kind) && cheq(&b_kind)) || (cheq(&a_kind) && card(&b_kind)) {
         Some(card_payment_category(conn).ok()?)
     } else {
         let own = |k: &str| matches!(k, "chequing" | "savings");
@@ -536,7 +571,9 @@ fn pair_categories_for(conn: &Connection, a: i64, b: i64) -> Option<i64> {
 /// sides, re-apply the rules to each row (the [`clear_override`] path from
 /// 2.6: a credit-card row goes back to its locked `Card Payment`, every
 /// other row takes its winning rule or becomes Uncategorized again), and
-/// exclude both sides so the next import never re-pairs them.
+/// exclude both sides so the next import never re-pairs them. A side whose
+/// category is no longer transfer-kind — one the user recategorized by
+/// hand — keeps that manual choice instead (3.69).
 pub fn unpair_transaction(conn: &mut Connection, transaction_id: i64) -> Result<()> {
     let tx = conn.transaction()?;
     let partner: Option<i64> = tx
@@ -556,7 +593,20 @@ pub fn unpair_transaction(conn: &mut Connection, transaction_id: i64) -> Result<
               WHERE id = ?1",
             [row],
         )?;
-        clear_override(&tx, row)?;
+        // Only a side still carrying a transfer-kind category goes back to
+        // the rules (3.69): one the user recategorized by hand keeps its
+        // manual category and its lock.
+        let transfer_kind: bool = tx.query_row(
+            "SELECT EXISTS (
+               SELECT 1 FROM transactions t
+                 JOIN categories c ON c.id = t.category_id
+                WHERE t.id = ?1 AND c.kind = 'transfer')",
+            [row],
+            |r| r.get(0),
+        )?;
+        if transfer_kind {
+            clear_override(&tx, row)?;
+        }
     }
     run_transfer_pairing(&tx)?;
     tx.commit()?;
@@ -1092,6 +1142,30 @@ mod tests {
     }
 
     #[test]
+    fn resolve_refuses_a_stale_review_pairing_two_card_rows() {
+        let conn = open_in_memory().unwrap();
+        let card = credit(&conn, "Cobalt");
+        let c1 = card_payment_row(&conn, card, "2026-10-25", 150_000);
+        let c2 = card_payment_row(&conn, card, "2026-10-28", 150_000);
+        // A review the engine would never write today (both sides are
+        // credit-card rows) left over from an earlier state: resolving it
+        // must not produce a Card Payment pair of two card rows (3.69).
+        conn.execute(
+            "INSERT INTO transfer_reviews (transaction_id, candidate_ids) VALUES (?1, ?2)",
+            (c1, c2.to_string()),
+        )
+        .unwrap();
+
+        let mut conn = conn;
+        assert!(matches!(
+            resolve_transfer_review(&mut conn, c1, Some(c2)).unwrap_err(),
+            DbError::NotTransferCandidate { .. }
+        ));
+        assert_eq!(state(&conn, c1).0, None, "nothing is written");
+        assert_eq!(state(&conn, c2).0, None);
+    }
+
+    #[test]
     fn unpair_clears_both_sides_and_reapplies_rules() {
         let conn = open_in_memory().unwrap();
         let (cheq, card) = (chequing(&conn, "Chequing"), credit(&conn, "Cobalt"));
@@ -1122,6 +1196,49 @@ mod tests {
         // And never re-paired by a later run.
         run_transfer_pairing(&conn).unwrap();
         assert_eq!(state(&conn, debit).0, None);
+    }
+
+    #[test]
+    fn unpair_keeps_a_manually_recategorized_side() {
+        let conn = open_in_memory().unwrap();
+        let (cheq, card) = (chequing(&conn, "Chequing"), credit(&conn, "Cobalt"));
+        let rent = {
+            use crate::categories::{create_child, create_parent};
+            let parent =
+                create_parent(&conn, "Bills", financi_core::CategoryKind::Expense).unwrap();
+            create_child(&conn, parent, "Rent").unwrap()
+        };
+        let debit = row(
+            &conn,
+            cheq,
+            "2026-10-26",
+            -150_000,
+            "CREDIT CARD PAYMENT",
+            None,
+        );
+        let credit_row = card_payment_row(&conn, card, "2026-10-25", 150_000);
+        run_transfer_pairing(&conn).unwrap();
+        // A database written before 3.69: the debit side was recategorized
+        // by hand while its link stayed.
+        conn.execute(
+            "UPDATE transactions SET category_id = ?1, category_locked = 1 WHERE id = ?2",
+            (rent, debit),
+        )
+        .unwrap();
+
+        let mut conn = conn;
+        unpair_transaction(&mut conn, credit_row).unwrap();
+        assert_eq!(
+            state(&conn, debit),
+            (None, Some(rent), true, true),
+            "the manual category and its lock survive the unpair"
+        );
+        let card_payment = card_payment_category(&conn).unwrap();
+        assert_eq!(
+            state(&conn, credit_row),
+            (None, Some(card_payment), true, true),
+            "the still-transfer-kind side goes back under the rules"
+        );
     }
 
     #[test]
@@ -1273,6 +1390,87 @@ mod tests {
     }
 
     #[test]
+    fn pairing_settles_when_a_row_loses_its_only_competitor() {
+        let conn = open_in_memory().unwrap();
+        let (cheq, card, sav) = (
+            chequing(&conn, "Chequing"),
+            credit(&conn, "Cobalt"),
+            savings(&conn, "Savings"),
+        );
+        // X pairs with the card payment C (mutual singletons). The savings
+        // credit S competes for X under the own-account rule — and X is M's
+        // only competitor too. Once X pairs in the card pass, S and M are
+        // mutual singletons and must pair within the same run (3.69), not
+        // sit unpaired with no review.
+        let x = row(
+            &conn,
+            cheq,
+            "2026-10-28",
+            -150_000,
+            "TRANSFER PAYMENT",
+            None,
+        );
+        let c = card_payment_row(&conn, card, "2026-10-25", 150_000);
+        let s = row(&conn, sav, "2026-10-30", 150_000, "TRANSFER IN", None);
+        let m = row(&conn, cheq, "2026-11-01", -150_000, "TRANSFER OUT", None);
+
+        let out = run_transfer_pairing(&conn).unwrap();
+        assert_eq!(out.paired, 2, "the X–C pair settles the S–M pair");
+        assert_eq!(out.reviews, 0);
+        assert_eq!(state(&conn, x).0, Some(c));
+        assert_eq!(state(&conn, m).0, Some(s), "S and M paired in the same run");
+        let between = crate::categories::between_accounts_category(&conn).unwrap();
+        assert_eq!(state(&conn, s).1, Some(between));
+        assert_eq!(state(&conn, m).1, Some(between));
+    }
+
+    #[test]
+    fn pairing_settles_across_kinds_in_both_directions() {
+        let conn = open_in_memory().unwrap();
+        let (cheq, card, sav) = (
+            chequing(&conn, "Chequing"),
+            credit(&conn, "Cobalt"),
+            savings(&conn, "Savings"),
+        );
+        // The own-account pass pairs D1 with the savings credit S, and
+        // that frees a *card* mutual singleton: with D1 gone from the
+        // pool, the card payment C and the 10-30 debit D2 (5 days apart,
+        // inside the card window) are each other's only live candidate.
+        // The card pass already ran, so only a cross-kind settle pairs
+        // them in the same run (3.69) — otherwise C stays hidden as a
+        // transfer and D2 counts as spending, with no review.
+        let c = card_payment_row(&conn, card, "2026-10-25", 150_000);
+        let d1 = row(
+            &conn,
+            cheq,
+            "2026-10-26",
+            -150_000,
+            "CREDIT CARD PAYMENT",
+            None,
+        );
+        let s = row(&conn, sav, "2026-10-27", 150_000, "TRANSFER IN", None);
+        let d2 = row(
+            &conn,
+            cheq,
+            "2026-10-30",
+            -150_000,
+            "CREDIT CARD PAYMENT",
+            None,
+        );
+
+        let out = run_transfer_pairing(&conn).unwrap();
+        assert_eq!(
+            out.paired, 2,
+            "the own pair frees a card pair in the same run"
+        );
+        assert_eq!(out.reviews, 0);
+        assert_eq!(state(&conn, d1).0, Some(s));
+        assert_eq!(state(&conn, d2).0, Some(c), "the freed mutual pairs");
+        let card_payment = card_payment_category(&conn).unwrap();
+        assert_eq!(state(&conn, d2).1, Some(card_payment));
+    }
+
+    #[test]
     fn resolving_frees_a_mutual_singleton_elsewhere() {
         let conn = open_in_memory().unwrap();
         let (cheq, card) = (chequing(&conn, "Chequing"), credit(&conn, "Cobalt"));
@@ -1305,6 +1503,44 @@ mod tests {
         let mut conn = conn;
         resolve_transfer_review(&mut conn, d1, None).unwrap();
         assert!(reviews(&conn).is_empty());
+    }
+
+    #[test]
+    fn list_reviews_drops_reviews_below_two_live_candidates() {
+        let conn = open_in_memory().unwrap();
+        let (cheq, card) = (chequing(&conn, "Chequing"), credit(&conn, "Cobalt"));
+        let debit = row(
+            &conn,
+            cheq,
+            "2026-10-26",
+            -150_000,
+            "CREDIT CARD PAYMENT",
+            None,
+        );
+        let c1 = card_payment_row(&conn, card, "2026-10-25", 150_000);
+        let c2 = card_payment_row(&conn, card, "2026-10-28", 150_000);
+        run_transfer_pairing(&conn).unwrap();
+        assert_eq!(list_transfer_reviews(&conn).unwrap().len(), 1);
+        assert_eq!(
+            list_transfer_reviews(&conn).unwrap()[0].transaction_id,
+            debit
+        );
+
+        // One candidate excluded: a single live candidate left asks
+        // nothing (3.69)…
+        conn.execute(
+            "UPDATE transactions SET transfer_excluded = 1 WHERE id = ?1",
+            [c1],
+        )
+        .unwrap();
+        assert!(
+            list_transfer_reviews(&conn).unwrap().is_empty(),
+            "fewer than two live candidates: dropped, never shown"
+        );
+        // …and neither does a review whose candidate was deleted.
+        conn.execute("DELETE FROM transactions WHERE id = ?1", [c2])
+            .unwrap();
+        assert!(list_transfer_reviews(&conn).unwrap().is_empty());
     }
 
     #[test]

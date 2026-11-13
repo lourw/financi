@@ -65,15 +65,36 @@ fn fetch_row(conn: &Connection, transaction_id: i64) -> Result<StoredRow> {
 /// touch the row again (see [`crate::rules::reapply_rules`]). Refuses
 /// parent categories and unknown transactions. Setting the same category
 /// again is fine and (re)locks the row.
+///
+/// Editing one side of a transfer pair unpairs both (3.69): totals exclude
+/// transfers by category kind, so a recategorized side counts as spending
+/// while its partner still hides as a transfer. The edited row keeps its
+/// manual category and lock; the partner is released the way [`clear_override`]
+/// releases an unpaired row — back under the rules (a credit-card payment
+/// row keeps its locked `Card Payment`).
 pub fn set_category(conn: &Connection, transaction_id: i64, category_id: i64) -> Result<()> {
     ensure_assignable(conn, category_id)?;
-    let updated = conn.execute(
+    let tx = conn.unchecked_transaction()?;
+    let partner: Option<i64> = tx
+        .query_row(
+            "SELECT transfer_pair_id FROM transactions WHERE id = ?1",
+            [transaction_id],
+            |r| r.get(0),
+        )
+        .optional()?
+        .ok_or(DbError::UnknownTransaction(transaction_id))?;
+    tx.execute(
         "UPDATE transactions SET category_id = ?1, category_locked = 1 WHERE id = ?2",
         (category_id, transaction_id),
     )?;
-    if updated == 0 {
-        return Err(DbError::UnknownTransaction(transaction_id));
+    if let Some(partner) = partner {
+        tx.execute(
+            "UPDATE transactions SET transfer_pair_id = NULL WHERE id IN (?1, ?2)",
+            (transaction_id, partner),
+        )?;
+        clear_override(&tx, partner)?;
     }
+    tx.commit()?;
     Ok(())
 }
 
@@ -236,6 +257,63 @@ mod tests {
         .unwrap()
     }
 
+    /// A stored row on a given account with explicit date/amount/
+    /// description, category and lock (for pairing tests).
+    fn add_row(
+        conn: &Connection,
+        account: i64,
+        posted: &str,
+        amount_cents: i64,
+        description: &str,
+        category_id: Option<i64>,
+        locked: bool,
+    ) -> i64 {
+        conn.execute(
+            "INSERT INTO imports (account_id, parser_id, file_name, imported_at, header_raw,
+                                  encoding, has_bom, line_ending, trailing_newline, row_count)
+             VALUES (?1, 'amex', 'activity.csv', '2026-11-01', X'00', 'utf-8', 0, 'lf', 0, 1)",
+            [account],
+        )
+        .unwrap();
+        let import = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO transactions (account_id, import_id, source_line, raw_bytes, row_hash,
+                                       posted_date, amount_cents, description_raw,
+                                       category_id, category_locked)
+             VALUES (?1, ?2, 0, X'00', ?3, ?4, ?5, ?6, ?7, ?8)",
+            (
+                account,
+                import,
+                uuid::Uuid::new_v4().to_string(),
+                posted,
+                amount_cents,
+                description,
+                category_id,
+                locked,
+            ),
+        )
+        .unwrap();
+        conn.last_insert_rowid()
+    }
+
+    fn pair_of(conn: &Connection, id: i64) -> Option<i64> {
+        conn.query_row(
+            "SELECT transfer_pair_id FROM transactions WHERE id = ?1",
+            [id],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    fn excluded(conn: &Connection, id: i64) -> bool {
+        conn.query_row(
+            "SELECT transfer_excluded FROM transactions WHERE id = ?1",
+            [id],
+            |r| r.get::<_, bool>(0),
+        )
+        .unwrap()
+    }
+
     #[test]
     fn set_category_assigns_and_locks_against_rules() {
         let conn = open_in_memory().unwrap();
@@ -293,6 +371,94 @@ mod tests {
             row_state(&conn, id),
             (None, false),
             "refusals change nothing"
+        );
+    }
+
+    #[test]
+    fn set_category_on_a_paired_row_unpairs_both_sides() {
+        let conn = open_in_memory().unwrap();
+        let cheq = crate::create_account(&conn, "amex", "Chequing", AccountKind::Chequing).unwrap();
+        let sav = crate::create_account(&conn, "amex", "Savings", AccountKind::Savings).unwrap();
+        let debit = add_row(
+            &conn,
+            cheq,
+            "2026-11-02",
+            -200_000,
+            "TRANSFER TO SAVINGS",
+            None,
+            false,
+        );
+        let credit_row = add_row(
+            &conn,
+            sav,
+            "2026-11-02",
+            200_000,
+            "TRANSFER FROM CHEQUING",
+            None,
+            false,
+        );
+        crate::transfers::run_transfer_pairing(&conn).unwrap();
+        assert_eq!(pair_of(&conn, debit), Some(credit_row));
+
+        let ruled = child_category(&conn, "Interest");
+        crate::rules::add_rule(&conn, "FROM", false, ruled).unwrap();
+        let rent = child_category(&conn, "Rent");
+        set_category(&conn, debit, rent).unwrap();
+
+        assert_eq!(pair_of(&conn, debit), None, "the edited row is unpaired");
+        assert_eq!(pair_of(&conn, credit_row), None, "and so is its partner");
+        assert_eq!(
+            row_state(&conn, debit),
+            (Some(rent), true),
+            "the edited row keeps its manual category, locked"
+        );
+        assert_eq!(
+            row_state(&conn, credit_row),
+            (Some(ruled), false),
+            "the partner is unlocked and rules re-run on it"
+        );
+        assert!(
+            !excluded(&conn, debit) && !excluded(&conn, credit_row),
+            "neither side is excluded: the partner may pair again"
+        );
+    }
+
+    #[test]
+    fn set_category_on_a_paired_side_restores_a_card_payment_partner() {
+        let conn = open_in_memory().unwrap();
+        let cheq = crate::create_account(&conn, "amex", "Chequing", AccountKind::Chequing).unwrap();
+        let card = crate::create_account(&conn, "amex", "Cobalt", AccountKind::CreditCard).unwrap();
+        let card_payment = card_payment_category(&conn).unwrap();
+        let debit = add_row(
+            &conn,
+            cheq,
+            "2026-10-26",
+            -150_000,
+            "CREDIT CARD PAYMENT",
+            None,
+            false,
+        );
+        let credit_row = add_row(
+            &conn,
+            card,
+            "2026-10-25",
+            150_000,
+            "PAYMENT RECEIVED - THANK YOU",
+            Some(card_payment),
+            true,
+        );
+        crate::transfers::run_transfer_pairing(&conn).unwrap();
+        assert_eq!(pair_of(&conn, debit), Some(credit_row));
+
+        let rent = child_category(&conn, "Rent");
+        set_category(&conn, debit, rent).unwrap();
+
+        assert_eq!(pair_of(&conn, debit), None);
+        assert_eq!(pair_of(&conn, credit_row), None);
+        assert_eq!(
+            row_state(&conn, credit_row),
+            (Some(card_payment), true),
+            "clear_override restores the built-in Card Payment, still locked"
         );
     }
 
