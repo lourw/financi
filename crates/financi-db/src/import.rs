@@ -182,10 +182,13 @@ pub fn plan_import(
 
     let total_rows = rows.len();
     let date_range = date_range(&rows);
+    // Every hash the file carries, reconciled or new: the near-match review
+    // skips existing rows the file still holds unchanged (3.68).
+    let file_hashes: HashSet<String> = rows.iter().map(|r| r.row_hash.0.clone()).collect();
     let new_rows = reconcile(rows, &existing_hash_counts(conn, account.id)?);
     let already_present = total_rows - new_rows.len();
     let overlap = other_account_overlap(conn, &account, parser, file)?;
-    let near_matches = find_near_matches(conn, account.id, &new_rows)?;
+    let near_matches = find_near_matches(conn, account.id, &new_rows, &file_hashes, file)?;
 
     Ok(ImportPlan {
         account,
@@ -329,8 +332,8 @@ pub fn commit_import(
 
 /// Apply one confirmed near-match (4.3): keep the existing transaction's id
 /// and category (and its import), overwrite its date/amount/description/
-/// merchant/raw bytes/`row_hash` with the new row's, add the old hash to
-/// `row_aliases` under the new import — so later overlapping exports
+/// merchant/raw bytes/`row_hash`/FX columns with the new row's, add the old
+/// hash to `row_aliases` under the new import — so later overlapping exports
 /// reconcile against it silently — and record the old values in
 /// `replacements` so undo can restore them. Returns the old posted date.
 fn apply_replacement(
@@ -339,57 +342,66 @@ fn apply_replacement(
     row: &PreparedRow,
     existing_id: i64,
 ) -> Result<String, ImportError> {
-    let old: (
-        Vec<u8>,
-        String,
-        String,
-        Option<String>,
-        i64,
-        String,
-        Option<String>,
-    ) = tx.query_row(
+    struct OldValues {
+        raw_bytes: Vec<u8>,
+        row_hash: String,
+        posted_date: String,
+        processed_date: Option<String>,
+        amount_cents: i64,
+        description_raw: String,
+        merchant: Option<String>,
+        original_currency: Option<String>,
+        original_amount_cents: Option<i64>,
+    }
+    let old: OldValues = tx.query_row(
         "SELECT raw_bytes, row_hash, posted_date, processed_date, amount_cents,
-                description_raw, merchant
+                description_raw, merchant, original_currency, original_amount_cents
            FROM transactions WHERE id = ?1",
         [existing_id],
         |r| {
-            Ok((
-                r.get(0)?,
-                r.get(1)?,
-                r.get(2)?,
-                r.get(3)?,
-                r.get(4)?,
-                r.get(5)?,
-                r.get(6)?,
-            ))
+            Ok(OldValues {
+                raw_bytes: r.get(0)?,
+                row_hash: r.get(1)?,
+                posted_date: r.get(2)?,
+                processed_date: r.get(3)?,
+                amount_cents: r.get(4)?,
+                description_raw: r.get(5)?,
+                merchant: r.get(6)?,
+                original_currency: r.get(7)?,
+                original_amount_cents: r.get(8)?,
+            })
         },
     )?;
     tx.execute(
         "INSERT INTO replacements
            (import_id, transaction_id, old_raw_bytes, old_row_hash, old_posted_date,
-            old_processed_date, old_amount_cents, old_description_raw, old_merchant)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            old_processed_date, old_amount_cents, old_description_raw, old_merchant,
+            old_original_currency, old_original_amount_cents)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         params![
             import_id,
             existing_id,
-            old.0,
-            old.1,
-            old.2,
-            old.3,
-            old.4,
-            old.5,
-            old.6
+            old.raw_bytes,
+            old.row_hash,
+            old.posted_date,
+            old.processed_date,
+            old.amount_cents,
+            old.description_raw,
+            old.merchant,
+            old.original_currency,
+            old.original_amount_cents,
         ],
     )?;
     tx.execute(
         "INSERT INTO row_aliases (transaction_id, row_hash, import_id) VALUES (?1, ?2, ?3)",
-        params![existing_id, old.1, import_id],
+        params![existing_id, old.row_hash, import_id],
     )?;
     let t = &row.txn;
     tx.execute(
         "UPDATE transactions
             SET posted_date = ?2, processed_date = ?3, amount_cents = ?4,
-                description_raw = ?5, merchant = ?6, raw_bytes = ?7, row_hash = ?8
+                description_raw = ?5, merchant = ?6, raw_bytes = ?7, row_hash = ?8,
+                original_currency = ?9, original_amount_cents = ?10
           WHERE id = ?1",
         params![
             existing_id,
@@ -400,9 +412,11 @@ fn apply_replacement(
             t.merchant,
             row.raw_bytes,
             row.row_hash.0,
+            t.original_currency,
+            t.original_amount_cents,
         ],
     )?;
-    Ok(old.2)
+    Ok(old.posted_date)
 }
 
 /// The `(category_id, category_locked)` pair for each new row, in order.
@@ -501,12 +515,15 @@ pub fn undo_last_import(
         old_amount_cents: i64,
         old_description_raw: String,
         old_merchant: Option<String>,
+        old_original_currency: Option<String>,
+        old_original_amount_cents: Option<i64>,
     }
     let replacements: Vec<Replacement> = {
         let mut stmt = tx.prepare(
             "SELECT r.transaction_id, t.posted_date, r.old_raw_bytes, r.old_row_hash,
                     r.old_posted_date, r.old_processed_date, r.old_amount_cents,
-                    r.old_description_raw, r.old_merchant
+                    r.old_description_raw, r.old_merchant, r.old_original_currency,
+                    r.old_original_amount_cents
                FROM replacements r
                JOIN transactions t ON t.id = r.transaction_id
               WHERE r.import_id = ?1",
@@ -522,6 +539,8 @@ pub fn undo_last_import(
                 old_amount_cents: r.get(6)?,
                 old_description_raw: r.get(7)?,
                 old_merchant: r.get(8)?,
+                old_original_currency: r.get(9)?,
+                old_original_amount_cents: r.get(10)?,
             })
         })?;
         rows.collect::<Result<Vec<_>, _>>()?
@@ -534,7 +553,8 @@ pub fn undo_last_import(
         tx.execute(
             "UPDATE transactions
                 SET raw_bytes = ?2, row_hash = ?3, posted_date = ?4, processed_date = ?5,
-                    amount_cents = ?6, description_raw = ?7, merchant = ?8
+                    amount_cents = ?6, description_raw = ?7, merchant = ?8,
+                    original_currency = ?9, original_amount_cents = ?10
               WHERE id = ?1",
             params![
                 r.id,
@@ -545,6 +565,8 @@ pub fn undo_last_import(
                 r.old_amount_cents,
                 r.old_description_raw,
                 r.old_merchant,
+                r.old_original_currency,
+                r.old_original_amount_cents,
             ],
         )?;
     }
@@ -644,6 +666,23 @@ struct ExistingRow {
 /// posted date within ±3 days (both inclusive). Hidden rows (deleted) and
 /// rows whose cleaned merchant is empty (nothing to compare) never pair.
 ///
+/// Only *changed* charges pair (3.68):
+/// - an existing row whose hash — or any alias hash — appears in
+///   `file_hashes` is still in the file unchanged: a repeat purchase, not a
+///   changed charge, so it never pairs (yesterday's coffee in the same
+///   export as today's is not "Same charge?").
+/// - a replacement keeps the existing row's `import_id`, so its new bytes
+///   would be written to the master CSV under that import's header and
+///   encoding. Rows whose import variant — header bytes, encoding, BOM, the
+///   key [`crate::master_csv`] groups by — differs from `file`'s don't pair;
+///   they import as new instead.
+///
+/// The scan is bounded (3.68): only stored rows posted between the new
+/// rows' earliest date − [`NEAR_MATCH_MAX_DAYS`] and their latest date +
+/// [`NEAR_MATCH_MAX_DAYS`] can pair, each candidate's lowercased merchant
+/// is computed once, and candidates are looked up per merchant in a map
+/// instead of being rescanned for every new row.
+///
 /// Greedy and deterministic: new rows are considered in file order and each
 /// takes the best remaining candidate — nearest posted date, ties by lowest
 /// transaction id — and an existing row is never matched to two new rows.
@@ -651,35 +690,124 @@ pub fn find_near_matches(
     conn: &Connection,
     account_id: i64,
     new_rows: &[PreparedRow],
+    file_hashes: &HashSet<String>,
+    file: &RawFile,
 ) -> Result<Vec<NearMatch>, DbError> {
     if new_rows.is_empty() {
         return Ok(Vec::new());
     }
-    let mut existing: Vec<ExistingRow> = Vec::new();
+    let parse_date = |d: &str| NaiveDate::parse_from_str(d, "%Y-%m-%d").ok();
+
+    // Widest window any candidate could fall in: the new rows' date range,
+    // grown by the pairing tolerance on both sides.
+    let mut range: Option<(NaiveDate, NaiveDate)> = None;
+    for row in new_rows {
+        let Some(d) = parse_date(&row.txn.posted_date) else {
+            continue; // parser-produced dates always parse; such a row never pairs
+        };
+        range = Some(match range {
+            Some((lo, hi)) => (lo.min(d), hi.max(d)),
+            None => (d, d),
+        });
+    }
+    let tolerance = chrono::Days::new(NEAR_MATCH_MAX_DAYS as u64);
+    let Some((lo, hi)) = range.and_then(|(lo, hi)| {
+        Some((
+            lo.checked_sub_days(tolerance)?,
+            hi.checked_add_days(tolerance)?,
+        ))
+    }) else {
+        return Ok(Vec::new());
+    };
+    let (lo, hi) = (
+        lo.format("%Y-%m-%d").to_string(),
+        hi.format("%Y-%m-%d").to_string(),
+    );
+
+    // The file's master CSV variant (3.68): a replacement rewrites the
+    // existing row under its own import, so only same-variant rows pair.
+    let variant = (
+        file.header_raw.as_slice(),
+        file.encoding.as_str(),
+        file.has_bom,
+    );
+
+    // Rows the file still carries through an alias hash (a prior
+    // replacement's old hash): same exclusion as a direct hash hit.
+    let aliased_in_file: HashSet<i64> = {
+        let mut stmt = conn.prepare(
+            "SELECT a.transaction_id, a.row_hash
+               FROM row_aliases a
+               JOIN transactions t ON t.id = a.transaction_id
+              WHERE t.account_id = ?1 AND t.posted_date BETWEEN ?2 AND ?3",
+        )?;
+        let rows = stmt.query_map(params![account_id, &lo, &hi], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+        })?;
+        rows.filter_map(|row| row.ok())
+            .filter(|(_, hash)| file_hashes.contains(hash))
+            .map(|(id, _)| id)
+            .collect()
+    };
+
+    let mut by_merchant: HashMap<String, Vec<ExistingRow>> = HashMap::new();
     {
         let mut stmt = conn.prepare(
-            "SELECT id, posted_date, amount_cents, description_raw
-               FROM transactions
-              WHERE account_id = ?1 AND hidden = 0",
+            "SELECT t.id, t.posted_date, t.amount_cents, t.description_raw, t.row_hash,
+                    i.header_raw, i.encoding, i.has_bom
+               FROM transactions t
+               JOIN imports i ON i.id = t.import_id
+              WHERE t.account_id = ?1 AND t.hidden = 0
+                AND t.posted_date BETWEEN ?2 AND ?3",
         )?;
-        let rows = stmt.query_map([account_id], |r| {
-            Ok(ExistingRow {
-                id: r.get(0)?,
-                posted_date: r.get(1)?,
-                amount_cents: r.get(2)?,
-                description_raw: r.get(3)?,
-            })
+        let rows = stmt.query_map(params![account_id, &lo, &hi], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, i64>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, Vec<u8>>(5)?,
+                r.get::<_, String>(6)?,
+                r.get::<_, bool>(7)?,
+            ))
         })?;
         for row in rows {
-            existing.push(row?);
+            let (
+                id,
+                posted_date,
+                amount_cents,
+                description_raw,
+                row_hash,
+                header_raw,
+                encoding,
+                has_bom,
+            ) = row?;
+            if file_hashes.contains(&row_hash) || aliased_in_file.contains(&id) {
+                continue; // still in the file unchanged: a repeat purchase
+            }
+            if (header_raw.as_slice(), encoding.as_str(), has_bom) != variant {
+                continue; // the replacement would corrupt the old import's CSV
+            }
+            // Lowercased once per row (3.68). ASCII folding matches the
+            // previous `eq_ignore_ascii_case` comparison exactly.
+            let merchant = parse::merchant(&description_raw).to_ascii_lowercase();
+            if merchant.is_empty() {
+                continue;
+            }
+            by_merchant.entry(merchant).or_default().push(ExistingRow {
+                id,
+                posted_date,
+                amount_cents,
+                description_raw,
+            });
         }
     }
 
-    let parse_date = |d: &str| NaiveDate::parse_from_str(d, "%Y-%m-%d").ok();
     let mut taken: HashSet<i64> = HashSet::new();
     let mut matches = Vec::new();
     for (ix, row) in new_rows.iter().enumerate() {
-        let merchant = parse::merchant(&row.txn.description_raw);
+        let merchant = parse::merchant(&row.txn.description_raw).to_ascii_lowercase();
         // Parser-produced dates always parse; skip rather than panic.
         let Some(new_date) = parse_date(&row.txn.posted_date) else {
             continue;
@@ -688,12 +816,8 @@ pub fn find_near_matches(
             continue;
         }
         let mut best: Option<(i64, i64, &ExistingRow)> = None; // (|days|, id, row)
-        for e in &existing {
-            if taken.contains(&e.id)
-                || !amount_near(row.txn.amount_cents, e.amount_cents)
-                || parse::merchant(&e.description_raw).is_empty()
-                || !parse::merchant(&e.description_raw).eq_ignore_ascii_case(&merchant)
-            {
+        for e in by_merchant.get(&merchant).map_or(&[][..], Vec::as_slice) {
+            if taken.contains(&e.id) || !amount_near(row.txn.amount_cents, e.amount_cents) {
                 continue;
             }
             let Some(days) = parse_date(&e.posted_date).map(|d| (new_date - d).num_days().abs())

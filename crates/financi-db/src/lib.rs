@@ -133,6 +133,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0003_transfers.sql"),
     include_str!("../migrations/0004_replacements.sql"),
     include_str!("../migrations/0005_perf_indexes.sql"),
+    include_str!("../migrations/0006_replacement_fx.sql"),
 ];
 
 pub const SCHEMA_VERSION: u32 = MIGRATIONS.len() as u32;
