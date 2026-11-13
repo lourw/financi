@@ -4,7 +4,9 @@
 use chrono::Datelike;
 use std::path::Path;
 
-use financi_core::{AccountKind, RawFile, ReadError, StatementParser, read_raw_file};
+use financi_core::{
+    AccountKind, MAX_FILE_BYTES, RawFile, ReadError, StatementParser, read_raw_file,
+};
 use financi_db::Account;
 use financi_db::import::{ImportPlan, NearMatch};
 
@@ -33,6 +35,15 @@ pub fn load_file(path: &Path) -> Result<LoadedFile, LoadError> {
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.display().to_string());
+    // 3.94: an oversized file is refused from its metadata alone, so a
+    // huge drop never gets read into memory. The error is the reader's
+    // own size guard's (`ReadError::NotCsv`): one limit, one message.
+    if is_oversized(path, MAX_FILE_BYTES as u64) {
+        return Err(LoadError::Read {
+            name,
+            source: ReadError::NotCsv,
+        });
+    }
     let bytes = std::fs::read(path).map_err(|e| LoadError::Io {
         name: name.clone(),
         message: e.to_string(),
@@ -62,6 +73,14 @@ pub fn load_file(path: &Path) -> Result<LoadedFile, LoadError> {
         parser_id: parser.id(),
         raw,
     })
+}
+
+/// True when the file's metadata reports more than `max` bytes. A
+/// metadata failure (missing file, permissions) answers `false`: the
+/// `std::fs::read` that follows reports the proper `Io` error. `max` is
+/// a parameter so tests exercise the guard without a 50 MB file.
+fn is_oversized(path: &Path, max: u64) -> bool {
+    path.metadata().is_ok_and(|m| m.len() > max)
 }
 
 /// The header shown in the unknown-format message, cut to ~120 characters
@@ -353,6 +372,36 @@ mod tests {
             "recognized header keeps the read error: {err}"
         );
         assert!(err.to_string().contains("line 3: unclosed quote"), "{err}");
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// 3.94: a file over the 50 MB limit is refused from its metadata,
+    /// before `std::fs::read`, with the in-memory guard's message. The
+    /// sparse file proves it at the real limit without writing 50 MB.
+    #[test]
+    fn oversized_file_is_refused_from_metadata() {
+        let dir = std::env::temp_dir().join(format!("financi-flow-394-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let big = dir.join("big.csv");
+        let f = std::fs::File::create(&big).unwrap();
+        f.set_len(MAX_FILE_BYTES as u64 + 1).unwrap();
+        drop(f);
+        let err = load_file(&big).unwrap_err();
+        assert!(matches!(err, LoadError::Read { .. }), "{err}");
+        assert!(
+            err.to_string().contains("This isn't a CSV export."),
+            "same message as the in-memory guard: {err}"
+        );
+
+        // The guard itself at a tiny cap: over refuses, at or under
+        // passes, and a missing path defers to the read's own Io error.
+        let small = dir.join("small.csv");
+        std::fs::write(&small, "a,b\n1,2\n").unwrap();
+        assert!(is_oversized(&small, 3));
+        assert!(!is_oversized(&small, 1 << 30));
+        assert!(!is_oversized(&dir.join("missing.csv"), 0));
 
         std::fs::remove_dir_all(dir).unwrap();
     }
