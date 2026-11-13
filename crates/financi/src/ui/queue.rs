@@ -12,26 +12,88 @@ const QUEUE_TOTAL_W: f32 = 110.;
 const QUEUE_DATES_W: f32 = 190.;
 const QUEUE_PICKER_W: f32 = 220.;
 
+/// This page's state (3.74): the pending list grouped by merchant, the
+/// per-visible-row category pickers and the error banner.
+pub(super) struct QueueState {
+    /// The queue: uncategorized transactions grouped by merchant, newest
+    /// first (as [`uncategorized_by_merchant`] returns them).
+    pub(super) groups: Vec<UncategorizedGroup>,
+    /// 3.19: pickers exist only for rows `render_queue` has built, so this
+    /// map stays the size of the visible slice, not the queue.
+    pub(super) pickers: HashMap<String, Entity<SelectState<Names>>>,
+    /// The category list the pickers above currently hold; `sync_queue`
+    /// re-sets items only when it changes, not on every refresh.
+    pub(super) picker_items: Option<Names>,
+    /// 3.34: one per live picker — a `Confirm` re-renders the rows so the
+    /// row's Categorize button flips from disabled to enabled the frame a
+    /// category is picked. Retired with its picker in `sync_queue`.
+    pub(super) picker_subs: HashMap<String, Subscription>,
+    /// The banner text above the list.
+    pub(super) error: Option<String>,
+    /// 3.21: the virtualized list's scroll handle, alive as long as the
+    /// `Shell` (see the note on `tree_scroll` in 3.21).
+    pub(super) scroll: VirtualListScrollHandle,
+    /// 3.19: how many queue rows the virtualized list built for the last
+    /// layout pass — the visible slice, not the whole queue. Observability
+    /// for the long-queue tests (like `tree_rows_built`).
+    #[cfg(test)]
+    pub(super) rows_built: std::cell::Cell<usize>,
+    /// 3.21: the range of rows the queue built last frame.
+    #[cfg(test)]
+    pub(super) range: std::cell::Cell<(usize, usize)>,
+}
+
+impl QueueState {
+    pub(super) fn new(_window: &mut Window, _cx: &mut Context<Shell>) -> Self {
+        Self {
+            groups: Vec::new(),
+            pickers: HashMap::new(),
+            picker_items: None,
+            picker_subs: HashMap::new(),
+            error: None,
+            scroll: VirtualListScrollHandle::new(),
+            #[cfg(test)]
+            rows_built: std::cell::Cell::new(0),
+            #[cfg(test)]
+            range: std::cell::Cell::new((0, 0)),
+        }
+    }
+}
+
+impl Shell {
+    /// Apply this page's part of a refresh result (3.74).
+    pub(super) fn apply_queue(&mut self, groups: Vec<UncategorizedGroup>) {
+        self.queue.groups = groups;
+    }
+}
+
 impl Shell {
     /// 3.19: pickers are built lazily by `render_queue` for the rows it
     /// shows, never up front per group. This retires pickers whose group
     /// left the queue and re-sets the items on the survivors only when the
     /// category list changed, so a refresh doesn't touch every picker.
     pub(super) fn sync_queue(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let current: HashSet<&str> = self.queue.iter().map(|g| g.merchant.as_str()).collect();
-        self.queue_pickers
+        let current: HashSet<&str> = self
+            .queue
+            .groups
+            .iter()
+            .map(|g| g.merchant.as_str())
+            .collect();
+        self.queue
+            .pickers
             .retain(|merchant, _| current.contains(merchant.as_str()));
         // 3.34: a picker's Categorize-mirror subscription retires with it.
-        self.queue_picker_subs
+        self.queue
+            .picker_subs
             .retain(|merchant, _| current.contains(merchant.as_str()));
         let names: Names = self
             .child_choices
             .iter()
             .map(|(_, n)| SharedString::from(n.clone()))
             .collect();
-        if self.queue_picker_items.as_ref() != Some(&names) {
-            self.queue_picker_items = Some(names.clone());
-            for picker in self.queue_pickers.values() {
+        if self.queue.picker_items.as_ref() != Some(&names) {
+            self.queue.picker_items = Some(names.clone());
+            for picker in self.queue.pickers.values() {
                 let items = names.clone();
                 picker.update(cx, |s, cx| s.set_items(items, window, cx));
             }
@@ -47,10 +109,10 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Entity<SelectState<Names>> {
-        if let Some(picker) = self.queue_pickers.get(merchant) {
+        if let Some(picker) = self.queue.pickers.get(merchant) {
             return picker.clone();
         }
-        let items: Names = self.queue_picker_items.clone().unwrap_or_else(|| {
+        let items: Names = self.queue.picker_items.clone().unwrap_or_else(|| {
             self.child_choices
                 .iter()
                 .map(|(_, n)| SharedString::from(n.clone()))
@@ -65,9 +127,10 @@ impl Shell {
                 cx.notify();
             }
         });
-        self.queue_pickers
+        self.queue
+            .pickers
             .insert(merchant.to_string(), picker.clone());
-        self.queue_picker_subs.insert(merchant.to_string(), sub);
+        self.queue.picker_subs.insert(merchant.to_string(), sub);
         picker
     }
 
@@ -79,11 +142,11 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(picker) = self.queue_pickers.get(&merchant).cloned() else {
+        let Some(picker) = self.queue.pickers.get(&merchant).cloned() else {
             return;
         };
         let Some(ix) = picker.read(cx).selected_index(cx) else {
-            self.queue_error = Some("Choose a category for this merchant first.".into());
+            self.queue.error = Some("Choose a category for this merchant first.".into());
             cx.notify();
             return;
         };
@@ -101,9 +164,9 @@ impl Shell {
                 match result {
                     Ok(_rule_id) => {
                         this.notify_ok(format!("Categorized {merchant}"), cx);
-                        this.queue_error = None;
+                        this.queue.error = None;
                     }
-                    Err(e) => this.queue_error = Some(e),
+                    Err(e) => this.queue.error = Some(e),
                 }
                 this.refresh(window, cx);
             });
@@ -129,8 +192,8 @@ impl Shell {
         // debug selector records the exact text so a test can pin it.
         let summary = format!(
             "{} transactions · {} merchants",
-            flow::count(self.queue.iter().map(|g| g.count).sum()),
-            flow::count(self.queue.len() as i64)
+            flow::count(self.queue.groups.iter().map(|g| g.count).sum()),
+            flow::count(self.queue.groups.len() as i64)
         );
         let summary_sel = format!("queue:summary:{summary}");
         // 3.34: one bordered panel (D7: bordered, never filled) fills the
@@ -144,7 +207,7 @@ impl Shell {
             .border_color(border)
             .overflow_hidden()
             .debug_selector(|| "queue:panel".to_string());
-        let body: AnyElement = if self.queue.is_empty() {
+        let body: AnyElement = if self.queue.groups.is_empty() {
             panel
                 .child(
                     div()
@@ -209,7 +272,7 @@ impl Shell {
             // `queue_picker` creates a picker only with its row. 3.34: rows
             // stay 40 px, now `px_3` with a bottom divider (none after the
             // last row) and `list_hover` on hover.
-            let sizes = Rc::new(vec![size(px(0.), px(40.)); self.queue.len()]);
+            let sizes = Rc::new(vec![size(px(0.), px(40.)); self.queue.groups.len()]);
             panel
                 .child(
                     v_virtual_list(
@@ -220,8 +283,8 @@ impl Shell {
                             #[cfg(test)]
                             let range_bounds = (range.start, range.end);
                             let start = range.start;
-                            let groups = this.queue[range].to_vec();
-                            let last = this.queue.len().saturating_sub(1);
+                            let groups = this.queue.groups[range].to_vec();
+                            let last = this.queue.groups.len().saturating_sub(1);
                             let mut rows = Vec::with_capacity(groups.len());
                             for (i, g) in groups.into_iter().enumerate() {
                                 let merchant = g.merchant.clone();
@@ -425,14 +488,14 @@ impl Shell {
                                 );
                             }
                             #[cfg(test)]
-                            this.queue_rows_built.set(rows.len());
+                            this.queue.rows_built.set(rows.len());
                             #[cfg(test)]
-                            this.queue_range.set(range_bounds);
+                            this.queue.range.set(range_bounds);
                             rows
                         },
                     )
                     // 3.21: Shell-owned handle (see the tree).
-                    .track_scroll(&self.queue_scroll)
+                    .track_scroll(&self.queue.scroll)
                     .flex_1()
                     .min_h_0(),
                 )
@@ -461,7 +524,8 @@ impl Shell {
                     ),
             )
             .children(
-                self.queue_error
+                self.queue
+                    .error
                     .clone()
                     .map(|e| div().text_sm().text_color(danger).child(e)),
             )

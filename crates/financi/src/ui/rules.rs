@@ -56,6 +56,165 @@ pub(super) enum PendingRuleAction {
     Delete(i64),
 }
 
+/// This page's state (3.74): the Rules page's search, filters, selection
+/// and list state. The add-rule row and its in-place editor stay on
+/// `Shell` (shared with the Categories page until 3.78).
+pub(super) struct RulesPageState {
+    /// 3.28: the Rules page search box; live filter over the list (pattern
+    /// and target category name, case-insensitive), focused when the page
+    /// opens (D5). In "Test a description" mode it takes the description.
+    pub(super) rules_search: Entity<InputState>,
+    /// 3.28: the "Test a description" switch (D5): the list shows only the
+    /// rules matching the text in the search box, winner first.
+    pub(super) rules_test_mode: bool,
+    /// 3.28: Type picker over the list (row 0 = All, 1 = Substring, 2 = Regex;
+    /// nothing selected reads as All).
+    pub(super) rules_type_select: Entity<SelectState<Names>>,
+    /// 3.28: the "Unused" checkbox: only show rules deciding zero
+    /// transactions.
+    pub(super) rules_unused_only: bool,
+    /// 3.28: child-category ids whose group header row is collapsed.
+    pub(super) collapsed_rule_groups: HashSet<i64>,
+    /// 3.28: sort rows within a group by Uses (descending) instead of by
+    /// Pattern (the default, ascending).
+    pub(super) rules_sort_by_uses: bool,
+    /// 3.28: rules whose row checkbox is ticked; the Move bar acts on these.
+    pub(super) selected_rules: HashSet<i64>,
+    /// 3.28: the Move bar's target picker (child categories only, like the
+    /// rule target pickers).
+    pub(super) move_rules_target: Entity<SelectState<Names>>,
+    /// 3.28: the Move bar's error line (a move the DB refused).
+    pub(super) rules_move_error: Option<SharedString>,
+    /// 3.28: how many unlocked rows each rule's match decides (the Uses
+    /// column); rules deciding nothing are absent.
+    pub(super) rule_uses: HashMap<i64, usize>,
+    /// 3.28: whether the add-rule row is open on the Rules page.
+    pub(super) new_rule_open: bool,
+    /// 3.28: set when the Rules page opens; focuses the search box on the
+    /// next render (D5).
+    pub(super) rules_focus_pending: std::cell::Cell<bool>,
+    /// 3.29: the rule the dashboard's *Show rule* item just landed on; its
+    /// row carries the `list_active` background until the user searches or
+    /// leaves the page (transient, like the page's other one-shot state).
+    pub(super) rules_reveal: Option<i64>,
+    /// 3.28: the Rules page list's scroll handle (headers and rows together).
+    pub(super) rules_scroll: VirtualListScrollHandle,
+    /// 3.28: how many items the Rules page list built last frame (headers
+    /// and rows together) and the range it drew, for the long-list tests.
+    #[cfg(test)]
+    pub(super) rules_page_rows_built: std::cell::Cell<usize>,
+    #[cfg(test)]
+    pub(super) rules_page_range: std::cell::Cell<(usize, usize)>,
+    /// The pickers and inputs above subscribe here.
+    _subs: Vec<Subscription>,
+}
+
+impl RulesPageState {
+    pub(super) fn new(window: &mut Window, cx: &mut Context<Shell>) -> Self {
+        // 3.28: the Rules page search box filters the list on every
+        // keystroke, and in "Test a description" mode it is the description
+        // the rules are tried against (D5). Typing replaces the list, so the
+        // scroll offset goes back to the top.
+        let rules_search =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Search pattern or category…"));
+        let rules_search_sub =
+            cx.subscribe(&rules_search, |this: &mut Shell, _, ev: &InputEvent, cx| {
+                if matches!(ev, InputEvent::Change) {
+                    this.rules_page.rules_scroll.set_offset(Point::default());
+                    // 3.29: the reveal highlight is one-shot; anything typed
+                    // after it is the user's own search.
+                    this.rules_page.rules_reveal = None;
+                    cx.notify();
+                }
+            });
+        // 3.28: the Type and Move pickers. The Type picker filters the list
+        // (nothing selected reads as All types); the Move picker holds the
+        // child categories, refreshed by `sync_category_choices`.
+        let rules_type_select = cx.new(|cx| {
+            SelectState::new(
+                vec!["All types".into(), "Substring".into(), "Regex".into()],
+                None,
+                window,
+                cx,
+            )
+        });
+        let rules_type_sub = cx.subscribe_in(
+            &rules_type_select,
+            window,
+            |this: &mut Shell, _select, ev: &SelectEvent<Names>, _window, cx| {
+                if matches!(ev, SelectEvent::Confirm(_)) {
+                    this.rules_page.rules_scroll.set_offset(Point::default());
+                    cx.notify();
+                }
+            },
+        );
+        let move_rules_target = cx.new(|cx| SelectState::new(Names::new(), None, window, cx));
+        Self {
+            rules_search,
+            rules_test_mode: false,
+            rules_type_select,
+            rules_unused_only: false,
+            collapsed_rule_groups: HashSet::default(),
+            rules_sort_by_uses: false,
+            selected_rules: HashSet::default(),
+            move_rules_target,
+            rules_move_error: None,
+            rule_uses: HashMap::default(),
+            new_rule_open: false,
+            rules_focus_pending: std::cell::Cell::new(false),
+            rules_reveal: None,
+            rules_scroll: VirtualListScrollHandle::new(),
+            #[cfg(test)]
+            rules_page_rows_built: std::cell::Cell::new(0),
+            #[cfg(test)]
+            rules_page_range: std::cell::Cell::new((0, 0)),
+            _subs: vec![rules_search_sub, rules_type_sub],
+        }
+    }
+}
+
+impl Shell {
+    /// Apply this page's part of a refresh result (3.74): the shared rule
+    /// list renders from `Shell`'s list (3.78 moves it here).
+    pub(super) fn apply_rules(&mut self, rules: Vec<Rule>, uses: HashMap<i64, usize>) {
+        self.rules = rules;
+        self.rules_page.rule_uses = uses;
+    }
+
+    /// The shared add-rule row's and the in-place editor's subscriptions
+    /// (3.24): every pattern keystroke re-runs the "matches N transactions"
+    /// preview, and Enter in the editor saves. Built by `Shell::new`.
+    pub(super) fn subscribe_rule_row(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Shell>,
+    ) -> Vec<Subscription> {
+        // The live "matches N transactions" preview runs on every pattern
+        // keystroke (ui-conventions, Categories page).
+        let preview_sub = cx.subscribe(&self.rule_pattern, |this, _, ev: &InputEvent, cx| {
+            // 3.24: while a rule editor is open, the preview belongs to it.
+            if matches!(ev, InputEvent::Change) && this.editing_rule.is_none() {
+                this.preview_rule_match(cx);
+            }
+        });
+        // 3.24: the rule editor's Pattern input drives the same preview and
+        // saves on Enter (Escape cancels through the window-level binding
+        // handled in `clear_category_selection`).
+        let rule_edit_sub = cx.subscribe_in(
+            &self.rule_edit_pattern,
+            window,
+            |this, _, ev: &InputEvent, window, cx| match ev {
+                InputEvent::Change if this.editing_rule.is_some() => this.preview_rule_match(cx),
+                InputEvent::PressEnter {
+                    secondary: false, ..
+                } if this.editing_rule.is_some() => this.save_rule_edit(window, cx),
+                _ => {}
+            },
+        );
+        vec![preview_sub, rule_edit_sub]
+    }
+}
+
 impl Shell {
     /// Count rows the current pattern would categorize, live as the user
     /// types (ui-conventions, Categories page).
@@ -119,12 +278,17 @@ impl Shell {
     pub(super) fn add_rule_to_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let category_id = match self.selected_node() {
             Some((_, None)) => {
-                let Some(ix) = self.cat_rule_target.read(cx).selected_index(cx) else {
+                let Some(ix) = self
+                    .categories_page
+                    .cat_rule_target
+                    .read(cx)
+                    .selected_index(cx)
+                else {
                     self.rule_error = Some("Choose the subcategory the rule assigns.".into());
                     cx.notify();
                     return;
                 };
-                let Some(cid) = self.cat_rule_child_ids.get(ix.row).copied() else {
+                let Some(cid) = self.categories_page.cat_rule_child_ids.get(ix.row).copied() else {
                     return;
                 };
                 cid
@@ -535,6 +699,7 @@ impl Shell {
     /// first, lowest id), so the winner is the first row.
     fn rules_page_items(&self, cx: &App) -> Vec<RulesItem> {
         let query = self
+            .rules_page
             .rules_search
             .read(cx)
             .value()
@@ -544,12 +709,13 @@ impl Shell {
         // Type picker: row 1 keeps substrings, row 2 regexes, nothing
         // selected or row 0 shows all.
         let type_ix = self
+            .rules_page
             .rules_type_select
             .read(cx)
             .selected_index(cx)
             .map(|ix| ix.row)
             .unwrap_or(0);
-        let test = self.rules_test_mode;
+        let test = self.rules_page.rules_test_mode;
         let mut filtered: Vec<&Rule> = self
             .rules
             .iter()
@@ -559,7 +725,8 @@ impl Shell {
                 _ => true,
             })
             .filter(|r| {
-                !self.rules_unused_only || self.rule_uses.get(&r.id).copied().unwrap_or(0) == 0
+                !self.rules_page.rules_unused_only
+                    || self.rules_page.rule_uses.get(&r.id).copied().unwrap_or(0) == 0
             })
             .filter(|r| {
                 if test {
@@ -599,11 +766,11 @@ impl Shell {
             }
         }
         groups.sort_by(|a, b| a.0.cmp(&b.0));
-        let by_uses = self.rules_sort_by_uses;
+        let by_uses = self.rules_page.rules_sort_by_uses;
         let mut items = Vec::with_capacity(filtered.len() + groups.len());
         for (label, cid, mut rules) in groups {
             let count = rules.len();
-            let collapsed = self.collapsed_rule_groups.contains(&cid);
+            let collapsed = self.rules_page.collapsed_rule_groups.contains(&cid);
             items.push(RulesItem::Group {
                 id: cid,
                 label,
@@ -615,8 +782,8 @@ impl Shell {
             }
             rules.sort_by(|a, b| {
                 if by_uses {
-                    let ua = self.rule_uses.get(&a.id).copied().unwrap_or(0);
-                    let ub = self.rule_uses.get(&b.id).copied().unwrap_or(0);
+                    let ua = self.rules_page.rule_uses.get(&a.id).copied().unwrap_or(0);
+                    let ub = self.rules_page.rule_uses.get(&b.id).copied().unwrap_or(0);
                     ub.cmp(&ua).then_with(|| a.pattern.cmp(&b.pattern))
                 } else {
                     a.pattern.cmp(&b.pattern)
@@ -628,19 +795,19 @@ impl Shell {
     }
 
     fn toggle_rule_group(&mut self, id: i64, cx: &mut Context<Self>) {
-        if !self.collapsed_rule_groups.remove(&id) {
-            self.collapsed_rule_groups.insert(id);
+        if !self.rules_page.collapsed_rule_groups.remove(&id) {
+            self.rules_page.collapsed_rule_groups.insert(id);
         }
         cx.notify();
     }
 
     pub(super) fn set_rule_selected(&mut self, id: i64, on: bool, cx: &mut Context<Self>) {
         if on {
-            self.selected_rules.insert(id);
+            self.rules_page.selected_rules.insert(id);
         } else {
-            self.selected_rules.remove(&id);
+            self.rules_page.selected_rules.remove(&id);
         }
-        self.rules_move_error = None;
+        self.rules_page.rules_move_error = None;
         cx.notify();
     }
 
@@ -648,15 +815,20 @@ impl Shell {
     /// rule and re-runs the rules over the unlocked rows once; then the
     /// selection clears and everything refreshes.
     pub(super) fn move_selected_rules(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(ix) = self.move_rules_target.read(cx).selected_index(cx) else {
-            self.rules_move_error = Some("Choose the category to move to.".into());
+        let Some(ix) = self
+            .rules_page
+            .move_rules_target
+            .read(cx)
+            .selected_index(cx)
+        else {
+            self.rules_page.rules_move_error = Some("Choose the category to move to.".into());
             cx.notify();
             return;
         };
         let Some((category_id, _)) = self.child_choices.get(ix.row).cloned() else {
             return;
         };
-        let mut ids: Vec<i64> = self.selected_rules.iter().copied().collect();
+        let mut ids: Vec<i64> = self.rules_page.selected_rules.iter().copied().collect();
         if ids.is_empty() {
             return;
         }
@@ -667,10 +839,10 @@ impl Shell {
             let _ = this.update_in(cx, |this, window, cx| {
                 match result {
                     Ok(()) => {
-                        this.selected_rules.clear();
-                        this.rules_move_error = None;
+                        this.rules_page.selected_rules.clear();
+                        this.rules_page.rules_move_error = None;
                     }
-                    Err(e) => this.rules_move_error = Some(e.into()),
+                    Err(e) => this.rules_page.rules_move_error = Some(e.into()),
                 }
                 this.refresh(window, cx);
             });
@@ -692,25 +864,30 @@ impl Shell {
         let Some(rule) = self.rules.iter().find(|r| r.id == rule_id).cloned() else {
             return; // a refresh dropped the rule between menu and click
         };
-        self.rules_test_mode = false;
-        self.rules_unused_only = false;
-        self.collapsed_rule_groups.remove(&rule.category_id);
-        self.rules_type_select.update(cx, |s, cx| {
+        self.rules_page.rules_test_mode = false;
+        self.rules_page.rules_unused_only = false;
+        self.rules_page
+            .collapsed_rule_groups
+            .remove(&rule.category_id);
+        self.rules_page.rules_type_select.update(cx, |s, cx| {
             s.set_selected_index(Some(gpui_kit::component::IndexPath::new(0)), window, cx)
         });
         // `set_value` scrolls the list back to the top, so the reveal's
         // `scroll_to_item` must come after it. Any later keystroke fires
         // the search subscription, which drops the reveal.
         let pattern = rule.pattern.clone();
-        self.rules_search
+        self.rules_page
+            .rules_search
             .update(cx, |i, cx| i.set_value(pattern, window, cx));
         let items = self.rules_page_items(cx);
         if let Some(ix) = items
             .iter()
             .position(|it| matches!(it, RulesItem::Rule { id } if *id == rule_id))
         {
-            self.rules_reveal = Some(rule_id);
-            self.rules_scroll.scroll_to_item(ix, ScrollStrategy::Center);
+            self.rules_page.rules_reveal = Some(rule_id);
+            self.rules_page
+                .rules_scroll
+                .scroll_to_item(ix, ScrollStrategy::Center);
         }
         cx.notify();
     }
@@ -765,7 +942,7 @@ impl Shell {
     ) -> AnyElement {
         let id = rule.id;
         let armed = self.armed_delete_rule == Some(id);
-        let uses = self.rule_uses.get(&id).copied().unwrap_or(0);
+        let uses = self.rules_page.rule_uses.get(&id).copied().unwrap_or(0);
         let reveal_bg = revealed.then(|| cx.theme().list_active);
         h_flex()
             .h_6()
@@ -783,7 +960,7 @@ impl Shell {
             .child(
                 div().w(px(RULE_SEL_W)).flex_shrink_0().child(
                     checkbox(SharedString::from(format!("rule-sel-{id}")))
-                        .checked(self.selected_rules.contains(&id))
+                        .checked(self.rules_page.selected_rules.contains(&id))
                         .on_click(cx.listener(move |this, on: &bool, _, cx| {
                             this.set_rule_selected(id, *on, cx);
                         })),
@@ -890,10 +1067,16 @@ impl Shell {
         };
         let count_text = format!("{} rules", self.rules.len());
         let count_sel = count_text.clone();
-        let query = self.rules_search.read(cx).value().trim().to_string();
+        let query = self
+            .rules_page
+            .rules_search
+            .read(cx)
+            .value()
+            .trim()
+            .to_string();
         // The "wins" marker follows [`winning_rule`] exactly, so the page
         // marks the rule the categoriser would actually apply (D5).
-        let winner = if self.rules_test_mode && !query.is_empty() {
+        let winner = if self.rules_page.rules_test_mode && !query.is_empty() {
             winning_rule(&self.rules, &query)
         } else {
             None
@@ -944,7 +1127,7 @@ impl Shell {
                                 if this.editing_rule == Some(*id) {
                                     this.rule_editor_row(r, muted, danger, cx)
                                 } else {
-                                    let revealed = this.rules_reveal == Some(*id);
+                                    let revealed = this.rules_page.rules_reveal == Some(*id);
                                     this.rules_page_row(r, winner == Some(*id), revealed, muted, cx)
                                 }
                             })
@@ -952,14 +1135,16 @@ impl Shell {
                     })
                     .collect();
                 #[cfg(test)]
-                this.rules_page_rows_built.set(rows.len());
+                this.rules_page.rules_page_rows_built.set(rows.len());
                 #[cfg(test)]
-                this.rules_page_range.set((range.start, range.end));
+                this.rules_page
+                    .rules_page_range
+                    .set((range.start, range.end));
                 rows
             },
         )
         // 3.21: Shell-owned handle (see the tree).
-        .track_scroll(&self.rules_scroll)
+        .track_scroll(&self.rules_page.rules_scroll)
         .gap_1()
         .flex_1()
         .min_h_0();
@@ -1010,14 +1195,14 @@ impl Shell {
                                 // Only one rule editor is open at a time:
                                 // opening the add row closes any row editor.
                                 this.close_rule_editor();
-                                this.new_rule_open = !this.new_rule_open;
+                                this.rules_page.new_rule_open = !this.rules_page.new_rule_open;
                                 cx.notify();
                             })),
                     ),
             )
             // Add-rule row (3.28): the same row the Categories page has,
             // hidden until the header button opens it.
-            .when(self.new_rule_open, |page| {
+            .when(self.rules_page.new_rule_open, |page| {
                 page.child(
                     v_flex()
                         .gap_1()
@@ -1102,15 +1287,15 @@ impl Shell {
                             .flex_1()
                             .min_w_0()
                             .debug_selector(|| "rules:search".into())
-                            .child(Input::new(&self.rules_search)),
+                            .child(Input::new(&self.rules_page.rules_search)),
                     )
                     .child(
                         Switch::new("rules-test-mode")
                             .label("Test a description")
-                            .checked(self.rules_test_mode)
+                            .checked(self.rules_page.rules_test_mode)
                             .on_click(cx.listener(|this, on: &bool, _, cx| {
-                                this.rules_test_mode = *on;
-                                this.rules_scroll.set_offset(Point::default());
+                                this.rules_page.rules_test_mode = *on;
+                                this.rules_page.rules_scroll.set_offset(Point::default());
                                 cx.notify();
                             })),
                     )
@@ -1119,22 +1304,25 @@ impl Shell {
                             .w(px(140.))
                             .flex_shrink_0()
                             .debug_selector(|| "rules:type-select".into())
-                            .child(Select::new(&self.rules_type_select).placeholder("All types")),
+                            .child(
+                                Select::new(&self.rules_page.rules_type_select)
+                                    .placeholder("All types"),
+                            ),
                     )
                     .child(
                         checkbox("rules-unused-only")
                             .label("Unused")
-                            .checked(self.rules_unused_only)
+                            .checked(self.rules_page.rules_unused_only)
                             .on_click(cx.listener(|this, on: &bool, _, cx| {
-                                this.rules_unused_only = *on;
-                                this.rules_scroll.set_offset(Point::default());
+                                this.rules_page.rules_unused_only = *on;
+                                this.rules_page.rules_scroll.set_offset(Point::default());
                                 cx.notify();
                             })),
                     ),
             )
             // Move bar (D5): only while rows are checked.
-            .when(!self.selected_rules.is_empty(), |page| {
-                let n = self.selected_rules.len();
+            .when(!self.rules_page.selected_rules.is_empty(), |page| {
+                let n = self.rules_page.selected_rules.len();
                 page.child(
                     v_flex()
                         .gap_1()
@@ -1152,7 +1340,7 @@ impl Shell {
                                 .child(
                                     v_flex().gap_1().child(field_label(muted, "Move to")).child(
                                         div().w(px(240.)).child(
-                                            Select::new(&self.move_rules_target)
+                                            Select::new(&self.rules_page.move_rules_target)
                                                 .placeholder(MOVE_RULES_TO_PH),
                                         ),
                                     ),
@@ -1167,7 +1355,7 @@ impl Shell {
                                         })),
                                 ),
                         )
-                        .children(self.rules_move_error.clone().map(|e| {
+                        .children(self.rules_page.rules_move_error.clone().map(|e| {
                             div()
                                 .text_sm()
                                 .text_color(danger)
@@ -1176,63 +1364,66 @@ impl Shell {
                         })),
                 )
             })
-            .when(!self.rules_test_mode && !items.is_empty(), |page| {
-                page.child(
-                    h_flex()
-                        .gap_2()
-                        .items_end()
-                        .debug_selector(|| "rules:heading-row".into())
-                        .child(div().w(px(RULE_SEL_W)).flex_shrink_0())
-                        .child(
-                            div().flex_1().min_w_0().child(
-                                Button::new("rules-sort-pattern")
-                                    .label(if self.rules_sort_by_uses {
-                                        "Pattern"
-                                    } else {
-                                        "Pattern ↓"
-                                    })
-                                    .ghost()
-                                    .text_xs()
-                                    .debug_selector(|| "rules:sort-pattern".into())
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.rules_sort_by_uses = false;
-                                        cx.notify();
-                                    })),
-                            ),
-                        )
-                        .child(
-                            div().w(px(RULE_TYPE_W)).flex_shrink_0().child(
-                                field_label(muted, "Type")
-                                    .debug_selector(|| "rules:heading-type".into()),
-                            ),
-                        )
-                        .child(
-                            div().w(px(RULE_USES_W)).flex_shrink_0().child(
-                                Button::new("rules-sort-uses")
-                                    .label(if self.rules_sort_by_uses {
-                                        "Uses ↓"
-                                    } else {
-                                        "Uses"
-                                    })
-                                    .ghost()
-                                    .text_xs()
-                                    .debug_selector(|| "rules:sort-uses".into())
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.rules_sort_by_uses = true;
-                                        cx.notify();
-                                    })),
-                            ),
-                        )
-                        .child(div().flex_shrink_0().child(field_label(muted, "Actions"))),
-                )
-            })
+            .when(
+                !self.rules_page.rules_test_mode && !items.is_empty(),
+                |page| {
+                    page.child(
+                        h_flex()
+                            .gap_2()
+                            .items_end()
+                            .debug_selector(|| "rules:heading-row".into())
+                            .child(div().w(px(RULE_SEL_W)).flex_shrink_0())
+                            .child(
+                                div().flex_1().min_w_0().child(
+                                    Button::new("rules-sort-pattern")
+                                        .label(if self.rules_page.rules_sort_by_uses {
+                                            "Pattern"
+                                        } else {
+                                            "Pattern ↓"
+                                        })
+                                        .ghost()
+                                        .text_xs()
+                                        .debug_selector(|| "rules:sort-pattern".into())
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.rules_page.rules_sort_by_uses = false;
+                                            cx.notify();
+                                        })),
+                                ),
+                            )
+                            .child(
+                                div().w(px(RULE_TYPE_W)).flex_shrink_0().child(
+                                    field_label(muted, "Type")
+                                        .debug_selector(|| "rules:heading-type".into()),
+                                ),
+                            )
+                            .child(
+                                div().w(px(RULE_USES_W)).flex_shrink_0().child(
+                                    Button::new("rules-sort-uses")
+                                        .label(if self.rules_page.rules_sort_by_uses {
+                                            "Uses ↓"
+                                        } else {
+                                            "Uses"
+                                        })
+                                        .ghost()
+                                        .text_xs()
+                                        .debug_selector(|| "rules:sort-uses".into())
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.rules_page.rules_sort_by_uses = true;
+                                            cx.notify();
+                                        })),
+                                ),
+                            )
+                            .child(div().flex_shrink_0().child(field_label(muted, "Actions"))),
+                    )
+                },
+            )
             .when(items.is_empty(), |page| {
                 page.child(
                     div()
                         .text_sm()
                         .text_color(muted)
                         .debug_selector(|| "rules:empty".into())
-                        .child(if self.rules_test_mode {
+                        .child(if self.rules_page.rules_test_mode {
                             "No rules match this description"
                         } else {
                             "No rules match"

@@ -6,7 +6,7 @@ Do these in the order listed (`docs/tasks.md` → *Picking the next task*). Each
 
 Steps 1–15 of `docs/tasks/gpui.md` → *GPUI best practices*, task by task.
 
-- [ ] **3.74 Group `Shell`'s state by page.** (Architecture, user decision
+- [x] **3.74 Group `Shell`'s state by page.** (Architecture, user decision
   2026-11-11: move to page entities.) Pure refactor, no behaviour change,
   right after 3.62. Today every page module reaches into ~200 shared
   `Shell` fields and a 450-line `Shell::new`, so two lanes still collide

@@ -163,6 +163,110 @@ fn kind_label(kind: CategoryKind) -> &'static str {
         .map_or("Expense", |(l, _)| l)
 }
 
+/// This page's state (3.74): the category tree selection, the add /
+/// rename / move / delete controls, the parent-scoped add-rule picker and
+/// the two virtualized lists' scroll state.
+pub(super) struct CategoriesState {
+    /// The category the detail pane shows.
+    pub(super) selected_category: Option<i64>,
+    pub(super) new_parent_name: Entity<InputState>,
+    pub(super) new_parent_kind: Entity<SelectState<Names>>,
+    pub(super) new_child_name: Entity<InputState>,
+    /// 3.23: the New category… form under the page header is open. The
+    /// header button opens it, Cancel and a successful add close it, and
+    /// `go_page` clears it like the page's other transient UI.
+    pub(super) new_category_open: bool,
+    pub(super) renaming: bool,
+    pub(super) rename_input: Entity<InputState>,
+    pub(super) move_target: Entity<SelectState<Names>>,
+    pub(super) delete_target: Entity<SelectState<Names>>,
+    pub(super) confirm_delete_category: Option<i64>,
+    pub(super) cat_error: Option<String>,
+    /// 3.53: the Categories page's add-rule picker, shown only when the
+    /// selection is a parent: its own child categories by their own names
+    /// (no "Parent › Child"), searchable, the wide menu and the
+    /// full-name tooltip. `cat_rule_child_ids` maps the picker's rows to
+    /// category ids (the items carry names only).
+    pub(super) cat_rule_target: Entity<SelectState<RuleChoices>>,
+    pub(super) cat_rule_child_ids: Vec<i64>,
+    /// 3.21: one scroll handle per virtualized list, alive as long as the
+    /// `Shell` (see the task's note on why per-render handles snap back).
+    pub(super) tree_scroll: VirtualListScrollHandle,
+    pub(super) rule_scroll: VirtualListScrollHandle,
+    /// 3.21: how many tree rows the virtualized list built for the last
+    /// layout pass — the visible slice, not the whole tree. Observability
+    /// for the long-list tests.
+    #[cfg(test)]
+    pub(super) tree_rows_built: std::cell::Cell<usize>,
+    /// 3.21: the range of rows the tree built last frame, so the scroll
+    /// tests can see the window move.
+    #[cfg(test)]
+    pub(super) tree_range: std::cell::Cell<(usize, usize)>,
+    #[cfg(test)]
+    pub(super) rule_rows_built: std::cell::Cell<usize>,
+    /// 3.21: the range of rows the rule list built last frame.
+    #[cfg(test)]
+    pub(super) rule_range: std::cell::Cell<(usize, usize)>,
+}
+
+impl CategoriesState {
+    pub(super) fn new(window: &mut Window, cx: &mut Context<Shell>) -> Self {
+        let new_parent_name =
+            cx.new(|cx| InputState::new(window, cx).placeholder("New category name"));
+        let new_parent_kind = cx.new(|cx| {
+            SelectState::new(
+                KIND_LABELS.iter().map(|(l, _)| (*l).into()).collect(),
+                Some(gpui_kit::component::IndexPath::new(0)),
+                window,
+                cx,
+            )
+        });
+        let new_child_name =
+            cx.new(|cx| InputState::new(window, cx).placeholder("New subcategory name"));
+        let rename_input = cx.new(|cx| InputState::new(window, cx).placeholder("New name"));
+        let move_target = cx.new(|cx| SelectState::new(Names::new(), None, window, cx));
+        let delete_target = cx.new(|cx| SelectState::new(Names::new(), None, window, cx));
+        // 3.53: the Categories page's parent-scoped subcategory picker —
+        // searchable, wide menu, full-name tooltip (see `subcategory_select`).
+        let cat_rule_target =
+            cx.new(|cx| SelectState::new(rule_choices(&[]), None, window, cx).searchable(true));
+        Self {
+            selected_category: None,
+            new_parent_name,
+            new_parent_kind,
+            new_child_name,
+            new_category_open: false,
+            renaming: false,
+            rename_input,
+            move_target,
+            delete_target,
+            confirm_delete_category: None,
+            cat_error: None,
+            cat_rule_target,
+            cat_rule_child_ids: Vec::new(),
+            tree_scroll: VirtualListScrollHandle::new(),
+            rule_scroll: VirtualListScrollHandle::new(),
+            #[cfg(test)]
+            tree_rows_built: std::cell::Cell::new(0),
+            #[cfg(test)]
+            tree_range: std::cell::Cell::new((0, 0)),
+            #[cfg(test)]
+            rule_rows_built: std::cell::Cell::new(0),
+            #[cfg(test)]
+            rule_range: std::cell::Cell::new((0, 0)),
+        }
+    }
+}
+
+impl Shell {
+    /// Apply this page's part of a refresh result (3.74): the shared tree
+    /// and counts render from `Shell`'s lists (3.78 moves them here).
+    pub(super) fn apply_categories(&mut self, tree: Vec<CategoryNode>, counts: HashMap<i64, i64>) {
+        self.categories = tree;
+        self.cat_counts = counts;
+    }
+}
+
 impl Shell {
     /// Recompute the derived choice lists after a refresh and drop stale
     /// selection state.
@@ -172,12 +276,20 @@ impl Shell {
                 .iter()
                 .any(|p| p.id == id || p.children.iter().any(|c| c.id == id))
         };
-        if self.selected_category.is_some_and(|id| !known(id)) {
-            self.selected_category = None;
-            self.renaming = false;
+        if self
+            .categories_page
+            .selected_category
+            .is_some_and(|id| !known(id))
+        {
+            self.categories_page.selected_category = None;
+            self.categories_page.renaming = false;
         }
-        if self.confirm_delete_category.is_some_and(|id| !known(id)) {
-            self.confirm_delete_category = None;
+        if self
+            .categories_page
+            .confirm_delete_category
+            .is_some_and(|id| !known(id))
+        {
+            self.categories_page.confirm_delete_category = None;
         }
         // 3.29: the system `Transfers > Card Payment` category, so the
         // dashboard menu can tell a built-in card payment from a hand-set
@@ -209,16 +321,21 @@ impl Shell {
             .collect();
         self.rule_target
             .update(cx, |s, cx| s.set_items(names.clone(), window, cx));
-        self.delete_target
+        self.categories_page
+            .delete_target
             .update(cx, |s, cx| s.set_items(names.clone(), window, cx));
         // 3.28: the Move bar's picker offers the same child categories.
-        self.move_rules_target
+        self.rules_page
+            .move_rules_target
             .update(cx, |s, cx| s.set_items(names, window, cx));
         // 3.28: a refresh that dropped a rule drops its checkbox with it;
         // a deleted category drops its collapsed-group marker.
-        self.selected_rules
+        self.rules_page
+            .selected_rules
             .retain(|id| self.rules.iter().any(|r| r.id == *id));
-        self.collapsed_rule_groups.retain(|id| known(*id));
+        self.rules_page
+            .collapsed_rule_groups
+            .retain(|id| known(*id));
         // 3.24: a refresh that dropped the rule (its category was deleted,
         // say) drops the editor open on it and its armed delete with it,
         // like the `rule_offer` check in `refresh`.
@@ -242,7 +359,7 @@ impl Shell {
     /// "Parent › Child"), empty when the selection is a subcategory or
     /// none. Order matches the tree.
     fn parent_child_choices(&self) -> Vec<(i64, String)> {
-        let Some(parent_id) = self.selected_category else {
+        let Some(parent_id) = self.categories_page.selected_category else {
             return Vec::new();
         };
         // Only a parent selection has children to offer the picker; a
@@ -263,14 +380,20 @@ impl Shell {
         let keep = if reset {
             None
         } else {
-            self.cat_rule_target
+            self.categories_page
+                .cat_rule_target
                 .read(cx)
                 .selected_index(cx)
-                .and_then(|ix| self.cat_rule_child_ids.get(ix.row).copied())
+                .and_then(|ix| self.categories_page.cat_rule_child_ids.get(ix.row).copied())
         };
-        self.cat_rule_child_ids = choices.iter().map(|(id, _)| *id).collect();
-        let selected = keep.and_then(|id| self.cat_rule_child_ids.iter().position(|c| *c == id));
-        self.cat_rule_target.update(cx, |s, cx| {
+        self.categories_page.cat_rule_child_ids = choices.iter().map(|(id, _)| *id).collect();
+        let selected = keep.and_then(|id| {
+            self.categories_page
+                .cat_rule_child_ids
+                .iter()
+                .position(|c| *c == id)
+        });
+        self.categories_page.cat_rule_target.update(cx, |s, cx| {
             s.set_items(rule_choices(&choices), window, cx);
             s.set_selected_index(
                 selected.map(gpui_kit::component::IndexPath::new),
@@ -282,7 +405,7 @@ impl Shell {
 
     /// The selected node as (node, parent), parents having `None`.
     pub(super) fn selected_node(&self) -> Option<(&CategoryNode, Option<&CategoryNode>)> {
-        let id = self.selected_category?;
+        let id = self.categories_page.selected_category?;
         for p in &self.categories {
             if p.id == id {
                 return Some((p, None));
@@ -312,7 +435,7 @@ impl Shell {
     /// (rules always target a child, but count the parent's own id in case
     /// one ever lands there). Nothing without a selection.
     fn visible_rules(&self) -> Vec<Rule> {
-        let Some(id) = self.selected_category else {
+        let Some(id) = self.categories_page.selected_category else {
             return Vec::new();
         };
         let mut ids: HashSet<i64> = [id].into_iter().collect();
@@ -327,11 +450,11 @@ impl Shell {
     }
 
     pub(super) fn select_category(&mut self, id: i64, window: &mut Window, cx: &mut Context<Self>) {
-        let changed = self.selected_category != Some(id);
-        self.selected_category = Some(id);
-        self.renaming = false;
-        self.confirm_delete_category = None;
-        self.cat_error = None;
+        let changed = self.categories_page.selected_category != Some(id);
+        self.categories_page.selected_category = Some(id);
+        self.categories_page.renaming = false;
+        self.categories_page.confirm_delete_category = None;
+        self.categories_page.cat_error = None;
         // 3.24: selecting another category closes the rule editor (with its
         // preview count) and disarms any armed rule delete — the same
         // "transient UI belongs to what it was opened on" rule as the page
@@ -342,7 +465,9 @@ impl Shell {
         // content is replaced with the selection and the scroll offset
         // resets (the reset point 3.21 documented).
         if changed {
-            self.rule_scroll.set_offset(Point::default());
+            self.categories_page
+                .rule_scroll
+                .set_offset(Point::default());
             // 3.53: the add-rule picker belongs to the selection: a
             // subcategory needs none, a parent picks among its own
             // children — never a default pick.
@@ -373,20 +498,28 @@ impl Shell {
             .into_iter()
             .map(|(_, n)| n.into())
             .collect();
-        self.move_target
+        self.categories_page
+            .move_target
             .update(cx, |s, cx| s.set_items(names, window, cx));
     }
 
     pub(super) fn add_parent(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let name = self.new_parent_name.read(cx).value().trim().to_string();
+        let name = self
+            .categories_page
+            .new_parent_name
+            .read(cx)
+            .value()
+            .trim()
+            .to_string();
         let kind = self
+            .categories_page
             .new_parent_kind
             .read(cx)
             .selected_index(cx)
             .map(|ix| KIND_LABELS[ix.row].1)
             .unwrap_or(CategoryKind::Expense);
         if name.is_empty() {
-            self.cat_error = Some("Give the category a name.".into());
+            self.categories_page.cat_error = Some("Give the category a name.".into());
             cx.notify();
             return;
         }
@@ -396,14 +529,15 @@ impl Shell {
             let _ = this.update_in(cx, |this, window, cx| {
                 match result {
                     Ok(id) => {
-                        this.new_parent_name
+                        this.categories_page
+                            .new_parent_name
                             .update(cx, |i, cx| i.set_value("", window, cx));
                         // 3.23: adding closes the New category… form.
-                        this.new_category_open = false;
-                        this.selected_category = Some(id);
-                        this.cat_error = None;
+                        this.categories_page.new_category_open = false;
+                        this.categories_page.selected_category = Some(id);
+                        this.categories_page.cat_error = None;
                     }
-                    Err(e) => this.cat_error = Some(e),
+                    Err(e) => this.categories_page.cat_error = Some(e),
                 }
                 this.refresh(window, cx);
             });
@@ -417,9 +551,15 @@ impl Shell {
             return;
         };
         let parent_id = parent.id;
-        let name = self.new_child_name.read(cx).value().trim().to_string();
+        let name = self
+            .categories_page
+            .new_child_name
+            .read(cx)
+            .value()
+            .trim()
+            .to_string();
         if name.is_empty() {
-            self.cat_error = Some("Give the subcategory a name.".into());
+            self.categories_page.cat_error = Some("Give the subcategory a name.".into());
             cx.notify();
             return;
         }
@@ -429,12 +569,13 @@ impl Shell {
             let _ = this.update_in(cx, |this, window, cx| {
                 match result {
                     Ok(id) => {
-                        this.new_child_name
+                        this.categories_page
+                            .new_child_name
                             .update(cx, |i, cx| i.set_value("", window, cx));
-                        this.selected_category = Some(id);
-                        this.cat_error = None;
+                        this.categories_page.selected_category = Some(id);
+                        this.categories_page.cat_error = None;
                     }
-                    Err(e) => this.cat_error = Some(e),
+                    Err(e) => this.categories_page.cat_error = Some(e),
                 }
                 this.refresh(window, cx);
             });
@@ -447,19 +588,26 @@ impl Shell {
             return;
         };
         let name = node.name.clone();
-        self.renaming = true;
-        self.rename_input
+        self.categories_page.renaming = true;
+        self.categories_page
+            .rename_input
             .update(cx, |i, cx| i.set_value(name, window, cx));
         cx.notify();
     }
 
     fn save_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(id) = self.selected_category else {
+        let Some(id) = self.categories_page.selected_category else {
             return;
         };
-        let name = self.rename_input.read(cx).value().trim().to_string();
+        let name = self
+            .categories_page
+            .rename_input
+            .read(cx)
+            .value()
+            .trim()
+            .to_string();
         if name.is_empty() {
-            self.cat_error = Some("Give the category a name.".into());
+            self.categories_page.cat_error = Some("Give the category a name.".into());
             cx.notify();
             return;
         }
@@ -469,10 +617,10 @@ impl Shell {
             let _ = this.update_in(cx, |this, window, cx| {
                 match result {
                     Ok(()) => {
-                        this.renaming = false;
-                        this.cat_error = None;
+                        this.categories_page.renaming = false;
+                        this.categories_page.cat_error = None;
                     }
-                    Err(e) => this.cat_error = Some(e),
+                    Err(e) => this.categories_page.cat_error = Some(e),
                 }
                 this.refresh(window, cx);
             });
@@ -489,8 +637,8 @@ impl Shell {
             return;
         };
         let child_id = node.id;
-        let Some(ix) = self.move_target.read(cx).selected_index(cx) else {
-            self.cat_error = Some("Choose the category to move it under.".into());
+        let Some(ix) = self.categories_page.move_target.read(cx).selected_index(cx) else {
+            self.categories_page.cat_error = Some("Choose the category to move it under.".into());
             cx.notify();
             return;
         };
@@ -502,8 +650,8 @@ impl Shell {
             let result = on_db(&db, move |c| move_child(c, child_id, new_parent_id)).await;
             let _ = this.update_in(cx, |this, window, cx| {
                 match result {
-                    Ok(()) => this.cat_error = None,
-                    Err(e) => this.cat_error = Some(e),
+                    Ok(()) => this.categories_page.cat_error = None,
+                    Err(e) => this.categories_page.cat_error = Some(e),
                 }
                 this.refresh(window, cx);
             });
@@ -514,33 +662,39 @@ impl Shell {
     /// First click arms the delete, the second runs it (ui-conventions,
     /// *Interaction*).
     pub(super) fn arm_delete_category(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(id) = self.selected_category else {
+        let Some(id) = self.categories_page.selected_category else {
             return;
         };
-        if self.confirm_delete_category != Some(id) {
-            self.confirm_delete_category = Some(id);
+        if self.categories_page.confirm_delete_category != Some(id) {
+            self.categories_page.confirm_delete_category = Some(id);
             cx.notify();
             return;
         }
-        let Some(ix) = self.delete_target.read(cx).selected_index(cx) else {
-            self.cat_error = Some("Choose where its transactions should go.".into());
+        let Some(ix) = self
+            .categories_page
+            .delete_target
+            .read(cx)
+            .selected_index(cx)
+        else {
+            self.categories_page.cat_error =
+                Some("Choose where its transactions should go.".into());
             cx.notify();
             return;
         };
         let Some((reassign_to, _)) = self.child_choices.get(ix.row).cloned() else {
             return;
         };
-        self.confirm_delete_category = None;
+        self.categories_page.confirm_delete_category = None;
         let db = self.db.clone();
         self.task = Some(cx.spawn_in(window, async move |this, cx| {
             let result = on_db(&db, move |c| delete_category(c, id, reassign_to)).await;
             let _ = this.update_in(cx, |this, window, cx| {
                 match result {
                     Ok(()) => {
-                        this.selected_category = None;
-                        this.cat_error = None;
+                        this.categories_page.selected_category = None;
+                        this.categories_page.cat_error = None;
                     }
-                    Err(e) => this.cat_error = Some(e),
+                    Err(e) => this.categories_page.cat_error = Some(e),
                 }
                 this.refresh(window, cx);
             });
@@ -679,7 +833,8 @@ impl Shell {
                                 break;
                             }
                             if ix >= range.start {
-                                let selected = this.selected_category == Some(parent.id);
+                                let selected =
+                                    this.categories_page.selected_category == Some(parent.id);
                                 rows.push(this.tree_row(
                                     parent,
                                     0,
@@ -695,7 +850,8 @@ impl Shell {
                                     break;
                                 }
                                 if ix >= range.start {
-                                    let selected = this.selected_category == Some(child.id);
+                                    let selected =
+                                        this.categories_page.selected_category == Some(child.id);
                                     rows.push(this.tree_row(
                                         child,
                                         1,
@@ -709,16 +865,18 @@ impl Shell {
                             }
                         }
                         #[cfg(test)]
-                        this.tree_rows_built.set(rows.len());
+                        this.categories_page.tree_rows_built.set(rows.len());
                         #[cfg(test)]
-                        this.tree_range.set((range.start, range.end));
+                        this.categories_page
+                            .tree_range
+                            .set((range.start, range.end));
                         rows
                     },
                 )
                 // 3.21: track the Shell-owned handle, not the fresh one
                 // `v_virtual_list` creates per render — that one resets the
                 // offset to 0 every frame.
-                .track_scroll(&self.tree_scroll)
+                .track_scroll(&self.categories_page.tree_scroll)
                 .gap_1()
                 .flex_1()
                 .min_h_0(),
@@ -808,7 +966,7 @@ impl Shell {
                             .gap_1()
                             .child(field_label(muted, "Subcategory"))
                             .child(subcategory_select(
-                                &self.cat_rule_target,
+                                &self.categories_page.cat_rule_target,
                                 "cat-add",
                                 trigger_w,
                                 menu_w,
@@ -817,8 +975,9 @@ impl Shell {
                             .into_any_element(),
                     )
                 };
-                let renaming = self.renaming;
-                let confirm_label = if self.confirm_delete_category == Some(node.id) {
+                let renaming = self.categories_page.renaming;
+                let confirm_label = if self.categories_page.confirm_delete_category == Some(node.id)
+                {
                     "Click again to delete"
                 } else {
                     "Delete…"
@@ -845,14 +1004,14 @@ impl Shell {
                                 v_flex()
                                     .gap_1()
                                     .child(field_label(muted, "New name"))
-                                    .child(div().w(px(260.)).child(Input::new(&self.rename_input))),
+                                    .child(div().w(px(260.)).child(Input::new(&self.categories_page.rename_input))),
                             )
                             .child(Button::new("save-rename").label("Save").primary().on_click(
                                 cx.listener(|this, _, window, cx| this.save_rename(window, cx)),
                             ))
                             .child(Button::new("cancel-rename").label("Cancel").on_click(
                                 cx.listener(|this, _, _, cx| {
-                                    this.renaming = false;
+                                    this.categories_page.renaming = false;
                                     cx.notify();
                                 }),
                             ))
@@ -909,7 +1068,7 @@ impl Shell {
                                                 .child(
                                                     div()
                                                         .w(px(220.))
-                                                        .child(Input::new(&self.new_child_name)),
+                                                        .child(Input::new(&self.categories_page.new_child_name)),
                                                 ),
                                         )
                                         .child(
@@ -940,7 +1099,7 @@ impl Shell {
                                                             format!("label:{MOVE_TO_CATEGORY_PH}")
                                                         })
                                                         .child(
-                                                            Select::new(&self.move_target)
+                                                            Select::new(&self.categories_page.move_target)
                                                                 .placeholder(MOVE_TO_CATEGORY_PH),
                                                         ),
                                                 ),
@@ -1150,14 +1309,14 @@ impl Shell {
                                                 })
                                                 .collect();
                                             #[cfg(test)]
-                                            this.rule_rows_built.set(rows.len());
+                                            this.categories_page.rule_rows_built.set(rows.len());
                                             #[cfg(test)]
-                                            this.rule_range.set((range.start, range.end));
+                                            this.categories_page.rule_range.set((range.start, range.end));
                                             rows
                                         },
                                     )
                                     // 3.21: Shell-owned handle (see the tree).
-                                    .track_scroll(&self.rule_scroll)
+                                    .track_scroll(&self.categories_page.rule_scroll)
                                     .gap_1()
                                     .flex_1()
                                     .min_h_0(),
@@ -1201,7 +1360,7 @@ impl Shell {
                                                             format!("label:{MOVE_TXNS_TO_PH}")
                                                         })
                                                         .child(
-                                                            Select::new(&self.delete_target)
+                                                            Select::new(&self.categories_page.delete_target)
                                                                 .placeholder(MOVE_TXNS_TO_PH),
                                                         ),
                                                 ),
@@ -1263,19 +1422,20 @@ impl Shell {
                             .ml_auto()
                             .flex_shrink_0()
                             .on_click(cx.listener(|this, _, _, cx| {
-                                this.new_category_open = true;
+                                this.categories_page.new_category_open = true;
                                 cx.notify();
                             })),
                     ),
             )
             .children(
-                self.cat_error
+                self.categories_page
+                    .cat_error
                     .clone()
                     .map(|e| div().text_sm().text_color(danger).child(e)),
             )
             // New-category form (3.23): hidden until the header button
             // opens it; Cancel and a successful add close it.
-            .when(self.new_category_open, |page| {
+            .when(self.categories_page.new_category_open, |page| {
                 page.child(
                     h_flex()
                         .gap_2()
@@ -1289,20 +1449,25 @@ impl Shell {
                             v_flex()
                                 .gap_1()
                                 .child(field_label(muted, "New category name"))
-                                .child(div().w(px(220.)).child(Input::new(&self.new_parent_name))),
+                                .child(
+                                    div()
+                                        .w(px(220.))
+                                        .child(Input::new(&self.categories_page.new_parent_name)),
+                                ),
                         )
                         .child(
-                            v_flex()
-                                .gap_1()
-                                .child(field_label(muted, "Kind"))
-                                .child(div().w(px(140.)).child(Select::new(&self.new_parent_kind))),
+                            v_flex().gap_1().child(field_label(muted, "Kind")).child(
+                                div()
+                                    .w(px(140.))
+                                    .child(Select::new(&self.categories_page.new_parent_kind)),
+                            ),
                         )
                         .child(
                             Button::new("cancel-new-category")
                                 .label("Cancel")
                                 .debug_selector(|| "cat:new-form-cancel".into())
                                 .on_click(cx.listener(|this, _, _, cx| {
-                                    this.new_category_open = false;
+                                    this.categories_page.new_category_open = false;
                                     cx.notify();
                                 })),
                         )

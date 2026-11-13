@@ -713,6 +713,71 @@ pub(super) fn history_flex_widths(page_w: f32) -> (f32, f32) {
     (flex / 2., flex / 2.)
 }
 
+/// This page's state (3.74): the import panel and the history table.
+pub(super) struct ImportsState {
+    /// The import panel, built once by [`Shell::import`] and kept so its
+    /// picked file survives page switches.
+    pub(super) import: Option<Entity<ImportPanel>>,
+    /// The history table's rows, newest first.
+    pub(super) import_history: Vec<ImportEntry>,
+    pub(super) history_table: Entity<TableState<ImportHistoryTable>>,
+    /// The import whose Undo… button is armed ("Click again to undo").
+    pub(super) confirm_undo_import: Option<i64>,
+}
+
+impl ImportsState {
+    pub(super) fn new(window: &mut Window, cx: &mut Context<Shell>) -> Self {
+        let on_undo = {
+            let shell = cx.entity();
+            Rc::new(move |id: i64, window: &mut Window, cx: &mut App| {
+                shell.update(cx, |this, cx| this.undo_import(id, window, cx));
+            }) as Rc<dyn Fn(i64, &mut Window, &mut App)>
+        };
+        let history_table = cx.new(|cx| {
+            TableState::new(
+                ImportHistoryTable {
+                    rows: Vec::new(),
+                    confirm_id: None,
+                    // 3.20: start at the widths the current window allows.
+                    flex_widths: history_flex_widths(
+                        (window.bounds().size.width.as_f32() - SIDEBAR_W - 2. * PAGE_PAD).max(0.),
+                    ),
+                    on_undo,
+                },
+                window,
+                cx,
+            )
+        });
+        Self {
+            import: None,
+            import_history: Vec::new(),
+            history_table,
+            confirm_undo_import: None,
+        }
+    }
+}
+
+impl Shell {
+    /// Apply this page's part of a refresh result (3.74).
+    pub(super) fn apply_imports(&mut self, history: Vec<ImportEntry>, cx: &mut Context<Shell>) {
+        if !history
+            .iter()
+            .any(|e| Some(e.id) == self.imports.confirm_undo_import)
+        {
+            self.imports.confirm_undo_import = None;
+        }
+        self.imports.import_history = history;
+        let confirm = self.imports.confirm_undo_import;
+        let history = self.imports.import_history.clone();
+        self.imports.history_table.update(cx, |t, cx| {
+            let delegate = t.delegate_mut();
+            delegate.rows = history;
+            delegate.confirm_id = confirm;
+            t.refresh(cx);
+        });
+    }
+}
+
 impl Shell {
     pub fn open_file(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         match flow::load_file(&path) {
@@ -729,15 +794,15 @@ impl Shell {
                                 } else {
                                     this.notify_ok(message.clone(), cx);
                                 }
-                                this.import = None;
+                                this.imports.import = None;
                             }
-                            ImportEvent::Cancelled => this.import = None,
+                            ImportEvent::Cancelled => this.imports.import = None,
                             ImportEvent::AccountsChanged => {}
                         }
                         this.refresh(window, cx);
                     });
                 self._subs.push(sub);
-                self.import = Some(panel);
+                self.imports.import = Some(panel);
                 // Opening a file switches to the Imports page with the
                 // preview open (ui-conventions, *Pages*).
                 self.page = Page::Imports;
@@ -767,7 +832,7 @@ impl Shell {
     /// Imports header button): the same path as the newest history row's
     /// Undo, two-click confirmation included; a no-op with no history.
     pub(super) fn undo_last_import(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(entry) = self.import_history.first() {
+        if let Some(entry) = self.imports.import_history.first() {
             let id = entry.id;
             self.undo_import(id, window, cx);
         }
@@ -792,16 +857,17 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.confirm_undo_import != Some(import_id) {
-            self.confirm_undo_import = Some(import_id);
-            self.history_table.update(cx, |t, _| {
+        if self.imports.confirm_undo_import != Some(import_id) {
+            self.imports.confirm_undo_import = Some(import_id);
+            self.imports.history_table.update(cx, |t, _| {
                 t.delegate_mut().confirm_id = Some(import_id);
             });
             cx.notify();
             return;
         }
-        self.confirm_undo_import = None;
+        self.imports.confirm_undo_import = None;
         let Some(account_id) = self
+            .imports
             .import_history
             .iter()
             .find(|e| e.id == import_id)
@@ -863,13 +929,14 @@ impl Shell {
         // 3.32: each button carries its Lucide icon left of the label, and
         // no ellipsis — the action runs straight away, any confirmation is
         // the button's own armed state, not a hidden dialog.
-        let latest_undo_id = self.import_history.first().map(|e| e.id);
-        let undo_label =
-            if self.confirm_undo_import.is_some() && self.confirm_undo_import == latest_undo_id {
-                "Click again to undo"
-            } else {
-                "Undo"
-            };
+        let latest_undo_id = self.imports.import_history.first().map(|e| e.id);
+        let undo_label = if self.imports.confirm_undo_import.is_some()
+            && self.imports.confirm_undo_import == latest_undo_id
+        {
+            "Click again to undo"
+        } else {
+            "Undo"
+        };
         v_flex()
             .flex_1()
             .min_h_0()
@@ -888,7 +955,7 @@ impl Shell {
                         div()
                             .text_sm()
                             .text_color(muted)
-                            .child(format!("{} imports", self.import_history.len())),
+                            .child(format!("{} imports", self.imports.import_history.len())),
                     )
                     .child(div().flex_1())
                     .child(
@@ -934,12 +1001,12 @@ impl Shell {
                             .on_click(cx.listener(|this, _, _, cx| this.restore_backup(cx))),
                     ),
             )
-            .children(self.import.clone())
+            .children(self.imports.import.clone())
             .child(
                 div()
                     .flex_1()
                     .min_h_0()
-                    .child(DataTable::new(&self.history_table).stripe(true)),
+                    .child(DataTable::new(&self.imports.history_table).stripe(true)),
             )
             .into_any_element()
     }

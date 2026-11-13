@@ -38,7 +38,7 @@ fn drop_create_account_inline_and_import(cx: &mut TestAppContext) {
     click_import(cx, handle, &shell);
 
     wait_until(cx, "import finished and table refreshed", |cx| {
-        shell.read(cx).import.is_none() && shell.read(cx).row_count == 11
+        shell.read(cx).imports.import.is_none() && shell.read(cx).dashboard.row_count == 11
     });
     cx.update(|cx| {
         let s = shell.read(cx);
@@ -111,7 +111,9 @@ fn overlap_with_another_account_blocks_until_overridden(cx: &mut TestAppContext)
     click_import(cx, handle, &shell);
     // 68 imported rows minus the card payment: transfers are hidden by
     // default (task 3.3).
-    wait_until(cx, "Cobalt import", |cx| shell.read(cx).row_count == 67);
+    wait_until(cx, "Cobalt import", |cx| {
+        shell.read(cx).dashboard.row_count == 67
+    });
 
     open_and_choose(
         cx,
@@ -131,14 +133,14 @@ fn overlap_with_another_account_blocks_until_overridden(cx: &mut TestAppContext)
     });
     click_import(cx, handle, &shell); // disabled: does nothing
     cx.run_until_parked();
-    cx.update(|cx| assert!(shell.read(cx).import.is_some(), "still open"));
+    cx.update(|cx| assert!(shell.read(cx).imports.import.is_some(), "still open"));
 
     with_window(cx, handle, |_, cx| {
         panel(&shell, cx).update(cx, |p, _| p.override_overlap = true); // the checkbox's handler
     });
     click_import(cx, handle, &shell);
     wait_until(cx, "Gold import with override", |cx| {
-        shell.read(cx).import.is_none() && shell.read(cx).row_count == 67 + 100
+        shell.read(cx).imports.import.is_none() && shell.read(cx).dashboard.row_count == 67 + 100
     });
 }
 
@@ -199,7 +201,7 @@ fn near_match_is_offered_and_a_confirmed_same_charge_replaces(cx: &mut TestAppCo
     wait_until(cx, "base plan", |cx| plan_ready(&shell, cx));
     click_import(cx, handle, &shell);
     wait_until(cx, "base import", |cx| {
-        shell.read(cx).import.is_none() && shell.read(cx).row_count == 1
+        shell.read(cx).imports.import.is_none() && shell.read(cx).dashboard.row_count == 1
     });
 
     open_path_and_choose(cx, handle, &shell, &tip, "American Express · Cobalt");
@@ -226,11 +228,14 @@ fn near_match_is_offered_and_a_confirmed_same_charge_replaces(cx: &mut TestAppCo
     });
     click_import(cx, handle, &shell);
     wait_until(cx, "replacement import", |cx| {
-        shell.read(cx).import.is_none()
+        shell.read(cx).imports.import.is_none()
     });
     cx.update(|cx| {
         let s = shell.read(cx);
-        assert_eq!(s.row_count, 1, "the existing row was replaced, not added");
+        assert_eq!(
+            s.dashboard.row_count, 1,
+            "the existing row was replaced, not added"
+        );
         assert_eq!(
             last_toast(&shell, cx),
             Some((
@@ -259,26 +264,26 @@ fn undo_needs_a_second_click_and_removes_the_latest_import(cx: &mut TestAppConte
     );
     wait_until(cx, "plan", |cx| plan_ready(&shell, cx));
     click_import(cx, handle, &shell);
-    wait_until(cx, "import", |cx| shell.read(cx).row_count == 67);
+    wait_until(cx, "import", |cx| shell.read(cx).dashboard.row_count == 67);
 
     wait_until(cx, "import history", |cx| {
-        shell.read(cx).import_history.len() == 1
+        shell.read(cx).imports.import_history.len() == 1
     });
 
     with_window(cx, handle, |window, cx| {
-        let id = shell.read(cx).import_history[0].id;
+        let id = shell.read(cx).imports.import_history[0].id;
         shell.update(cx, |s, cx| s.undo_import(id, window, cx));
         assert_eq!(
-            shell.read(cx).confirm_undo_import,
+            shell.read(cx).imports.confirm_undo_import,
             Some(id),
             "first click only asks to confirm"
         );
-        assert_eq!(shell.read(cx).row_count, 67);
+        assert_eq!(shell.read(cx).dashboard.row_count, 67);
         shell.update(cx, |s, cx| s.undo_import(id, window, cx));
     });
 
     wait_until(cx, "undo", |cx| {
-        shell.read(cx).row_count == 0 && shell.read(cx).import_history.is_empty()
+        shell.read(cx).dashboard.row_count == 0 && shell.read(cx).imports.import_history.is_empty()
     });
     cx.update(|cx| {
         assert_eq!(
@@ -371,7 +376,7 @@ fn history_table_columns_fit_every_page_width() {
 fn the_imports_history_table_fits_the_available_width(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, seed_long_history);
     wait_until(cx, "import history", |cx| {
-        shell.read(cx).import_history.len() == 1
+        shell.read(cx).imports.import_history.len() == 1
     });
     cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Imports, cx)));
 
@@ -384,7 +389,7 @@ fn the_imports_history_table_fits_the_available_width(cx: &mut TestAppContext) {
         draw_frame(cx, handle);
     };
     let widths = |cx: &App| -> Vec<f32> {
-        let table = shell.read(cx).history_table.read(cx);
+        let table = shell.read(cx).imports.history_table.read(cx);
         (0..6)
             .map(|i| table.col_width(i).unwrap().as_f32())
             .collect()
@@ -503,7 +508,7 @@ fn assert_button_paints_icon(
 fn the_in_row_undo_button_stays_inside_its_row(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, seed_three_imports);
     wait_until(cx, "import history", |cx| {
-        shell.read(cx).import_history.len() == 3
+        shell.read(cx).imports.import_history.len() == 3
     });
     cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Imports, cx)));
     cx.run_until_parked();
@@ -578,13 +583,13 @@ fn the_in_row_undo_button_stays_inside_its_row(cx: &mut TestAppContext) {
     // Arm the confirmation (first click): the button grows its label —
     // still with clearance, the row no taller than its neighbours, and the
     // armed label fitting the Undo column.
-    let newest = cx.update(|cx| shell.read(cx).import_history[0].id);
+    let newest = cx.update(|cx| shell.read(cx).imports.import_history[0].id);
     with_window(cx, handle, |window, cx| {
         shell.update(cx, |s, cx| s.undo_import(newest, window, cx));
     });
     cx.update(|cx| {
         assert_eq!(
-            shell.read(cx).confirm_undo_import,
+            shell.read(cx).imports.confirm_undo_import,
             Some(newest),
             "the first click only arms the confirmation"
         );
@@ -601,7 +606,15 @@ fn the_in_row_undo_button_stays_inside_its_row(cx: &mut TestAppContext) {
         cells[0].size.height, cells[1].size.height,
         "the armed newest row is no taller than the others"
     );
-    let col_w = cx.update(|cx| shell.read(cx).history_table.read(cx).col_width(5).unwrap());
+    let col_w = cx.update(|cx| {
+        shell
+            .read(cx)
+            .imports
+            .history_table
+            .read(cx)
+            .col_width(5)
+            .unwrap()
+    });
     assert!(
         btn(&mut window).size.width + px(CELL_PAD_X) <= col_w,
         "the armed label overflows the Undo column: button {:?} + {CELL_PAD_X} > {col_w:?}",
@@ -625,7 +638,7 @@ fn the_in_row_undo_button_stays_inside_its_row(cx: &mut TestAppContext) {
 fn the_imports_header_buttons_show_icons_without_ellipses(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, seed_three_imports);
     wait_until(cx, "import history", |cx| {
-        shell.read(cx).import_history.len() == 3
+        shell.read(cx).imports.import_history.len() == 3
     });
     cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Imports, cx)));
     cx.run_until_parked();
@@ -799,7 +812,12 @@ fn cmd_o_opens_the_file_picker_and_the_preview(cx: &mut TestAppContext) {
     // Actions dispatch along the focus path, so focus the search input
     // first — like a user who clicked into the window.
     with_window(cx, handle, |window, cx| {
-        let input = shell.read(cx).search_input.read(cx).focus_handle(cx);
+        let input = shell
+            .read(cx)
+            .dashboard
+            .search_input
+            .read(cx)
+            .focus_handle(cx);
         window.focus(&input, cx);
     });
     cx.simulate_keystrokes(handle, "cmd-o");
@@ -808,7 +826,7 @@ fn cmd_o_opens_the_file_picker_and_the_preview(cx: &mut TestAppContext) {
     let file = demo("simplii-chequing.csv");
     cx.simulate_path_prompt_response(move |_| Some(vec![file]));
     wait_until(cx, "preview open on the Imports page", |cx| {
-        shell.read(cx).import.is_some() && shell.read(cx).page == Page::Imports
+        shell.read(cx).imports.import.is_some() && shell.read(cx).page == Page::Imports
     });
 }
 
@@ -832,9 +850,9 @@ fn the_undo_action_arms_then_undoes_the_newest_import(cx: &mut TestAppContext) {
     wait_until(cx, "plan", |cx| plan_ready(&shell, cx));
     click_import(cx, handle, &shell);
     wait_until(cx, "import history", |cx| {
-        shell.read(cx).import_history.len() == 1 && shell.read(cx).row_count == 67
+        shell.read(cx).imports.import_history.len() == 1 && shell.read(cx).dashboard.row_count == 67
     });
-    let id = cx.update(|cx| shell.read(cx).import_history[0].id);
+    let id = cx.update(|cx| shell.read(cx).imports.import_history[0].id);
 
     with_window(cx, handle, |window, cx| {
         window.dispatch_action(Box::new(UndoLastImport), cx)
@@ -842,7 +860,7 @@ fn the_undo_action_arms_then_undoes_the_newest_import(cx: &mut TestAppContext) {
     cx.run_until_parked();
     cx.update(|cx| {
         assert_eq!(
-            shell.read(cx).confirm_undo_import,
+            shell.read(cx).imports.confirm_undo_import,
             Some(id),
             "first activation only asks to confirm"
         );
@@ -851,7 +869,7 @@ fn the_undo_action_arms_then_undoes_the_newest_import(cx: &mut TestAppContext) {
         window.dispatch_action(Box::new(UndoLastImport), cx)
     });
     wait_until(cx, "undo", |cx| {
-        shell.read(cx).row_count == 0 && shell.read(cx).import_history.is_empty()
+        shell.read(cx).dashboard.row_count == 0 && shell.read(cx).imports.import_history.is_empty()
     });
 }
 
@@ -867,7 +885,7 @@ fn the_undo_action_is_a_no_op_without_history(cx: &mut TestAppContext) {
     });
     cx.run_until_parked();
     cx.update(|cx| {
-        assert_eq!(shell.read(cx).confirm_undo_import, None);
+        assert_eq!(shell.read(cx).imports.confirm_undo_import, None);
         assert!(toasts(&shell, cx).is_empty());
     });
 }
@@ -914,7 +932,12 @@ fn cmd_e_dispatches_export(cx: &mut TestAppContext) {
         shell.read(cx).refresh_task.is_some()
     });
     with_window(cx, handle, |window, cx| {
-        let input = shell.read(cx).search_input.read(cx).focus_handle(cx);
+        let input = shell
+            .read(cx)
+            .dashboard
+            .search_input
+            .read(cx)
+            .focus_handle(cx);
         window.focus(&input, cx);
     });
     cx.simulate_keystrokes(handle, "cmd-e");
@@ -940,7 +963,7 @@ fn unrecognized_file_shows_an_error_and_no_panel(cx: &mut TestAppContext) {
     });
     cx.update(|cx| {
         let s = shell.read(cx);
-        assert!(s.import.is_none());
+        assert!(s.imports.import.is_none());
         let (msg, is_error) = last_toast(&shell, cx).expect("error toast");
         assert!(is_error && msg.contains("not a recognized export"), "{msg}");
     });
@@ -979,8 +1002,8 @@ fn import_end_to_end_shows_expected_values_on_every_page(cx: &mut TestAppContext
     // PAY DEMO AMEX" debits pair with those payments (4.2) and are
     // categorized as Card Payment too.
     wait_until(cx, "all-time view over both imports", |cx| {
-        shell.read(cx).summary.months == ["2026-09", "2026-10", "2026-11"]
-            && shell.read(cx).row_count == 109
+        shell.read(cx).dashboard.summary.months == ["2026-09", "2026-10", "2026-11"]
+            && shell.read(cx).dashboard.row_count == 109
     });
 
     // Spend per month from expected.json with transfers excluded: the Amex
@@ -1010,7 +1033,8 @@ fn import_end_to_end_shows_expected_values_on_every_page(cx: &mut TestAppContext
     cx.update(|cx| {
         let s = shell.read(cx);
         let row = |name: &str| {
-            s.summary
+            s.dashboard
+                .summary
                 .rows
                 .iter()
                 .find(|r| r.name == name)
@@ -1026,6 +1050,7 @@ fn import_end_to_end_shows_expected_values_on_every_page(cx: &mut TestAppContext
         assert_eq!(row("Uncategorized").total, row("Spend").total);
         // Chart + legend (3.5): the single Uncategorized row.
         let chart: Vec<(&str, i64)> = s
+            .dashboard
             .chart_rows
             .iter()
             .map(|r| (r.name.as_str(), r.spend_cents))
@@ -1041,17 +1066,17 @@ fn import_end_to_end_shows_expected_values_on_every_page(cx: &mut TestAppContext
     cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::ToCategorize, cx)));
     cx.update(|cx| {
         let s = shell.read(cx);
-        assert!(!s.queue.is_empty(), "the queue has groups");
+        assert!(!s.queue.groups.is_empty(), "the queue has groups");
         assert!(
-            s.queue.windows(2).all(|w| w[0].count >= w[1].count),
+            s.queue.groups.windows(2).all(|w| w[0].count >= w[1].count),
             "sorted by count descending"
         );
-        let rows: i64 = s.queue.iter().map(|g| g.count).sum();
+        let rows: i64 = s.queue.groups.iter().map(|g| g.count).sum();
         assert_eq!(
             rows, s.uncategorized_visible,
             "the queue covers every uncategorized row"
         );
-        let cents: i64 = s.queue.iter().map(|g| g.total_cents).sum();
+        let cents: i64 = s.queue.groups.iter().map(|g| g.total_cents).sum();
         assert_eq!(cents, -spend_total, "queue amounts match the dashboard");
     });
 
@@ -1081,6 +1106,7 @@ fn import_end_to_end_shows_expected_values_on_every_page(cx: &mut TestAppContext
     cx.update(|cx| {
         let s = shell.read(cx);
         let history: Vec<(&str, &str, i64)> = s
+            .imports
             .import_history
             .iter()
             .map(|e| (e.file_name.as_str(), e.account.as_str(), e.rows_added))
@@ -1094,14 +1120,20 @@ fn import_end_to_end_shows_expected_values_on_every_page(cx: &mut TestAppContext
             "newest import first"
         );
         assert_eq!(
-            s.import_history[0].first_date.as_deref(),
+            s.imports.import_history[0].first_date.as_deref(),
             Some("2026-09-01")
         );
-        assert_eq!(s.import_history[0].last_date.as_deref(), Some("2026-11-01"));
         assert_eq!(
-            s.import_history[1].first_date.as_deref(),
+            s.imports.import_history[0].last_date.as_deref(),
+            Some("2026-11-01")
+        );
+        assert_eq!(
+            s.imports.import_history[1].first_date.as_deref(),
             Some("2026-09-01")
         );
-        assert_eq!(s.import_history[1].last_date.as_deref(), Some("2026-11-06"));
+        assert_eq!(
+            s.imports.import_history[1].last_date.as_deref(),
+            Some("2026-11-06")
+        );
     });
 }
