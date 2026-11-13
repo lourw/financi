@@ -78,7 +78,9 @@ impl StatementParser for Amex {
     }
 
     fn row_hash(&self, account_key: &AccountKey, record: &RawRecord) -> RowHash {
-        let field = |ix: usize| record.fields.get(ix).map_or(&b""[..], |s| s.as_bytes());
+        // 3.71: hash the undecoded bytes, so the file's encoding guess
+        // cannot move a row's identity.
+        let field = |ix: usize| record.raw_fields.get(ix).map_or(&b""[..], Vec::as_slice);
         row_hash(
             account_key,
             &[field(DATE), field(DESCRIPTION), field(AMOUNT)],
@@ -103,7 +105,7 @@ impl StatementParser for Amex {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use financi_core::read_raw_file;
+    use financi_core::{Encoding, read_raw_file};
 
     fn record(line: &str) -> RawRecord {
         let file = format!("{}\n{line}", HEADER.join(","));
@@ -260,5 +262,69 @@ mod tests {
         let c = Amex.row_hash(&key(), &record("05 Nov 2026,06 Nov 2026,COFFEE,4.51"));
         assert_eq!(a, b, "Date Processed is not an identity field");
         assert_ne!(a, c);
+    }
+
+    #[test]
+    fn ascii_row_hash_is_pinned() {
+        // 3.71: an all-ASCII row's hash is unchanged by byte hashing. This
+        // hex digest pins the scheme (key, `|`-free identity fields,
+        // length-prefixed SHA-256) so any change trips here first.
+        let rec = record("05 Nov 2026,06 Nov 2026,COFFEE,4.50");
+        assert_eq!(
+            Amex.row_hash(&key(), &rec).0,
+            "ab548ab4d7b0a777d4787259740a57ebcb6a550352594216e4d6c6afb6dcd5f0"
+        );
+    }
+
+    #[test]
+    fn hash_survives_the_encoding_guess() {
+        // 3.71: the same row, byte for byte, in a clean UTF-8 file and in
+        // a file a stray Windows-1252 byte pushes to that encoding, must
+        // hash the same even though the two files decode it differently.
+        let row = b"05 Nov 2026,06 Nov 2026,CAF\xC3\xA9 MARKET,4.50"; // é as UTF-8
+        let header = b"Date,Date Processed,Description,Amount\n";
+        let clean = read_raw_file(&[header.as_slice(), row, b"\n"].concat()).unwrap();
+        let mixed = read_raw_file(
+            &[
+                header.as_slice(),
+                row,
+                b"\n07 Nov 2026,07 Nov 2026,STRAY\xC9,3.00\n",
+            ]
+            .concat(),
+        )
+        .unwrap();
+        assert_eq!(clean.encoding, Encoding::Utf8);
+        assert_eq!(
+            mixed.encoding,
+            Encoding::Windows1252,
+            "the stray byte moves the file"
+        );
+        let a = Amex.row_hash(&key(), &clean.records[0]);
+        let b = Amex.row_hash(&key(), &mixed.records[0]);
+        assert_eq!(a, b, "same bytes, same hash");
+        assert_ne!(
+            clean.records[0].fields[2], mixed.records[0].fields[2],
+            "the decoded text differs, which is exactly why it must not be hashed"
+        );
+    }
+
+    #[test]
+    fn rows_differing_only_in_invalid_bytes_hash_differently() {
+        // 3.71: a BOM pins the file to UTF-8 with lossy decoding, so two
+        // rows carrying different invalid bytes look identical once
+        // decoded — hashing the bytes keeps them distinct rows.
+        let mut file = vec![0xEF, 0xBB, 0xBF];
+        file.extend(b"Date,Date Processed,Description,Amount\n");
+        file.extend(b"05 Nov 2026,06 Nov 2026,CAF\x81,4.50\n");
+        file.extend(b"05 Nov 2026,06 Nov 2026,CAF\x8D,4.50\n");
+        let raw = read_raw_file(&file).unwrap();
+        assert_eq!(raw.encoding, Encoding::Utf8, "the BOM decides the guess");
+        assert_eq!(
+            raw.records[0].fields[2], raw.records[1].fields[2],
+            "both invalid bytes decode to the replacement character"
+        );
+        let a = Amex.row_hash(&key(), &raw.records[0]);
+        let b = Amex.row_hash(&key(), &raw.records[1]);
+        assert_ne!(a, b, "the bytes differ, so the rows differ");
     }
 }

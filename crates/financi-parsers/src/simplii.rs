@@ -109,7 +109,9 @@ impl StatementParser for Simplii {
     }
 
     fn row_hash(&self, account_key: &AccountKey, record: &RawRecord) -> RowHash {
-        let field = |ix: usize| record.fields.get(ix).map_or(&b""[..], |s| s.as_bytes());
+        // 3.71: hash the undecoded bytes, so the file's encoding guess
+        // cannot move a row's identity.
+        let field = |ix: usize| record.raw_fields.get(ix).map_or(&b""[..], Vec::as_slice);
         row_hash(
             account_key,
             &[field(DATE), field(DETAILS), field(OUT), field(IN)],
@@ -139,7 +141,7 @@ impl StatementParser for Simplii {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use financi_core::read_raw_file;
+    use financi_core::{Encoding, read_raw_file};
 
     const RAW_HEADER: &str = "Date, Transaction Details, Funds Out, Funds In ";
 
@@ -219,6 +221,39 @@ mod tests {
         let c = Simplii.row_hash(&key, &record("10/07/2026, X,1.00,"));
         assert_ne!(a, b, "leading space is part of the raw value");
         assert_ne!(a, c, "in vs out matters");
+    }
+
+    #[test]
+    fn hash_survives_the_encoding_guess() {
+        // 3.71: the same row, byte for byte, hashes the same in a clean
+        // UTF-8 file and in one a stray Windows-1252 byte pushes to that
+        // encoding — even though the two guesses decode it differently.
+        let key = AccountKey("00000000-0000-4000-8000-0000000000bb".into());
+        let row = b"10/07/2026,CAF\xC3\xA9,,12.34"; // é as UTF-8
+        let clean = read_raw_file(&[RAW_HEADER.as_bytes(), b"\n", row, b"\n"].concat()).unwrap();
+        let mixed = read_raw_file(
+            &[
+                RAW_HEADER.as_bytes(),
+                b"\n",
+                row,
+                b"\n11/07/2026,STRAY\xC9,3.00,\n",
+            ]
+            .concat(),
+        )
+        .unwrap();
+        assert_eq!(clean.encoding, Encoding::Utf8);
+        assert_eq!(
+            mixed.encoding,
+            Encoding::Windows1252,
+            "the stray byte moves the file"
+        );
+        let a = Simplii.row_hash(&key, &clean.records[0]);
+        let b = Simplii.row_hash(&key, &mixed.records[0]);
+        assert_eq!(a, b, "same bytes, same hash");
+        assert_ne!(
+            clean.records[0].fields[1], mixed.records[0].fields[1],
+            "the decoded text differs, which is exactly why it must not be hashed"
+        );
     }
 
     #[test]

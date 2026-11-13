@@ -6,7 +6,7 @@ Runs beside the UI queue, in the order listed. Backend only: don't read the UI d
 
 Runs beside the UI queue. 5.1 and 5.2 (in M5) follow 3.90.
 
-- [ ] **3.71 Row hashes don't depend on the encoding guess.** (Code
+- [x] **3.71 Row hashes don't depend on the encoding guess.** (Code
   review, 2026-11-11.) Parsers hash `record.fields`, which are decoded
   strings, and the encoding is guessed once per file: one invalid UTF-8
   byte makes the whole file Windows-1252. Then every correctly encoded
