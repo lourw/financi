@@ -102,21 +102,15 @@ pub fn parser(id: &str) -> Option<Parser> {
     financi_parsers::by_id(id)
 }
 
-/// A human name for a parser's format, e.g. "American Express credit card".
-/// A format that feeds several account kinds lists them all, joined with
-/// " / ".
-pub fn format_label(parser: &dyn StatementParser) -> String {
-    let institution = match parser.institution() {
+/// The display name of a parser's institution, e.g. "American Express" —
+/// keyed by `StatementParser::institution()`, never the parser id, and the
+/// same name `Account::display_name` and the account picker show (3.61).
+pub fn institution_label(parser: &dyn StatementParser) -> &'static str {
+    match parser.institution() {
         "amex" => "American Express",
         "simplii" => "Simplii Financial",
         other => other,
-    };
-    let kinds: Vec<_> = parser
-        .account_kinds()
-        .iter()
-        .map(|k| k.label().to_lowercase())
-        .collect();
-    format!("{institution} {}", kinds.join(" / "))
+    }
 }
 
 /// Accounts this file may be imported into: same institution, and an
@@ -305,8 +299,12 @@ mod tests {
         let simplii = load_file(&demo("simplii-chequing.csv")).unwrap();
         assert_eq!(simplii.parser_id, "simplii");
         assert_eq!(
-            format_label(parser(simplii.parser_id).unwrap().as_ref()),
-            "Simplii Financial chequing / credit card"
+            institution_label(parser(amex.parser_id).unwrap().as_ref()),
+            "American Express"
+        );
+        assert_eq!(
+            institution_label(parser(simplii.parser_id).unwrap().as_ref()),
+            "Simplii Financial"
         );
     }
 

@@ -373,12 +373,11 @@ sharing the header Undo's confirm state, tooltip "Undo this import"; at
 rest it reads "Undo" beside the `undo-2` icon — an explicit exception to
 the icon-only `row_action_button` (3.37, user request).
 
-**Import preview.** A two-line `Panel`. Line one: file name, the
-institution, then Cancel and the primary import action ("Import 32
-transactions") at the right end. Line two, muted with the key number in
-`foreground`: `Into [account ▾] | 32 new of 84 rows · 52 already
-imported, skipped · Oct 1 – Dec 4, 2026`. No stat blocks. The institution
-becomes a `TypeTag` (3.61).
+**Import preview.** A two-line `Panel`. Line one: file name, then the
+institution as a `text_sm` `TypeTag` (3.61), then Cancel and the primary
+import action ("Import 32 transactions") at the right end. Line two, muted
+with the key number in `foreground`: `Into [account ▾] | 32 new of 84 rows
+· 52 already imported, skipped · Oct 1 – Dec 4, 2026`. No stat blocks.
 
 ## 6. Decisions
 

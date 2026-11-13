@@ -627,7 +627,7 @@ Start these only after both queues are done (`docs/tasks.md` → *Picking the ne
     install-desktop`, and say which session type (X11 / Wayland) you
     checked. Add the new `mise` tasks to `CLAUDE.md` → *Commands*.
 
-- [ ] **3.61 The import preview names the institution.** From `plan.md`
+- [x] **3.61 The import preview names the institution.** From `plan.md`
   → *Make account selection on import clearer* (never made a task; user
   confirmed 2026-11-11). The account picker already lists "Institution ·
   Account" (`Account::display_name`), but the preview's only sign of the
