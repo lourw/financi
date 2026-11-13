@@ -350,14 +350,14 @@ fn the_dashboard_filter_row_controls_share_one_centre_line(cx: &mut TestAppConte
     for (w, h) in [(1200., 720.), (1600., 1000.)] {
         let (handle, _shell) = open_dashboard_for_geometry(cx, w, h);
         let mut window = VisualTestContext::from_window(handle, cx);
-        let centre = centre_y(&mut window, "filters:date-range");
+        let centre = centre_y(cx, handle, "filters:date-range");
         for sel in [
             "accounts:filter",
             "filters:search",
             "filters:options",
             "filters:count",
         ] {
-            let cy = centre_y(&mut window, sel);
+            let cy = centre_y(cx, handle, sel);
             assert!(
                 (cy - centre).abs() <= 1.,
                 "{sel} centres at y {cy}, not on the filter row's centre line {centre} ({w}x{h})"
@@ -463,9 +463,9 @@ fn the_dashboard_stays_aligned_with_a_custom_date_range(cx: &mut TestAppContext)
             "filters:options",
             "filters:count",
         ];
-        let centre = centre_y(&mut window, "filters:date-range");
+        let centre = centre_y(cx, handle, "filters:date-range");
         for sel in CONTROLS {
-            let cy = centre_y(&mut window, sel);
+            let cy = centre_y(cx, handle, sel);
             assert!(
                 (cy - centre).abs() <= 1.,
                 "{sel} centres at y {cy}, not on the filter row's centre line {centre} (custom range, {w}x{h})"
@@ -1197,35 +1197,20 @@ fn clicking_the_include_transfers_checkbox_toggles_it(cx: &mut TestAppContext) {
     wait_until(cx, "initial rows, transfers off", |cx| {
         shell.read(cx).dashboard.row_count == 2 && shell.read(cx).accounts.len() == 2
     });
-    let mut window = VisualTestContext::from_window(handle, cx);
-    let trigger = window
-        .debug_bounds("filters:options")
-        .expect("the filter row renders the Options button");
-    window.simulate_click(trigger.center(), Modifiers::default());
-    cx.run_until_parked();
+    click(cx, handle, "filters:options");
     draw_frame(cx, handle);
     for sel in [
         "checkbox:include-transfers",
         "checkbox:uncategorized-only",
         "checkbox:show-hidden",
     ] {
-        assert!(
-            window.debug_bounds(sel).is_some(),
-            "the Options popover renders {sel}"
-        );
+        assert!(paints(cx, handle, sel), "the Options popover renders {sel}");
     }
-    let bounds = window
-        .debug_bounds("checkbox:include-transfers")
-        .expect("the Options popover renders the include-transfers checkbox");
-    let at = point(
-        bounds.origin.x + bounds.size.width / 2.,
-        bounds.origin.y + bounds.size.height / 2.,
-    );
-    window.simulate_click(at, Modifiers::default());
+    click(cx, handle, "checkbox:include-transfers");
     wait_until(cx, "click checks the box and shows the transfer", |cx| {
         shell.read(cx).dashboard.include_transfers && shell.read(cx).dashboard.row_count == 3
     });
-    window.simulate_click(at, Modifiers::default());
+    click(cx, handle, "checkbox:include-transfers");
     wait_until(cx, "clicking again unchecks", |cx| {
         !shell.read(cx).dashboard.include_transfers && shell.read(cx).dashboard.row_count == 2
     });
@@ -1239,26 +1224,21 @@ fn the_options_button_counts_the_toggles_that_are_on(cx: &mut TestAppContext) {
     wait_until(cx, "initial rows, transfers off", |cx| {
         shell.read(cx).dashboard.row_count == 2 && shell.read(cx).accounts.len() == 2
     });
-    let mut window = VisualTestContext::from_window(handle, cx);
     draw_frame(cx, handle);
     assert!(
-        window.debug_bounds("filters:options-btn:Options").is_some(),
+        paints(cx, handle, "filters:options-btn:Options"),
         "with no toggle on, the button reads just \"Options\""
     );
-    with_window(cx, handle, |window, cx| {
-        shell.update(cx, |s, cx| {
-            s.set_include_transfers(true, window, cx);
-            s.set_uncategorized_only(true, window, cx);
-        });
-    });
+    // Flip two toggles through the popover, the way a user does.
+    click(cx, handle, "filters:options");
+    click(cx, handle, "checkbox:include-transfers");
+    click(cx, handle, "checkbox:uncategorized-only");
     wait_until(cx, "both toggles on", |cx| {
         shell.read(cx).dashboard.include_transfers && shell.read(cx).dashboard.uncategorized_only
     });
     draw_frame(cx, handle);
     assert!(
-        window
-            .debug_bounds("filters:options-btn:Options \u{b7} 2")
-            .is_some(),
+        paints(cx, handle, "filters:options-btn:Options \u{b7} 2"),
         "with two toggles on, the button reads \"Options \u{b7} 2\""
     );
 }
@@ -1297,9 +1277,9 @@ fn unchecking_an_account_filters_the_table(cx: &mut TestAppContext) {
         (id("Cobalt"), id("Gold"))
     });
 
-    with_window(cx, handle, |window, cx| {
-        shell.update(cx, |s, cx| s.set_account_checked(cobalt, false, window, cx));
-    });
+    // Open the accounts popover and click the checkboxes themselves.
+    click(cx, handle, "accounts:filter");
+    click(cx, handle, format!("checkbox:account-{cobalt}"));
     wait_until(cx, "only Gold's row shows", |cx| {
         shell.read(cx).dashboard.row_count == 1
             && table_rows(&shell, cx)
@@ -1313,16 +1293,12 @@ fn unchecking_an_account_filters_the_table(cx: &mut TestAppContext) {
 
     // Unchecking every account shows no rows (empty in `ViewFilter`
     // means all, so the table must not fall back to everything).
-    with_window(cx, handle, |window, cx| {
-        shell.update(cx, |s, cx| s.set_account_checked(gold, false, window, cx));
-    });
+    click(cx, handle, format!("checkbox:account-{gold}"));
     wait_until(cx, "nothing selected: empty table", |cx| {
         shell.read(cx).dashboard.row_count == 0
     });
 
-    with_window(cx, handle, |window, cx| {
-        shell.update(cx, |s, cx| s.set_account_checked(cobalt, true, window, cx));
-    });
+    click(cx, handle, format!("checkbox:account-{cobalt}"));
     wait_until(cx, "Cobalt's row back", |cx| {
         shell.read(cx).dashboard.row_count == 1
             && table_rows(&shell, cx)
@@ -1918,15 +1894,25 @@ fn seed_chart_rows(conn: &financi_db::rusqlite::Connection) {
     txn("Mystery Vendor", -200, None);
 }
 
+/// 3.75: click a legend row for real — the same `on_click` the user hits.
 fn click_chart_legend(
     cx: &mut TestAppContext,
     handle: AnyWindowHandle,
     shell: &Entity<Shell>,
     id: Option<i64>,
 ) {
-    with_window(cx, handle, |window, cx| {
-        shell.update(cx, |s, cx| s.click_legend_row(id, window, cx));
+    let ix = cx.update(|cx| {
+        shell
+            .read(cx)
+            .dashboard
+            .chart_rows
+            .iter()
+            .position(|r| r.id == id)
     });
+    let Some(ix) = ix else {
+        panic!("category {id:?} is one of the legend's rows (wait for the refresh that shows it)")
+    };
+    click(cx, handle, format!("chart:legend-row:{ix}"));
 }
 
 fn top_category_id(shell: &Entity<Shell>, cx: &App, name: &str) -> i64 {
@@ -2035,6 +2021,9 @@ fn child_click_filters_further_and_a_second_click_clears(cx: &mut TestAppContext
     wait_until(cx, "drilled into Food", |cx| {
         shell.read(cx).dashboard.chart_parent == Some(food)
     });
+    // The chart's *rows* follow on the refresh the click started; the
+    // child is only a legend row once they have landed.
+    wait_idle(cx, &shell);
     let groceries = cx.update(|cx| find_child(&shell, cx, "Groceries").unwrap());
 
     click_chart_legend(cx, handle, &shell, Some(groceries));
@@ -2301,7 +2290,7 @@ fn chart_labels_adapt_to_the_window_size(cx: &mut TestAppContext) {
         shell.read(cx).dashboard.chart_rows.len() == 3
     });
 
-    // `open_shell` opens 1100 wide: with the legend beside it the plot is
+    // `open_shell` opens 1200 wide: with the legend beside it the plot is
     // narrow, so the labels are truncated to a small character budget.
     let (small_chars, small_labels) = cx.update(|cx| shell.read(cx).chart_label_plan());
     assert_eq!(small_labels, 3);
@@ -2775,6 +2764,8 @@ fn set_all_time(cx: &mut TestAppContext, handle: AnyWindowHandle, shell: &Entity
     });
 }
 
+/// 3.75: click a summary grid cell for real. `id` is the category row
+/// (`None` — the Uncategorized row), `month` the column (`None` — Total).
 fn click_summary_cell(
     cx: &mut TestAppContext,
     handle: AnyWindowHandle,
@@ -2782,11 +2773,60 @@ fn click_summary_cell(
     id: Option<i64>,
     month: Option<&str>,
 ) {
-    let month = month.map(str::to_string);
-    with_window(cx, handle, |window, cx| {
-        shell.update(cx, |s, cx| {
-            s.click_summary_cell(id, month.clone(), window, cx)
-        });
+    let found = cx.update(|cx| {
+        let s = shell.read(cx);
+        let ix = s.summary_rows().iter().position(|r| {
+            r.id == id
+                && !matches!(
+                    r.kind,
+                    SummaryRowKind::Income | SummaryRowKind::Spend | SummaryRowKind::Net
+                )
+        })?;
+        let months = &s.dashboard.summary.months;
+        let col = match month {
+            Some(m) => months.iter().position(|x| x == m)?,
+            None => months.len(),
+        };
+        Some((ix, col))
+    });
+    let Some((ix, col)) = found else {
+        panic!(
+            "category {id:?} paints a summary row (children only after \
+             `expand_summary_parent`) and month {month:?} is a column"
+        )
+    };
+    click(cx, handle, format!("summary:cell-{ix}-{col}"));
+}
+
+/// Expand a collapsed summary parent by clicking its name cell, so its
+/// child rows paint and can be clicked (3.75).
+fn expand_summary_parent(
+    cx: &mut TestAppContext,
+    handle: AnyWindowHandle,
+    shell: &Entity<Shell>,
+    parent: i64,
+) {
+    let ix = cx.update(|cx| {
+        shell
+            .read(cx)
+            .summary_rows()
+            .iter()
+            .position(|r| r.id == Some(parent))
+    });
+    let Some(ix) = ix else {
+        panic!("parent {parent} is a summary row")
+    };
+    click(cx, handle, format!("summary:name-{ix}"));
+    wait_until(cx, "parent expanded", |cx| {
+        matches!(
+            shell
+                .read(cx)
+                .summary_rows()
+                .iter()
+                .find(|r| r.id == Some(parent))
+                .map(|r| r.kind),
+            Some(SummaryRowKind::Parent { expanded: true, .. })
+        )
     });
 }
 
@@ -2900,12 +2940,15 @@ fn clicking_a_child_summary_cell_drills_the_chart_to_its_parent(cx: &mut TestApp
         shell.read(cx).dashboard.row_count == 7
     });
     let groceries = cx.update(|cx| find_child(&shell, cx, "Groceries").unwrap());
+    // Children only paint once the parent is expanded — click its cell,
+    // not a row the user cannot see.
+    let food = cx.update(|cx| summary_parent_id(&shell, cx, "Food"));
+    expand_summary_parent(cx, handle, &shell, food);
 
     click_summary_cell(cx, handle, &shell, Some(groceries), Some("2026-04"));
     wait_until(cx, "only April's Groceries row", |cx| {
         shell.read(cx).dashboard.row_count == 1
     });
-    let food = cx.update(|cx| summary_parent_id(&shell, cx, "Food"));
     cx.update(|cx| {
         assert_eq!(table_rows(&shell, cx)[0].description, "GROCER STORE APR");
         assert_eq!(
@@ -2987,6 +3030,8 @@ fn clearing_the_legend_selection_clears_the_summary_month(cx: &mut TestAppContex
     });
     let food = cx.update(|cx| summary_parent_id(&shell, cx, "Food"));
     let groceries = cx.update(|cx| find_child(&shell, cx, "Groceries").unwrap());
+    // The Groceries cell only exists once Food is expanded.
+    expand_summary_parent(cx, handle, &shell, food);
 
     // Re-clicking the selected legend row: the pair clears together.
     click_summary_cell(cx, handle, &shell, Some(groceries), Some("2026-04"));
@@ -3195,11 +3240,10 @@ fn summary_months_scroll_under_pinned_name_and_total(cx: &mut TestAppContext) {
     });
     draw_frame(cx, handle);
 
-    let mut window = VisualTestContext::from_window(handle, cx);
-    let panel = bounds_of(&mut window, "panel:summary");
-    let name = bounds_of(&mut window, "summary:name-0");
-    let total = bounds_of(&mut window, "summary:cell-0-24");
-    let zone = bounds_of(&mut window, "summary:months-0");
+    let panel = bounds(cx, handle, "panel:summary");
+    let name = bounds(cx, handle, "summary:name-0");
+    let total = bounds(cx, handle, "summary:cell-0-24");
+    let zone = bounds(cx, handle, "summary:months-0");
     // Both pinned columns paint inside the panel…
     assert!(
         panel.origin.x <= name.origin.x && name.right() <= panel.right(),
@@ -3220,7 +3264,7 @@ fn summary_months_scroll_under_pinned_name_and_total(cx: &mut TestAppContext) {
     // or the Total), so no cell's visible part can leave the zone.
     let mut whole = 0;
     for col in 0..24 {
-        let cell = bounds_of(&mut window, leaked(format!("summary:cell-0-{col}")));
+        let cell = bounds(cx, handle, leaked(format!("summary:cell-0-{col}")));
         if cell.origin.x >= zone.origin.x - px(1.) && cell.right() <= zone.right() + px(1.) {
             whole += 1;
         } else {
@@ -3239,12 +3283,12 @@ fn summary_months_scroll_under_pinned_name_and_total(cx: &mut TestAppContext) {
     // scrolled away to the left.
     let off0 = cx.update(|cx| shell.read(cx).dashboard.summary_scroll.offset().x);
     assert!(off0 < px(0.), "the 24-month strip is scrolled sideways");
-    let newest = bounds_of(&mut window, "summary:cell-0-23");
+    let newest = bounds(cx, handle, "summary:cell-0-23");
     assert!(
         newest.right() > zone.origin.x && newest.origin.x < zone.right(),
         "the latest month is on screen"
     );
-    let oldest = bounds_of(&mut window, "summary:cell-0-0");
+    let oldest = bounds(cx, handle, "summary:cell-0-0");
     assert!(
         oldest.right() <= zone.origin.x + px(1.),
         "the oldest month is scrolled out to the left"
@@ -3252,18 +3296,18 @@ fn summary_months_scroll_under_pinned_name_and_total(cx: &mut TestAppContext) {
 
     // Shift+wheel over the month zone scrolls it, and the header moves by
     // exactly the same amount as the body cells.
-    let before_label = bounds_of(&mut window, "summary:month-label-12").origin.x;
-    let before_cell = bounds_of(&mut window, "summary:cell-0-12").origin.x;
-    let before_name = bounds_of(&mut window, "summary:name-0").origin.x;
-    let before_total = bounds_of(&mut window, "summary:cell-0-24").origin.x;
-    wheel_over_x(cx, handle, viewport_centre(zone), 240.);
+    let before_label = bounds(cx, handle, "summary:month-label-12").origin.x;
+    let before_cell = bounds(cx, handle, "summary:cell-0-12").origin.x;
+    let before_name = bounds(cx, handle, "summary:name-0").origin.x;
+    let before_total = bounds(cx, handle, "summary:cell-0-24").origin.x;
+    wheel(cx, handle, viewport_centre(zone), 240., 0.);
     draw_frame(cx, handle);
     let off1 = cx.update(|cx| shell.read(cx).dashboard.summary_scroll.offset().x);
     assert!(off1 > off0, "the strip scrolled back towards its left end");
     let moved = f32::from(off1 - off0);
     assert!(moved > 0.);
-    let after_label = f32::from(bounds_of(&mut window, "summary:month-label-12").origin.x);
-    let after_cell = f32::from(bounds_of(&mut window, "summary:cell-0-12").origin.x);
+    let after_label = f32::from(bounds(cx, handle, "summary:month-label-12").origin.x);
+    let after_cell = f32::from(bounds(cx, handle, "summary:cell-0-12").origin.x);
     assert!(
         (after_label - f32::from(before_label) - moved).abs() < 1.,
         "the header months moved with the handle"
@@ -3274,22 +3318,22 @@ fn summary_months_scroll_under_pinned_name_and_total(cx: &mut TestAppContext) {
     );
     // The pinned columns did not move.
     assert_eq!(
-        bounds_of(&mut window, "summary:name-0").origin.x,
+        bounds(cx, handle, "summary:name-0").origin.x,
         before_name,
         "the name column stays pinned"
     );
     assert_eq!(
-        bounds_of(&mut window, "summary:cell-0-24").origin.x,
+        bounds(cx, handle, "summary:cell-0-24").origin.x,
         before_total,
         "the Total column stays pinned"
     );
 
     // Vertical scrolling of the body still works over the month zone,
     // and the name column moves with the rows (it is part of the body).
-    let y_before = bounds_of(&mut window, "summary:name-0").origin.y;
-    wheel_over(cx, handle, viewport_centre(zone), -40.);
+    let y_before = bounds(cx, handle, "summary:name-0").origin.y;
+    wheel(cx, handle, viewport_centre(zone), 0., -40.);
     draw_frame(cx, handle);
-    let y_after = bounds_of(&mut window, "summary:name-0").origin.y;
+    let y_after = bounds(cx, handle, "summary:name-0").origin.y;
     assert!(
         y_after < y_before,
         "the rows scroll vertically under the month zone, names included"
@@ -3306,25 +3350,24 @@ fn a_horizontal_swipe_does_not_jump_the_summary_rows_vertically(cx: &mut TestApp
     resize_and_draw(cx, handle, 1200., 720.);
     set_all_time_covering(cx, handle, &shell, 24);
     draw_frame(cx, handle);
-    let mut window = VisualTestContext::from_window(handle, cx);
-    let zone = bounds_of(&mut window, "summary:months-0");
+    let zone = bounds(cx, handle, "summary:months-0");
 
     // Wheel the body down first, so there is somewhere to jump back to.
-    let y_top = bounds_of(&mut window, "summary:name-0").origin.y;
-    wheel_over(cx, handle, viewport_centre(zone), -40.);
+    let y_top = bounds(cx, handle, "summary:name-0").origin.y;
+    wheel(cx, handle, viewport_centre(zone), 0., -40.);
     draw_frame(cx, handle);
-    let y_scrolled = bounds_of(&mut window, "summary:name-0").origin.y;
+    let y_scrolled = bounds(cx, handle, "summary:name-0").origin.y;
     assert!(y_scrolled < y_top, "the body is scrolled down");
 
     // A horizontal swipe over the month zone moves the months…
     let x0 = cx.update(|cx| shell.read(cx).dashboard.summary_scroll.offset().x);
-    wheel_over_x(cx, handle, viewport_centre(zone), 200.);
+    wheel(cx, handle, viewport_centre(zone), 200., 0.);
     draw_frame(cx, handle);
     let x1 = cx.update(|cx| shell.read(cx).dashboard.summary_scroll.offset().x);
     assert_ne!(x1, x0, "the month strip scrolled sideways");
 
     // …and leaves the body exactly where it was.
-    let y_after = bounds_of(&mut window, "summary:name-0").origin.y;
+    let y_after = bounds(cx, handle, "summary:name-0").origin.y;
     assert_eq!(
         y_after, y_scrolled,
         "the horizontal swipe left the rows' vertical position alone"
@@ -3360,9 +3403,8 @@ fn changing_the_summary_range_lands_on_the_latest_month(cx: &mut TestAppContext)
     );
 
     // Scroll away from the right end…
-    let mut window = VisualTestContext::from_window(handle, cx);
-    let zone = bounds_of(&mut window, "summary:months-0");
-    wheel_over_x(cx, handle, viewport_centre(zone), 200.);
+    let zone = bounds(cx, handle, "summary:months-0");
+    wheel(cx, handle, viewport_centre(zone), 200., 0.);
     draw_frame(cx, handle);
     let scrolled = cx.update(|cx| shell.read(cx).dashboard.summary_scroll.offset().x);
     assert!(scrolled < max, "the strip is no longer at its right end");
@@ -3384,8 +3426,8 @@ fn changing_the_summary_range_lands_on_the_latest_month(cx: &mut TestAppContext)
         (offset + max).abs() < px(1.),
         "the new range lands scrolled to the last month"
     );
-    let zone = bounds_of(&mut window, "summary:months-0");
-    let newest = bounds_of(&mut window, "summary:cell-0-23");
+    let zone = bounds(cx, handle, "summary:months-0");
+    let newest = bounds(cx, handle, "summary:cell-0-23");
     assert!(
         newest.right() > zone.origin.x && newest.origin.x < zone.right(),
         "the latest month is on screen"
@@ -3405,6 +3447,9 @@ fn a_short_summary_range_shows_no_horizontal_scrollbar(cx: &mut TestAppContext) 
     let (handle, shell) = open_shell(cx, |conn| seed_summary_months(conn, 3));
     resize_and_draw(cx, handle, 1600., 900.);
     set_all_time_covering(cx, handle, &shell, 3);
+    // Two frames: the scroll handle clamps the app's stick-to-end sentinel
+    // only on the pass after the new months first paint.
+    draw_frame(cx, handle);
     draw_frame(cx, handle);
     let (offset, max) = cx.update(|cx| {
         let s = shell.read(cx);
@@ -3421,9 +3466,8 @@ fn a_short_summary_range_shows_no_horizontal_scrollbar(cx: &mut TestAppContext) 
     assert_eq!(offset, px(0.), "and nothing is scrolled");
     // The strip still reads as today: the newest month sits flush against
     // `Total`.
-    let mut window = VisualTestContext::from_window(handle, cx);
-    let total = bounds_of(&mut window, "summary:cell-0-3");
-    let newest = bounds_of(&mut window, "summary:cell-0-2");
+    let total = bounds(cx, handle, "summary:cell-0-3");
+    let newest = bounds(cx, handle, "summary:cell-0-2");
     assert!(
         (total.origin.x - newest.right()).abs() < px(9.),
         "the months sit right-aligned beside the Total column"

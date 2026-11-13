@@ -4,9 +4,7 @@ use super::*;
 #[gpui::test]
 fn drop_create_account_inline_and_import(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, |_| {});
-    wait_until(cx, "initial load", |cx| {
-        shell.read(cx).refresh_task.is_some()
-    });
+    wait_idle(cx, &shell);
 
     open_and_choose(cx, handle, &shell, "simplii-chequing.csv", NEW_ACCOUNT);
     with_window(cx, handle, |window, cx| {
@@ -78,9 +76,7 @@ fn empty_account_name_is_refused(cx: &mut TestAppContext) {
 #[gpui::test]
 fn the_new_account_field_has_a_visible_label(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, |_| {});
-    wait_until(cx, "initial load", |cx| {
-        shell.read(cx).refresh_task.is_some()
-    });
+    wait_idle(cx, &shell);
     open_and_choose(cx, handle, &shell, "amex-sep-oct.csv", NEW_ACCOUNT);
     let mut window = VisualTestContext::from_window(handle, cx);
     draw_frame(cx, handle);
@@ -132,7 +128,7 @@ fn overlap_with_another_account_blocks_until_overridden(cx: &mut TestAppContext)
         assert!(!p.read(cx).can_import(), "blocked without override");
     });
     click_import(cx, handle, &shell); // disabled: does nothing
-    cx.run_until_parked();
+    wait_idle(cx, &shell);
     cx.update(|cx| assert!(shell.read(cx).imports.import.is_some(), "still open"));
 
     with_window(cx, handle, |_, cx| {
@@ -806,9 +802,7 @@ fn the_file_menu_offers_all_five_actions(cx: &mut TestAppContext) {
 #[gpui::test]
 fn cmd_o_opens_the_file_picker_and_the_preview(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, |_| {});
-    wait_until(cx, "initial load", |cx| {
-        shell.read(cx).refresh_task.is_some()
-    });
+    wait_idle(cx, &shell);
     // Actions dispatch along the focus path, so focus the search input
     // first — like a user who clicked into the window.
     with_window(cx, handle, |window, cx| {
@@ -877,13 +871,11 @@ fn the_undo_action_arms_then_undoes_the_newest_import(cx: &mut TestAppContext) {
 #[gpui::test]
 fn the_undo_action_is_a_no_op_without_history(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, |_| {});
-    wait_until(cx, "initial load", |cx| {
-        shell.read(cx).refresh_task.is_some()
-    });
+    wait_idle(cx, &shell);
     with_window(cx, handle, |window, cx| {
         window.dispatch_action(Box::new(UndoLastImport), cx)
     });
-    cx.run_until_parked();
+    wait_idle(cx, &shell);
     cx.update(|cx| {
         assert_eq!(shell.read(cx).imports.confirm_undo_import, None);
         assert!(toasts(&shell, cx).is_empty());
@@ -895,9 +887,7 @@ fn the_undo_action_is_a_no_op_without_history(cx: &mut TestAppContext) {
 #[gpui::test]
 fn export_and_restore_say_not_available_yet(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, |_| {});
-    wait_until(cx, "initial load", |cx| {
-        shell.read(cx).refresh_task.is_some()
-    });
+    wait_idle(cx, &shell);
     with_window(cx, handle, |window, cx| {
         window.dispatch_action(Box::new(ExportData), cx)
     });
@@ -928,9 +918,7 @@ fn export_and_restore_say_not_available_yet(cx: &mut TestAppContext) {
 #[gpui::test]
 fn cmd_e_dispatches_export(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, |_| {});
-    wait_until(cx, "initial load", |cx| {
-        shell.read(cx).refresh_task.is_some()
-    });
+    wait_idle(cx, &shell);
     with_window(cx, handle, |window, cx| {
         let input = shell
             .read(cx)
@@ -961,6 +949,7 @@ fn unrecognized_file_shows_an_error_and_no_panel(cx: &mut TestAppContext) {
     with_window(cx, handle, |window, cx| {
         shell.update(cx, |s, cx| s.open_file(odd.clone(), window, cx));
     });
+    wait_idle(cx, &shell);
     cx.update(|cx| {
         let s = shell.read(cx);
         assert!(s.imports.import.is_none());
@@ -973,9 +962,7 @@ fn unrecognized_file_shows_an_error_and_no_panel(cx: &mut TestAppContext) {
 #[gpui::test]
 fn import_end_to_end_shows_expected_values_on_every_page(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, |_| {});
-    wait_until(cx, "initial load", |cx| {
-        shell.read(cx).refresh_task.is_some()
-    });
+    wait_idle(cx, &shell);
 
     import_demo_file(cx, handle, &shell, "amex-sep-nov.csv", "Amex");
     import_demo_file(cx, handle, &shell, "simplii-chequing.csv", "Chequing");

@@ -656,60 +656,50 @@ fn set_rules_search(
     cx.run_until_parked();
 }
 
-/// The y of a painted selector's top edge, panicking with a Rules-page
-/// message when it is not painted.
-fn rules_sel_y(window: &mut VisualTestContext, sel: &str) -> f32 {
-    let b = window
-        .debug_bounds(leaked(sel.to_string()))
-        .unwrap_or_else(|| panic!("{sel} paints on the Rules page"));
-    f32::from(b.origin.y)
-}
-
 /// 3.28: the list groups rules by their subcategory with a header row per
 /// group ("Food › Coffee · 3 rules"), groups in label order, and rows
 /// within a group by Pattern (the default).
 #[gpui::test]
 fn rules_page_groups_rows_by_target_category(cx: &mut TestAppContext) {
     let (handle, _shell, coffee, snacks, games, rules) = open_rules_page(cx);
-    let mut window = VisualTestContext::from_window(handle, cx);
     draw_frame(cx, handle);
 
     assert!(
-        paints(&mut window, "label:4 rules".into()),
+        paints(cx, handle, "label:4 rules"),
         "the header counts the rules"
     );
     for id in [coffee, snacks, games] {
         assert!(
-            paints(&mut window, format!("rules:group-{id}")),
+            paints(cx, handle, format!("rules:group-{id}")),
             "a group header for category {id}"
         );
     }
     for id in rules {
         assert!(
-            paints(&mut window, format!("rules:row-{id}")),
+            paints(cx, handle, format!("rules:row-{id}")),
             "a row for rule {id}"
         );
     }
     // Groups sorted by label: Food › Coffee before Food › Snacks before
     // Fun › Games.
     assert!(
-        rules_sel_y(&mut window, &format!("rules:group-{coffee}")) < {
+        centre_y(cx, handle, format!("rules:group-{coffee}")) < {
             draw_frame(cx, handle);
-            rules_sel_y(&mut window, &format!("rules:group-{snacks}"))
+            centre_y(cx, handle, format!("rules:group-{snacks}"))
         }
     );
     assert!(
-        rules_sel_y(&mut window, &format!("rules:group-{snacks}")) < {
+        centre_y(cx, handle, format!("rules:group-{snacks}")) < {
             draw_frame(cx, handle);
-            rules_sel_y(&mut window, &format!("rules:group-{games}"))
+            centre_y(cx, handle, format!("rules:group-{games}"))
         }
     );
     // Within the Coffee group the rows are by Pattern: "COFFEE" above
     // "COFFEE SHOP".
     assert!(
-        rules_sel_y(&mut window, &format!("rules:row-{}", rules[0])) < {
+        centre_y(cx, handle, format!("rules:row-{}", rules[0])) < {
             draw_frame(cx, handle);
-            rules_sel_y(&mut window, &format!("rules:row-{}", rules[1]))
+            centre_y(cx, handle, format!("rules:row-{}", rules[1]))
         },
         "rows sort by Pattern within their group"
     );
@@ -720,15 +710,14 @@ fn rules_page_groups_rows_by_target_category(cx: &mut TestAppContext) {
 #[gpui::test]
 fn rules_page_search_covers_patterns_and_category_names(cx: &mut TestAppContext) {
     let (handle, shell, _coffee, _snacks, _games, rules) = open_rules_page(cx);
-    let mut window = VisualTestContext::from_window(handle, cx);
 
     // A pattern substring: only r2 ("COFFEE SHOP").
     set_rules_search(cx, handle, &shell, "shop");
     draw_frame(cx, handle);
-    assert!(paints(&mut window, format!("rules:row-{}", rules[1])));
+    assert!(paints(cx, handle, format!("rules:row-{}", rules[1])));
     for id in [rules[0], rules[2], rules[3]] {
         assert!(
-            !paints(&mut window, format!("rules:row-{id}")),
+            !paints(cx, handle, format!("rules:row-{id}")),
             "r{id} does not match \"shop\""
         );
     }
@@ -736,10 +725,10 @@ fn rules_page_search_covers_patterns_and_category_names(cx: &mut TestAppContext)
     // A child-category name in another case: only r3 (targets Games).
     set_rules_search(cx, handle, &shell, "games");
     draw_frame(cx, handle);
-    assert!(paints(&mut window, format!("rules:row-{}", rules[2])));
+    assert!(paints(cx, handle, format!("rules:row-{}", rules[2])));
     for id in [rules[0], rules[1], rules[3]] {
         assert!(
-            !paints(&mut window, format!("rules:row-{id}")),
+            !paints(cx, handle, format!("rules:row-{id}")),
             "rule {id} does not match \"games\""
         );
     }
@@ -747,22 +736,22 @@ fn rules_page_search_covers_patterns_and_category_names(cx: &mut TestAppContext)
     // A parent-category name: "fun" is r3's parent.
     set_rules_search(cx, handle, &shell, "fun");
     draw_frame(cx, handle);
-    assert!(paints(&mut window, format!("rules:row-{}", rules[2])));
-    assert!(!paints(&mut window, format!("rules:row-{}", rules[0])));
+    assert!(paints(cx, handle, format!("rules:row-{}", rules[2])));
+    assert!(!paints(cx, handle, format!("rules:row-{}", rules[0])));
 
     // Nothing matches: the empty state, no rows.
     set_rules_search(cx, handle, &shell, "zzz");
     draw_frame(cx, handle);
-    assert!(paints(&mut window, "rules:empty".into()));
+    assert!(paints(cx, handle, "rules:empty"));
     for id in rules {
-        assert!(!paints(&mut window, format!("rules:row-{id}")));
+        assert!(!paints(cx, handle, format!("rules:row-{id}")));
     }
     // Clearing the box shows everything again.
     set_rules_search(cx, handle, &shell, "");
     draw_frame(cx, handle);
-    assert!(!paints(&mut window, "rules:empty".into()));
+    assert!(!paints(cx, handle, "rules:empty"));
     for id in rules {
-        assert!(paints(&mut window, format!("rules:row-{id}")));
+        assert!(paints(cx, handle, format!("rules:row-{id}")));
     }
 }
 
@@ -779,26 +768,25 @@ fn rules_page_test_mode_marks_the_winner_first(cx: &mut TestAppContext) {
         });
     });
     set_rules_search(cx, handle, &shell, "COFFEE SHOP A");
-    let mut window = VisualTestContext::from_window(handle, cx);
     draw_frame(cx, handle);
 
     // Both substring rules match the description; the unused ones don't.
-    assert!(paints(&mut window, format!("rules:row-{}", rules[0])));
-    assert!(paints(&mut window, format!("rules:row-{}", rules[1])));
+    assert!(paints(cx, handle, format!("rules:row-{}", rules[0])));
+    assert!(paints(cx, handle, format!("rules:row-{}", rules[1])));
     for id in &rules[2..] {
         assert!(
-            !paints(&mut window, format!("rules:row-{id}")),
+            !paints(cx, handle, format!("rules:row-{id}")),
             "r{id} does not match the description"
         );
     }
     // "COFFEE SHOP" is the longer substring, so it wins and is the first
     // row, marked "wins"; "COFFEE" follows unmarked.
-    assert!(paints(&mut window, format!("rules:wins-{}", rules[1])));
-    assert!(!paints(&mut window, format!("rules:wins-{}", rules[0])));
+    assert!(paints(cx, handle, format!("rules:wins-{}", rules[1])));
+    assert!(!paints(cx, handle, format!("rules:wins-{}", rules[0])));
     assert!(
-        rules_sel_y(&mut window, &format!("rules:row-{}", rules[1])) < {
+        centre_y(cx, handle, format!("rules:row-{}", rules[1])) < {
             draw_frame(cx, handle);
-            rules_sel_y(&mut window, &format!("rules:row-{}", rules[0]))
+            centre_y(cx, handle, format!("rules:row-{}", rules[0]))
         },
         "the winner is the first row"
     );
@@ -812,8 +800,8 @@ fn rules_page_test_mode_marks_the_winner_first(cx: &mut TestAppContext) {
         });
     });
     draw_frame(cx, handle);
-    assert!(!paints(&mut window, format!("rules:wins-{}", rules[1])));
-    assert!(paints(&mut window, format!("rules:row-{}", rules[2])));
+    assert!(!paints(cx, handle, format!("rules:wins-{}", rules[1])));
+    assert!(paints(cx, handle, format!("rules:row-{}", rules[2])));
 }
 
 /// 3.28: the Unused checkbox keeps only the rules deciding zero
@@ -827,18 +815,17 @@ fn rules_page_unused_shows_only_zero_use_rules(cx: &mut TestAppContext) {
             cx.notify();
         });
     });
-    let mut window = VisualTestContext::from_window(handle, cx);
     draw_frame(cx, handle);
     // r1 (2 uses) and r2 (1 use) hide; the two rules nothing matches stay.
     for id in &rules[..2] {
         assert!(
-            !paints(&mut window, format!("rules:row-{id}")),
+            !paints(cx, handle, format!("rules:row-{id}")),
             "a used rule hides behind Unused"
         );
     }
     for id in &rules[2..] {
         assert!(
-            paints(&mut window, format!("rules:row-{id}")),
+            paints(cx, handle, format!("rules:row-{id}")),
             "the unused rule {id} stays listed"
         );
     }
@@ -862,14 +849,13 @@ fn rules_page_type_picker_filters_by_kind(cx: &mut TestAppContext) {
         });
         cx.run_until_parked();
     };
-    let mut window = VisualTestContext::from_window(handle, cx);
 
     pick(cx, Some(2)); // Regex
     draw_frame(cx, handle);
-    assert!(paints(&mut window, format!("rules:row-{}", rules[3])));
+    assert!(paints(cx, handle, format!("rules:row-{}", rules[3])));
     for id in &rules[..3] {
         assert!(
-            !paints(&mut window, format!("rules:row-{id}")),
+            !paints(cx, handle, format!("rules:row-{id}")),
             "substring rules hide under Regex"
         );
     }
@@ -877,14 +863,14 @@ fn rules_page_type_picker_filters_by_kind(cx: &mut TestAppContext) {
     pick(cx, Some(1)); // Substring
     draw_frame(cx, handle);
     for id in &rules[..3] {
-        assert!(paints(&mut window, format!("rules:row-{id}")));
+        assert!(paints(cx, handle, format!("rules:row-{id}")));
     }
-    assert!(!paints(&mut window, format!("rules:row-{}", rules[3])));
+    assert!(!paints(cx, handle, format!("rules:row-{}", rules[3])));
 
     pick(cx, None); // All types
     draw_frame(cx, handle);
     for id in rules {
-        assert!(paints(&mut window, format!("rules:row-{id}")));
+        assert!(paints(cx, handle, format!("rules:row-{id}")));
     }
 }
 
@@ -903,17 +889,17 @@ fn rules_page_collapse_hides_a_groups_rows(cx: &mut TestAppContext) {
     cx.run_until_parked();
     draw_frame(cx, handle);
     assert!(
-        paints(&mut window, format!("rules:group-{coffee}")),
+        paints(cx, handle, format!("rules:group-{coffee}")),
         "the collapsed group keeps its header"
     );
     for id in [rules[0], rules[1]] {
         assert!(
-            !paints(&mut window, format!("rules:row-{id}")),
+            !paints(cx, handle, format!("rules:row-{id}")),
             "rule {id} hides with its collapsed group"
         );
     }
     assert!(
-        paints(&mut window, format!("rules:row-{}", rules[2])),
+        paints(cx, handle, format!("rules:row-{}", rules[2])),
         "other groups stay open"
     );
 
@@ -923,8 +909,8 @@ fn rules_page_collapse_hides_a_groups_rows(cx: &mut TestAppContext) {
     window.simulate_click(header.center(), Modifiers::default());
     cx.run_until_parked();
     draw_frame(cx, handle);
-    assert!(paints(&mut window, format!("rules:row-{}", rules[0])));
-    assert!(paints(&mut window, format!("rules:row-{}", rules[1])));
+    assert!(paints(cx, handle, format!("rules:row-{}", rules[0])));
+    assert!(paints(cx, handle, format!("rules:row-{}", rules[1])));
 }
 
 /// 3.28: checking rules opens the Move bar; Move points them at another
@@ -940,10 +926,9 @@ fn rules_page_move_recategorizes_rows_and_clears_selection(cx: &mut TestAppConte
             s.set_rule_selected(r2, true, cx);
         });
     });
-    let mut window = VisualTestContext::from_window(handle, cx);
     draw_frame(cx, handle);
     assert!(
-        paints(&mut window, "rules:move-bar".into()),
+        paints(cx, handle, "rules:move-bar"),
         "checked rows open the Move bar"
     );
 
@@ -992,7 +977,7 @@ fn rules_page_move_recategorizes_rows_and_clears_selection(cx: &mut TestAppConte
     });
     draw_frame(cx, handle);
     assert!(
-        !paints(&mut window, "rules:move-bar".into()),
+        !paints(cx, handle, "rules:move-bar"),
         "the Move bar closes with the cleared selection"
     );
 }
@@ -1127,7 +1112,6 @@ fn show_rule_from_a_row_lands_on_the_deciding_rule(cx: &mut TestAppContext) {
             && s.cat_counts.get(&coffee) == Some(&3)
             && s.dashboard.table.read(cx).delegate().rows.len() == 5
     });
-    let mut window = VisualTestContext::from_window(handle, cx);
 
     // The menu model on the dashboard row: r1 decided it, so *Show rule*
     // is live.
@@ -1160,7 +1144,7 @@ fn show_rule_from_a_row_lands_on_the_deciding_rule(cx: &mut TestAppContext) {
     for _ in 0..8 {
         cx.run_until_parked();
         draw_frame(cx, handle);
-        if paints(&mut window, active.clone()) {
+        if paints(cx, handle, active.clone()) {
             break;
         }
     }
@@ -1187,18 +1171,18 @@ fn show_rule_from_a_row_lands_on_the_deciding_rule(cx: &mut TestAppContext) {
         Some(r1)
     );
     assert!(
-        paints(&mut window, active.clone()),
+        paints(cx, handle, active.clone()),
         "the deciding rule paints highlighted"
     );
     assert!(
-        !paints(&mut window, format!("rules:row-{r1}")),
+        !paints(cx, handle, format!("rules:row-{r1}")),
         "the highlighted row carries only the reveal selector"
     );
     assert!(
-        !paints(&mut window, format!("rules:row-{r3}")),
+        !paints(cx, handle, format!("rules:row-{r3}")),
         "r3 (\"GAME\") does not match the pattern and stays hidden"
     );
-    let y = rules_sel_y(&mut window, &active);
+    let y = centre_y(cx, handle, &active);
     assert!(
         y > 0. && y < 720.,
         "the revealed row was scrolled into view (y {y})"
@@ -1212,7 +1196,7 @@ fn show_rule_from_a_row_lands_on_the_deciding_rule(cx: &mut TestAppContext) {
     draw_frame(cx, handle);
     assert_eq!(cx.update(|cx| shell.read(cx).rules_page.rules_reveal), None);
     assert!(
-        !paints(&mut window, active.clone()),
+        !paints(cx, handle, active.clone()),
         "the highlight did not survive the user's own edit"
     );
 
@@ -1222,7 +1206,7 @@ fn show_rule_from_a_row_lands_on_the_deciding_rule(cx: &mut TestAppContext) {
     });
     cx.run_until_parked();
     draw_frame(cx, handle);
-    assert!(paints(&mut window, active.clone()), "revealed again");
+    assert!(paints(cx, handle, active.clone()), "revealed again");
     cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
     draw_frame(cx, handle);
     assert_eq!(

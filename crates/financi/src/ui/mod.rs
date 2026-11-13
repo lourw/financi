@@ -199,6 +199,14 @@ pub struct Shell {
     toast_clock: Instant,
     toast_task: Option<Task<()>>,
     refresh_task: Option<Task<()>>,
+    /// 3.75: idle markers for the tests. `refresh_started` counts calls to
+    /// `refresh` (the generation number); `refresh_applied` holds the
+    /// generation of the last refresh whose result was applied — the shell
+    /// is idle once the two agree (`wait_idle`). A refresh replaced by a
+    /// later one is cancelled, which is why the continuation stamps rather
+    /// than counts.
+    refresh_started: u64,
+    refresh_applied: u64,
     task: Option<Task<()>>,
     // -- Page state (3.74): each page's fields live with its page module,
     // built by its own `new` and updated by its own `apply_*` in the
@@ -365,6 +373,8 @@ impl Shell {
             toast_clock: Instant::now(),
             toast_task: None,
             refresh_task: None,
+            refresh_started: 0,
+            refresh_applied: 0,
             task: None,
             dashboard,
             queue,
@@ -466,6 +476,13 @@ impl Shell {
             sort: self.dashboard.tx_sort,
         };
         let chart_parent = self.dashboard.chart_parent;
+        // 3.75: generation counter for `wait_idle` in the tests. A refresh
+        // replaced before it completes is cancelled and its continuation
+        // never runs, so the continuation stamps its own generation into
+        // `refresh_applied`; the two agree only once the *latest* refresh
+        // has landed.
+        self.refresh_started += 1;
+        let generation = self.refresh_started;
         self.refresh_task = Some(cx.spawn_in(window, async move |this, cx| {
             let result = on_db(&db, move |c| {
                 let accounts = list_accounts(c)?;
@@ -581,6 +598,7 @@ impl Shell {
                     }
                     Err(e) => this.notify_err(format!("Database error: {e}"), cx),
                 }
+                this.refresh_applied = generation;
                 cx.notify();
             });
         }));

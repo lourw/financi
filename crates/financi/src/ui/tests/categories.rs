@@ -4,9 +4,7 @@ use super::*;
 #[gpui::test]
 fn creates_parent_and_child(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, |_| {});
-    wait_until(cx, "initial load", |cx| {
-        shell.read(cx).refresh_task.is_some()
-    });
+    wait_idle(cx, &shell);
 
     add_parent(cx, handle, &shell, "Food & Dining");
     cx.update(|cx| {
@@ -228,7 +226,7 @@ fn the_category_tree_keeps_its_scroll_offset(cx: &mut TestAppContext) {
     for _ in 0..120 {
         let centre =
             cx.update(|cx| viewport_centre(shell.read(cx).categories_page.tree_scroll.bounds()));
-        wheel_over(cx, handle, centre, -2_000.);
+        wheel(cx, handle, centre, 0., -2_000.);
         draw_frame(cx, handle);
     }
     cx.update(|cx| {
@@ -414,9 +412,7 @@ fn switching_to_categories_after_load_shows_rows(cx: &mut TestAppContext) {
 #[gpui::test]
 fn the_categories_page_labels_its_controls(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, |_| {});
-    wait_until(cx, "initial load", |cx| {
-        shell.read(cx).refresh_task.is_some()
-    });
+    wait_idle(cx, &shell);
     cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Categories, cx)));
     add_parent(cx, handle, &shell, "Food & Dining");
     let parent_id = cx.update(|cx| {
@@ -936,17 +932,12 @@ fn the_add_rule_picker_lists_the_selected_parents_children(cx: &mut TestAppConte
     cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Categories, cx)));
     select_parent(cx, handle, &shell, "Drinks");
     draw_frame(cx, handle);
-    let mut window = VisualTestContext::from_window(handle, cx);
     assert!(
-        window
-            .debug_bounds("rule:subcategory-select:cat-add")
-            .is_some(),
+        paints(cx, handle, "rule:subcategory-select:cat-add"),
         "under a parent the row paints its subcategory picker"
     );
     assert!(
-        window
-            .debug_bounds(leaked(format!("label:{SUBCATEGORY_PH}")))
-            .is_some(),
+        paints(cx, handle, format!("label:{SUBCATEGORY_PH}")),
         "the picker reads {SUBCATEGORY_PH:?} while nothing is picked"
     );
     cx.update(|cx| {
@@ -961,27 +952,22 @@ fn the_add_rule_picker_lists_the_selected_parents_children(cx: &mut TestAppConte
         );
     });
     // The open menu holds this parent's children, by their own names.
-    let trigger = window
-        .debug_bounds("rule:subcategory-select:cat-add")
-        .expect("the picker trigger");
-    window.simulate_click(trigger.center(), Modifiers::default());
-    cx.run_until_parked();
-    draw_frame(cx, handle);
-    draw_frame(cx, handle);
+    open_picker_menu(cx, handle, "rule:subcategory-select:cat-add");
     assert!(
-        window.debug_bounds("rule-choice:Coffee").is_some(),
+        paints(cx, handle, "rule-choice:Coffee"),
         "the parent's own child is listed by its own name"
     );
     assert!(
-        window.debug_bounds("rule-choice:Fuel").is_none(),
+        !paints(cx, handle, "rule-choice:Fuel"),
         "another parent's child is not in the list"
     );
     assert!(
-        window.debug_bounds("rule-choice:Drinks › Coffee").is_none(),
+        !paints(cx, handle, "rule-choice:Drinks › Coffee"),
         "the names are bare, not \"Parent › Child\""
     );
     // Add rule with a pattern but no pick: the error explains, nothing
     // saves. Close the menu first — the click must land on the button.
+    let mut window = VisualTestContext::from_window(handle, cx);
     click_past_anything(cx, &mut window);
     draw_frame(cx, handle);
     with_window(cx, handle, |window, cx| {
@@ -990,10 +976,7 @@ fn the_add_rule_picker_lists_the_selected_parents_children(cx: &mut TestAppConte
                 .update(cx, |i, cx| i.set_value("UBER", window, cx));
         });
     });
-    let btn = window
-        .debug_bounds("rule:add-rule-btn:cat-add")
-        .expect("the row's Add rule button");
-    window.simulate_click(btn.center(), Modifiers::default());
+    click(cx, handle, "rule:add-rule-btn:cat-add");
     wait_until(cx, "the no-pick error", |cx| {
         shell.read(cx).rule_error.is_some()
     });
@@ -1080,9 +1063,7 @@ fn the_rule_list_points_at_the_rules_page(cx: &mut TestAppContext) {
 #[gpui::test]
 fn the_new_category_button_opens_and_closes_the_form(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, |_| {});
-    wait_until(cx, "initial load", |cx| {
-        shell.read(cx).refresh_task.is_some()
-    });
+    wait_idle(cx, &shell);
     cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Categories, cx)));
     cx.run_until_parked();
     let mut window = VisualTestContext::from_window(handle, cx);
@@ -1300,17 +1281,8 @@ fn open_long_name_rule_fixture(
 
 /// 3.53: open a rule picker the way a user does — a click on the middle
 /// of the trigger — and paint until the (deferred) menu is up.
-fn open_picker_menu(
-    cx: &mut TestAppContext,
-    window: &mut VisualTestContext,
-    handle: AnyWindowHandle,
-    sel: &'static str,
-) {
-    let b = window
-        .debug_bounds(sel)
-        .unwrap_or_else(|| panic!("{sel} paints"));
-    window.simulate_click(b.center(), Modifiers::default());
-    cx.run_until_parked();
+fn open_picker_menu(cx: &mut TestAppContext, handle: AnyWindowHandle, sel: impl Into<String>) {
+    click(cx, handle, sel);
     draw_frame(cx, handle);
     draw_frame(cx, handle);
 }
@@ -1372,16 +1344,11 @@ fn the_subcategory_menu_shows_a_forty_character_name(cx: &mut TestAppContext) {
         trigger.size.width,
     );
 
-    open_picker_menu(cx, &mut window, handle, "rule:subcategory-select:cat-add");
+    open_picker_menu(cx, handle, "rule:subcategory-select:cat-add");
     assert_menu_item_unclipped(&mut window, name, 1200.);
 
     // Pick the long child; the trigger then holds the ellipsized name…
-    let item = window
-        .debug_bounds(leaked(format!("rule-choice:{name}")))
-        .expect("the long child paints in the open menu");
-    window.simulate_click(item.center(), Modifiers::default());
-    cx.run_until_parked();
-    draw_frame(cx, handle);
+    click(cx, handle, format!("rule-choice:{name}"));
     cx.update(|cx| {
         let s = shell.read(cx);
         assert_eq!(

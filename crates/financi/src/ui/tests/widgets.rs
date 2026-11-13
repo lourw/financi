@@ -7,9 +7,7 @@ use super::*;
 #[gpui::test]
 fn info_toasts_dismiss_themselves_after_a_few_seconds(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, |_| {});
-    wait_until(cx, "initial load", |cx| {
-        shell.read(cx).refresh_task.is_some()
-    });
+    wait_idle(cx, &shell);
     with_window(cx, handle, |window, cx| {
         window.dispatch_action(Box::new(ExportData), cx)
     });

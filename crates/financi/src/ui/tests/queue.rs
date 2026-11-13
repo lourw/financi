@@ -310,7 +310,7 @@ fn categorizing_a_queue_group_toasts_without_moving_the_page(cx: &mut TestAppCon
         .expect("the toast card is painted");
     assert!(
         card.center().x > px(550.) && card.center().y > px(360.),
-        "the toast sits in the bottom-right of the 1100 × 720 window, at {card:?}"
+        "the toast sits in the bottom-right of the 1200 × 720 window, at {card:?}"
     );
 }
 
@@ -544,11 +544,11 @@ fn the_queue_list_paints_inside_one_panel(cx: &mut TestAppContext) {
     let panel = window
         .debug_bounds("queue:panel")
         .expect("the queue page paints one bordered panel");
-    // The panel fits the default 1100 × 720 window.
+    // The panel fits the default 1200 × 720 window.
     assert!(
         panel.origin.x >= px(0.)
             && panel.origin.y >= px(0.)
-            && panel.origin.x + panel.size.width <= px(1100.) + px(1.)
+            && panel.origin.x + panel.size.width <= px(1200.) + px(1.)
             && panel.origin.y + panel.size.height <= px(720.) + px(1.),
         "the panel fits the window: {panel:?}",
     );
