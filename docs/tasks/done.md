@@ -1019,6 +1019,23 @@ the UI; tests cover 2.1–2.9.
     one matching pair still pairs it and finishes in well under a second
     in a debug build.
 
+- [x] **3.74 Group `Shell`'s state by page.** (Architecture, user decision
+  2026-11-11: move to page entities.) Pure refactor, no behaviour change,
+  right after 3.62. Today every page module reaches into ~200 shared
+  `Shell` fields and a 450-line `Shell::new`, so two lanes still collide
+  on the struct, the constructor and `refresh`.
+  - Move each page's fields into a struct in its module: `DashboardState`,
+    `QueueState`, `CategoriesState`, `RulesPageState`, `TransfersState`,
+    `ImportsState`, each with its own `new(window, cx)`; `Shell` holds
+    them as `self.dashboard`, `self.rules_page`, …. Shared data (accounts,
+    categories, rules, `child_choices`, counts) stays on `Shell` until
+    3.78 moves it to `Catalog`.
+  - Split `Shell::new` the same way, and the refresh continuation into a
+    per-page `apply_*` method.
+  - Done when: every page field lives in its page struct, `Shell::new`
+    is under ~100 lines, no file over ~1 500 lines, no new `pub`, and
+    the test count is unchanged.
+
 - [x] **3.77 A DbWorker that keeps reads fast.** (Architecture, code
   review 2026-11-11.) Backend only (`financi-db/src/worker.rs`, `lib.rs`);
   runs in a free slot any time after the Fixes lane. Today it is one FIFO
