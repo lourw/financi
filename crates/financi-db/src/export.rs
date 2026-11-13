@@ -1,7 +1,8 @@
-//! Export: one zip holding a database snapshot, `manifest.json` and the
-//! master CSV tree copied as-is (5.1, plan.md → *Export and restore*).
+//! Export, verify and restore: one zip holding a database snapshot,
+//! `manifest.json` and the master CSV tree copied as-is (5.1, 5.2,
+//! plan.md → *Export and restore*).
 //!
-//! Three parts, per plan.md:
+//! Export has three parts, per plan.md:
 //!
 //! - `financi.sqlite` — a `VACUUM INTO` snapshot taken on a dedicated
 //!   read-only connection, like the worker's reader (3.77), so exporting
@@ -14,21 +15,31 @@
 //! - `csv/…` — every file under the master CSV root, byte for byte. The
 //!   2.2 self-check runs first, so missing or damaged year files are
 //!   rebuilt before anything is zipped.
+//!
+//! Restore is the mirror image: [`verify_export`] checks a zip against its
+//! manifest without changing anything, and [`restore`] takes `.bak` copies
+//! of the live database and `csv/` tree, writes the snapshot into the live
+//! connection with rusqlite's backup API (no file swapping), migrates an
+//! older schema, and replaces `csv/` with the zip's tree.
 
 use std::collections::BTreeMap;
+use std::ffi::c_int;
 use std::fs::File;
-use std::io::{Write, copy};
-use std::path::Path;
+use std::io::{Read, Write, copy};
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use chrono::{SecondsFormat, Utc};
 use rusqlite::{Connection, OpenFlags};
 use sha2::{Digest, Sha256};
 use zip::write::SimpleFileOptions;
-use zip::{CompressionMethod, ZipWriter};
+use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
 use crate::master_csv::{self, parse_year_file};
 use crate::worker::BUSY_TIMEOUT;
-use crate::{Account, DbError, Result, SCHEMA_VERSION, list_accounts};
+use crate::{
+    Account, DbError, DbWorker, Result, SCHEMA_VERSION, list_accounts, migrate, on_db_typed,
+};
 
 /// The manifest and zip layout version. Restore refuses an export written
 /// by a newer format; bump only when the layout changes incompatibly.
@@ -263,4 +274,365 @@ fn io_error(path: &Path, source: std::io::Error) -> DbError {
 
 fn zip_error(path: &Path, source: zip::result::ZipError) -> DbError {
     io_error(path, std::io::Error::other(source))
+}
+
+// ---------------------------------------------------------------------------
+// Verify and restore (5.2)
+// ---------------------------------------------------------------------------
+
+/// Pages copied per backup step; a busy source or destination only slows
+/// the copy (both worker connections carry `busy_timeout`, 3.77).
+const BACKUP_PAGES: c_int = 1024;
+
+/// The parts of `manifest.json` that restore acts on (5.1 writes it).
+#[derive(Debug, Clone)]
+pub struct Manifest {
+    /// The manifest and zip layout version.
+    pub format_version: u32,
+    /// The schema version of the snapshot and CSVs inside.
+    pub schema_version: u32,
+    /// The export time, for confirming with the user (5.3).
+    pub exported_at: String,
+    /// SHA-256 of the `financi.sqlite` snapshot.
+    pub database_sha256: String,
+    /// One entry per listed CSV. `account.json` and stray files have no
+    /// entries and are not hash-checked.
+    pub files: Vec<ManifestFile>,
+}
+
+/// One CSV's manifest entry: its path in the zip and its SHA-256.
+#[derive(Debug, Clone)]
+pub struct ManifestFile {
+    /// Path inside the zip, e.g. `csv/amex/<key>/2026.csv`.
+    pub path: String,
+    /// SHA-256 of the exact bytes in the zip.
+    pub sha256: String,
+}
+
+/// Check an export zip without changing anything: `manifest.json` parses,
+/// its format and schema versions are no newer than this build, and every
+/// file it lists matches its SHA-256. Files the manifest does not list —
+/// `account.json`, stray files — carry no hash and are not checked.
+pub fn verify_export(zip_path: &Path) -> Result<Manifest> {
+    let mut zip = open_zip(zip_path)?;
+    verify_zip(&mut zip, zip_path)
+}
+
+/// Restore the export zip `zip_path` into the live `conn` and the master
+/// CSV root `root`, returning the manifest it restored (5.2).
+///
+/// Order is the safety: everything the zip owes is verified first, so a
+/// tampered file or a newer schema refuses before anything changes. Then
+/// the current database is copied to `<db>.bak` beside `conn` and `csv/`
+/// to `csv.bak/` beside `root`; the snapshot replaces the live database
+/// through rusqlite's backup API on the live connection (no file
+/// swapping); an older snapshot migrates to this build's schema; and
+/// `csv/` is replaced with the zip's tree. A failure part-way — say a
+/// stray file that will not extract — leaves the live database usable:
+/// restored or untouched, never half-written, with the `.bak` copies on
+/// disk either way.
+///
+/// `conn` must be a file database (it needs a path to back up) and not in
+/// a transaction: in the app this runs on the writer thread through
+/// [`restore_job`].
+pub fn restore(conn: &mut Connection, root: &Path, zip_path: &Path) -> Result<Manifest> {
+    let mut zip = open_zip(zip_path)?;
+    let manifest = verify_zip(&mut zip, zip_path)?;
+    let db_path = conn
+        .path()
+        .filter(|p| !p.is_empty())
+        .map(PathBuf::from)
+        .ok_or(DbError::RestoreNeedsFile)?;
+    // The snapshot lands in a temp file beside the live database — a
+    // source to open a backup connection from, never swapped in for it.
+    let snapshot =
+        db_path.with_file_name(format!(".financi-restore-{}.sqlite", uuid::Uuid::new_v4()));
+    let result = restore_verified(conn, root, zip_path, &mut zip, &db_path, &snapshot);
+    remove_db_files(&snapshot);
+    result?;
+    Ok(manifest)
+}
+
+/// [`restore`] as a [`DbWorker`] job: it runs on the writer thread against
+/// the live connection; the reader connection is reused and sees the
+/// restored data on its next read (WAL, 3.77). The app refreshes its
+/// views when the job returns Ok — `Catalog`'s DataChanged is 5.3.
+pub async fn restore_job(db: &DbWorker, root: &Path, zip_path: &Path) -> Result<Manifest> {
+    let (root, zip_path) = (root.to_path_buf(), zip_path.to_path_buf());
+    on_db_typed(db, move |conn| restore(conn, &root, &zip_path)).await
+}
+
+fn open_zip(zip_path: &Path) -> Result<ZipArchive<File>> {
+    let file = File::open(zip_path).map_err(|source| io_error(zip_path, source))?;
+    ZipArchive::new(file).map_err(|source| invalid_export(zip_path, source.to_string()))
+}
+
+/// The manifest, parsed and proven: versions this build can take, and a
+/// matching SHA-256 for every file the manifest lists.
+fn verify_zip(zip: &mut ZipArchive<File>, zip_path: &Path) -> Result<Manifest> {
+    let manifest = parse_manifest(zip_path, &read_entry(zip, zip_path, MANIFEST_NAME)?)?;
+    if manifest.format_version > FORMAT_VERSION {
+        return Err(DbError::ExportFormatTooNew {
+            found: manifest.format_version,
+            supported: FORMAT_VERSION,
+        });
+    }
+    if manifest.schema_version > SCHEMA_VERSION {
+        return Err(DbError::TooNew {
+            found: manifest.schema_version,
+            supported: SCHEMA_VERSION,
+        });
+    }
+    check_hash(zip, zip_path, DB_NAME, &manifest.database_sha256)?;
+    for file in &manifest.files {
+        check_hash(zip, zip_path, &file.path, &file.sha256)?;
+    }
+    Ok(manifest)
+}
+
+/// Pull the fields restore needs out of `manifest.json`.
+fn parse_manifest(zip_path: &Path, bytes: &[u8]) -> Result<Manifest> {
+    let value: serde_json::Value = serde_json::from_slice(bytes)
+        .map_err(|source| invalid_export(zip_path, format!("{MANIFEST_NAME}: {source}")))?;
+    let uint = |name: &str| -> Result<u32> {
+        value
+            .get(name)
+            .and_then(|v| v.as_u64())
+            .and_then(|v| u32::try_from(v).ok())
+            .ok_or_else(|| {
+                invalid_export(zip_path, format!("{MANIFEST_NAME} has no integer {name:?}"))
+            })
+    };
+    let text = |where_: &serde_json::Value, name: &str| -> Result<String> {
+        where_
+            .get(name)
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .ok_or_else(|| {
+                invalid_export(zip_path, format!("{MANIFEST_NAME} has no string {name:?}"))
+            })
+    };
+    // The snapshot is `financi.sqlite` by contract (5.1); an export that
+    // says otherwise is not this format.
+    let database = value.get("database").ok_or_else(|| {
+        invalid_export(zip_path, format!("{MANIFEST_NAME} has no database object"))
+    })?;
+    let db_name = text(database, "path")?;
+    if db_name != DB_NAME {
+        return Err(invalid_export(
+            zip_path,
+            format!("unexpected database path {db_name:?}"),
+        ));
+    }
+    let listed = value
+        .get("files")
+        .and_then(|f| f.as_array())
+        .ok_or_else(|| invalid_export(zip_path, format!("{MANIFEST_NAME} has no files array")))?;
+    let mut files = Vec::with_capacity(listed.len());
+    for entry in listed {
+        files.push(ManifestFile {
+            path: text(entry, "path")?,
+            sha256: text(entry, "sha256")?,
+        });
+    }
+    Ok(Manifest {
+        format_version: uint("format_version")?,
+        schema_version: uint("schema_version")?,
+        exported_at: text(&value, "exported_at")?,
+        database_sha256: text(database, "sha256")?,
+        files,
+    })
+}
+
+/// One entry's bytes, or an `InvalidExport` naming the zip.
+fn read_entry(zip: &mut ZipArchive<File>, zip_path: &Path, name: &str) -> Result<Vec<u8>> {
+    let mut entry = zip
+        .by_name(name)
+        .map_err(|source| invalid_export(zip_path, format!("{name}: {source}")))?;
+    let mut bytes = Vec::new();
+    entry
+        .read_to_end(&mut bytes)
+        .map_err(|source| io_error(zip_path, source))?;
+    Ok(bytes)
+}
+
+fn check_hash(
+    zip: &mut ZipArchive<File>,
+    zip_path: &Path,
+    name: &str,
+    expected: &str,
+) -> Result<()> {
+    let found = sha256_hex(&read_entry(zip, zip_path, name)?);
+    if found != expected {
+        return Err(DbError::ExportHashMismatch {
+            path: zip_path.to_path_buf(),
+            entry: name.to_string(),
+            expected: expected.to_string(),
+            found,
+        });
+    }
+    Ok(())
+}
+
+/// The mutation half of [`restore`], after the zip has been verified.
+fn restore_verified(
+    conn: &mut Connection,
+    root: &Path,
+    zip_path: &Path,
+    zip: &mut ZipArchive<File>,
+    db_path: &Path,
+    snapshot: &Path,
+) -> Result<()> {
+    // A database at a schema this build can migrate, checked before the
+    // live data is touched. The manifest's own version was verified
+    // already; a manifest that lies cannot get past the snapshot's.
+    write_entry(zip, zip_path, DB_NAME, snapshot)?;
+    let source = Connection::open(snapshot).map_err(|source| {
+        invalid_export(
+            zip_path,
+            format!("the snapshot is not a database: {source}"),
+        )
+    })?;
+    source.busy_timeout(BUSY_TIMEOUT)?;
+    let found: u32 = source.pragma_query_value(None, "user_version", |r| r.get(0))?;
+    if found > SCHEMA_VERSION {
+        return Err(DbError::TooNew {
+            found,
+            supported: SCHEMA_VERSION,
+        });
+    }
+
+    // `.bak` copies of the live data, then the restore itself. The backup
+    // API writes through the live connection (no file swapping), so the
+    // reader connection of 3.77 stays open and sees the new data in WAL.
+    let db_backup = backup_path(db_path);
+    let mut backup_conn = Connection::open(&db_backup)
+        .map_err(|source| io_error(&db_backup, std::io::Error::other(source)))?;
+    run_backup(conn, &mut backup_conn)?;
+    drop(backup_conn);
+    run_backup(&source, conn)?;
+    drop(source);
+    // A snapshot from an older build catches up (5.2).
+    migrate(conn)?;
+
+    // Then the CSV tree. If an entry fails to extract, the database is
+    // already restored — usable, with the old tree safe in `csv.bak/`.
+    back_up_csv_root(root)?;
+    extract_csv_tree(zip, zip_path, root)
+}
+
+/// Pages through one online backup. `run_to_completion` retries while the
+/// other connection holds a lock, so a busy source or destination only
+/// slows it down.
+fn run_backup(from: &Connection, to: &mut Connection) -> Result<()> {
+    let backup = rusqlite::backup::Backup::new(from, to)?;
+    backup.run_to_completion(BACKUP_PAGES, Duration::from_millis(10), None)?;
+    Ok(())
+}
+
+/// `<name>.bak` beside `path` (`financi.sqlite` → `financi.sqlite.bak`).
+fn backup_path(path: &Path) -> PathBuf {
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    path.with_file_name(format!("{name}.bak"))
+}
+
+/// A database file and its WAL sidecars, if any.
+fn remove_db_files(path: &Path) {
+    for suffix in ["", "-wal", "-shm"] {
+        let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
+    }
+}
+
+/// Move `root` aside as `<root>.bak`, replacing an earlier backup; a
+/// missing tree has nothing to back up.
+fn back_up_csv_root(root: &Path) -> Result<()> {
+    if !root.exists() {
+        return Ok(());
+    }
+    let bak = backup_path(root);
+    if bak.exists() {
+        let removed = if bak.is_dir() {
+            std::fs::remove_dir_all(&bak)
+        } else {
+            std::fs::remove_file(&bak)
+        };
+        removed.map_err(|source| io_error(&bak, source))?;
+    }
+    std::fs::rename(root, &bak).map_err(|source| io_error(root, source))
+}
+
+/// Extract the zip's `csv/` tree under `root`, which [`back_up_csv_root`]
+/// has just moved out of the way. The manifest and the snapshot belong to
+/// the other steps; a corrupt stray entry — one the manifest never
+/// hashed, so verification passed — fails here, part-way.
+fn extract_csv_tree(zip: &mut ZipArchive<File>, zip_path: &Path, root: &Path) -> Result<()> {
+    let prefix = format!("{CSV_DIR}/");
+    for i in 0..zip.len() {
+        let mut entry = zip
+            .by_index(i)
+            .map_err(|source| zip_error(zip_path, source))?;
+        if entry.is_dir() {
+            continue;
+        }
+        let name = entry
+            .name()
+            .map_err(|source| zip_error(zip_path, source))?
+            .into_owned();
+        let Some(rel) = name.strip_prefix(&prefix) else {
+            continue;
+        };
+        let path = csv_target(zip_path, root, rel)?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|source| io_error(parent, source))?;
+        }
+        let mut out = File::create(&path).map_err(|source| io_error(&path, source))?;
+        copy(&mut entry, &mut out).map_err(|source| io_error(&path, source))?;
+    }
+    Ok(())
+}
+
+/// Where a `csv/…` entry lands under `root`; paths that climb out of the
+/// tree are refused.
+fn csv_target(zip_path: &Path, root: &Path, rel: &str) -> Result<PathBuf> {
+    let mut path = root.to_path_buf();
+    for part in rel.split('/') {
+        if part == ".." {
+            return Err(invalid_export(
+                zip_path,
+                format!("{CSV_DIR}/{rel} escapes the csv tree"),
+            ));
+        }
+        if part.is_empty() || part == "." {
+            return Err(invalid_export(
+                zip_path,
+                format!("{CSV_DIR}/{rel} is not a file name"),
+            ));
+        }
+        path.push(part);
+    }
+    if path == root {
+        return Err(invalid_export(
+            zip_path,
+            format!("{CSV_DIR}/ is not a file"),
+        ));
+    }
+    Ok(path)
+}
+
+/// Write one zip entry to `dest`, reading it through the zip crate so its
+/// CRC check applies to what lands on disk.
+fn write_entry(zip: &mut ZipArchive<File>, zip_path: &Path, name: &str, dest: &Path) -> Result<()> {
+    let mut entry = zip
+        .by_name(name)
+        .map_err(|source| invalid_export(zip_path, format!("{name}: {source}")))?;
+    let mut out = File::create(dest).map_err(|source| io_error(dest, source))?;
+    copy(&mut entry, &mut out).map_err(|source| io_error(dest, source))?;
+    Ok(())
+}
+
+fn invalid_export(path: &Path, reason: impl Into<String>) -> DbError {
+    DbError::InvalidExport {
+        path: path.to_path_buf(),
+        reason: reason.into(),
+    }
 }

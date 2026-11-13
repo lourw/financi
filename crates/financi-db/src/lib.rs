@@ -72,6 +72,21 @@ pub enum DbError {
     },
     #[error("database schema version {found} is newer than this build supports ({supported})")]
     TooNew { found: u32, supported: u32 },
+    #[error("export format version {found} is newer than this build supports ({supported})")]
+    ExportFormatTooNew { found: u32, supported: u32 },
+    #[error(
+        "{path}: {entry} does not match its manifest SHA-256 (manifest {expected}, file {found})"
+    )]
+    ExportHashMismatch {
+        path: PathBuf,
+        entry: String,
+        expected: String,
+        found: String,
+    },
+    #[error("{path} is not a valid export: {reason}")]
+    InvalidExport { path: PathBuf, reason: String },
+    #[error("restore needs a file database, so it can write the .bak backup first")]
+    RestoreNeedsFile,
     #[error("the database job panicked; the worker survived")]
     JobPanicked,
     #[error("job superseded by a newer one with the same key")]
@@ -134,7 +149,8 @@ pub enum DbError {
 pub type Result<T, E = DbError> = std::result::Result<T, E>;
 
 /// Ordered migrations. Index + 1 is the schema version (`PRAGMA user_version`).
-const MIGRATIONS: &[&str] = &[
+/// Public so restore tests can build snapshots at an older version (5.2).
+pub const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0001_init.sql"),
     include_str!("../migrations/0002_categorize.sql"),
     include_str!("../migrations/0003_transfers.sql"),
