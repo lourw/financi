@@ -203,16 +203,15 @@ fn live_only(
     rest.next().is_none().then_some(only)
 }
 
-/// Pair every mutual singleton, rows in id order, skipping rows `paired`
-/// already holds, and return the pairs written.
+/// One pass of pairing every mutual singleton in `adj`, rows in id order,
+/// skipping rows `paired` already holds, and return the pairs written.
 ///
-/// Mutual-singleton is judged against the *live* candidates (rows not yet
-/// paired this run, in either kind): the other kind's pass may have paired
-/// a row's only competitor, and a pass of this very function can pair one
-/// that frees another (3.69). So pair until a full pass changes nothing.
-/// Each accepted pair moves two rows into `paired` and no row leaves it,
-/// so the loop terminates, and rows are visited in id order, so the result
-/// never depends on HashMap iteration.
+/// Mutual-singleton is judged against the *live* candidates: rows not yet
+/// paired this run, in either kind. A pass alone does not settle — a pair
+/// it writes can free a mutual singleton under the *other* rule — so
+/// [`run_transfer_pairing`] repeats the passes until nothing changes.
+/// Rows are visited in id order, so a pass never depends on HashMap
+/// iteration.
 fn pair_mutuals(
     conn: &Connection,
     adj: &HashMap<i64, Vec<i64>>,
@@ -222,28 +221,21 @@ fn pair_mutuals(
     let mut ids: Vec<i64> = adj.keys().copied().collect();
     ids.sort_unstable();
     let mut count = 0;
-    loop {
-        let mut progressed = false;
-        for id in &ids {
-            if paired.contains(id) {
-                continue;
-            }
-            // Mutual singleton: my only live candidate, and I am theirs.
-            let Some(other) = live_only(adj, paired, *id) else {
-                continue;
-            };
-            if live_only(adj, paired, other) != Some(*id) {
-                continue;
-            }
-            write_pair(conn, *id, other, category_id)?;
-            paired.insert(*id);
-            paired.insert(other);
-            count += 1;
-            progressed = true;
+    for id in ids {
+        if paired.contains(&id) {
+            continue;
         }
-        if !progressed {
-            break;
+        // Mutual singleton: my only live candidate, and I am theirs.
+        let Some(other) = live_only(adj, paired, id) else {
+            continue;
+        };
+        if live_only(adj, paired, other) != Some(id) {
+            continue;
         }
+        write_pair(conn, id, other, category_id)?;
+        paired.insert(id);
+        paired.insert(other);
+        count += 1;
     }
     Ok(count)
 }
@@ -334,8 +326,6 @@ pub fn run_transfer_pairing(conn: &Connection) -> Result<PairingSummary> {
             && credit.category_id == Some(card_payment)
             && within(debit.posted, credit.posted, CARD_PAYMENT_WINDOW_DAYS)
     });
-    summary.paired += pair_mutuals(conn, &card_adj, card_payment, &mut paired)?;
-
     // Own-account transfers: two different chequing/savings accounts,
     // ∓X, at least one description containing TRANSFER (case-insensitive).
     let own_adj = adjacency(
@@ -357,7 +347,18 @@ pub fn run_transfer_pairing(conn: &Connection) -> Result<PairingSummary> {
                 && within(debit.posted, credit.posted, OWN_ACCOUNT_WINDOW_DAYS)
         },
     );
-    summary.paired += pair_mutuals(conn, &own_adj, between_accounts, &mut paired)?;
+    // Settle: a pair under one rule can free a mutual singleton under
+    // either rule (3.69), so alternate passes until one changes nothing.
+    // Adjacencies are fixed, `paired` only grows, and each accepted pair
+    // adds two rows to it, so the loop terminates.
+    loop {
+        let before = paired.len();
+        summary.paired += pair_mutuals(conn, &card_adj, card_payment, &mut paired)?;
+        summary.paired += pair_mutuals(conn, &own_adj, between_accounts, &mut paired)?;
+        if paired.len() == before {
+            break;
+        }
+    }
 
     // Ambiguity: anything still unpaired with several candidates asks the
     // user — one review per row across both kinds (card first, then
@@ -1421,6 +1422,52 @@ mod tests {
         let between = crate::categories::between_accounts_category(&conn).unwrap();
         assert_eq!(state(&conn, s).1, Some(between));
         assert_eq!(state(&conn, m).1, Some(between));
+    }
+
+    #[test]
+    fn pairing_settles_across_kinds_in_both_directions() {
+        let conn = open_in_memory().unwrap();
+        let (cheq, card, sav) = (
+            chequing(&conn, "Chequing"),
+            credit(&conn, "Cobalt"),
+            savings(&conn, "Savings"),
+        );
+        // The own-account pass pairs D1 with the savings credit S, and
+        // that frees a *card* mutual singleton: with D1 gone from the
+        // pool, the card payment C and the 10-30 debit D2 (5 days apart,
+        // inside the card window) are each other's only live candidate.
+        // The card pass already ran, so only a cross-kind settle pairs
+        // them in the same run (3.69) — otherwise C stays hidden as a
+        // transfer and D2 counts as spending, with no review.
+        let c = card_payment_row(&conn, card, "2026-10-25", 150_000);
+        let d1 = row(
+            &conn,
+            cheq,
+            "2026-10-26",
+            -150_000,
+            "CREDIT CARD PAYMENT",
+            None,
+        );
+        let s = row(&conn, sav, "2026-10-27", 150_000, "TRANSFER IN", None);
+        let d2 = row(
+            &conn,
+            cheq,
+            "2026-10-30",
+            -150_000,
+            "CREDIT CARD PAYMENT",
+            None,
+        );
+
+        let out = run_transfer_pairing(&conn).unwrap();
+        assert_eq!(
+            out.paired, 2,
+            "the own pair frees a card pair in the same run"
+        );
+        assert_eq!(out.reviews, 0);
+        assert_eq!(state(&conn, d1).0, Some(s));
+        assert_eq!(state(&conn, d2).0, Some(c), "the freed mutual pairs");
+        let card_payment = card_payment_category(&conn).unwrap();
+        assert_eq!(state(&conn, d2).1, Some(card_payment));
     }
 
     #[test]
