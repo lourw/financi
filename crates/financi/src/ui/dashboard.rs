@@ -1366,6 +1366,9 @@ impl Shell {
         self.dashboard.chart_parent = None;
         self.dashboard.legend_selection = None;
         self.dashboard.summary_month = None;
+        // 3.65: the cleared box, legend highlight and summary-cell highlight
+        // repaint with this click, not with the answer.
+        cx.notify();
         self.refresh(window, cx);
     }
 }
