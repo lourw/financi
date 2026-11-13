@@ -454,11 +454,16 @@ fn categorize_new_rows(
     Ok(out)
 }
 
-/// Hard-delete the most recent import of an account, with its rows and
-/// aliases (via cascade). `None` if the account has no imports.
+/// Hard-delete the account's import `expected_import_id`, with its rows and
+/// aliases (via cascade). `None` if the account has no imports at all.
+/// Refuses with [`DbError::ImportNotNewest`] when `expected_import_id` is
+/// not the newest import of the account (3.70): the caller's history is
+/// stale, and deleting the newest import would undo a different file than
+/// the one the user clicked.
 pub fn undo_last_import(
     conn: &mut Connection,
     account_id: i64,
+    expected_import_id: i64,
 ) -> Result<Option<UndoneImport>, DbError> {
     let tx = conn.transaction()?;
     let last: Option<(i64, String)> = tx
@@ -475,6 +480,12 @@ pub fn undo_last_import(
     let Some((import_id, file_name)) = last else {
         return Ok(None);
     };
+    if import_id != expected_import_id {
+        return Err(DbError::ImportNotNewest {
+            expected: expected_import_id,
+            newest: import_id,
+        });
+    }
     let removed: usize = tx.query_row(
         "SELECT COUNT(*) FROM transactions WHERE import_id = ?1",
         [import_id],

@@ -32,8 +32,8 @@ pub fn root_for_db(db_path: &Path) -> PathBuf {
 }
 
 /// What a startup self-check did. `rewritten_years` holds `(account_id, year)`
-/// pairs that were rebuilt because the files were missing, extra or had a
-/// different row count than the database.
+/// pairs that were rebuilt because the files were missing, extra or did not
+/// match the database byte for byte.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct SelfCheckReport {
     pub accounts: usize,
@@ -66,12 +66,12 @@ struct ImportMeta {
     trailing_newline: bool,
 }
 
-/// One file to write: its name and exact bytes.
+/// One file to write: its name and exact bytes. The self-check compares
+/// against these same bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct YearFile {
     name: String,
     contents: Vec<u8>,
-    row_count: usize,
 }
 
 /// Regenerate the given calendar-year files for one account from the
@@ -105,9 +105,9 @@ pub fn rewrite_years(conn: &Connection, root: &Path, account_id: i64, years: &[i
     Ok(())
 }
 
-/// Rebuild any account's year files that are missing, extra, or whose row
-/// count differs from the database. Also writes missing `account.json`
-/// files. Notices are logged to stderr.
+/// Rebuild any account's year files that are missing, extra, or whose
+/// contents differ from the bytes the database implies. Also writes missing
+/// `account.json` files. Notices are logged to stderr.
 pub fn self_check(conn: &Connection, root: &Path) -> Result<SelfCheckReport> {
     let accounts = list_accounts(conn)?;
     let mut report = SelfCheckReport {
@@ -153,8 +153,11 @@ pub fn self_check(conn: &Connection, root: &Path) -> Result<SelfCheckReport> {
     Ok(report)
 }
 
-/// True when the files on disk match the expected set: same names and same
-/// row counts.
+/// True when the files on disk match the expected set: same names and the
+/// exact bytes `year_files` builds (3.70: a count-only check never noticed
+/// an edited or half-written file whose rows still counted right). The
+/// comparison is against the rendered bytes themselves, so encoding, BOM,
+/// line endings and trailing newline are all covered.
 fn year_is_current(expected: &[YearFile], actual: Option<&BTreeMap<String, PathBuf>>) -> bool {
     match (expected.is_empty(), actual) {
         (true, None) => true,
@@ -167,8 +170,8 @@ fn year_is_current(expected: &[YearFile], actual: Option<&BTreeMap<String, PathB
             expected.iter().all(|file| {
                 files
                     .get(&file.name)
-                    .and_then(|path| file_row_count(path).ok())
-                    == Some(file.row_count)
+                    .and_then(|path| fs::read(path).ok())
+                    .is_some_and(|bytes| bytes == file.contents)
             })
         }
     }
@@ -318,11 +321,9 @@ fn year_files(year: i32, rows: &[(&Row, &ImportMeta)]) -> Result<Vec<YearFile>> 
             } else {
                 format!("{year}-v{}.csv", ix + 1)
             };
-            let row_count = group.rows.len();
             YearFile {
                 name,
                 contents: render(group.earliest, &group.rows),
-                row_count,
             }
         })
         .collect())
@@ -423,11 +424,6 @@ fn parse_year_file(name: &str) -> Option<(i32, u32)> {
         }
         _ => None,
     }
-}
-
-fn file_row_count(path: &Path) -> std::result::Result<usize, financi_core::ReadError> {
-    let bytes = fs::read(path).map_err(|_| financi_core::ReadError::Empty)?;
-    financi_core::read_raw_file(&bytes).map(|file| file.records.len())
 }
 
 /// Write `account.json` if it is missing or its content changed. Returns
@@ -706,19 +702,23 @@ mod tests {
             "04 Nov 2026,04 Nov 2026,TWO,2.00",
         ]);
         let second = amex_file(&["03 Nov 2026,03 Nov 2026,THREE,3.00"]);
-        import(&mut conn, acct, "amex", &first, "first.csv");
-        import(&mut conn, acct, "amex", &second, "second.csv");
+        let first_import = import(&mut conn, acct, "amex", &first, "first.csv");
+        let second_import = import(&mut conn, acct, "amex", &second, "second.csv");
         rewrite_years(&conn, &root, acct, &[2026]).unwrap();
 
         let dir = account_dir_for(&conn, &root, acct);
-        let undone = undo_last_import(&mut conn, acct).unwrap().unwrap();
+        let undone = undo_last_import(&mut conn, acct, second_import.import_id.unwrap())
+            .unwrap()
+            .unwrap();
         assert_eq!(undone.affected_years, [2026].into_iter().collect());
         rewrite_years(&conn, &root, acct, &[2026]).unwrap();
         let after_first = String::from_utf8(read(&dir.join("2026.csv"))).unwrap();
         assert!(!after_first.contains("THREE"), "{after_first}");
         assert!(after_first.contains("ONE") && after_first.contains("TWO"));
 
-        let undone = undo_last_import(&mut conn, acct).unwrap().unwrap();
+        let undone = undo_last_import(&mut conn, acct, first_import.import_id.unwrap())
+            .unwrap()
+            .unwrap();
         assert_eq!(undone.removed, 2);
         rewrite_years(&conn, &root, acct, &[2026]).unwrap();
         assert_eq!(
@@ -862,6 +862,25 @@ mod tests {
         let report = self_check(&conn, &root).unwrap();
         assert!(report.rewritten_years.contains(&(acct, 2026)));
         assert_eq!(read(&dir.join("2026.csv")), original);
+
+        // Same row count, different bytes (3.70): a count-only check never
+        // noticed an edited file, the byte comparison rebuilds it.
+        let tampered = String::from_utf8(original.clone())
+            .unwrap()
+            .replace("ONE,1.00", "ONE,9.99");
+        assert_ne!(tampered.as_bytes(), original.as_slice());
+        fs::write(dir.join("2026.csv"), tampered).unwrap();
+        let report = self_check(&conn, &root).unwrap();
+        assert!(report.rewritten_years.contains(&(acct, 2026)));
+        assert_eq!(read(&dir.join("2026.csv")), original);
+
+        // Files that already match byte for byte are left alone.
+        let report = self_check(&conn, &root).unwrap();
+        assert!(
+            report.rewritten_years.is_empty(),
+            "current files are not rebuilt: {:?}",
+            report.rewritten_years
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 

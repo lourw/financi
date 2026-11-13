@@ -110,6 +110,11 @@ pub enum DbError {
     UnknownRule(i64),
     #[error("no transaction with id {0}")]
     UnknownTransaction(i64),
+    #[error(
+        "import {expected} is not the newest import for this account ({newest} is); \
+         refresh the history and undo that one first"
+    )]
+    ImportNotNewest { expected: i64, newest: i64 },
     #[error("transaction {0} has no merchant to build a rule from")]
     EmptyMerchant(i64),
     #[error("a rule needs a non-empty pattern")]

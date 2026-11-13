@@ -9,7 +9,9 @@ use financi_db::import::{
     undo_last_import,
 };
 use financi_db::master_csv::rewrite_years;
-use financi_db::{add_rule, create_account, get_account, open_in_memory, rusqlite::Connection};
+use financi_db::{
+    DbError, add_rule, create_account, get_account, open_in_memory, rusqlite::Connection,
+};
 use financi_parsers::amex::Amex;
 use financi_parsers::simplii::Simplii;
 
@@ -326,26 +328,86 @@ fn a_bad_row_rejects_the_whole_file() {
 fn undo_removes_latest_import_first_and_only_for_that_account() {
     let (mut conn, cobalt) = setup();
     let gold = create_account(&conn, "amex", "Gold", AccountKind::CreditCard).unwrap();
-    import(&mut conn, cobalt, &fixture("basic.csv"));
-    import(&mut conn, cobalt, &fixture("overlap.csv"));
+    let first = import(&mut conn, cobalt, &fixture("basic.csv"));
+    let second = import(&mut conn, cobalt, &fixture("overlap.csv"));
     import(
         &mut conn,
         gold,
         &csv(&["01 Nov 2026,01 Nov 2026,GOLD ONLY,9.99"]),
     );
 
-    let undone = undo_last_import(&mut conn, cobalt).unwrap().unwrap();
+    let undone = undo_last_import(&mut conn, cobalt, second.import_id.unwrap())
+        .unwrap()
+        .unwrap();
     assert_eq!(undone.removed, 1, "overlap.csv added one row");
     assert_eq!(count(&conn, cobalt), 5);
 
     assert_eq!(
-        undo_last_import(&mut conn, cobalt)
+        undo_last_import(&mut conn, cobalt, first.import_id.unwrap())
             .unwrap()
             .unwrap()
             .removed,
         5
     );
-    assert!(undo_last_import(&mut conn, cobalt).unwrap().is_none());
+    assert!(
+        undo_last_import(&mut conn, cobalt, first.import_id.unwrap())
+            .unwrap()
+            .is_none(),
+        "no imports left: nothing to undo, whatever id is named"
+    );
+    assert_eq!(count(&conn, gold), 1, "other account untouched");
+}
+
+/// 3.70: the caller names the import the user clicked. If it is no longer
+/// the newest (stale history), the undo refuses instead of deleting a
+/// different import.
+#[test]
+fn undo_refuses_an_import_that_is_no_longer_the_newest() {
+    let (mut conn, cobalt) = setup();
+    let first = import(&mut conn, cobalt, &fixture("basic.csv"));
+    let second = import(&mut conn, cobalt, &fixture("overlap.csv"));
+    let (first_id, second_id) = (first.import_id.unwrap(), second.import_id.unwrap());
+
+    let err = undo_last_import(&mut conn, cobalt, first_id).unwrap_err();
+    assert!(
+        matches!(err, DbError::ImportNotNewest { expected, newest }
+            if expected == first_id && newest == second_id),
+        "{err}"
+    );
+    assert_eq!(count(&conn, cobalt), 6, "the refusal deleted nothing");
+    let still_there: i64 = conn
+        .query_row("SELECT COUNT(*) FROM imports", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(still_there, 2);
+
+    // Another account's newest import is not this one either.
+    let gold = create_account(&conn, "amex", "Gold", AccountKind::CreditCard).unwrap();
+    let gold_import = import(
+        &mut conn,
+        gold,
+        &csv(&["01 Nov 2026,01 Nov 2026,GOLD ONLY,9.99"]),
+    );
+    let err = undo_last_import(&mut conn, cobalt, gold_import.import_id.unwrap()).unwrap_err();
+    assert!(matches!(
+        err,
+        DbError::ImportNotNewest { expected, newest }
+            if expected == gold_import.import_id.unwrap() && newest == second_id
+    ));
+
+    // Naming the newest import undoes exactly it.
+    let undone = undo_last_import(&mut conn, cobalt, second_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(undone.import_id, second_id);
+    assert_eq!(undone.removed, 1);
+    // …and now the older import is the newest one.
+    assert_eq!(
+        undo_last_import(&mut conn, cobalt, first_id)
+            .unwrap()
+            .unwrap()
+            .import_id,
+        first_id
+    );
     assert_eq!(count(&conn, gold), 1, "other account untouched");
 }
 
@@ -529,7 +591,7 @@ fn history_lists_imports_newest_first_with_their_rows() {
     assert_eq!(history[0].last_date.as_deref(), Some("2026-11-06"));
     assert_eq!(history[1].rows_added, 1);
 
-    let undone = undo_last_import(&mut conn, acct).unwrap();
+    let undone = undo_last_import(&mut conn, acct, history[0].id).unwrap();
     assert!(undone.is_some());
     let history = list_imports(&conn).unwrap();
     assert_eq!(
@@ -669,7 +731,7 @@ fn undoing_a_paired_import_releases_the_surviving_partner() {
     add_rule(&conn, "BILL PAYMENT", false, card_bill).unwrap();
 
     // A pair formed at import: the statement payment and its debit.
-    import(
+    let statement = import(
         &mut conn,
         cobalt,
         &csv(&["25 Oct 2026,25 Oct 2026,PAYMENT RECEIVED,-1500.00"]),
@@ -688,7 +750,9 @@ fn undoing_a_paired_import_releases_the_surviving_partner() {
 
     // Undo the statement: the surviving debit loses link, lock and transfer
     // category — rules re-apply, as after *Unpair*.
-    undo_last_import(&mut conn, cobalt).unwrap().unwrap();
+    undo_last_import(&mut conn, cobalt, statement.import_id.unwrap())
+        .unwrap()
+        .unwrap();
     assert_eq!(
         stored(&conn, "BILL PAYMENT AMEX"),
         (Some(card_bill), false),
@@ -733,7 +797,7 @@ fn undo_re_runs_pairing_and_drops_stale_reviews() {
     let gamma = create_account(&conn, "simplii", "Gamma", AccountKind::Chequing).unwrap();
 
     // Two transfer credits…
-    import_simplii(
+    let beta_import = import_simplii(
         &mut conn,
         beta,
         &simplii_csv(&["10/27/2026,TRANSFER IN,,1500.00"]),
@@ -757,7 +821,9 @@ fn undo_re_runs_pairing_and_drops_stale_reviews() {
     // Undoing Beta's import deletes one credit. Pairing runs at the end of
     // the undo (3.69): the debit pairs with the surviving credit at once,
     // and no review is left pointing at the deleted row.
-    undo_last_import(&mut conn, beta).unwrap().unwrap();
+    undo_last_import(&mut conn, beta, beta_import.import_id.unwrap())
+        .unwrap()
+        .unwrap();
     let gamma_row: i64 = conn
         .query_row(
             "SELECT id FROM transactions WHERE account_id = ?1",
@@ -1180,10 +1246,12 @@ fn undo_restores_the_replaced_transaction() {
     let before = row_values(&conn, id);
 
     let tip = csv(&[COFFEE_TIP]);
-    import_marking(&mut conn, acct, &tip, vec![(0, id)]);
+    let tip_import = import_marking(&mut conn, acct, &tip, vec![(0, id)]);
     assert_ne!(row_values(&conn, id), before);
 
-    let undone = undo_last_import(&mut conn, acct).unwrap().unwrap();
+    let undone = undo_last_import(&mut conn, acct, tip_import.import_id.unwrap())
+        .unwrap()
+        .unwrap();
     assert_eq!(
         undone.removed, 0,
         "the replacement belonged to the earlier import"
@@ -1242,7 +1310,9 @@ fn same_charge_replaces_and_restores_the_fx_columns() {
     assert_eq!(recorded, (Some("USD".to_string()), Some(1234)));
 
     // Undo puts them back.
-    undo_last_import(&mut conn, acct).unwrap().unwrap();
+    undo_last_import(&mut conn, acct, out.import_id.unwrap())
+        .unwrap()
+        .unwrap();
     assert_eq!(
         fx_values(&conn, id),
         (Some("USD".to_string()), Some(1234)),
@@ -1305,7 +1375,9 @@ fn same_charge_moves_the_master_csv_row_across_the_year_boundary() {
     );
 
     // Undo puts the old row back, byte for byte, and empties 2027.
-    let undone = undo_last_import(&mut conn, acct).unwrap().unwrap();
+    let undone = undo_last_import(&mut conn, acct, out.import_id.unwrap())
+        .unwrap()
+        .unwrap();
     assert_eq!(undone.affected_years, [2026, 2027].into_iter().collect());
     rewrite_years(&conn, &root, acct, &[2026, 2027]).unwrap();
     assert!(!dir.join("2027.csv").exists());

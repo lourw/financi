@@ -880,7 +880,9 @@ impl Shell {
         let csv_root = self.csv_root.clone();
         self.task = Some(cx.spawn_in(window, async move |this, cx| {
             let result = on_db(&db, move |c| {
-                let undone = undo_last_import(c, account_id)?;
+                // 3.70: name the import the user clicked; if the history
+                // went stale the DB refuses instead of undoing another file.
+                let undone = undo_last_import(c, account_id, import_id)?;
                 let csv_error = match &undone {
                     Some(u) => {
                         let years: Vec<i32> = u.affected_years.iter().copied().collect();
