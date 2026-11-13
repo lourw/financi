@@ -6,16 +6,6 @@ Runs beside the UI queue, in the order listed. Backend only: don't read the UI d
 
 Runs beside the UI queue. 5.1 and 5.2 (in M5) follow 3.90.
 
-- [x] **3.72 Text rules ignore case for accented letters.** (Code review,
-  2026-11-11.) Substring rules lowercase with `to_ascii_lowercase`
-  (`financi-core/src/rules.rs`), regex rules are Unicode
-  case-insensitive. So the text rule `Montréal` never matches
-  `CAFE    MONTRÉAL`, while the regex `montréal` does. Use
-  `to_lowercase()` on pattern and description, keep tie-break lengths as
-  `chars().count()` of the original pattern, and add tests with accented
-  upper and lower case. 3.55's Aho-Corasick matcher must keep this
-  folding.
-
 - [ ] **3.71 Row hashes don't depend on the encoding guess.** (Code
   review, 2026-11-11.) Parsers hash `record.fields`, which are decoded
   strings, and the encoding is guessed once per file: one invalid UTF-8

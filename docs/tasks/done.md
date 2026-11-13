@@ -1060,6 +1060,16 @@ the UI; tests cover 2.1–2.9.
     survives. Add `DbError::JobPanicked`.
   - Tests for each.
 
+- [x] **3.72 Text rules ignore case for accented letters.** (Code review,
+  2026-11-11.) Substring rules lowercase with `to_ascii_lowercase`
+  (`financi-core/src/rules.rs`), regex rules are Unicode
+  case-insensitive. So the text rule `Montréal` never matches
+  `CAFE    MONTRÉAL`, while the regex `montréal` does. Use
+  `to_lowercase()` on pattern and description, keep tie-break lengths as
+  `chars().count()` of the original pattern, and add tests with accented
+  upper and lower case. 3.55's Aho-Corasick matcher must keep this
+  folding.
+
 - [x] **3.73 Imports and undo stay fast as data grows.** (Code review,
   2026-11-11; cheap fixes now, timed budgets in 3.55.)
   - **Compile rules once per import.** `categorize_new_rows`
