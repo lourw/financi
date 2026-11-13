@@ -619,14 +619,32 @@ fn seed_three_imports(conn: &financi_db::rusqlite::Connection) {
 fn history_table_columns_fit_every_page_width() {
     // The Undo column budgets the longest label ("Click again to undo")
     // at the generous per-character width, plus the xsmall button's icon
-    // and padding and the cell's, so neither it nor the icon-only rest
-    // state can clip (3.32).
+    // and padding and the cell's, so neither it nor the icon-plus-"Undo"
+    // rest state (3.37) can clip.
     assert!(
         history_undo_col_w()
             >= UNDO_LABEL_MAX.chars().count() as f32 * TEXT_SM_CHAR_PX
                 + BUTTON_PAD_X
                 + UNDO_ICON_W
                 + CELL_PAD_X
+    );
+    // 3.37: the idle label fits too, and the column is exactly as wide as
+    // the widest label needs — no wider, so it steals nothing from `File`
+    // and `Account`.
+    assert!(
+        history_undo_col_w()
+            >= "Undo".chars().count() as f32 * TEXT_SM_CHAR_PX
+                + BUTTON_PAD_X
+                + UNDO_ICON_W
+                + CELL_PAD_X
+    );
+    assert_eq!(
+        history_undo_col_w(),
+        (UNDO_LABEL_MAX.chars().count() as f32 * TEXT_SM_CHAR_PX
+            + BUTTON_PAD_X
+            + UNDO_ICON_W
+            + CELL_PAD_X)
+            .ceil()
     );
     for win in [1200., 1440., 1920., 2560., 4000.] {
         let page_w = win - SIDEBAR_W - 2. * PAGE_PAD;
@@ -816,9 +834,9 @@ fn the_in_row_undo_button_stays_inside_its_row(cx: &mut TestAppContext) {
     let cell = |cx: &mut TestAppContext, handle: AnyWindowHandle, row: usize| {
         bounds(cx, handle, format!("history:undo-cell:{row}"))
     };
-    let btn = |window: &mut VisualTestContext| {
+    let btn = |window: &mut VisualTestContext, label: &str| {
         window
-            .debug_bounds("history:undo-btn")
+            .debug_bounds(leaked(format!("history:undo-btn:{label}")))
             .expect("the newest row draws its Undo button")
     };
     // Distance from the button's edges to the row's, the cell padding
@@ -847,15 +865,30 @@ fn the_in_row_undo_button_stays_inside_its_row(cx: &mut TestAppContext) {
         );
     }
 
-    // Idle: the icon-only button is centred with clearance to spare.
-    let (above, below) = clearance(btn(&mut window), cells[0]);
+    // Idle: the icon-and-"Undo"-label button (3.37) is centred with
+    // clearance to spare, and its label fits the Undo column.
+    let (above, below) = clearance(btn(&mut window, "Undo"), cells[0]);
     assert!(
         above >= 4. && below >= 4.,
         "idle: {above} above, {below} below"
     );
+    let col_w = cx.update(|cx| {
+        shell
+            .read(cx)
+            .imports
+            .history_table
+            .read(cx)
+            .col_width(5)
+            .unwrap()
+    });
+    assert!(
+        btn(&mut window, "Undo").size.width + px(CELL_PAD_X) <= col_w,
+        "the idle label overflows the Undo column: button {:?} + {CELL_PAD_X} > {col_w:?}",
+        btn(&mut window, "Undo").size.width,
+    );
 
     // Hovering the button shows the tooltip naming the action.
-    let b = btn(&mut window);
+    let b = btn(&mut window, "Undo");
     let centre = point(b.center().x, b.center().y);
     window.simulate_mouse_move(centre, None, Modifiers::default());
     cx.executor().advance_clock(Duration::from_millis(600));
@@ -870,7 +903,7 @@ fn the_in_row_undo_button_stays_inside_its_row(cx: &mut TestAppContext) {
     cx.run_until_parked();
     draw_frame(cx, handle);
 
-    // Arm the confirmation (first click): the button grows its label —
+    // Arm the confirmation (first click): the button grows its prompt —
     // still with clearance, the row no taller than its neighbours, and the
     // armed label fitting the Undo column.
     let newest = cx.update(|cx| shell.read(cx).imports.import_history[0].id);
@@ -886,7 +919,7 @@ fn the_in_row_undo_button_stays_inside_its_row(cx: &mut TestAppContext) {
     });
     cx.run_until_parked();
     draw_frame(cx, handle);
-    let (above, below) = clearance(btn(&mut window), cell(cx, handle, 0));
+    let (above, below) = clearance(btn(&mut window, UNDO_LABEL_MAX), cell(cx, handle, 0));
     assert!(
         above >= 4. && below >= 4.,
         "armed: {above} above, {below} below"
@@ -896,6 +929,52 @@ fn the_in_row_undo_button_stays_inside_its_row(cx: &mut TestAppContext) {
         cells[0].size.height, cells[1].size.height,
         "the armed newest row is no taller than the others"
     );
+    assert!(
+        btn(&mut window, UNDO_LABEL_MAX).size.width + px(CELL_PAD_X) <= col_w,
+        "the armed label overflows the Undo column: button {:?} + {CELL_PAD_X} > {col_w:?}",
+        btn(&mut window, UNDO_LABEL_MAX).size.width,
+    );
+    // The header Undo shares the confirmation state: same moment, armed text.
+    assert!(
+        window
+            .debug_bounds("imports:header:Click again to undo:icons/undo-2.svg")
+            .is_some(),
+        "the header Undo arms with the in-row one"
+    );
+}
+
+/// 3.37: the in-row Undo button shows the `undo-2` icon plus the label
+/// "Undo" — 3.32's icon-only button read as unclear. The selector records
+/// the label it was built with; the drawn width proves the icon paints
+/// beside it; and the labelled button still fits the Undo column at rest.
+#[gpui::test]
+fn the_in_row_undo_button_shows_the_undo_label(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_three_imports);
+    wait_until(cx, "import history", |cx| {
+        shell.read(cx).imports.import_history.len() == 3
+    });
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Imports, cx)));
+    cx.run_until_parked();
+    let mut window = VisualTestContext::from_window(handle, cx);
+    draw_frame(cx, handle);
+
+    // At rest the button reads "Undo".
+    let idle = window
+        .debug_bounds(leaked("history:undo-btn:Undo".into()))
+        .expect("the newest row's Undo button reads \"Undo\"");
+    // And it paints the icon beside the label: the drawn width is the
+    // label plus the xsmall icon block and the button's padding, so a
+    // dropped `.icon()` call — 16 px narrower — fails here.
+    let mut refs = open_icon_width_refs(cx, vec![("ref:undo-xs", "Undo", true)]);
+    assert_button_paints_icon(
+        &mut refs,
+        "the idle in-row Undo",
+        idle,
+        "ref:undo-xs",
+        UNDO_ICON_W,
+        BUTTON_PAD_X,
+    );
+    // With its label the idle button still fits the Undo column.
     let col_w = cx.update(|cx| {
         shell
             .read(cx)
@@ -906,16 +985,9 @@ fn the_in_row_undo_button_stays_inside_its_row(cx: &mut TestAppContext) {
             .unwrap()
     });
     assert!(
-        btn(&mut window).size.width + px(CELL_PAD_X) <= col_w,
-        "the armed label overflows the Undo column: button {:?} + {CELL_PAD_X} > {col_w:?}",
-        btn(&mut window).size.width,
-    );
-    // The header Undo shares the confirmation state: same moment, armed text.
-    assert!(
-        window
-            .debug_bounds("imports:header:Click again to undo:icons/undo-2.svg")
-            .is_some(),
-        "the header Undo arms with the in-row one"
+        idle.size.width + px(CELL_PAD_X) <= col_w,
+        "the idle label overflows the Undo column: {} + {CELL_PAD_X} > {col_w:?}",
+        idle.size.width
     );
 }
 
@@ -998,9 +1070,8 @@ fn the_imports_header_buttons_show_icons_without_ellipses(cx: &mut TestAppContex
 
     // The shared confirm, seen from the header: the header button's own
     // first click arms it, and the in-row Undo reflects it — the armed
-    // in-row button draws the prompt together with its icon (width as
-    // above; at rest the icon-only button is a fixed square, so only the
-    // armed state shows whether the icon paints).
+    // in-row button swaps its idle "Undo" label for the prompt together
+    // with its icon (width as above).
     with_window(cx, handle, |window, cx| {
         shell.update(cx, |s, cx| s.undo_last_import(window, cx));
     });
@@ -1013,7 +1084,7 @@ fn the_imports_header_buttons_show_icons_without_ellipses(cx: &mut TestAppContex
         "the header button arms the confirm"
     );
     let armed = window
-        .debug_bounds("history:undo-btn")
+        .debug_bounds(leaked(format!("history:undo-btn:{UNDO_LABEL_MAX}")))
         .expect("the newest row draws its Undo button");
     assert_button_paints_icon(
         &mut refs,
