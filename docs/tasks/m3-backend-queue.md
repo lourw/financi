@@ -6,25 +6,6 @@ Runs beside the UI queue, in the order listed. Backend only: don't read the UI d
 
 Runs beside the UI queue. 5.1 and 5.2 (in M5) follow 3.90.
 
-- [x] **3.70 Database guard rails.** (Code review, 2026-11-11.) Small
-  `financi-db` fixes, one commit each or together:
-  - **Undo names its import.** `undo_last_import(account_id)` deletes
-    whatever import is newest; the UI looks the account up from the row
-    the user clicked, so stale history could delete a different import.
-    Take `expected_import_id` and refuse if it isn't the newest.
-  - **Deleting a category keeps its kind.** `delete_category` accepts a
-    reassign target of another kind, so deleting an expense subcategory
-    into an income one silently turns spend into income. Refuse with
-    `CategoryKindMismatch`, as `move_child` does.
-  - **The startup self-check compares content.** `year_is_current` only
-    compares names and row counts, so a replacement (or a failed rewrite
-    after a commit) that keeps the count is never repaired. Compare the
-    file's bytes with the bytes `year_files` already builds.
-  - **Worker panics say so.** A panicking job reaches the caller as
-    `WorkerGone` ("database worker is gone") although the worker
-    survives. Add `DbError::JobPanicked`.
-  - Tests for each.
-
 - [ ] **3.72 Text rules ignore case for accented letters.** (Code review,
   2026-11-11.) Substring rules lowercase with `to_ascii_lowercase`
   (`financi-core/src/rules.rs`), regex rules are Unicode

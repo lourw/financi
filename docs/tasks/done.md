@@ -1041,6 +1041,25 @@ the UI; tests cover 2.1–2.9.
     each.
   - Tests for each bullet.
 
+- [x] **3.70 Database guard rails.** (Code review, 2026-11-11.) Small
+  `financi-db` fixes, one commit each or together:
+  - **Undo names its import.** `undo_last_import(account_id)` deletes
+    whatever import is newest; the UI looks the account up from the row
+    the user clicked, so stale history could delete a different import.
+    Take `expected_import_id` and refuse if it isn't the newest.
+  - **Deleting a category keeps its kind.** `delete_category` accepts a
+    reassign target of another kind, so deleting an expense subcategory
+    into an income one silently turns spend into income. Refuse with
+    `CategoryKindMismatch`, as `move_child` does.
+  - **The startup self-check compares content.** `year_is_current` only
+    compares names and row counts, so a replacement (or a failed rewrite
+    after a commit) that keeps the count is never repaired. Compare the
+    file's bytes with the bytes `year_files` already builds.
+  - **Worker panics say so.** A panicking job reaches the caller as
+    `WorkerGone` ("database worker is gone") although the worker
+    survives. Add `DbError::JobPanicked`.
+  - Tests for each.
+
 - [x] **3.73 Imports and undo stay fast as data grows.** (Code review,
   2026-11-11; cheap fixes now, timed budgets in 3.55.)
   - **Compile rules once per import.** `categorize_new_rows`

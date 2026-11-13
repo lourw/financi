@@ -39,6 +39,15 @@ Steps 1–15 of `docs/tasks/gpui.md` → *GPUI best practices*, task by task.
     assertion follows `wait_idle`, and the test count is unchanged or
     higher.
 
+- [ ] **3.92 UI worker calls report panics.** (Review note, 2026-11-12,
+  during 3.70.) The UI still runs every job through untyped `on_db`
+  (`ui/widgets.rs`), so a panicking undo or category edit still surfaces
+  `WorkerGone` to the user although typed jobs resolve with
+  `DbError::JobPanicked` and the worker survives (3.77). Migrate the
+  call sites in `crates/financi/src/ui/` to the typed path, or classify
+  panics in `plain_job` the same way, so a panicking UI job reports a
+  job panic through `DbWorker`; test a panicking job over the UI path.
+
 - [ ] **3.64 Actions never cancel each other.** (Code review, 2026-11-11.)
   About 20 unrelated actions store their async work in one
   `Shell::task: Option<Task<()>>` (assigned in ~21 places: pick file,

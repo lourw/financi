@@ -58,7 +58,7 @@ worktree from the current `main`.
 1. **Two queues, in order:**
    - **UI queue** (`docs/tasks/m3-ui-queue.md`; architecture and GPUI best
      practices): 3.62 → 3.74 →
-     3.75 → 3.64 → 3.65 → 3.76 → 3.78 → 3.56 → 3.89 → 3.79 → 3.80 → 3.81
+     3.75 → 3.64 → 3.92 → 3.65 → 3.76 → 3.78 → 3.56 → 3.89 → 3.79 → 3.80 → 3.81
      → 3.82 → 3.83 → 3.91 → 3.57 → 3.84 → 3.85 → 3.86. One at a time, except that
      once 3.79 has merged, two of 3.80–3.83 may run together (they live in
      different modules).
