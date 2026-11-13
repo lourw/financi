@@ -627,23 +627,6 @@ Start these only after both queues are done (`docs/tasks.md` → *Picking the ne
     install-desktop`, and say which session type (X11 / Wayland) you
     checked. Add the new `mise` tasks to `CLAUDE.md` → *Commands*.
 
-- [x] **3.61 The import preview names the institution.** From `plan.md`
-  → *Make account selection on import clearer* (never made a task; user
-  confirmed 2026-11-11). The account picker already lists "Institution ·
-  Account" (`Account::display_name`), but the preview's only sign of the
-  institution is a muted `text_xs` "Detected format: …" after the file
-  name, which is easy to miss when choosing which card a file belongs to.
-  - Line one of the preview: file name, then the **institution name**
-    (e.g. "American Express", from the parser's institution, not the
-    parser id) as an outline tag in `text_sm`, replacing "Detected format:
-    …".
-  - The "Into" picker lists only that institution's eligible accounts, as
-    now; check each item reads "Institution · Account" and that "+ New
-    account…" creates the account under the detected institution.
-  - Tests: the preview paints the institution name and no "Detected
-    format"; the picker items carry the institution. Tick the `plan.md`
-    box and update the *Import preview* bullet of `ui-conventions.md`.
-
 - [ ] **3.59 Searchable category pickers.** From `plan.md` → *Make
   category dropdowns usable with thousands of categories* (never made a
   task; user confirmed 2026-11-11). A flat scrolling list doesn't work at
