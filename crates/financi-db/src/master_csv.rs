@@ -413,7 +413,7 @@ fn year_files_on_disk(dir: &Path, year: i32) -> Result<BTreeMap<String, PathBuf>
 }
 
 /// `2026.csv` -> (2026, 1); `2026-v2.csv` -> (2026, 2).
-fn parse_year_file(name: &str) -> Option<(i32, u32)> {
+pub(crate) fn parse_year_file(name: &str) -> Option<(i32, u32)> {
     let stem = name.strip_suffix(".csv")?;
     match stem.split_once("-v") {
         None if stem.len() == 4 => Some((stem.parse().ok()?, 1)),
