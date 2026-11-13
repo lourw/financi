@@ -1177,6 +1177,24 @@ the UI; tests cover 2.1–2.9.
   - Tests: all existing view tests pass unchanged; one test checks the
     three queries agree on totals for the same filter.
 
+- [x] **3.90 Build and tooling.** (Code review, 2026-11-11.) A `chore:`
+  filler for any free slot.
+  - Drop `spikes/*` from the workspace `members` (keep the directory, as
+    `CLAUDE.md` says): every build, clippy and clean-checkout verify
+    compiles that extra GPUI binary today.
+  - Add `rust-version` to `[workspace.package]` matching `mise.toml`.
+  - `build.rs`: also `rerun-if-changed` on `git rev-parse --git-path
+    packed-refs` and `--git-path index`, so the version follows commits
+    and packed tags.
+  - `.githooks/post-commit`: before 1.0 a breaking change bumps the minor
+    version, not 1.0.0; for a merge commit, scan the merged commits'
+    subjects and take the highest bump.
+  - `flow::parser()` returns `Option` instead of panicking on an unknown
+    id, and `new_account_defaults` doesn't index `account_kinds()[0]`;
+    add a parser-registry test: unique ids, at least one account kind
+    each, and every parser's institution exists in the `institutions`
+    table.
+
 ---
 
 ## M4 — Simplii Visa, transfer pairing, near-match review

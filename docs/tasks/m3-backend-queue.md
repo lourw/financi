@@ -28,24 +28,6 @@ Runs beside the UI queue. 5.1 and 5.2 (in M5) follow 3.90.
     a clean UTF-8 file and in a file with one stray invalid byte hashes
     the same; two rows differing only in invalid bytes hash differently.
 
-- [x] **3.90 Build and tooling.** (Code review, 2026-11-11.) A `chore:`
-  filler for any free slot.
-  - Drop `spikes/*` from the workspace `members` (keep the directory, as
-    `CLAUDE.md` says): every build, clippy and clean-checkout verify
-    compiles that extra GPUI binary today.
-  - Add `rust-version` to `[workspace.package]` matching `mise.toml`.
-  - `build.rs`: also `rerun-if-changed` on `git rev-parse --git-path
-    packed-refs` and `--git-path index`, so the version follows commits
-    and packed tags.
-  - `.githooks/post-commit`: before 1.0 a breaking change bumps the minor
-    version, not 1.0.0; for a merge commit, scan the merged commits'
-    subjects and take the highest bump.
-  - `flow::parser()` returns `Option` instead of panicking on an unknown
-    id, and `new_account_defaults` doesn't index `account_kinds()[0]`;
-    add a parser-registry test: unique ids, at least one account kind
-    each, and every parser's institution exists in the `institutions`
-    table.
-
 - [ ] **3.94 CSV loading runs off the UI thread.** (Follow-up split from
   3.67, 2026-11-12; run after 3.74 has merged — it touches
   `ui/imports.rs`.) `Shell::open_file` calls `flow::load_file` on the UI
