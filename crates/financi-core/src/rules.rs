@@ -65,8 +65,12 @@ impl CompiledPattern {
                 Err(_) => Pattern::Never,
             }
         } else {
-            // ASCII case folding, consistent with the rest of core (parse.rs).
-            Pattern::Substring(pattern.to_ascii_lowercase())
+            // Unicode case folding (3.72): regex rules are Unicode
+            // case-insensitive, so substring rules fold the same way and
+            // `Montréal` matches `MONTRÉAL`. Descriptions are folded with
+            // `to_lowercase()` too (see [`CompiledPattern::is_match`]), so
+            // both sides always fold identically.
+            Pattern::Substring(pattern.to_lowercase())
         };
         Self { kind }
     }
@@ -74,10 +78,10 @@ impl CompiledPattern {
     /// Does this pattern match `description`? An empty pattern or an
     /// invalid regex never matches.
     pub fn is_match(&self, description: &str) -> bool {
-        self.matches(description, &description.to_ascii_lowercase())
+        self.matches(description, &description.to_lowercase())
     }
 
-    /// Like [`CompiledPattern::is_match`], given the caller's ASCII-
+    /// Like [`CompiledPattern::is_match`], given the caller's Unicode-
     /// lowercased description, so matching one description against many
     /// patterns lowers it only once.
     fn matches(&self, description: &str, description_lower: &str) -> bool {
@@ -158,7 +162,7 @@ impl CompiledRules {
     /// lowest id (the first candidate, since distinct rules never tie —
     /// matching `max_by(more_specific)`'s keep-the-greater walk).
     fn winner(&self, description: &str) -> Option<&CompiledRule> {
-        let description_lower = description.to_ascii_lowercase();
+        let description_lower = description.to_lowercase();
         for rules in [&self.substrings, &self.regexes] {
             let mut best: Option<&CompiledRule> = None;
             for candidate in rules {
@@ -263,6 +267,26 @@ mod tests {
         assert_eq!(pick_category(&lower, "COFFEE PURCHASE"), Some(10));
     }
 
+    /// 3.72: substring rules fold accented case like the (Unicode
+    /// case-insensitive) regex rules do.
+    #[test]
+    fn substring_matching_ignores_accented_case() {
+        let rules = [rule(1, "Montréal", false, 10)];
+        assert_eq!(pick_category(&rules, "CAFE    MONTRÉAL"), Some(10));
+        let rules = [rule(1, "MONTRÉAL", false, 10)];
+        assert_eq!(pick_category(&rules, "Café Montréal"), Some(10));
+        // Folding case, not accents: `cafe` still misses `CAFÉ`.
+        let rules = [rule(1, "cafe", false, 10)];
+        assert_eq!(pick_category(&rules, "CAFÉ PURCHASE"), None);
+    }
+
+    #[test]
+    fn pattern_matches_ignores_accented_case() {
+        assert!(pattern_matches("café", false, "CAFÉ PURCHASE"));
+        assert!(pattern_matches("CAFÉ", false, "café purchase"));
+        assert!(!pattern_matches("cafe", false, "CAFÉ PURCHASE"));
+    }
+
     #[test]
     fn longest_substring_wins() {
         let rules = [
@@ -310,6 +334,19 @@ mod tests {
     fn equal_length_substrings_tie_break_to_lowest_id() {
         let rules = [rule(5, "COFFEE", false, 10), rule(3, "MUFFIN", false, 20)];
         assert_eq!(pick_category(&rules, "COFFEE AND MUFFIN"), Some(20));
+    }
+
+    /// 3.72: tie-break lengths come from `chars().count()` of the
+    /// original pattern, not the lowercased one — `İ` (U+0130) lowercases
+    /// to two chars (`i` plus a combining dot). With lowercased lengths
+    /// `İ` and `ZZ` would tie and the lowest id would win; with original
+    /// lengths `ZZ` (2) beats `İ` (1).
+    #[test]
+    fn tie_break_length_uses_the_original_pattern() {
+        let rules = [rule(1, "İ", false, 10), rule(2, "ZZ", false, 20)];
+        assert_eq!(pick_category(&rules, "ZZİ RESTAURANT"), Some(20));
+        let compiled = CompiledRules::new(&rules);
+        assert_eq!(compiled.winning("ZZİ RESTAURANT"), Some(2));
     }
 
     #[test]
@@ -482,6 +519,23 @@ mod tests {
             "equal-length regexes tie-break to the lowest id"
         );
         assert_eq!(compiled.winning("HARDWARE STORE"), None);
+    }
+
+    /// 3.72: the compiled form folds accented case exactly like
+    /// `pick_category`, on both the pattern and the description side.
+    #[test]
+    fn compiled_rules_fold_accented_case() {
+        let rules = [rule(1, "Montréal", false, 10), rule(2, "CAFÉ.*", true, 20)];
+        let compiled = CompiledRules::new(&rules);
+        assert_eq!(compiled.pick("CAFE    MONTRÉAL"), Some(10));
+        assert_eq!(compiled.pick("CAFÉ NOIR"), Some(20));
+        assert_eq!(compiled.pick("café noir"), Some(20));
+        assert_eq!(
+            compiled.pick("CAFE NOIR"),
+            None,
+            "accents are not folded away"
+        );
+        assert!(CompiledPattern::new("Montréal", false).is_match("CAFE MONTRÉAL"));
     }
 
     #[test]

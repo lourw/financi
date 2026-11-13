@@ -6,7 +6,7 @@ Runs beside the UI queue, in the order listed. Backend only: don't read the UI d
 
 Runs beside the UI queue. 5.1 and 5.2 (in M5) follow 3.90.
 
-- [ ] **3.72 Text rules ignore case for accented letters.** (Code review,
+- [x] **3.72 Text rules ignore case for accented letters.** (Code review,
   2026-11-11.) Substring rules lowercase with `to_ascii_lowercase`
   (`financi-core/src/rules.rs`), regex rules are Unicode
   case-insensitive. So the text rule `Montréal` never matches
