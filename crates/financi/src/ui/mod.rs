@@ -207,7 +207,13 @@ pub struct Shell {
     /// than counts.
     refresh_started: u64,
     refresh_applied: u64,
-    task: Option<Task<()>>,
+    /// 3.64: there is deliberately no shared task slot. A mutation whose
+    /// result must always be applied runs detached (`cx.spawn_in(..).detach()`)
+    /// so a later action can never cancel it mid-flight; its handler checks
+    /// the state it touches is still current before applying. Only work that
+    /// *should* be replaced when the user moves on keeps a slot — one per
+    /// purpose: `refresh_task`, `rule_task` (live preview), `toast_task`, and
+    /// the settings writes in `dashboard`.
     // -- Page state (3.74): each page's fields live with its page module,
     // built by its own `new` and updated by its own `apply_*` in the
     // `refresh` continuation.
@@ -375,7 +381,6 @@ impl Shell {
             refresh_task: None,
             refresh_started: 0,
             refresh_applied: 0,
-            task: None,
             dashboard,
             queue,
             categories_page,

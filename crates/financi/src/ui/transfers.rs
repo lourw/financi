@@ -37,7 +37,9 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         let db = self.db.clone();
-        self.task = Some(cx.spawn_in(window, async move |this, cx| {
+        // 3.64: detached — a later action must not cancel this write's
+        // continuation and swallow its refresh.
+        cx.spawn_in(window, async move |this, cx| {
             let result = on_db(&db, move |c| {
                 resolve_transfer_review(c, transaction_id, Some(candidate))
             })
@@ -49,7 +51,8 @@ impl Shell {
                 }
                 this.refresh(window, cx);
             });
-        }));
+        })
+        .detach();
     }
 
     /// Mark an open review's row *not a transfer* (Transfers page, 4.2): the
@@ -61,7 +64,8 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         let db = self.db.clone();
-        self.task = Some(cx.spawn_in(window, async move |this, cx| {
+        // 3.64: detached — see `pair_transfer`.
+        cx.spawn_in(window, async move |this, cx| {
             let result = on_db(&db, move |c| {
                 resolve_transfer_review(c, transaction_id, None)
             })
@@ -73,7 +77,8 @@ impl Shell {
                 }
                 this.refresh(window, cx);
             });
-        }));
+        })
+        .detach();
     }
 
     /// Unpair a linked transaction from the row menu (4.2): both sides are
@@ -85,7 +90,8 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         let db = self.db.clone();
-        self.task = Some(cx.spawn_in(window, async move |this, cx| {
+        // 3.64: detached — see `pair_transfer`.
+        cx.spawn_in(window, async move |this, cx| {
             let result = on_db(&db, move |c| unpair_transaction(c, transaction_id)).await;
             let _ = this.update_in(cx, |this, window, cx| {
                 match result {
@@ -94,7 +100,8 @@ impl Shell {
                 }
                 this.refresh(window, cx);
             });
-        }));
+        })
+        .detach();
     }
 
     /// The Transfers page (4.2): one bordered panel per open review — the

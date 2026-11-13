@@ -1,6 +1,7 @@
 //! Tests for `ui/imports.rs` (3.62 split from `ui_tests.rs`).
 
 use super::*;
+use crate::ui::imports::ImportEvent;
 #[gpui::test]
 fn drop_create_account_inline_and_import(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, |_| {});
@@ -137,6 +138,183 @@ fn overlap_with_another_account_blocks_until_overridden(cx: &mut TestAppContext)
     click_import(cx, handle, &shell);
     wait_until(cx, "Gold import with override", |cx| {
         shell.read(cx).imports.import.is_none() && shell.read(cx).dashboard.row_count == 67 + 100
+    });
+}
+
+/// 3.64: while a commit runs, the panel is the record of it — Cancel is
+/// disabled, Import shows its spinner, and a file dropped mid-commit is
+/// ignored instead of replacing the panel and stranding the result. The
+/// commit itself finishes on its own whatever the user clicks.
+#[gpui::test]
+fn a_committing_import_disables_cancel_and_ignores_new_files(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |c| {
+        create_account(c, "amex", "Cobalt", AccountKind::CreditCard).unwrap();
+    });
+    wait_until(cx, "accounts loaded", |cx| {
+        shell.read(cx).accounts.len() == 1
+    });
+    open_and_choose(
+        cx,
+        handle,
+        &shell,
+        "amex-sep-oct.csv",
+        "American Express · Cobalt",
+    );
+    wait_until(cx, "plan", |cx| plan_ready(&shell, cx));
+
+    click_import(cx, handle, &shell);
+
+    // Nothing has pumped the executor since `click_import` started the
+    // commit, so this frame is the busy panel: Cancel disabled, Import a
+    // spinner, and a second Import click impossible (`can_import` false).
+    draw_frame(cx, handle);
+    assert!(
+        paints(cx, handle, "imports:cancel-state:disabled"),
+        "Cancel is disabled while the commit runs"
+    );
+    assert!(
+        !paints(cx, handle, "imports:cancel-state:enabled"),
+        "the enabled Cancel is gone"
+    );
+    assert!(
+        paints(cx, handle, "imports:import-state:loading"),
+        "Import shows loading while it commits"
+    );
+    let first_panel = cx.update(|cx| {
+        assert!(!panel(&shell, cx).read(cx).can_import(), "no second commit");
+        panel(&shell, cx).entity_id()
+    });
+
+    // A second file dropped mid-commit is ignored: same panel, same plan.
+    with_window(cx, handle, |window, cx| {
+        let path = demo("simplii-chequing.csv");
+        shell.update(cx, |s, cx| s.open_file(path, window, cx));
+    });
+    cx.update(|cx| {
+        assert!(shell.read(cx).imports.import.is_some(), "the panel stays");
+        assert_eq!(
+            panel(&shell, cx).entity_id(),
+            first_panel,
+            "the drop while busy must not replace the committing panel"
+        );
+    });
+
+    // A real click on the disabled Cancel must not abort the commit. The
+    // input dispatch is the first pump the commit sees, so this also
+    // proves the ordering: the click lands while the button is still
+    // disabled (busy only clears in the commit's own continuation) and
+    // does nothing; had Cancel fired, the panel would close with no
+    // success toast at all — the detached commit's result has nowhere
+    // to emit to.
+    draw_frame(cx, handle);
+    let mut window = VisualTestContext::from_window(handle, cx);
+    let b = window
+        .debug_bounds(leaked("imports:cancel-state:disabled".into()))
+        .expect("the Cancel paints disabled while the commit is in flight");
+    window.simulate_click(b.center(), Modifiers::default());
+
+    // The commit lands on its own: panel gone, toast of the first file
+    // only, and the second file was never imported.
+    wait_until(cx, "commit finished", |cx| {
+        shell.read(cx).imports.import.is_none()
+    });
+    cx.update(|cx| {
+        let (msg, is_error) = last_toast(&shell, cx).expect("import toast");
+        assert!(!is_error, "the commit succeeded: {msg}");
+        assert!(
+            msg.starts_with("Imported amex-sep-oct.csv:"),
+            "the toast names the committing file: {msg}"
+        );
+        assert!(
+            !msg.contains("simplii"),
+            "the ignored file left no trace: {msg}"
+        );
+    });
+    wait_idle(cx, &shell);
+    assert_eq!(shell.update(cx, |s, _| s.dashboard.row_count), 67);
+}
+
+/// 3.64: every opened panel subscribes the shell to it, and the
+/// subscription lives and dies with the panel. Ten files dropped in a row
+/// replace the panel ten times — the shell's subscription list must not
+/// grow by ten (it used to: each open leaked one).
+#[gpui::test]
+fn opening_ten_files_leaves_one_import_subscription(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |_| {});
+    wait_idle(cx, &shell);
+    let before = cx.update(|cx| shell.read(cx)._subs.len());
+
+    let mut seen = Vec::new();
+    for _ in 0..10 {
+        with_window(cx, handle, |window, cx| {
+            let path = demo("amex-sep-oct.csv");
+            shell.update(cx, |s, cx| s.open_file(path, window, cx));
+        });
+        let id = cx.update(|cx| panel(&shell, cx).entity_id());
+        assert!(
+            !seen.contains(&id),
+            "each open_file replaces the panel — a stuck panel would empty this test"
+        );
+        seen.push(id);
+    }
+    // Let the panels' account loads finish, then count.
+    cx.run_until_parked();
+    let after = cx.update(|cx| shell.read(cx)._subs.len());
+    assert_eq!(
+        after, before,
+        "ten replaced panels must leave exactly one import subscription"
+    );
+    cx.update(|cx| {
+        assert!(
+            shell.read(cx).imports.import.is_some(),
+            "the tenth panel is the open one"
+        );
+    });
+}
+
+/// 3.64: the live half of the previous test — gpui cancels a `Subscription`
+/// when its handle *drops*, so replacing the panel really does unsubscribe
+/// it. A panel the shell has moved on from must stop reaching the shell:
+/// the abandoned panel cancelling itself used to close the current one.
+#[gpui::test]
+fn a_replaced_import_panel_stops_reaching_the_shell(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |_| {});
+    wait_idle(cx, &shell);
+
+    with_window(cx, handle, |window, cx| {
+        let path = demo("amex-sep-oct.csv");
+        shell.update(cx, |s, cx| s.open_file(path, window, cx));
+    });
+    cx.run_until_parked();
+    // Held here so the old entity outlives its replacement: what must go
+    // away is its subscription, not the panel.
+    let old = cx.update(|cx| panel(&shell, cx));
+
+    with_window(cx, handle, |window, cx| {
+        let path = demo("simplii-chequing.csv");
+        shell.update(cx, |s, cx| s.open_file(path, window, cx));
+    });
+    cx.run_until_parked();
+    let current = cx.update(|cx| panel(&shell, cx).entity_id());
+    assert_ne!(
+        current,
+        old.entity_id(),
+        "the second file replaced the panel"
+    );
+
+    // The abandoned panel cancels itself; the shell ignores it now.
+    old.update(cx, |_, cx| cx.emit(ImportEvent::Cancelled));
+    cx.run_until_parked();
+    cx.update(|cx| {
+        assert!(
+            shell.read(cx).imports.import.is_some(),
+            "an event from the replaced panel must not close the open one"
+        );
+        assert_eq!(
+            panel(&shell, cx).entity_id(),
+            current,
+            "and must not replace it either"
+        );
     });
 }
 

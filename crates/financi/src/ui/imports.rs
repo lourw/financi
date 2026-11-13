@@ -180,7 +180,10 @@ pub struct ImportPanel {
     pub(super) same_charges: HashSet<(usize, i64)>,
     busy: bool,
     pub(super) error: Option<String>,
-    task: Option<Task<()>>,
+    /// 3.64: only the replaceable preview lives here — a newer plan
+    /// supersedes the old one. Account load and the import commit run
+    /// detached so no later action can cancel them mid-flight.
+    plan_task: Option<Task<()>>,
     _subs: Vec<Subscription>,
 }
 
@@ -220,7 +223,9 @@ impl ImportPanel {
                 this.choose(choice.clone(), cx);
             },
         );
-        let load = {
+        // 3.64: the account list is the panel's own load — detached so a
+        // later action can't cancel it.
+        {
             let db = db.clone();
             cx.spawn_in(window, async move |this, cx| {
                 let result = on_db(&db, |c| list_accounts(c)).await;
@@ -229,7 +234,8 @@ impl ImportPanel {
                     Err(e) => this.error = Some(e),
                 });
             })
-        };
+            .detach();
+        }
         Self {
             db,
             csv_root,
@@ -248,7 +254,7 @@ impl ImportPanel {
             same_charges: HashSet::new(),
             busy: false,
             error,
-            task: Some(load),
+            plan_task: None,
             _subs: vec![sub],
         }
     }
@@ -304,7 +310,10 @@ impl ImportPanel {
         };
         self.plan = PlanState::Loading;
         let (db, file) = (self.db.clone(), self.file.clone());
-        self.task = Some(cx.spawn(async move |this, cx| {
+        // 3.64: the preview is the one piece of panel work that *should*
+        // be replaced when the account changes — it keeps the panel's own
+        // slot. The commit is not replaceable: see `import`.
+        self.plan_task = Some(cx.spawn(async move |this, cx| {
             let result = on_db(&db, move |c| {
                 let Some(parser) = flow::parser(file.parser_id) else {
                     return Err(format!("unknown import format {:?}", file.parser_id));
@@ -347,7 +356,8 @@ impl ImportPanel {
         };
         let db = self.db.clone();
         self.busy = true;
-        self.task = Some(cx.spawn_in(window, async move |this, cx| {
+        // 3.64: detached — the commit's result must always be applied.
+        cx.spawn_in(window, async move |this, cx| {
             let result = on_db(&db, move |c| {
                 let id = create_account(c, institution, &name, kind)?;
                 let all = list_accounts(c)?;
@@ -368,7 +378,8 @@ impl ImportPanel {
                 }
                 cx.notify();
             });
-        }));
+        })
+        .detach();
         cx.notify();
     }
 
@@ -383,7 +394,9 @@ impl ImportPanel {
             same_charges: self.same_charges.iter().copied().collect(),
         };
         self.busy = true;
-        self.task = Some(cx.spawn(async move |this, cx| {
+        // 3.64: detached — the commit's result must always be applied,
+        // whatever the user clicks while the DB is busy.
+        cx.spawn(async move |this, cx| {
             let name = file.file_name.clone();
             let result = on_db(&db, move |c| {
                 let Some(parser) = flow::parser(file.parser_id) else {
@@ -430,7 +443,8 @@ impl ImportPanel {
                 }
                 cx.notify();
             });
-        }));
+        })
+        .detach();
         cx.notify();
     }
 
@@ -623,6 +637,7 @@ impl Render for ImportPanel {
 
         // Two lines in a bordered panel: identity + actions, then the plan
         // (ui-conventions, *Pages*).
+        let busy = self.busy;
         v_flex()
             .gap_2()
             .p_4()
@@ -650,6 +665,16 @@ impl Render for ImportPanel {
                     .child(
                         Button::new("cancel-import")
                             .label("Cancel")
+                            // 3.64: while a commit runs the panel is the
+                            // record of it — Cancel is disabled until the
+                            // result lands.
+                            .disabled(busy)
+                            .debug_selector(move || {
+                                format!(
+                                    "imports:cancel-state:{}",
+                                    if busy { "disabled" } else { "enabled" }
+                                )
+                            })
                             .on_click(cx.listener(|_, _, _, cx| cx.emit(ImportEvent::Cancelled))),
                     )
                     .child(
@@ -657,6 +682,14 @@ impl Render for ImportPanel {
                             .label(import_label)
                             .primary()
                             .disabled(!self.can_import())
+                            // 3.64: loading while the commit runs.
+                            .loading(busy)
+                            .debug_selector(move || {
+                                format!(
+                                    "imports:import-state:{}",
+                                    if busy { "loading" } else { "ready" }
+                                )
+                            })
                             .on_click(cx.listener(|this, _, _, cx| this.import(cx))),
                     ),
             )
@@ -743,8 +776,10 @@ pub(super) fn history_flex_widths(page_w: f32) -> (f32, f32) {
 /// This page's state (3.74): the import panel and the history table.
 pub(super) struct ImportsState {
     /// The import panel, built once by [`Shell::import`] and kept so its
-    /// picked file survives page switches.
-    pub(super) import: Option<Entity<ImportPanel>>,
+    /// picked file survives page switches. 3.64: the panel's subscription
+    /// lives beside it — replacing the panel drops the subscription with
+    /// it, so opening many files can't accumulate subscriptions.
+    pub(super) import: Option<(Entity<ImportPanel>, Subscription)>,
     /// The history table's rows, newest first.
     pub(super) import_history: Vec<ImportEntry>,
     pub(super) history_table: Entity<TableState<ImportHistoryTable>>,
@@ -807,11 +842,25 @@ impl Shell {
 
 impl Shell {
     pub fn open_file(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        // 3.64: while a commit is in flight the panel is still the record
+        // of it — opening another file would replace it and strand the
+        // result. The request is ignored (the Import button is likewise
+        // disabled; the drop and ⌘O paths share this guard).
+        if self
+            .imports
+            .import
+            .as_ref()
+            .is_some_and(|(panel, _)| panel.read(cx).busy)
+        {
+            return;
+        }
         match flow::load_file(&path) {
             Ok(file) => {
                 let db = self.db.clone();
                 let csv_root = self.csv_root.clone();
                 let panel = cx.new(|cx| ImportPanel::new(db, csv_root, file, window, cx));
+                // 3.64: the subscription lives beside the panel in the
+                // tuple, so replacing the panel is what ends it (below).
                 let sub =
                     cx.subscribe_in(&panel, window, |this, _, ev: &ImportEvent, window, cx| {
                         match ev {
@@ -828,8 +877,14 @@ impl Shell {
                         }
                         this.refresh(window, cx);
                     });
-                self._subs.push(sub);
-                self.imports.import = Some(panel);
+                // 3.64: the subscription lives in the tuple, and gpui
+                // cancels a `Subscription` when the handle *drops*
+                // (`Subscription::detach` is the opposite — it keeps the
+                // callback alive until the entities die). So replacing the
+                // tuple is what unsubscribes the old panel: the pair that
+                // `replace` hands back drops right here. Ten opens leave
+                // exactly one live subscription.
+                drop(self.imports.import.replace((panel, sub)));
                 // Opening a file switches to the Imports page with the
                 // preview open (ui-conventions, *Pages*).
                 self.page = Page::Imports;
@@ -846,13 +901,16 @@ impl Shell {
             multiple: false,
             prompt: Some("Import".into()),
         });
-        self.task = Some(cx.spawn_in(window, async move |this, cx| {
+        // 3.64: detached — the prompt's result must arrive whatever the
+        // user did meanwhile (`open_file` itself refuses while busy).
+        cx.spawn_in(window, async move |this, cx| {
             if let Ok(Ok(Some(paths))) = paths.await
                 && let Some(path) = paths.into_iter().next()
             {
                 let _ = this.update_in(cx, |this, window, cx| this.open_file(path, window, cx));
             }
-        }));
+        })
+        .detach();
     }
 
     /// Undo the most recent successful import (the File menu item and the
@@ -905,7 +963,8 @@ impl Shell {
         };
         let db = self.db.clone();
         let csv_root = self.csv_root.clone();
-        self.task = Some(cx.spawn_in(window, async move |this, cx| {
+        // 3.64: detached — the undo's result must always be applied.
+        cx.spawn_in(window, async move |this, cx| {
             let result = on_db(&db, move |c| {
                 // 3.70: name the import the user clicked; if the history
                 // went stale the DB refuses instead of undoing another file.
@@ -945,7 +1004,8 @@ impl Shell {
                 }
                     this.refresh(window, cx);
                 });
-        }));
+        })
+        .detach();
         cx.notify();
     }
 
@@ -1033,7 +1093,7 @@ impl Shell {
                             .on_click(cx.listener(|this, _, _, cx| this.restore_backup(cx))),
                     ),
             )
-            .children(self.imports.import.clone())
+            .children(self.imports.import.as_ref().map(|(p, _)| p.clone()))
             .child(
                 div()
                     .flex_1()

@@ -15,7 +15,7 @@ Steps 1–15 of `docs/tasks/gpui.md` → *GPUI best practices*, task by task.
   panics in `plain_job` the same way, so a panicking UI job reports a
   job panic through `DbWorker`; test a panicking job over the UI path.
 
-- [ ] **3.64 Actions never cancel each other.** (Code review, 2026-11-11.)
+- [x] **3.64 Actions never cancel each other.** (Code review, 2026-11-11.)
   About 20 unrelated actions store their async work in one
   `Shell::task: Option<Task<()>>` (assigned in ~21 places: pick file,
   undo import, category edits, rule add/save/delete/move, queue
