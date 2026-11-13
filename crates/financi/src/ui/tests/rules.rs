@@ -136,6 +136,83 @@ fn editing_a_rules_pattern_recategorizes_unlocked_rows(cx: &mut TestAppContext) 
     });
 }
 
+/// 3.64: two actions issued in the same frame never cancel each other.
+/// The shared task slot used to make the later one kill the earlier's DB
+/// write mid-flight. Here a rule edit's Save and a row Hide go out
+/// together, and *both* complete: the rule carries its new pattern (the
+/// save's recategorize sent the dropped row back to Uncategorized), the
+/// locked row left the counts (hidden), the editor closed, and the pending
+/// badge cleared — with a refresh per action.
+#[gpui::test]
+fn a_rule_save_and_a_row_hide_never_cancel_each_other(cx: &mut TestAppContext) {
+    // The shared fixture's rows, plus the id of the locked row to hide.
+    let mut ids = (0i64, 0i64, 0i64, 0i64);
+    let (handle, shell) = open_shell(cx, |c| {
+        let (rule, first, second) = seed_rule_fixture(c);
+        let locked: i64 = c
+            .query_row(
+                "SELECT id FROM transactions WHERE description_raw = 'COFFEE SHOP LOCKED'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        ids = (rule, first, second, locked);
+    });
+    let (rule, _first, second, locked) = ids;
+    wait_until(cx, "rule fixture loaded", |cx| {
+        let s = shell.read(cx);
+        s.rules.len() == 1 && s.cat_counts.get(&second) == Some(&1)
+    });
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Categories, cx)));
+    select_parent(cx, handle, &shell, "Drinks");
+
+    start_rule_edit(cx, handle, &shell, rule);
+    set_edit_pattern(cx, handle, &shell, "SHOP B");
+    let started = cx.update(|cx| shell.read(cx).refresh_started);
+
+    // One frame, two actions: Save the edited rule, Hide the locked row.
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.save_rule_edit(window, cx);
+            s.set_row_hidden(locked, true, window, cx);
+        });
+    });
+    // Both are in flight — the Hide left the Save's badge alone (the badge
+    // names rule actions only), and nothing has run yet.
+    cx.update(|cx| {
+        let s = shell.read(cx);
+        assert_eq!(
+            s.pending_rule_action,
+            Some(PendingRuleAction::Save(rule)),
+            "the save is in flight"
+        );
+        assert_eq!(s.editing_rule, Some(rule), "the editor waits for its save");
+    });
+
+    wait_until(cx, "the save and the hide both landed", |cx| {
+        let s = shell.read(cx);
+        s.pending_rule_action.is_none()
+            && s.editing_rule.is_none()
+            && s.rules
+                .iter()
+                .any(|r| r.id == rule && r.pattern == "SHOP B")
+            && s.cat_counts.get(&second).copied().unwrap_or(0) == 0
+    });
+    cx.update(|cx| {
+        let s = shell.read(cx);
+        assert!(s.rule_error.is_none(), "the save succeeded");
+        assert_eq!(
+            s.uncategorized_visible, 1,
+            "the row the new pattern dropped is back in Uncategorized — the save's recategorize ran"
+        );
+        assert!(
+            s.refresh_started >= started + 2,
+            "each action refreshed: {started} → {}",
+            s.refresh_started
+        );
+    });
+}
+
 /// 3.53: the editor has no picker, so saving an edit — even with a new
 /// pattern — keeps the rule on its own category, and the rows follow the
 /// rule there. Moving a rule to another category is the Rules page's

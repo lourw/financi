@@ -315,21 +315,33 @@ impl Shell {
         // 3.40: the Add button shows loading, disabled, until the DB is
         // done (a save that re-runs the rules can take seconds).
         self.pending_rule_action = Some(PendingRuleAction::Add);
-        self.task = Some(cx.spawn_in(window, async move |this, cx| {
+        let submitted = pattern.clone();
+        // 3.64: detached — a later action must not cancel this write's
+        // continuation and swallow its refresh.
+        cx.spawn_in(window, async move |this, cx| {
             let result = on_db(&db, move |c| add_rule(c, &pattern, is_regex, category_id)).await;
             let _ = this.update_in(cx, |this, window, cx| {
-                this.pending_rule_action = None;
+                // 3.64: only clear the pending marker if it still marks
+                // *this* add; a newer action owns the slot now.
+                if this.pending_rule_action == Some(PendingRuleAction::Add) {
+                    this.pending_rule_action = None;
+                }
                 match result {
                     Ok(_) => {
-                        this.rule_pattern
-                            .update(cx, |i, cx| i.set_value("", window, cx));
+                        // The input still shows what was submitted — don't
+                        // wipe a pattern typed after this one landed.
+                        if this.rule_pattern.read(cx).value().trim() == submitted {
+                            this.rule_pattern
+                                .update(cx, |i, cx| i.set_value("", window, cx));
+                        }
                         this.rule_error = None;
                     }
                     Err(e) => this.rule_error = Some(e),
                 }
                 this.refresh(window, cx);
             });
-        }));
+        })
+        .detach();
         cx.notify();
     }
 
@@ -408,22 +420,35 @@ impl Shell {
         // 3.40: the Save button shows loading, disabled, until the DB is
         // done; on error the editor stays open and pending clears too.
         self.pending_rule_action = Some(PendingRuleAction::Save(id));
-        self.task = Some(cx.spawn_in(window, async move |this, cx| {
+        // 3.64: detached — see `commit_new_rule`.
+        cx.spawn_in(window, async move |this, cx| {
             let result = on_db(&db, move |c| {
                 update_rule(c, id, &pattern, is_regex, category_id)
             })
             .await;
             let _ = this.update_in(cx, |this, window, cx| {
-                this.pending_rule_action = None;
+                if this.pending_rule_action == Some(PendingRuleAction::Save(id)) {
+                    this.pending_rule_action = None;
+                }
                 match result {
                     Ok(()) => {
-                        this.close_rule_editor();
+                        // The editor may have moved to another rule (or
+                        // closed) while this save ran: only the editor on
+                        // *this* rule gets its result.
+                        if this.editing_rule == Some(id) {
+                            this.close_rule_editor();
+                        }
                     }
-                    Err(e) => this.rule_error = Some(e),
+                    Err(e) => {
+                        if this.editing_rule == Some(id) {
+                            this.rule_error = Some(e);
+                        }
+                    }
                 }
                 this.refresh(window, cx);
             });
-        }));
+        })
+        .detach();
         cx.notify();
     }
 
@@ -438,13 +463,18 @@ impl Shell {
             // 3.40: the delete runs (and the button shows loading,
             // disabled) while the rules re-run over the unlocked rows.
             self.pending_rule_action = Some(PendingRuleAction::Delete(id));
-            self.task = Some(cx.spawn_in(window, async move |this, cx| {
+            // 3.64: detached — see `commit_new_rule`.
+            cx.spawn_in(window, async move |this, cx| {
                 let result = on_db(&db, move |c| delete_rule(c, id)).await;
                 let _ = this.update_in(cx, |this, window, cx| {
-                    this.pending_rule_action = None;
+                    if this.pending_rule_action == Some(PendingRuleAction::Delete(id)) {
+                        this.pending_rule_action = None;
+                    }
                     match result {
                         Ok(()) => {
-                            this.armed_delete_rule = None;
+                            if this.armed_delete_rule == Some(id) {
+                                this.armed_delete_rule = None;
+                            }
                             if this.editing_rule == Some(id) {
                                 this.close_rule_editor();
                             }
@@ -453,7 +483,8 @@ impl Shell {
                     }
                     this.refresh(window, cx);
                 });
-            }));
+            })
+            .detach();
         } else {
             self.armed_delete_rule = Some(id);
         }
@@ -833,20 +864,27 @@ impl Shell {
             return;
         }
         ids.sort();
+        let moved = ids.clone();
         let db = self.db.clone();
-        self.task = Some(cx.spawn_in(window, async move |this, cx| {
+        // 3.64: detached — see `commit_new_rule`.
+        cx.spawn_in(window, async move |this, cx| {
             let result = on_db(&db, move |c| move_rules(c, &ids, category_id)).await;
             let _ = this.update_in(cx, |this, window, cx| {
                 match result {
                     Ok(()) => {
-                        this.rules_page.selected_rules.clear();
+                        // Only the moved rules leave the selection: rules
+                        // checked while this move ran keep their checkbox.
+                        this.rules_page
+                            .selected_rules
+                            .retain(|id| !moved.contains(id));
                         this.rules_page.rules_move_error = None;
                     }
                     Err(e) => this.rules_page.rules_move_error = Some(e.into()),
                 }
                 this.refresh(window, cx);
             });
-        }));
+        })
+        .detach();
         cx.notify();
     }
 

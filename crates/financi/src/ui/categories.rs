@@ -524,16 +524,26 @@ impl Shell {
             return;
         }
         let db = self.db.clone();
-        self.task = Some(cx.spawn_in(window, async move |this, cx| {
+        let submitted = name.clone();
+        // 3.64: detached — a later action must not cancel this write's
+        // continuation and swallow its refresh.
+        cx.spawn_in(window, async move |this, cx| {
             let result = on_db(&db, move |c| create_parent(c, &name, kind)).await;
             let _ = this.update_in(cx, |this, window, cx| {
                 match result {
                     Ok(id) => {
-                        this.categories_page
-                            .new_parent_name
-                            .update(cx, |i, cx| i.set_value("", window, cx));
-                        // 3.23: adding closes the New category… form.
-                        this.categories_page.new_category_open = false;
+                        // 3.64: the form still shows what was submitted —
+                        // don't wipe a newer draft typed while the write ran.
+                        let unchanged =
+                            this.categories_page.new_parent_name.read(cx).value().trim()
+                                == submitted;
+                        if unchanged {
+                            this.categories_page
+                                .new_parent_name
+                                .update(cx, |i, cx| i.set_value("", window, cx));
+                            // 3.23: adding closes the New category… form.
+                            this.categories_page.new_category_open = false;
+                        }
                         this.categories_page.selected_category = Some(id);
                         this.categories_page.cat_error = None;
                     }
@@ -541,7 +551,8 @@ impl Shell {
                 }
                 this.refresh(window, cx);
             });
-        }));
+        })
+        .detach();
         cx.notify();
     }
 
@@ -564,14 +575,21 @@ impl Shell {
             return;
         }
         let db = self.db.clone();
-        self.task = Some(cx.spawn_in(window, async move |this, cx| {
+        let submitted = name.clone();
+        // 3.64: detached — see `add_parent`.
+        cx.spawn_in(window, async move |this, cx| {
             let result = on_db(&db, move |c| create_child(c, parent_id, &name)).await;
             let _ = this.update_in(cx, |this, window, cx| {
                 match result {
                     Ok(id) => {
-                        this.categories_page
-                            .new_child_name
-                            .update(cx, |i, cx| i.set_value("", window, cx));
+                        // 3.64: don't wipe a newer draft (see `add_parent`).
+                        let unchanged = this.categories_page.new_child_name.read(cx).value().trim()
+                            == submitted;
+                        if unchanged {
+                            this.categories_page
+                                .new_child_name
+                                .update(cx, |i, cx| i.set_value("", window, cx));
+                        }
                         this.categories_page.selected_category = Some(id);
                         this.categories_page.cat_error = None;
                     }
@@ -579,7 +597,8 @@ impl Shell {
                 }
                 this.refresh(window, cx);
             });
-        }));
+        })
+        .detach();
         cx.notify();
     }
 
@@ -612,19 +631,25 @@ impl Shell {
             return;
         }
         let db = self.db.clone();
-        self.task = Some(cx.spawn_in(window, async move |this, cx| {
+        // 3.64: detached — see `add_parent`.
+        cx.spawn_in(window, async move |this, cx| {
             let result = on_db(&db, move |c| rename_category(c, id, &name)).await;
             let _ = this.update_in(cx, |this, window, cx| {
                 match result {
                     Ok(()) => {
-                        this.categories_page.renaming = false;
+                        // 3.64: the rename still belongs to this row's
+                        // session — leave a newer selection's UI alone.
+                        if this.categories_page.selected_category == Some(id) {
+                            this.categories_page.renaming = false;
+                        }
                         this.categories_page.cat_error = None;
                     }
                     Err(e) => this.categories_page.cat_error = Some(e),
                 }
                 this.refresh(window, cx);
             });
-        }));
+        })
+        .detach();
         cx.notify();
     }
 
@@ -646,7 +671,8 @@ impl Shell {
             return;
         };
         let db = self.db.clone();
-        self.task = Some(cx.spawn_in(window, async move |this, cx| {
+        // 3.64: detached — see `add_parent`.
+        cx.spawn_in(window, async move |this, cx| {
             let result = on_db(&db, move |c| move_child(c, child_id, new_parent_id)).await;
             let _ = this.update_in(cx, |this, window, cx| {
                 match result {
@@ -655,7 +681,8 @@ impl Shell {
                 }
                 this.refresh(window, cx);
             });
-        }));
+        })
+        .detach();
         cx.notify();
     }
 
@@ -686,19 +713,25 @@ impl Shell {
         };
         self.categories_page.confirm_delete_category = None;
         let db = self.db.clone();
-        self.task = Some(cx.spawn_in(window, async move |this, cx| {
+        // 3.64: detached — see `add_parent`.
+        cx.spawn_in(window, async move |this, cx| {
             let result = on_db(&db, move |c| delete_category(c, id, reassign_to)).await;
             let _ = this.update_in(cx, |this, window, cx| {
                 match result {
                     Ok(()) => {
-                        this.categories_page.selected_category = None;
+                        // 3.64: the deleted row is gone; only drop the
+                        // selection if it still points at it.
+                        if this.categories_page.selected_category == Some(id) {
+                            this.categories_page.selected_category = None;
+                        }
                         this.categories_page.cat_error = None;
                     }
                     Err(e) => this.categories_page.cat_error = Some(e),
                 }
                 this.refresh(window, cx);
             });
-        }));
+        })
+        .detach();
         cx.notify();
     }
 

@@ -155,7 +155,9 @@ impl Shell {
         };
         let db = self.db.clone();
         let merchant_for_db = merchant.clone();
-        self.task = Some(cx.spawn_in(window, async move |this, cx| {
+        // 3.64: detached — a later action must not cancel this write's
+        // continuation and swallow its refresh.
+        cx.spawn_in(window, async move |this, cx| {
             let result = on_db(&db, move |c| {
                 categorize_group(c, &merchant_for_db, category_id)
             })
@@ -170,7 +172,8 @@ impl Shell {
                 }
                 this.refresh(window, cx);
             });
-        }));
+        })
+        .detach();
         cx.notify();
     }
 

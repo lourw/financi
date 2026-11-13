@@ -165,7 +165,8 @@ fn panel(shell: &Entity<Shell>, cx: &App) -> Entity<ImportPanel> {
         .read(cx)
         .imports
         .import
-        .clone()
+        .as_ref()
+        .map(|(panel, _)| panel.clone())
         .expect("import panel open")
 }
 
@@ -175,7 +176,7 @@ fn plan_ready(shell: &Entity<Shell>, cx: &App) -> bool {
         .imports
         .import
         .as_ref()
-        .is_some_and(|p| matches!(p.read(cx).plan, PlanState::Ready(_)))
+        .is_some_and(|(panel, _)| matches!(panel.read(cx).plan, PlanState::Ready(_)))
 }
 
 /// Open a file's import panel, wait until its account list offers

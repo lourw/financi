@@ -522,6 +522,11 @@ pub(super) struct DashboardState {
     /// category_id)`, whose row now offers to extend that choice to every
     /// matching row (2.6's rule offer, surfaced from the 2.9 menu).
     pub(super) rule_offer: Option<(i64, i64)>,
+    /// 3.64: the last manual category choice issued, `(transaction_id,
+    /// category_id)`. The detached `change_row_category` offers its rule
+    /// only while its own choice is the newest one on that row — the
+    /// table's rows are a refresh behind, so they cannot answer that.
+    last_category_choice: Option<(i64, i64)>,
     /// The pickers and inputs above subscribe here.
     _subs: Vec<Subscription>,
 }
@@ -694,6 +699,7 @@ impl DashboardState {
             table,
             row_count: 0,
             rule_offer: None,
+            last_category_choice: None,
             _subs: vec![date_preset_sub, date_from_sub, date_to_sub, search_sub],
         }
     }
@@ -1094,20 +1100,35 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         let db = self.db.clone();
-        self.task = Some(cx.spawn_in(window, async move |this, cx| {
+        // 3.64: record the choice now — the continuation compares against
+        // it, and the table's rows lag a whole refresh behind.
+        self.dashboard.last_category_choice = Some((transaction_id, category_id));
+        // 3.64: detached — a later action must not cancel the write's
+        // continuation and swallow its refresh.
+        cx.spawn_in(window, async move |this, cx| {
             let result = on_db(&db, move |c| set_category(c, transaction_id, category_id)).await;
             let _ = this.update_in(cx, |this, window, cx| {
                 match result {
                     Ok(()) => {
                         // The row itself starts offering the rule (2.6); no
-                        // separate feedback.
-                        this.dashboard.rule_offer = Some((transaction_id, category_id));
+                        // separate feedback. Don't open the offer over a
+                        // newer choice made on this row while the write was
+                        // in flight (3.64): only a *different* later choice
+                        // on the same row supersedes this one.
+                        let superseded = this
+                            .dashboard
+                            .last_category_choice
+                            .is_some_and(|(id, cat)| id == transaction_id && cat != category_id);
+                        if !superseded {
+                            this.dashboard.rule_offer = Some((transaction_id, category_id));
+                        }
                     }
                     Err(e) => this.notify_err(e, cx),
                 }
                 this.refresh(window, cx);
             });
-        }));
+        })
+        .detach();
     }
 
     /// Hide or unhide a transaction from the row menu (2.9). Hidden rows leave
@@ -1128,7 +1149,8 @@ impl Shell {
             self.dashboard.rule_offer = None;
         }
         let db = self.db.clone();
-        self.task = Some(cx.spawn_in(window, async move |this, cx| {
+        // 3.64: detached — see `change_row_category`.
+        cx.spawn_in(window, async move |this, cx| {
             let result = on_db(&db, move |c| set_hidden(c, transaction_id, hidden)).await;
             let _ = this.update_in(cx, |this, window, cx| {
                 if let Err(e) = result {
@@ -1136,7 +1158,8 @@ impl Shell {
                 }
                 this.refresh(window, cx);
             });
-        }));
+        })
+        .detach();
     }
 
     /// Accept the post-edit offer from the row (2.6, 2.9): turn the merchant of
@@ -1157,7 +1180,8 @@ impl Shell {
         };
         self.dashboard.rule_offer = None;
         let db = self.db.clone();
-        self.task = Some(cx.spawn_in(window, async move |this, cx| {
+        // 3.64: detached — see `change_row_category`.
+        cx.spawn_in(window, async move |this, cx| {
             let result = on_db(&db, move |c| {
                 apply_rule_from_merchant(c, transaction_id, category_id)
             })
@@ -1171,7 +1195,8 @@ impl Shell {
                 }
                 this.refresh(window, cx);
             });
-        }));
+        })
+        .detach();
         cx.notify();
     }
 
