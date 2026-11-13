@@ -1771,6 +1771,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "chrono",
+ "directories",
  "financi-core",
  "financi-db",
  "financi-parsers",

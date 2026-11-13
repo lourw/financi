@@ -1311,13 +1311,24 @@ impl Shell {
                     ),
             )
             .child(match body {
-                DashboardBody::NoData => div()
+                // 5.3: an empty database is also where a restore begins,
+                // so the empty state offers it beside the import hint.
+                DashboardBody::NoData => v_flex()
                     .flex_1()
-                    .flex()
                     .items_center()
                     .justify_center()
+                    .gap_2()
                     .text_color(muted)
                     .child("Drop an Amex or Simplii CSV export here, or press ⌘O")
+                    .child(
+                        Button::new("restore-from-export")
+                            .link()
+                            .label("Restore from export…")
+                            .debug_selector(|| "dashboard:restore-link".into())
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.restore_backup(window, cx);
+                            })),
+                    )
                     .into_any_element(),
                 _ => {
                     v_flex()

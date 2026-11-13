@@ -13,6 +13,9 @@ financi-parsers.workspace = true
 gpui-kit.workspace = true
 gpui-platform.workspace = true
 chrono.workspace = true
+# The save-dialog default for Export lives on the Desktop; same crate
+# financi-db uses to find the data root.
+directories.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 

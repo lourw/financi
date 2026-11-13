@@ -8,13 +8,10 @@ use super::*;
 fn info_toasts_dismiss_themselves_after_a_few_seconds(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, |_| {});
     wait_idle(cx, &shell);
-    with_window(cx, handle, |window, cx| {
-        window.dispatch_action(Box::new(ExportData), cx)
-    });
-    cx.run_until_parked();
-    cx.update(|cx| {
-        assert_eq!(toasts(&shell, cx).len(), 1, "the toast is up");
-    });
+    // 5.3 took the Export… placeholder toast away; a finished import
+    // pushes the same plain info toast.
+    import_demo_file(cx, handle, &shell, "simplii-chequing.csv", "Simplii");
+    wait_until(cx, "the toast is up", |cx| !toasts(&shell, cx).is_empty());
     // 3 s in: still mounted, the timeout is 4 s.
     tick_toasts(cx, 30);
     cx.update(|cx| {

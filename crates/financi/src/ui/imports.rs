@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::ui::widgets::*;
+use financi_db::export;
 
 fn now_iso() -> String {
     chrono::Local::now().format("%Y-%m-%dT%H:%M:%S").to_string()
@@ -14,6 +15,25 @@ fn history_time(iso: &str) -> String {
         Some((date, time)) if time.len() >= 5 => format!("{date} {}", &time[..5]),
         _ => iso.to_string(),
     }
+}
+
+/// The save dialog's default for Export… (5.3):
+/// `~/Desktop/financi-export-<today>.zip`, falling back to the home
+/// directory where the platform has no Desktop. Returned as directory
+/// and name separately, which is what `App::prompt_for_new_path` takes.
+pub(crate) fn export_default_path() -> (PathBuf, String) {
+    let dir = directories::UserDirs::new()
+        .and_then(|dirs| {
+            dirs.desktop_dir()
+                .or_else(|| Some(dirs.home_dir()))
+                .map(PathBuf::from)
+        })
+        .unwrap_or_else(|| PathBuf::from("."));
+    let name = format!(
+        "financi-export-{}.zip",
+        chrono::Local::now().format("%Y-%m-%d")
+    );
+    (dir, name)
 }
 
 // ---------------------------------------------------------------------------
@@ -966,15 +986,150 @@ impl Shell {
         }
     }
 
-    /// Export… (⌘E): wired in M5. Until then the menu item, the ⌘E
-    /// shortcut and the Imports header button all say so plainly.
-    pub(super) fn export_data(&mut self, cx: &mut Context<Self>) {
-        self.notify_ok("Export is not available yet.", cx);
+    /// Export… (⌘E, 5.3): ask where to put the zip, then write it on the
+    /// DB worker's writer thread, so it serialises behind any queued
+    /// import instead of racing it. The save dialog defaults to
+    /// `~/Desktop/financi-export-<today>.zip`; cancelling changes nothing.
+    /// `exporting` (with `restoring`) blocks re-entry: the archive is a
+    /// consistent snapshot only while nothing else touches the files.
+    pub(super) fn export_data(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.exporting || self.restoring {
+            return;
+        }
+        self.exporting = true;
+        let (dir, name) = export_default_path();
+        let response = cx.prompt_for_new_path(&dir, Some(&name));
+        let db = self.db.clone();
+        let root = self.csv_root.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let chosen = match response.await {
+                Ok(Ok(Some(dest))) => Some(dest),
+                _ => None,
+            };
+            let result = match chosen {
+                Some(dest) => {
+                    let label = dest
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| dest.display().to_string());
+                    let app_version = crate::version::version_label();
+                    let result = on_db(&db, move |conn| {
+                        export::export(conn, &root, &dest, &app_version)
+                    })
+                    .await;
+                    Some((label, result))
+                }
+                None => None,
+            };
+            let _ = this.update_in(cx, |shell, _window, cx| {
+                shell.exporting = false;
+                match result {
+                    Some((label, Ok(()))) => {
+                        shell.notify_ok(format!("Exported to {label}"), cx);
+                    }
+                    Some((_, Err(err))) => {
+                        shell.notify_err(format!("Export failed: {err}"), cx);
+                    }
+                    // Cancelled prompt: nothing happened, nothing to say.
+                    None => {}
+                }
+            });
+        })
+        .detach();
     }
 
-    /// Restore…: wired in M5, like [`Shell::export_data`].
-    pub(super) fn restore_backup(&mut self, cx: &mut Context<Self>) {
-        self.notify_ok("Restore is not available yet.", cx);
+    /// Restore… (5.3): pick an export zip, then verify it and swap the
+    /// whole database and CSV tree on the DB worker's writer thread —
+    /// [`export::restore_job`] checks every file before a single one
+    /// moves, and a queued import waits behind it. On success every
+    /// page's transient state is dropped (the ids it holds may name
+    /// different rows now — [`Shell::reset_pages_after_restore`]) and the
+    /// window reloads; on failure the live data is untouched and the
+    /// error toast stays until closed.
+    pub(super) fn restore_backup(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.exporting || self.restoring {
+            return;
+        }
+        self.restoring = true;
+        let response = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Restore".into()),
+        });
+        let db = self.db.clone();
+        let root = self.csv_root.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let chosen = match response.await {
+                Ok(Ok(Some(paths))) => paths.into_iter().next(),
+                _ => None,
+            };
+            let result = match chosen {
+                Some(zip) => {
+                    let label = zip
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| zip.display().to_string());
+                    let result = export::restore_job(&db, &root, &zip).await;
+                    Some((label, result))
+                }
+                None => None,
+            };
+            let _ = this.update_in(cx, |shell, window, cx| {
+                shell.restoring = false;
+                match result {
+                    Some((label, Ok(_manifest))) => {
+                        shell.reset_pages_after_restore(window, cx);
+                        shell.notify_ok(format!("Restored from {label}"), cx);
+                    }
+                    Some((_, Err(err))) => {
+                        // The live tree is untouched by a refused restore,
+                        // but reload so the pages show exactly what survived.
+                        shell.notify_err(format!("Restore failed: {err}"), cx);
+                        shell.refresh(window, cx);
+                    }
+                    None => {}
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Drop every page's transient state after a restore replaced the
+    /// whole database behind the UI (5.3): row ids, open editors, armed
+    /// confirmations and picker selections all name rows that the new
+    /// file may not have, or — worse — ids reused for other rows. This is
+    /// what `Catalog::DataChanged(all)` will broadcast once it exists
+    /// (3.78); until then it is every reset plus a full `refresh`.
+    pub(super) fn reset_pages_after_restore(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.dashboard.legend_selection = None;
+        self.dashboard.summary_month = None;
+        self.dashboard.chart_parent = None;
+        self.dashboard.rule_offer = None;
+        self.queue.pickers.clear();
+        self.queue.picker_subs.clear();
+        self.queue.picker_items = None;
+        self.queue.error = None;
+        self.categories_page.selected_category = None;
+        self.categories_page.renaming = false;
+        self.categories_page.new_category_open = false;
+        self.categories_page.confirm_delete_category = None;
+        self.close_rule_editor();
+        self.armed_delete_rule = None;
+        self.rules_page.new_rule_open = false;
+        self.rules_page.selected_rules.clear();
+        self.rules_page.collapsed_rule_groups.clear();
+        self.rules_page.rules_move_error = None;
+        self.rules_page.rules_reveal = None;
+        // An armed Undo or a half-filled import panel would commit the
+        // old database's ids and categories into the restored one.
+        self.imports.confirm_undo_import = None;
+        self.imports.import = None;
+        self.refresh(window, cx);
     }
 
     /// Undo an import from the history: the first click arms the button,
@@ -1118,22 +1273,31 @@ impl Shell {
                         Button::new("export-data")
                             .label("Export")
                             .icon(IconName::Download)
+                            // 3.64: busy while an export or restore runs.
+                            .loading(self.exporting)
+                            .disabled(self.exporting || self.restoring)
                             .debug_selector(|| {
                                 format!("imports:header:{}:{}", "Export", "icons/download.svg")
                             })
-                            .on_click(cx.listener(|this, _, _, cx| this.export_data(cx))),
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.export_data(window, cx);
+                            })),
                     )
                     .child(
                         Button::new("restore-backup")
                             .label("Restore")
                             .icon(IconName::ArchiveRestore)
+                            .loading(self.restoring)
+                            .disabled(self.exporting || self.restoring)
                             .debug_selector(|| {
                                 format!(
                                     "imports:header:{}:{}",
                                     "Restore", "icons/archive-restore.svg"
                                 )
                             })
-                            .on_click(cx.listener(|this, _, _, cx| this.restore_backup(cx))),
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.restore_backup(window, cx);
+                            })),
                     ),
             )
             .children(self.imports.import.as_ref().map(|(p, _)| p.clone()))
