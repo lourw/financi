@@ -110,21 +110,17 @@ fn the_transfers_page_offers_every_candidate_for_a_tie_and_pairs_the_chosen_one(
     let mut window = VisualTestContext::from_window(handle, cx);
     draw_frame(cx, handle);
     assert!(window.debug_bounds("page:page-transfers").is_some());
-    assert!(
-        window
-            .debug_bounds(leaked(format!("transfer-review:{debit}")))
-            .is_some()
-    );
-    assert!(
-        window
-            .debug_bounds(leaked(format!("transfer-candidate:{debit}:{credit_a}")))
-            .is_some()
-    );
-    assert!(
-        window
-            .debug_bounds(leaked(format!("transfer-candidate:{debit}:{credit_b}")))
-            .is_some()
-    );
+    assert!(paints(cx, handle, format!("transfers:review:{debit}")));
+    assert!(paints(
+        cx,
+        handle,
+        format!("transfers:candidate:{debit}:{credit_a}")
+    ));
+    assert!(paints(
+        cx,
+        handle,
+        format!("transfers:candidate:{debit}:{credit_b}")
+    ));
 
     // Choosing a candidate pairs exactly that couple, categorizes both sides
     // *Between Accounts*, and clears the review (and the pill).

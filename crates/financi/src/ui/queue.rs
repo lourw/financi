@@ -195,7 +195,6 @@ impl Shell {
             flow::count(self.queue.groups.iter().map(|g| g.count).sum()),
             flow::count(self.queue.groups.len() as i64)
         );
-        let summary_sel = format!("queue:summary:{summary}");
         // 3.34: one bordered panel (D7: bordered, never filled) fills the
         // rest of the page and holds the list; the empty state is centered
         // inside it.
@@ -379,7 +378,7 @@ impl Shell {
                                                             let n = g.count;
                                                             move || {
                                                                 format!(
-                                                                    "queue:txns-text:{m}={}",
+                                                                    "queue:txns-text:{m}:{}",
                                                                     flow::count(n)
                                                                 )
                                                             }
@@ -469,7 +468,7 @@ impl Shell {
                                                     .disabled(!picked)
                                                     .debug_selector(move || {
                                                         format!(
-                                                            "queue:categorize-state:{m}={}",
+                                                            "queue:categorize-state:{m}:{}",
                                                             if picked { "enabled" } else { "disabled" }
                                                         )
                                                     })
@@ -519,7 +518,10 @@ impl Shell {
                         div()
                             .text_sm()
                             .text_color(muted)
-                            .debug_selector(move || summary_sel.clone())
+                            .debug_selector({
+                                let summary = summary.clone();
+                                move || format!("queue:summary:{summary}")
+                            })
                             .child(summary),
                     ),
             )

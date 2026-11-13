@@ -58,19 +58,26 @@ fn demo(name: &str) -> PathBuf {
         .join(name)
 }
 
-/// Open the main window over a fresh in-memory database prepared by `setup`.
+/// Open the shell over a fresh in-memory database prepared by `setup`.
 fn open_shell(
     cx: &mut TestAppContext,
     setup: impl FnOnce(&financi_db::rusqlite::Connection),
 ) -> (AnyWindowHandle, Entity<Shell>) {
     // A real path beside a scratch directory so master CSV writes during
     // import/undo never land in the repository. The database itself stays
-    // in memory.
-    let db_path = std::env::temp_dir().join(format!(
-        "financi-ui-db-{}/financi.sqlite",
-        std::process::id()
-    ));
-    open_shell_at(cx, setup, db_path)
+    // in memory. 3.75: one directory per test — the tests of one binary
+    // share a process and run in parallel threads, and a shared path let
+    // them write the same master CSVs behind each other's back.
+    open_shell_at(cx, setup, temp_db_path())
+}
+
+/// A scratch DB path unique to the caller (3.75).
+fn temp_db_path() -> PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, Ordering::Relaxed);
+    let pid = std::process::id();
+    std::env::temp_dir().join(format!("financi-ui-db-{pid}-{n}/financi.sqlite"))
 }
 
 /// `open_shell` with a chosen database path (3.38: the footer tooltip
@@ -89,7 +96,7 @@ fn open_shell_at(
     cx.update(|cx| {
         let bounds = Bounds {
             origin: Point::default(),
-            size: size(px(1100.), px(720.)),
+            size: size(px(1200.), px(720.)),
         };
         let (window, shell) = gpui_kit::open_window(
             WindowOptions {
@@ -114,6 +121,32 @@ fn wait_until(cx: &mut TestAppContext, what: &str, mut done: impl FnMut(&App) ->
             return;
         }
         assert!(Instant::now() < deadline, "timed out waiting for: {what}");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+/// 3.75: Wait until the shell has settled — the DB worker has nothing in
+/// flight and every started refresh has had its result applied. The worker
+/// runs its jobs in order, so a no-op job completing proves the refresh's
+/// own query finished too, and the counter check covers the continuation
+/// that applies the data. Use this before asserting that something is
+/// *not* shown: `run_until_parked` alone returns while the worker is still
+/// mid-query, so the "still empty" check would race it.
+fn wait_idle(cx: &mut TestAppContext, shell: &Entity<Shell>) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        cx.run_until_parked();
+        let db = shell.update(cx, |s, _| s.db.clone());
+        let _ = block_on(db.call(|_| ()));
+        cx.run_until_parked();
+        let (started, applied) = shell.update(cx, |s, _| (s.refresh_started, s.refresh_applied));
+        if started == applied {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for the shell to go idle (started {started}, applied {applied})"
+        );
         std::thread::sleep(Duration::from_millis(2));
     }
 }
@@ -273,13 +306,206 @@ fn resize_and_draw(cx: &mut TestAppContext, handle: AnyWindowHandle, w: f32, h: 
     draw_frame(cx, handle);
 }
 
-/// 3.25: the centre-line y of a selector, panicking with its name when the
-/// element did not paint at all.
-fn centre_y(window: &mut VisualTestContext, sel: &'static str) -> f32 {
-    let b = window
-        .debug_bounds(sel)
-        .unwrap_or_else(|| panic!("{sel} paints on the dashboard"));
+/// 3.75: every debug selector the app emits follows `page:thing[:id]`.
+/// gpui keeps a rendered frame's selector map private (`Window`'s
+/// `debug_bounds` field is `pub(crate)`), so the walk runs over the
+/// source the frames are built from: every string literal inside a
+/// `.debug_selector(…)` call in the view code (`ui/*.rs`; test-only
+/// selectors are the tests' business). Selectors that reach a widget
+/// through a helper (`control_slot`, `month_viewport`) carry no literal
+/// at the `debug_selector` — the walk checks the literals those helpers
+/// receive at their call sites instead. A selector is at least two
+/// colon-separated segments, lowercase kebab-case with `{…}` marking an
+/// interpolated id, and its first segment must be one of the page (or
+/// shared-chrome) namespaces below — a stray `rule:`, a typo or a
+/// widget id mistaken for a selector fails the walk.
+#[test]
+fn selectors_follow_the_page_thing_id_pattern() {
+    let ui_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src")
+        .join("ui");
+    let mut files: Vec<_> = std::fs::read_dir(&ui_dir)
+        .expect("the view directory")
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|x| x == "rs"))
+        .collect();
+    files.sort();
+    let mut checked = 0usize;
+    let mut bad: Vec<String> = Vec::new();
+    for path in files {
+        let text = std::fs::read_to_string(&path).unwrap();
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        // `.debug_selector(` contributes one selector; the helpers take
+        // their selectors as literal arguments at the call site.
+        for (needle, expect) in [
+            (".debug_selector(", 1),
+            ("control_slot(", 2),
+            ("month_viewport(", 1),
+        ] {
+            let mut at = 0usize;
+            while let Some(found) = text[at..].find(needle) {
+                let open = at + found + needle.len();
+                let lits = call_literals(&text, open, expect);
+                for (sel, pos) in lits {
+                    checked += 1;
+                    if !selector_ok(&sel) {
+                        let line = text[..pos].matches('\n').count() + 1;
+                        bad.push(format!("{name}:{line}: {sel}"));
+                    }
+                }
+                // Keep scanning inside the call: arguments nest their own
+                // `debug_selector` calls (tooltips, slot controls).
+                at = open;
+            }
+        }
+    }
+    assert!(
+        bad.is_empty(),
+        "selectors must follow page:thing[:id], fix:\n{}",
+        bad.join("\n")
+    );
+    assert!(
+        checked > 100,
+        "the walk found only {checked} selectors — did it parse the view at all?"
+    );
+}
+
+/// The namespaces the view's selectors live in: one per page, plus the
+/// shared chrome (`label` region/field titles, `panel` wrappers, `page`
+/// content root, `toast` popups). New pages register here.
+const PAGE_NAMESPACES: &[&str] = &[
+    "accounts",
+    "cat",
+    "chart",
+    "filters",
+    "history",
+    "imports",
+    "label",
+    "page",
+    "panel",
+    "queue",
+    "rules",
+    "sidebar",
+    "summary",
+    "toast",
+    "transfers",
+];
+
+/// The first `max` string literals written inside the call whose open
+/// paren ends at `open`, paired with their source positions. String- and
+/// escape-aware: parens and quotes inside strings do not count, and a
+/// call with no literal (`debug_selector(move || selector.clone())`)
+/// yields nothing instead of grabbing a literal from later code.
+fn call_literals(text: &str, open: usize, max: usize) -> Vec<(String, usize)> {
+    let bytes = text.as_bytes();
+    let mut out = Vec::new();
+    let mut depth = 1usize;
+    let mut i = open;
+    while i < bytes.len() && depth > 0 && out.len() < max {
+        match bytes[i] {
+            b'"' => {
+                let start = i + 1;
+                let mut j = start;
+                while j < bytes.len() && bytes[j] != b'"' {
+                    if bytes[j] == b'\\' {
+                        j += 1;
+                    }
+                    j += 1;
+                }
+                out.push((text[start..j.min(text.len())].to_string(), start));
+                i = j + 1;
+            }
+            b'(' => {
+                depth += 1;
+                i += 1;
+            }
+            b')' => {
+                depth -= 1;
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+    out
+}
+
+/// `page:thing[:id]`: two or more colon-separated segments of lowercase
+/// kebab-case letters, digits and hyphens, where `{…}` stands for an
+/// interpolated id. The first segment is the namespace and must be a
+/// registered page (or shared-chrome) namespace, never interpolated.
+fn selector_ok(sel: &str) -> bool {
+    let mut parts = sel.split(':');
+    let Some(namespace) = parts.next() else {
+        return false;
+    };
+    if !PAGE_NAMESPACES.contains(&namespace) {
+        return false;
+    }
+    let mut saw_segment = false;
+    for part in parts {
+        saw_segment = true;
+        if part.is_empty() {
+            return false;
+        }
+        let mut chars = part.char_indices().peekable();
+        while let Some((ix, c)) = chars.next() {
+            if c == '{' {
+                let Some(close) = part[ix..].find('}') else {
+                    return false;
+                };
+                if !part[ix + 1..ix + close]
+                    .chars()
+                    .all(|c| c.is_ascii_alphabetic() || c == '_')
+                {
+                    return false;
+                }
+                // `{` was consumed above; skip the placeholder body and `}`.
+                for _ in 0..close {
+                    chars.next();
+                }
+            } else if !(c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') {
+                return false;
+            }
+        }
+    }
+    saw_segment
+}
+
+/// 3.75: the painted bounds of a debug selector, panicking with its name
+/// when the element did not paint at all. The one bounds helper — call
+/// this instead of reaching for `debug_bounds` per test.
+fn bounds(
+    cx: &mut TestAppContext,
+    handle: AnyWindowHandle,
+    sel: impl Into<String>,
+) -> Bounds<Pixels> {
+    let sel = sel.into();
+    let mut window = VisualTestContext::from_window(handle, cx);
+    window
+        .debug_bounds(leaked(sel.clone()))
+        .unwrap_or_else(|| panic!("{sel} paints"))
+}
+
+/// The centre-line y of a selector (see `bounds`).
+fn centre_y(cx: &mut TestAppContext, handle: AnyWindowHandle, sel: impl Into<String>) -> f32 {
+    let b = bounds(cx, handle, sel);
     f32::from(b.origin.y) + f32::from(b.size.height) / 2.
+}
+
+/// 3.75: a real click at the centre of the widget's painted bounds — the
+/// user's own path, through the widget's click handler. The selector must
+/// paint in a real frame, so this paints one first; afterwards the
+/// executor is parked, so handlers and the state changes they start have
+/// run (wait for the state itself, or `wait_idle`, before asserting on it).
+fn click(cx: &mut TestAppContext, handle: AnyWindowHandle, sel: impl Into<String>) {
+    let sel = sel.into();
+    draw_frame(cx, handle);
+    let mut window = VisualTestContext::from_window(handle, cx);
+    let b = window
+        .debug_bounds(leaked(sel.clone()))
+        .unwrap_or_else(|| panic!("{sel} paints"));
+    window.simulate_click(b.center(), Modifiers::default());
+    cx.run_until_parked();
 }
 
 /// Type a parent name, pick the Expense kind (index 0) and add it.
@@ -487,18 +713,20 @@ fn draw_frame(cx: &mut TestAppContext, handle: AnyWindowHandle) {
     });
 }
 
-/// 3.21: wheel `dy` pixels over a point — `v_virtual_list` scrolls under
-/// the mouse, so tests aim at the centre of the list handle's viewport.
-fn wheel_over(cx: &mut TestAppContext, handle: AnyWindowHandle, at: Point<Pixels>, dy: f32) {
+/// 3.21: wheel `dx` × `dy` pixels over a point — `v_virtual_list` scrolls
+/// under the mouse, so tests aim at the centre of the list handle's
+/// viewport. Sideways scrolling is `dx` (3.30: on Linux Shift+wheel
+/// arrives as a horizontal delta, which is what the month strip scrolls on).
+fn wheel(cx: &mut TestAppContext, handle: AnyWindowHandle, at: Point<Pixels>, dx: f32, dy: f32) {
     let mut window = VisualTestContext::from_window(handle, cx);
     window.simulate_event(ScrollEvent {
         position: at,
-        delta: ScrollDelta::Pixels(point(px(0.), px(dy))),
+        delta: ScrollDelta::Pixels(point(px(dx), px(dy))),
         ..Default::default()
     });
 }
 
-/// The centre of a window-space rectangle's viewport, to aim `wheel_over`.
+/// The centre of a window-space rectangle's viewport, to aim `wheel`.
 fn viewport_centre(b: Bounds<Pixels>) -> Point<Pixels> {
     point(
         b.origin.x + b.size.width / 2.0,
@@ -507,7 +735,9 @@ fn viewport_centre(b: Bounds<Pixels>) -> Point<Pixels> {
 }
 
 /// Does a widget with this debug selector paint in the last frame?
-fn paints(window: &mut VisualTestContext, sel: String) -> bool {
+fn paints(cx: &mut TestAppContext, handle: AnyWindowHandle, sel: impl Into<String>) -> bool {
+    let sel = sel.into();
+    let mut window = VisualTestContext::from_window(handle, cx);
     window.debug_bounds(leaked(sel)).is_some()
 }
 
@@ -570,11 +800,7 @@ fn page_switches_paint_only_the_current_page(cx: &mut TestAppContext) {
 
     // The accounts popover (Dashboard content) opened with a real click:
     // switching away must close it, and returning must not show it open.
-    let trigger = window
-        .debug_bounds("accounts:filter")
-        .expect("accounts filter trigger");
-    window.simulate_click(trigger.center(), Modifiers::default());
-    cx.run_until_parked();
+    click(cx, handle, "accounts:filter");
     draw_frame(cx, handle);
     assert!(
         painted(&mut window).contains(&"checkbox:account-1"),
@@ -761,23 +987,4 @@ fn db_setting(cx: &mut TestAppContext, shell: &Entity<Shell>, key: &str) -> Opti
     }))
     .ok()
     .flatten()
-}
-
-/// 3.30: wheel `dx` pixels sideways over a point. On Linux Shift+wheel
-/// arrives as a horizontal delta, which is what the month strip scrolls on.
-fn wheel_over_x(cx: &mut TestAppContext, handle: AnyWindowHandle, at: Point<Pixels>, dx: f32) {
-    let mut window = VisualTestContext::from_window(handle, cx);
-    window.simulate_event(ScrollEvent {
-        position: at,
-        delta: ScrollDelta::Pixels(point(px(dx), px(0.))),
-        ..Default::default()
-    });
-}
-
-/// 3.30: the painted bounds of a selector, panicking with its name when
-/// the element did not paint at all.
-fn bounds_of(window: &mut VisualTestContext, sel: &'static str) -> Bounds<Pixels> {
-    window
-        .debug_bounds(sel)
-        .unwrap_or_else(|| panic!("{sel} paints on the dashboard"))
 }

@@ -484,7 +484,7 @@ impl Shell {
             .w_full()
             .gap_2()
             .items_center()
-            .debug_selector(move || format!("rule-row-{id}"))
+            .debug_selector(move || format!("cat:rule-row:{id}"))
             .child(
                 div()
                     .id(SharedString::from(format!("rule-pattern-{id}")))
@@ -492,7 +492,7 @@ impl Shell {
                     .min_w_0()
                     .overflow_hidden()
                     .text_ellipsis()
-                    .debug_selector(move || format!("rule:pattern-col:{id}"))
+                    .debug_selector(move || format!("cat:rule-pattern-col:{id}"))
                     .tooltip({
                         let full = rule.pattern.clone();
                         move |window, cx| {
@@ -501,7 +501,7 @@ impl Shell {
                                 div()
                                     .debug_selector({
                                         let p = tip.clone();
-                                        move || format!("rule:pattern-tooltip:{p}")
+                                        move || format!("cat:rule-pattern-tooltip:{p}")
                                     })
                                     .child(tip.clone())
                             })
@@ -516,7 +516,7 @@ impl Shell {
                     .flex_shrink_0()
                     .text_xs()
                     .text_color(muted)
-                    .debug_selector(move || format!("rule:type-col:{id}"))
+                    .debug_selector(move || format!("cat:rule-type-col:{id}"))
                     .child(if rule.is_regex { "regex" } else { "substring" }),
             )
             .child(
@@ -527,7 +527,7 @@ impl Shell {
                     .overflow_hidden()
                     .text_ellipsis()
                     .text_color(muted)
-                    .debug_selector(move || format!("rule:category-col:{id}"))
+                    .debug_selector(move || format!("cat:rule-category-col:{id}"))
                     .child(target),
             )
             .child(
@@ -587,7 +587,7 @@ impl Shell {
             Some(n) => div()
                 .text_sm()
                 .text_color(muted)
-                .debug_selector(|| "rule-edit-preview".into())
+                .debug_selector(|| "rules:edit-preview".into())
                 .child(format!("matches {} transactions", flow::count(n)))
                 .into_any_element(),
             None => div().into_any_element(),
@@ -610,7 +610,7 @@ impl Shell {
                             .child(
                                 div()
                                     .w_full()
-                                    .debug_selector(|| "rule:edit-pattern-input".into())
+                                    .debug_selector(|| "rules:edit-pattern-input".into())
                                     .child(Input::new(&self.rule_edit_pattern)),
                             ),
                     )
@@ -619,8 +619,8 @@ impl Shell {
                         // slot so its centre matches the input, picker and
                         // buttons.
                         control_slot(
-                            "rule:regex-slot:edit".into(),
-                            "rule:switch:edit".into(),
+                            "rules:regex-slot:edit".into(),
+                            "rules:switch:edit".into(),
                             Switch::new(SharedString::from(format!("rule-edit-regex-{}", rule.id)))
                                 .label("regex")
                                 .checked(self.rule_edit_regex)
@@ -640,7 +640,7 @@ impl Shell {
                             .primary()
                             .flex_shrink_0()
                             // 3.42: the alignment test measures its centre.
-                            .debug_selector(|| "rule:edit-save-btn".into())
+                            .debug_selector(|| "rules:edit-save-btn".into())
                             // 3.40: loading + disabled while the save runs.
                             .loading(self.rule_action_pending(PendingRuleAction::Save(rule.id)))
                             .disabled(self.rule_action_pending(PendingRuleAction::Save(rule.id)))
@@ -671,7 +671,7 @@ impl Shell {
                             .text_sm()
                             .text_color(danger)
                             .text_ellipsis()
-                            .debug_selector(|| "rule-edit-error".into())
+                            .debug_selector(|| "rules:edit-error".into())
                             .child(e)
                     }),
             )
@@ -913,7 +913,7 @@ impl Shell {
             .cursor_pointer()
             .text_sm()
             .text_color(muted)
-            .debug_selector(move || format!("rules:group-{id}"))
+            .debug_selector(move || format!("rules:group:{id}"))
             .on_click(cx.listener(move |this, _, _, cx| this.toggle_rule_group(id, cx)))
             .child(format!(
                 "{} {} · {} rules",
@@ -1220,15 +1220,15 @@ impl Shell {
                                         .child(
                                             div()
                                                 .w_full()
-                                                .debug_selector(|| "rule:pattern-input:add".into())
+                                                .debug_selector(|| "rules:pattern-input:add".into())
                                                 .child(Input::new(&self.rule_pattern)),
                                         ),
                                 )
                                 .child(
                                     // 3.42: control-height slot, centred.
                                     control_slot(
-                                        "rule:regex-slot:add".into(),
-                                        "rule:switch:add".into(),
+                                        "rules:regex-slot:add".into(),
+                                        "rules:switch:add".into(),
                                         Switch::new("rule-regex")
                                             .label("regex")
                                             .checked(self.rule_regex)
@@ -1256,7 +1256,7 @@ impl Shell {
                                         .primary()
                                         .flex_shrink_0()
                                         // 3.42: the alignment test measures its centre.
-                                        .debug_selector(|| "rule:add-rule-btn:add".into())
+                                        .debug_selector(|| "rules:add-rule-btn:add".into())
                                         // 3.40: loading + disabled while the add runs.
                                         .loading(self.rule_action_pending(PendingRuleAction::Add))
                                         .disabled(self.rule_action_pending(PendingRuleAction::Add))

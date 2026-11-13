@@ -533,7 +533,7 @@ impl Shell {
                             .text_ellipsis()
                             .debug_selector({
                                 let name = r.name.clone();
-                                move || format!("chart:legend-text:{ix}={name}")
+                                move || format!("chart:legend-text:{ix}:{name}")
                             })
                             .when(id.is_none(), |name| name.text_color(muted))
                             .child(r.name.clone()),
@@ -543,10 +543,12 @@ impl Shell {
                         move |window, cx| {
                             let (name, value) = (name.clone(), value.clone());
                             Tooltip::element(move |_, _| {
-                                let sel = format!("chart:legend-tooltip:{name}={value}");
                                 v_flex()
                                     .gap_0p5()
-                                    .debug_selector(move || sel)
+                                    .debug_selector({
+                                        let (name, value) = (name.clone(), value.clone());
+                                        move || format!("chart:legend-tooltip:{name}:{value}")
+                                    })
                                     .child(
                                         div().font_weight(FontWeight::SEMIBOLD).child(name.clone()),
                                     )
@@ -845,7 +847,7 @@ impl Shell {
                         .id(SharedString::from(format!("summary-cell-{ix}-{col_ix}")))
                         .w(if is_total { px(TOTAL_W) } else { px(MONTH_W) })
                         .flex_none()
-                        .debug_selector(move || format!("summary:cell-{ix}-{col_ix}"))
+                        .debug_selector(move || format!("summary:cell:{ix}:{col_ix}"))
                         .text_right()
                         .text_sm()
                         .rounded(px(2.))
