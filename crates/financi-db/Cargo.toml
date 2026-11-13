@@ -3,6 +3,7 @@ name = "financi-db"
 description = "SQLite schema, migrations, DB worker thread and dev seed for financi."
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 publish = false
 
 [features]

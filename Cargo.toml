@@ -1,10 +1,14 @@
 [workspace]
 resolver = "3"
-members = ["crates/*", "spikes/*"]
+# spikes/ stays in the tree for reference but is not built: keeping it out
+# of the members saves every build, clippy run and verify a GPUI binary (3.90).
+members = ["crates/*"]
+exclude = ["spikes"]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.99.1" # keep in step with the toolchain pinned in mise.toml
 license = "MIT"
 
 [workspace.dependencies]

@@ -3,6 +3,7 @@ name = "financi-core"
 description = "Shared model for financi: raw CSV records, transactions, hashing."
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 publish = false
 
 [dependencies]

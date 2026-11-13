@@ -1,11 +1,28 @@
 #!/bin/sh
 # Tags each commit on main with the next semver version, based on its
 # Conventional Commit message: breaking = major, feat = minor, else patch.
+# While the major is 0 (before 1.0), a breaking change bumps the minor
+# instead, per semver. A merge commit scans the subjects of the commits it
+# merges (HEAD^1..HEAD^2) as well and takes the highest bump of them all.
 # Enable with: git config core.hooksPath .githooks
 
 [ "$(git symbolic-ref --short -q HEAD)" = "main" ] || exit 0
 
 subject=$(git log -1 --format=%s)
+
+# Bump classes are judged from this list of subjects: just the commit's own
+# for a normal commit, plus the merged commits' for a merge.
+subjects=$subject
+body_breaking=no
+if git rev-parse -q --verify HEAD^2 >/dev/null; then
+    subjects=$(printf '%s\n%s\n' "$subject" "$(git log --format=%s HEAD^1..HEAD^2)")
+else
+    # A BREAKING CHANGE footer in the body counts too (single commits only;
+    # for merges the spec is: scan the merged commits' subjects).
+    if git log -1 --format=%B | grep -Eq '^BREAKING[ -]CHANGE:'; then
+        body_breaking=yes
+    fi
+fi
 
 # The previous version is the newest tag on the parent's history. Looking at
 # the parent, not HEAD, means an amended commit gets the same version again.
@@ -20,10 +37,15 @@ else
     IFS=. read -r major minor patch <<EOF
 ${prev#v}
 EOF
-    if printf '%s\n' "$subject" | grep -Eq '^[a-z]+(\([^)]*\))?!:' ||
-        git log -1 --format=%B | grep -Eq '^BREAKING[ -]CHANGE:'; then
-        next="v$((major + 1)).0.0"
-    elif printf '%s\n' "$subject" | grep -Eq '^feat(\([^)]*\))?:'; then
+    if printf '%s\n' "$subjects" | grep -Eq '^[a-z]+(\([^)]*\))?!:' ||
+        [ "$body_breaking" = "yes" ]; then
+        if [ "$major" -ge 1 ]; then
+            next="v$((major + 1)).0.0"
+        else
+            # Before 1.0 a breaking change is a minor bump, not 1.0.0 (3.90).
+            next="v$major.$((minor + 1)).0"
+        fi
+    elif printf '%s\n' "$subjects" | grep -Eq '^feat(\([^)]*\))?:'; then
         next="v$major.$((minor + 1)).0"
     else
         next="v$major.$minor.$((patch + 1))"
