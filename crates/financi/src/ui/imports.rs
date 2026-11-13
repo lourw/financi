@@ -96,18 +96,20 @@ impl TableDelegate for ImportHistoryTable {
                 let id = entry.id;
                 let armed = self.confirm_id == Some(id);
                 let on_undo = self.on_undo.clone();
-                // xsmall ghost button: the undo glyph alone at rest;
-                // armed, it grows the prompt in danger text.
+                // xsmall ghost button (3.37): the undo icon plus the label
+                // "Undo" at rest — the icon alone read as unclear; armed,
+                // the label becomes the prompt in danger text. The selector
+                // records the label it was built with.
+                let label = if armed { UNDO_LABEL_MAX } else { UNDO_LABEL };
                 let btn = Button::new("undo-import")
                     .xsmall()
                     .ghost()
                     .icon(IconName::Undo2)
-                    .debug_selector(|| "history:undo-btn".to_string())
+                    .label(label)
+                    .debug_selector(move || format!("history:undo-btn:{label}"))
                     .on_click(move |_, window, cx| on_undo(id, window, cx));
                 let btn = if armed {
-                    btn.label(UNDO_LABEL_MAX)
-                        .text_color(cx.theme().danger)
-                        .into_any_element()
+                    btn.text_color(cx.theme().danger).into_any_element()
                 } else {
                     btn.into_any_element()
                 };
@@ -739,27 +741,33 @@ actions!(
 // 1,110 px, wider than the page beside the sidebar at the minimum window
 // size, which forced the table to scroll sideways. Now `Imported`,
 // `Rows added` and `Dates` keep their widths, `Undo` is sized so the
-// armed button — its icon and its widest label, "Click again to undo" —
-// shows in full (3.32), and `File` and `Account` share whatever width is
-// left — they truncate with an ellipsis as the window narrows and grow
-// with it, so the table fits the page from the minimum window size up.
+// button — its icon and its widest label, whichever state it is in
+// (3.32, 3.37) — shows in full, and `File` and `Account` share whatever
+// width is left — they truncate with an ellipsis as the window narrows
+// and grow with it, so the table fits the page from the minimum window
+// size up.
 pub(super) const HISTORY_TIME_W: f32 = 150.;
 pub(super) const HISTORY_ROWS_W: f32 = 110.;
 pub(super) const HISTORY_DATES_W: f32 = 220.;
 /// Floor for one flexible column: below this a File or Account cell is
 /// unreadable anyway. The app's minimum window never reaches it.
 pub(super) const HISTORY_FLEX_MIN_W: f32 = 80.;
+/// The in-row Undo button's label at rest (3.37: icon plus text, since
+/// the icon alone read as unclear).
+pub(super) const UNDO_LABEL: &str = "Undo";
 /// The Undo button's widest label; the column must fit this without
 /// clipping whatever the window size.
 pub(super) const UNDO_LABEL_MAX: &str = "Click again to undo";
-/// The Undo column's width: the longest label at `TEXT_SM_CHAR_PX`,
-/// plus the button's icon and horizontal padding and the cell's.
+/// The Undo column's width: the widest of the button's two labels at
+/// `TEXT_SM_CHAR_PX`, plus the button's icon and horizontal padding and
+/// the cell's — so both states show in full (3.37), and no wider, since
+/// every extra pixel comes off `File` and `Account`.
 pub(super) fn history_undo_col_w() -> f32 {
-    (UNDO_LABEL_MAX.chars().count() as f32 * TEXT_SM_CHAR_PX
-        + BUTTON_PAD_X
-        + UNDO_ICON_W
-        + CELL_PAD_X)
-        .ceil()
+    let label_chars = UNDO_LABEL
+        .chars()
+        .count()
+        .max(UNDO_LABEL_MAX.chars().count()) as f32;
+    (label_chars * TEXT_SM_CHAR_PX + BUTTON_PAD_X + UNDO_ICON_W + CELL_PAD_X).ceil()
 }
 
 /// The history table's `File` and `Account` widths for `page_w` pixels

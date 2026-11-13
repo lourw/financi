@@ -369,8 +369,9 @@ arrive with 3.58.
 **Restore** (live in M5; until then a toast says so). The import preview
 (while a file is open) on top, then the history `DataTable` (time, file,
 account, rows added, dates). The newest history row carries an in-row Undo
-sharing the header Undo's confirm state, tooltip "Undo this import"; it
-gains the label "Undo" (3.37).
+sharing the header Undo's confirm state, tooltip "Undo this import"; at
+rest it reads "Undo" beside the `undo-2` icon — an explicit exception to
+the icon-only `row_action_button` (3.37, user request).
 
 **Import preview.** A two-line `Panel`. Line one: file name, the
 institution, then Cancel and the primary import action ("Import 32

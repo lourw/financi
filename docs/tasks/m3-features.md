@@ -627,7 +627,7 @@ Start these only after both queues are done (`docs/tasks.md` → *Picking the ne
     install-desktop`, and say which session type (X11 / Wayland) you
     checked. Add the new `mise` tasks to `CLAUDE.md` → *Commands*.
 
-- [ ] **3.37 In-row Undo says "Undo".** 3.32 made the newest history
+- [x] **3.37 In-row Undo says "Undo".** 3.32 made the newest history
   row's Undo an icon-only button, which the user finds unclear. Make it
   the `undo-2` icon **plus the label "Undo"** (still `.xsmall().ghost()`,
   vertically centered with ≥ 4 px above and below); armed it still reads
