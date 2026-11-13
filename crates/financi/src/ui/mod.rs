@@ -26,6 +26,7 @@ use self::rules::*;
 use self::transfers::*;
 use self::widgets::*;
 
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -205,6 +206,11 @@ pub struct Shell {
     /// the files (3.64) — and the Imports header buttons render busy.
     exporting: bool,
     restoring: bool,
+    /// 5.3 review fix: `exporting || restoring` as a cell shared with
+    /// every [`ImportPanel`], so no UI write dispatch — panel commits
+    /// included — queues behind an archive job. A queued write may name
+    /// rows the restore replaces (dense ids land on different rows).
+    writes_blocked: Rc<Cell<bool>>,
     /// 3.75: idle markers for the tests. `refresh_started` counts calls to
     /// `refresh` (the generation number); `refresh_applied` holds the
     /// generation of the last refresh whose result was applied — the shell
@@ -387,6 +393,7 @@ impl Shell {
             refresh_task: None,
             exporting: false,
             restoring: false,
+            writes_blocked: Rc::new(Cell::new(false)),
             refresh_started: 0,
             refresh_applied: 0,
             dashboard,

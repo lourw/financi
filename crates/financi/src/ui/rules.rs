@@ -316,6 +316,10 @@ impl Shell {
     /// the button shows loading, disabled, while the DB is busy — a save
     /// that re-runs the rules can take seconds).
     fn commit_new_rule(&mut self, category_id: i64, window: &mut Window, cx: &mut Context<Self>) {
+        // 5.3 review fix: refuse writes while an export/restore is in flight.
+        if self.writes_blocked.get() {
+            return;
+        }
         let pattern = self.rule_pattern.read(cx).value().trim().to_string();
         let is_regex = self.rule_regex;
         if pattern.is_empty() {
@@ -421,6 +425,10 @@ impl Shell {
     /// the editor — and the editor stays open. On success every view
     /// refreshes, as after `add_rule`.
     pub(super) fn save_rule_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // 5.3 review fix: refuse writes while an export/restore is in flight.
+        if self.writes_blocked.get() {
+            return;
+        }
         let Some(id) = self.editing_rule else {
             return;
         };
@@ -483,6 +491,10 @@ impl Shell {
     /// re-run leaves the freed rows to the remaining rules or
     /// Uncategorized — and refreshes every view.
     pub(super) fn arm_delete_rule(&mut self, id: i64, window: &mut Window, cx: &mut Context<Self>) {
+        // 5.3 review fix: refuse writes while an export/restore is in flight.
+        if self.writes_blocked.get() {
+            return;
+        }
         if self.armed_delete_rule == Some(id) {
             let db = self.db.clone();
             // 3.40: the delete runs (and the button shows loading,
@@ -874,6 +886,10 @@ impl Shell {
     /// rule and re-runs the rules over the unlocked rows once; then the
     /// selection clears and everything refreshes.
     pub(super) fn move_selected_rules(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // 5.3 review fix: refuse writes while an export/restore is in flight.
+        if self.writes_blocked.get() {
+            return;
+        }
         let Some(ix) = self
             .rules_page
             .move_rules_target

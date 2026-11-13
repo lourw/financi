@@ -199,6 +199,10 @@ pub struct ImportPanel {
     /// charge" — the default, so an unreviewed row imports as new.
     pub(super) same_charges: HashSet<(usize, i64)>,
     busy: bool,
+    /// 5.3 review fix: shared with the shell — set while an export or
+    /// restore dialog or job is in flight; every write this panel makes
+    /// (the commit, the new account) refuses while it is set.
+    writes_blocked: Rc<Cell<bool>>,
     pub(super) error: Option<String>,
     /// 3.64: only the replaceable preview lives here — a newer plan
     /// supersedes the old one. Account load and the import commit run
@@ -218,6 +222,7 @@ impl ImportPanel {
         db: DbWorker,
         csv_root: PathBuf,
         file: LoadedFile,
+        writes_blocked: Rc<Cell<bool>>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -273,6 +278,7 @@ impl ImportPanel {
             override_overlap: false,
             same_charges: HashSet::new(),
             busy: false,
+            writes_blocked,
             error,
             plan_task: None,
             _subs: vec![sub],
@@ -355,6 +361,10 @@ impl ImportPanel {
     }
 
     pub(super) fn create_account(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // 5.3 review fix: no writes while an export/restore is in flight.
+        if self.writes_blocked.get() {
+            return;
+        }
         let name = self.new_name.read(cx).value().trim().to_string();
         if name.is_empty() {
             self.error = Some("Give the account a name.".into());
@@ -404,6 +414,12 @@ impl ImportPanel {
     }
 
     pub(super) fn import(&mut self, cx: &mut Context<Self>) {
+        // 5.3 review fix: no writes while an export/restore is in flight —
+        // the commit holds an `account_id` into the database the restore
+        // may be replacing, and this panel is destroyed by the reset.
+        if self.writes_blocked.get() {
+            return;
+        }
         let Some(account_id) = self.account_id else {
             return;
         };
@@ -470,7 +486,11 @@ impl ImportPanel {
 
     pub(super) fn can_import(&self) -> bool {
         match &self.plan {
-            PlanState::Ready(s) => !self.busy && (s.overlap.is_none() || self.override_overlap),
+            PlanState::Ready(s) => {
+                !self.busy
+                    && !self.writes_blocked.get()
+                    && (s.overlap.is_none() || self.override_overlap)
+            }
             _ => false,
         }
     }
@@ -915,7 +935,10 @@ impl Shell {
                     Ok(file) => {
                         let db = this.db.clone();
                         let csv_root = this.csv_root.clone();
-                        let panel = cx.new(|cx| ImportPanel::new(db, csv_root, file, window, cx));
+                        let writes_blocked = this.writes_blocked.clone();
+                        let panel = cx.new(|cx| {
+                            ImportPanel::new(db, csv_root, file, writes_blocked, window, cx)
+                        });
                         // 3.64: the subscription lives beside the panel in the
                         // tuple, so replacing the panel is what ends it (below).
                         let sub = cx.subscribe_in(
@@ -986,6 +1009,20 @@ impl Shell {
         }
     }
 
+    /// 5.3 review fix: while an export or restore dialog or job is in
+    /// flight every UI write dispatch is refused — the archive must be a
+    /// consistent snapshot, and a write queued behind the restore may
+    /// name rows the replaced database numbers differently. The flag is
+    /// a cell shared with every panel, since the import panel cannot
+    /// see the shell; both repaint for their button states.
+    fn set_writes_blocked(&mut self, blocked: bool, cx: &mut Context<Self>) {
+        self.writes_blocked.set(blocked);
+        if let Some((panel, _)) = self.imports.import.as_ref() {
+            panel.update(cx, |_, cx| cx.notify());
+        }
+        cx.notify();
+    }
+
     /// Export… (⌘E, 5.3): ask where to put the zip, then write it on the
     /// DB worker's writer thread, so it serialises behind any queued
     /// import instead of racing it. The save dialog defaults to
@@ -997,6 +1034,7 @@ impl Shell {
             return;
         }
         self.exporting = true;
+        self.set_writes_blocked(true, cx);
         let (dir, name) = export_default_path();
         let response = cx.prompt_for_new_path(&dir, Some(&name));
         let db = self.db.clone();
@@ -1023,6 +1061,7 @@ impl Shell {
             };
             let _ = this.update_in(cx, |shell, _window, cx| {
                 shell.exporting = false;
+                shell.set_writes_blocked(false, cx);
                 match result {
                     Some((label, Ok(()))) => {
                         shell.notify_ok(format!("Exported to {label}"), cx);
@@ -1051,6 +1090,7 @@ impl Shell {
             return;
         }
         self.restoring = true;
+        self.set_writes_blocked(true, cx);
         let response = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: false,
@@ -1077,6 +1117,7 @@ impl Shell {
             };
             let _ = this.update_in(cx, |shell, window, cx| {
                 shell.restoring = false;
+                shell.set_writes_blocked(false, cx);
                 match result {
                     Some((label, Ok(_manifest))) => {
                         shell.reset_pages_after_restore(window, cx);
@@ -1140,6 +1181,11 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // 5.3 review fix: no writes while an export/restore is in flight —
+        // the armed id names a row of the database being replaced.
+        if self.writes_blocked.get() {
+            return;
+        }
         if self.imports.confirm_undo_import != Some(import_id) {
             self.imports.confirm_undo_import = Some(import_id);
             self.imports.history_table.update(cx, |t, _| {

@@ -1753,3 +1753,306 @@ fn import_end_to_end_shows_expected_values_on_every_page(cx: &mut TestAppContext
         );
     });
 }
+
+// -- Writes wait for the archive (5.3 review fix) ------------------------------
+
+/// 5.3 review fix: while a Restore… job runs every other write dispatch
+/// is refused — an import queued behind the restore would commit its
+/// pre-restore account id into the replaced database, and its panel is
+/// destroyed by the restore's reset anyway. The Import button is
+/// disabled, even a direct call does nothing, and once the restore
+/// lands the data is the snapshot's exactly.
+#[gpui::test]
+fn restore_in_flight_refuses_an_import(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell_on_file(cx, |_| {});
+    wait_idle(cx, &shell);
+    import_demo_file(cx, handle, &shell, "amex-sep-oct.csv", "Amex");
+    wait_until(cx, "67 rows", |cx| shell.read(cx).dashboard.row_count == 67);
+    let zip = scratch_file("snapshot.zip");
+    export_to(cx, handle, &shell, &zip);
+
+    // A second file's panel, planned and ready to commit.
+    open_and_choose(cx, handle, &shell, "simplii-chequing.csv", NEW_ACCOUNT);
+    with_window(cx, handle, |window, cx| {
+        let p = panel(&shell, cx);
+        p.update(cx, |p, cx| {
+            p.new_name.update(cx, |input, cx| {
+                input.set_value("Simplii", window, cx);
+            });
+            p.create_account(window, cx);
+        });
+    });
+    wait_until(cx, "plan ready", |cx| plan_ready(&shell, cx));
+    wait_idle(cx, &shell);
+
+    // Hold the writer, start a restore, answer its dialog: the job
+    // waits on the blocker, so the restore is in flight.
+    let block = block_worker(cx, &shell);
+    with_window(cx, handle, |window, cx| {
+        window.dispatch_action(Box::new(RestoreBackup), cx)
+    });
+    cx.run_until_parked();
+    assert!(cx.did_prompt_for_paths(), "Restore opened the file dialog");
+    cx.simulate_path_prompt_response(move |_| Some(vec![zip]));
+    cx.run_until_parked();
+    cx.update(|cx| {
+        assert!(shell.read(cx).restoring, "the restore is in flight");
+        let p = panel(&shell, cx);
+        assert!(
+            !p.read(cx).can_import(),
+            "Import is refused while a restore runs"
+        );
+    });
+    // The button is disabled, but even the direct call must be refused.
+    with_window(cx, handle, |_, cx| {
+        let p = panel(&shell, cx);
+        p.update(cx, |p, cx| p.import(cx));
+    });
+    draw_frame(cx, handle);
+    assert!(
+        paints(cx, handle, "imports:import-state:ready"),
+        "the refused import leaves the panel idle"
+    );
+    assert!(
+        !paints(cx, handle, "imports:import-state:loading"),
+        "no commit started"
+    );
+
+    // Release the writer: the restore lands and the import never happened.
+    drop(block);
+    wait_until(cx, "the restored rows land", |cx| {
+        !shell.read(cx).restoring
+            && shell.read(cx).dashboard.row_count == 67
+            && shell.read(cx).accounts.len() == 1
+    });
+    wait_idle(cx, &shell);
+    cx.update(|cx| {
+        assert!(
+            shell.read(cx).imports.import.is_none(),
+            "the restore reset closed the panel"
+        );
+        assert_eq!(
+            shell.read(cx).imports.import_history.len(),
+            1,
+            "only the snapshot's import is in the history"
+        );
+        assert_eq!(
+            last_toast(&shell, cx),
+            Some(("Restored from snapshot.zip".into(), false))
+        );
+        assert!(
+            !toasts(&shell, cx)
+                .iter()
+                .any(|(msg, _)| msg.to_lowercase().contains("simplii")),
+            "the refused import never ran (no Imported toast for its file)"
+        );
+    });
+}
+
+/// 5.3 review fix: a queue apply holds transaction ids of the database
+/// being replaced — dense ids name different rows after the restore —
+/// so `categorize_merchant` is refused while a restore runs too: no rule
+/// is created and the restored queue still holds the group whole.
+#[gpui::test]
+fn restore_in_flight_refuses_a_queue_apply(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell_on_file(cx, |_| {});
+    wait_idle(cx, &shell);
+    import_demo_file(cx, handle, &shell, "amex-sep-oct.csv", "Amex");
+    wait_until(cx, "67 rows", |cx| shell.read(cx).dashboard.row_count == 67);
+    add_parent(cx, handle, &shell, "Shopping");
+    add_child(cx, handle, &shell, "Online");
+    wait_until(cx, "queue populated", |cx| {
+        !shell.read(cx).queue.groups.is_empty()
+    });
+    let (merchant, before) = cx.update(|cx| top_group(&shell, cx));
+    let child = cx.update(|cx| find_child(&shell, cx, "Online").unwrap());
+    let zip = scratch_file("queue-snapshot.zip");
+    export_to(cx, handle, &shell, &zip);
+    wait_idle(cx, &shell);
+
+    let block = block_worker(cx, &shell);
+    with_window(cx, handle, |window, cx| {
+        window.dispatch_action(Box::new(RestoreBackup), cx)
+    });
+    cx.run_until_parked();
+    assert!(cx.did_prompt_for_paths(), "Restore opened the file dialog");
+    cx.simulate_path_prompt_response(move |_| Some(vec![zip]));
+    cx.run_until_parked();
+    cx.update(|cx| assert!(shell.read(cx).restoring, "the restore is in flight"));
+
+    // The very call the row's Apply button makes, picker and all —
+    // refused mid-restore.
+    let refused = merchant.clone();
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            let picker = s.queue_picker(&refused, window, cx);
+            let ix = s
+                .child_choices
+                .iter()
+                .position(|(id, _)| *id == child)
+                .unwrap();
+            picker.update(cx, |sel, cx| {
+                sel.set_selected_index(Some(gpui_kit::component::IndexPath::new(ix)), window, cx);
+            });
+            s.categorize_merchant(refused.clone(), window, cx);
+        });
+    });
+
+    drop(block);
+    wait_until(cx, "the restored rows land", |cx| {
+        !shell.read(cx).restoring && shell.read(cx).dashboard.row_count == 67
+    });
+    wait_idle(cx, &shell);
+    cx.update(|cx| {
+        assert!(
+            !shell.read(cx).rules.iter().any(|r| r.pattern == merchant),
+            "the refused categorize created no rule"
+        );
+        let (top, count) = top_group(&shell, cx);
+        assert_eq!(top, merchant, "the same group tops the restored queue");
+        assert_eq!(count, before, "and it still holds every row");
+    });
+}
+
+/// 5.3 review fix: the export flag covers the open save dialog too, so
+/// an import planned while the dialog waits is refused for its duration
+/// — and works the moment the dialog is cancelled.
+#[gpui::test]
+fn a_cancelled_export_dialog_leaves_import_working(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |_| {});
+    wait_idle(cx, &shell);
+    open_and_choose(cx, handle, &shell, "amex-sep-oct.csv", NEW_ACCOUNT);
+    with_window(cx, handle, |window, cx| {
+        let p = panel(&shell, cx);
+        p.update(cx, |p, cx| {
+            p.new_name.update(cx, |input, cx| {
+                input.set_value("Cobalt", window, cx);
+            });
+            p.create_account(window, cx);
+        });
+    });
+    wait_until(cx, "plan ready", |cx| plan_ready(&shell, cx));
+
+    with_window(cx, handle, |window, cx| {
+        window.dispatch_action(Box::new(ExportData), cx)
+    });
+    cx.run_until_parked();
+    assert!(
+        cx.did_prompt_for_new_path(),
+        "Export opened the save dialog"
+    );
+    cx.update(|cx| {
+        assert!(shell.read(cx).exporting, "the dialog is in flight");
+        let p = panel(&shell, cx);
+        assert!(!p.read(cx).can_import(), "Import waits for the dialog");
+    });
+    with_window(cx, handle, |_, cx| {
+        let p = panel(&shell, cx);
+        p.update(cx, |p, cx| p.import(cx));
+    });
+    draw_frame(cx, handle);
+    assert!(
+        paints(cx, handle, "imports:import-state:ready"),
+        "the refused import leaves the panel idle"
+    );
+    assert!(
+        !paints(cx, handle, "imports:import-state:loading"),
+        "the refused import started no commit"
+    );
+
+    // Cancel the dialog: the panel is live again and imports for real.
+    cx.simulate_new_path_selection(|_| None);
+    cx.run_until_parked();
+    cx.update(|cx| {
+        assert!(!shell.read(cx).exporting, "not stuck busy");
+        let p = panel(&shell, cx);
+        assert!(p.read(cx).can_import(), "Import is live after the cancel");
+    });
+    click_import(cx, handle, &shell);
+    wait_until(cx, "the import lands", |cx| {
+        shell.read(cx).dashboard.row_count == 67
+    });
+    wait_idle(cx, &shell);
+}
+
+/// 5.3 review fix: an archive result that lands after the window is
+/// gone hits the weak `update_in` path — it is dropped, never panicked.
+/// Phase 1 releases a restore job to a closed window (its continuation
+/// touches the window for the page reset); phase 2 answers an export's
+/// save dialog after that window closed.
+#[gpui::test]
+fn archive_results_landing_after_the_window_closes_are_dropped(cx: &mut TestAppContext) {
+    // Phase 1: Restore… answered, window closed, job released.
+    let (handle, shell) = open_shell_on_file(cx, |_| {});
+    wait_idle(cx, &shell);
+    import_demo_file(cx, handle, &shell, "amex-sep-oct.csv", "Amex");
+    wait_until(cx, "67 rows", |cx| shell.read(cx).dashboard.row_count == 67);
+    let snapshot = scratch_file("snapshot.zip");
+    export_to(cx, handle, &shell, &snapshot);
+    let db = shell.update(cx, |s, _| s.db.clone());
+    let raw_count = |db: &financi_db::DbWorker| -> i64 {
+        block_on(db.call(|c| {
+            c.query_row("SELECT COUNT(*) FROM transactions", [], |r| {
+                r.get::<_, i64>(0)
+            })
+        }))
+        .unwrap()
+        .unwrap()
+    };
+    // The snapshot's raw rows: the fixture's 68, one of them a hidden
+    // transfer the dashboard does not count.
+    let snapshot_rows = raw_count(&db);
+    assert_eq!(snapshot_rows, 68, "raw rows the snapshot carries");
+    import_demo_file(cx, handle, &shell, "simplii-chequing.csv", "Simplii");
+    wait_until(cx, "the second import lands", |cx| {
+        shell.read(cx).dashboard.row_count > 67
+    });
+    assert!(raw_count(&db) > snapshot_rows, "the second import landed");
+
+    let block = block_worker(cx, &shell);
+    with_window(cx, handle, |window, cx| {
+        window.dispatch_action(Box::new(RestoreBackup), cx)
+    });
+    cx.run_until_parked();
+    assert!(cx.did_prompt_for_paths(), "Restore opened the file dialog");
+    cx.simulate_path_prompt_response(move |_| Some(vec![snapshot]));
+    cx.run_until_parked();
+    // The job waits on the blocker; close the window under it.
+    with_window(cx, handle, |window, _cx| window.remove_window());
+    // Release: the restore replaces the database and its result tries
+    // to land on the closed window — dropped, not panicked.
+    drop(block);
+    cx.run_until_parked();
+    let rows = raw_count(&db);
+    assert_eq!(
+        rows, snapshot_rows,
+        "the restore ran after the window closed and the result was dropped"
+    );
+
+    // Phase 2: Export… dialog answered after its window closed.
+    let (handle2, shell2) = open_shell_on_file(cx, |_| {});
+    wait_idle(cx, &shell2);
+    import_demo_file(cx, handle2, &shell2, "amex-sep-oct.csv", "Amex");
+    wait_until(cx, "67 rows again", |cx| {
+        shell2.read(cx).dashboard.row_count == 67
+    });
+    let block2 = block_worker(cx, &shell2);
+    with_window(cx, handle2, |window, cx| {
+        window.dispatch_action(Box::new(ExportData), cx)
+    });
+    cx.run_until_parked();
+    assert!(
+        cx.did_prompt_for_new_path(),
+        "Export opened the save dialog"
+    );
+    with_window(cx, handle2, |window, _cx| window.remove_window());
+    let late_zip = scratch_file("late-export.zip");
+    let dest = late_zip.clone();
+    cx.simulate_new_path_selection(move |_| Some(dest));
+    drop(block2);
+    cx.run_until_parked();
+    let db2 = shell2.update(cx, |s, _| s.db.clone());
+    block_on(db2.call(|_| ())).unwrap();
+    let written = late_zip.metadata().expect("the export still wrote its zip");
+    assert!(written.len() > 0, "and it is not empty");
+}

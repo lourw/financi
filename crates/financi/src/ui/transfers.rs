@@ -36,6 +36,11 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // 5.3 review fix: refuse writes while an export/restore is in
+        // flight — the row ids may name different transactions after it.
+        if self.writes_blocked.get() {
+            return;
+        }
         let db = self.db.clone();
         // 3.64: detached — a later action must not cancel this write's
         // continuation and swallow its refresh.
@@ -63,6 +68,10 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // 5.3 review fix: refuse writes while an export/restore is in flight.
+        if self.writes_blocked.get() {
+            return;
+        }
         let db = self.db.clone();
         // 3.64: detached — see `pair_transfer`.
         cx.spawn_in(window, async move |this, cx| {
@@ -89,6 +98,10 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // 5.3 review fix: refuse writes while an export/restore is in flight.
+        if self.writes_blocked.get() {
+            return;
+        }
         let db = self.db.clone();
         // 3.64: detached — see `pair_transfer`.
         cx.spawn_in(window, async move |this, cx| {
