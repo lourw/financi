@@ -26,6 +26,7 @@ use self::rules::*;
 use self::transfers::*;
 use self::widgets::*;
 
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -199,6 +200,17 @@ pub struct Shell {
     toast_clock: Instant,
     toast_task: Option<Task<()>>,
     refresh_task: Option<Task<()>>,
+    /// 5.3: an export or a restore in flight (including its open file
+    /// dialog). Both refuse to start while either is set — the archive
+    /// must be a consistent snapshot, taken while nothing else touches
+    /// the files (3.64) — and the Imports header buttons render busy.
+    exporting: bool,
+    restoring: bool,
+    /// 5.3 review fix: `exporting || restoring` as a cell shared with
+    /// every [`ImportPanel`], so no UI write dispatch — panel commits
+    /// included — queues behind an archive job. A queued write may name
+    /// rows the restore replaces (dense ids land on different rows).
+    writes_blocked: Rc<Cell<bool>>,
     /// 3.75: idle markers for the tests. `refresh_started` counts calls to
     /// `refresh` (the generation number); `refresh_applied` holds the
     /// generation of the last refresh whose result was applied — the shell
@@ -379,6 +391,9 @@ impl Shell {
             toast_clock: Instant::now(),
             toast_task: None,
             refresh_task: None,
+            exporting: false,
+            restoring: false,
+            writes_blocked: Rc::new(Cell::new(false)),
             refresh_started: 0,
             refresh_applied: 0,
             dashboard,
@@ -410,11 +425,11 @@ impl Shell {
         Self::on_shell_action(shell, window, cx, |this, _: &UndoLastImport, window, cx| {
             this.undo_last_import(window, cx);
         });
-        Self::on_shell_action(shell, window, cx, |this, _: &ExportData, _, cx| {
-            this.export_data(cx);
+        Self::on_shell_action(shell, window, cx, |this, _: &ExportData, window, cx| {
+            this.export_data(window, cx);
         });
-        Self::on_shell_action(shell, window, cx, |this, _: &RestoreBackup, _, cx| {
-            this.restore_backup(cx);
+        Self::on_shell_action(shell, window, cx, |this, _: &RestoreBackup, window, cx| {
+            this.restore_backup(window, cx);
         });
         Self::on_shell_action(shell, window, cx, |_, _: &QuitApp, _, cx| cx.quit());
     }

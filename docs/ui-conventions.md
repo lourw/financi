@@ -205,7 +205,7 @@ or changing the selection disarms it. No modals, no native alerts.
 - Every click shows its effect, or a loading/disabled state on the
   control, within one frame (`plan.md` → *Responsiveness*).
 - **Toasts, never inline status lines.** Messages ("Categorized
-  MERCHANT", "Export is not available yet.", errors) are gpui-base toasts
+  MERCHANT", "Exported to …", errors) are gpui-base toasts
   over the window's bottom-right corner. No page renders a status line in
   its content column.
 - Success and info toasts dismiss after ~4 s; errors stay until closed. A
@@ -366,7 +366,9 @@ arrive with 3.58.
 
 **Imports.** `PageHeader` actions: **Import CSV** (primary), **Undo**
 (two-click, newest import, disabled with no history), **Export**,
-**Restore** (live in M5; until then a toast says so). The import preview
+**Restore** (5.3: a save dialog defaulting to
+`~/Desktop/financi-export-YYYY-MM-DD.zip` and a file dialog; busy while
+one runs; the result is a toast, errors until closed). The import preview
 (while a file is open) on top, then the history `DataTable` (time, file,
 account, rows added, dates). The newest history row carries an in-row Undo
 sharing the header Undo's confirm state, tooltip "Undo this import"; at

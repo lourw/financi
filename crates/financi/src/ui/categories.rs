@@ -504,6 +504,10 @@ impl Shell {
     }
 
     pub(super) fn add_parent(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // 5.3 review fix: refuse writes while an export/restore is in flight.
+        if self.writes_blocked.get() {
+            return;
+        }
         let name = self
             .categories_page
             .new_parent_name
@@ -568,6 +572,10 @@ impl Shell {
 
     /// Add a child under the selected parent.
     pub(super) fn add_child(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // 5.3 review fix: refuse writes while an export/restore is in flight.
+        if self.writes_blocked.get() {
+            return;
+        }
         let Some((parent, None)) = self.selected_node() else {
             return;
         };
@@ -630,6 +638,10 @@ impl Shell {
     }
 
     fn save_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // 5.3 review fix: refuse writes while an export/restore is in flight.
+        if self.writes_blocked.get() {
+            return;
+        }
         let Some(id) = self.categories_page.selected_category else {
             return;
         };
@@ -673,6 +685,10 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // 5.3 review fix: refuse writes while an export/restore is in flight.
+        if self.writes_blocked.get() {
+            return;
+        }
         let Some((node, Some(_))) = self.selected_node() else {
             return;
         };
@@ -704,6 +720,10 @@ impl Shell {
     /// First click arms the delete, the second runs it (ui-conventions,
     /// *Interaction*).
     pub(super) fn arm_delete_category(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // 5.3 review fix: refuse writes while an export/restore is in flight.
+        if self.writes_blocked.get() {
+            return;
+        }
         let Some(id) = self.categories_page.selected_category else {
             return;
         };

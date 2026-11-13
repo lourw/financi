@@ -81,17 +81,42 @@ fn temp_db_path() -> PathBuf {
 }
 
 /// `open_shell` with a chosen database path (3.38: the footer tooltip
-/// test uses a path longer than the sidebar).
+/// test uses a path longer than the sidebar). The database itself stays
+/// in memory.
 fn open_shell_at(
     cx: &mut TestAppContext,
     setup: impl FnOnce(&financi_db::rusqlite::Connection),
     db_path: PathBuf,
 ) -> (AnyWindowHandle, Entity<Shell>) {
+    let conn = open_in_memory().unwrap();
+    setup(&conn);
+    open_shell_with_conn(cx, conn, db_path)
+}
+
+/// Open the shell over a real database file at a unique path (5.3):
+/// restore refuses an in-memory database, so the export and restore
+/// flows need the on-disk one. Its `csv/` tree lands beside the file,
+/// inside the same per-test scratch directory.
+fn open_shell_on_file(
+    cx: &mut TestAppContext,
+    setup: impl FnOnce(&financi_db::rusqlite::Connection),
+) -> (AnyWindowHandle, Entity<Shell>) {
+    let db_path = temp_db_path();
+    let conn = financi_db::open(&db_path).unwrap();
+    setup(&conn);
+    open_shell_with_conn(cx, conn, db_path)
+}
+
+/// The window half of the `open_shell*` helpers: init, spawn the worker
+/// over `conn` and open the shell as the app does.
+fn open_shell_with_conn(
+    cx: &mut TestAppContext,
+    conn: financi_db::rusqlite::Connection,
+    db_path: PathBuf,
+) -> (AnyWindowHandle, Entity<Shell>) {
     // The DB worker answers from its own OS thread.
     cx.executor().allow_parking();
     cx.update(gpui_kit::init);
-    let conn = open_in_memory().unwrap();
-    setup(&conn);
     let db = DbWorker::spawn(conn);
     cx.update(|cx| {
         let bounds = Bounds {
@@ -149,26 +174,6 @@ fn wait_idle(cx: &mut TestAppContext, shell: &Entity<Shell>) {
         );
         std::thread::sleep(Duration::from_millis(2));
     }
-}
-
-/// 3.65: hold the DB worker on a sleeping job. Every job a test triggers
-/// afterwards queues behind the blocker, so the UI can be drawn while its
-/// refresh is *still in flight* — the exact moment 3.65 is about. Keep the
-/// returned sender alive while the worker must stay blocked; dropping it
-/// finishes the blocker and the queued jobs run. In-memory test databases
-/// have no reader thread, so all jobs queue behind this one deterministically.
-fn block_worker(cx: &mut TestAppContext, shell: &Entity<Shell>) -> std::sync::mpsc::Sender<()> {
-    let db = shell.update(cx, |s, _| s.db.clone());
-    let (started_tx, started_rx) = std::sync::mpsc::channel();
-    let (done_tx, done_rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let _ = block_on(db.call(move |_| {
-            started_tx.send(()).ok();
-            let _ = done_rx.recv();
-        }));
-    });
-    started_rx.recv().expect("the blocker job started");
-    done_tx
 }
 
 fn with_window<R>(
@@ -398,6 +403,7 @@ const PAGE_NAMESPACES: &[&str] = &[
     "accounts",
     "cat",
     "chart",
+    "dashboard",
     "filters",
     "history",
     "imports",
@@ -997,6 +1003,36 @@ fn block_on<F: std::future::Future>(future: F) -> F::Output {
         }
         rx.recv().expect("waker vanished");
     }
+}
+
+/// 5.3: hold the DB worker's writer thread so a test can act while a load
+/// or a restore is in flight. The worker runs its jobs in order, so while
+/// the blocker runs every later job waits and the shell's tasks park
+/// mid-await. `wait_idle` first, so the blocker is the job that runs.
+/// Dropping the returned guard releases the thread.
+fn block_worker(cx: &mut TestAppContext, shell: &Entity<Shell>) -> WorkerBlock {
+    use std::sync::mpsc;
+    let db = shell.update(cx, |s, _| s.db.clone());
+    let (started_tx, started_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = block_on(db.call(move |_conn| {
+            let _ = started_tx.send(());
+            // Hold the writer thread until the test drops `release_tx`.
+            let _ = release_rx.recv();
+        }));
+    });
+    started_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("worker blocker took the writer thread");
+    WorkerBlock {
+        _release: release_tx,
+    }
+}
+
+/// Releases the worker-thread blocker (see [`block_worker`]) when dropped.
+struct WorkerBlock {
+    _release: std::sync::mpsc::Sender<()>,
 }
 
 fn db_setting(cx: &mut TestAppContext, shell: &Entity<Shell>, key: &str) -> Option<String> {

@@ -17,10 +17,11 @@
 //!   rebuilt before anything is zipped.
 //!
 //! Restore is the mirror image: [`verify_export`] checks a zip against its
-//! manifest without changing anything, and [`restore`] takes `.bak` copies
-//! of the live database and `csv/` tree, writes the snapshot into the live
+//! manifest without changing anything, and [`restore`] takes a `.bak`
+//! copy of the live database, writes the snapshot into the live
 //! connection with rusqlite's backup API (no file swapping), migrates an
-//! older schema, and replaces `csv/` with the zip's tree.
+//! older schema, and stages the zip's tree before moving it in over
+//! `csv/`.
 
 use std::collections::BTreeMap;
 use std::ffi::c_int;
@@ -310,9 +311,12 @@ pub struct ManifestFile {
 }
 
 /// Check an export zip without changing anything: `manifest.json` parses,
-/// its format and schema versions are no newer than this build, and every
-/// file it lists matches its SHA-256. Files the manifest does not list —
-/// `account.json`, stray files — carry no hash and are not checked.
+/// its format and schema versions are no newer than this build, every
+/// file it lists matches its SHA-256, and no `csv/` entry carries a path
+/// that would escape the tree. Files the manifest does not list —
+/// `account.json`, stray files — carry no hash and are not checked, but
+/// their names are: a stray `csv/../../` entry must not pass this gate
+/// only to fail the restore after the database is replaced (5.3).
 pub fn verify_export(zip_path: &Path) -> Result<Manifest> {
     let mut zip = open_zip(zip_path)?;
     verify_zip(&mut zip, zip_path)
@@ -322,15 +326,16 @@ pub fn verify_export(zip_path: &Path) -> Result<Manifest> {
 /// CSV root `root`, returning the manifest it restored (5.2).
 ///
 /// Order is the safety: everything the zip owes is verified first, so a
-/// tampered file or a newer schema refuses before anything changes. Then
-/// the current database is copied to `<db>.bak` beside `conn` and `csv/`
-/// to `csv.bak/` beside `root`; the snapshot replaces the live database
-/// through rusqlite's backup API on the live connection (no file
-/// swapping); an older snapshot migrates to this build's schema; and
-/// `csv/` is replaced with the zip's tree. A failure part-way — say a
-/// stray file that will not extract — leaves the live database usable:
-/// restored or untouched, never half-written, with the `.bak` copies on
-/// disk either way.
+/// tampered file, a newer schema, or a `csv/` path that would escape the
+/// tree refuses before anything changes. Then the current database is
+/// copied to `<db>.bak` beside `conn`; the snapshot replaces the live
+/// database through rusqlite's backup API on the live connection (no
+/// file swapping); an older snapshot migrates to this build's schema;
+/// and the zip's tree extracts to `<root>.tmp-<uuid>`, after which
+/// `csv/` moves to `csv.bak/` and the staging copy takes its place. A
+/// failure part-way — say a corrupt stray file — leaves the live
+/// database usable, restored or untouched and never half-written, with
+/// the CSV tree and its `csv.bak` left exactly as they were.
 ///
 /// `conn` must be a file database (it needs a path to back up) and not in
 /// a transaction: in the app this runs on the writer thread through
@@ -386,6 +391,17 @@ fn verify_zip(zip: &mut ZipArchive<File>, zip_path: &Path) -> Result<Manifest> {
     check_hash(zip, zip_path, DB_NAME, &manifest.database_sha256)?;
     for file in &manifest.files {
         check_hash(zip, zip_path, &file.path, &file.sha256)?;
+    }
+    // A `csv/` entry whose name `csv_target` refuses can only fail while
+    // extracting — after the database is replaced. Refuse those names
+    // here, before anything changes. Names only: the root they would land
+    // under is irrelevant to the shape of the path.
+    let prefix = format!("{CSV_DIR}/");
+    for name in zip.file_names() {
+        let name = name.map_err(|source| zip_error(zip_path, source))?;
+        if let Some(rel) = name.strip_prefix(&prefix) {
+            csv_target(zip_path, Path::new("/"), rel)?;
+        }
     }
     Ok(manifest)
 }
@@ -515,10 +531,32 @@ fn restore_verified(
     // A snapshot from an older build catches up (5.2).
     migrate(conn)?;
 
-    // Then the CSV tree. If an entry fails to extract, the database is
-    // already restored — usable, with the old tree safe in `csv.bak/`.
-    back_up_csv_root(root)?;
-    extract_csv_tree(zip, zip_path, root)
+    // Then the CSV tree, staged: the zip's tree extracts into
+    // `<root>.tmp-<uuid>` first, and only once the whole tree has landed
+    // does `csv/` move aside to `csv.bak/` and the staging copy take its
+    // place. If an entry fails to extract, the live tree and the earlier
+    // `csv.bak` are left alone — a retry cannot clobber the only good
+    // backup with half a tree. The database is already restored by this
+    // point: usable, restored or untouched, never half-written.
+    let staging = staging_csv_root(root);
+    let staged = std::fs::create_dir_all(&staging)
+        .map_err(|source| io_error(&staging, source))
+        .and_then(|()| extract_csv_tree(zip, zip_path, &staging))
+        .and_then(|()| {
+            back_up_csv_root(root)?;
+            std::fs::rename(&staging, root).map_err(|source| io_error(root, source))
+        });
+    if staged.is_err() {
+        let _ = std::fs::remove_dir_all(&staging);
+    }
+    staged
+}
+
+/// `<root>.tmp-<uuid>`: the staging directory the zip's tree extracts
+/// into before it replaces the live root.
+fn staging_csv_root(root: &Path) -> PathBuf {
+    let name = root.file_name().unwrap_or_default().to_string_lossy();
+    root.with_file_name(format!("{name}.tmp-{}", uuid::Uuid::new_v4()))
 }
 
 /// Pages through one online backup. `run_to_completion` retries while the
@@ -544,7 +582,9 @@ fn remove_db_files(path: &Path) {
 }
 
 /// Move `root` aside as `<root>.bak`, replacing an earlier backup; a
-/// missing tree has nothing to back up.
+/// missing tree has nothing to back up. Runs only after the zip's tree
+/// has fully extracted into the staging directory, so a failed restore
+/// never reaches it and never destroys the earlier backup.
 fn back_up_csv_root(root: &Path) -> Result<()> {
     if !root.exists() {
         return Ok(());
@@ -561,11 +601,12 @@ fn back_up_csv_root(root: &Path) -> Result<()> {
     std::fs::rename(root, &bak).map_err(|source| io_error(root, source))
 }
 
-/// Extract the zip's `csv/` tree under `root`, which [`back_up_csv_root`]
-/// has just moved out of the way. The manifest and the snapshot belong to
-/// the other steps; a corrupt stray entry — one the manifest never
-/// hashed, so verification passed — fails here, part-way.
-fn extract_csv_tree(zip: &mut ZipArchive<File>, zip_path: &Path, root: &Path) -> Result<()> {
+/// Extract the zip's `csv/` tree under `dest` — the staging directory,
+/// which the caller renames onto the live root only after this returns
+/// Ok. The manifest and the snapshot belong to the other steps; a
+/// corrupt stray entry — one the manifest never hashed, so verification
+/// passed — fails here, part-way, harmlessly in the staging copy.
+fn extract_csv_tree(zip: &mut ZipArchive<File>, zip_path: &Path, dest: &Path) -> Result<()> {
     let prefix = format!("{CSV_DIR}/");
     for i in 0..zip.len() {
         let mut entry = zip
@@ -581,7 +622,7 @@ fn extract_csv_tree(zip: &mut ZipArchive<File>, zip_path: &Path, root: &Path) ->
         let Some(rel) = name.strip_prefix(&prefix) else {
             continue;
         };
-        let path = csv_target(zip_path, root, rel)?;
+        let path = csv_target(zip_path, dest, rel)?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|source| io_error(parent, source))?;
         }

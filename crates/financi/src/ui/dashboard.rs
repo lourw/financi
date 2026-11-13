@@ -859,6 +859,10 @@ impl Shell {
     /// Write the current selection to the `settings` table through the
     /// worker. A failed write only costs the restore at the next launch.
     fn persist_date_range(&mut self, cx: &mut Context<Self>) {
+        // 5.3 review fix: refuse writes while an export/restore is in flight.
+        if self.writes_blocked.get() {
+            return;
+        }
         let db = self.db.clone();
         let range = self.dashboard.date_range;
         self.dashboard.date_range_task = Some(cx.spawn(async move |_, _| {
@@ -964,6 +968,10 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // 5.3 review fix: refuse writes while an export/restore is in flight.
+        if self.writes_blocked.get() {
+            return;
+        }
         if on == self.dashboard.include_transfers {
             return;
         }
@@ -1102,6 +1110,11 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // 5.3 review fix: refuse writes while an export/restore is in
+        // flight — the row id may name a different transaction after it.
+        if self.writes_blocked.get() {
+            return;
+        }
         let db = self.db.clone();
         // 3.64: record the choice now — the continuation compares against
         // it, and the table's rows lag a whole refresh behind.
@@ -1143,6 +1156,10 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // 5.3 review fix: refuse writes while an export/restore is in flight.
+        if self.writes_blocked.get() {
+            return;
+        }
         // Hiding the row a rule offer is on would strand the offer.
         if self
             .dashboard
@@ -1174,6 +1191,10 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // 5.3 review fix: refuse writes while an export/restore is in flight.
+        if self.writes_blocked.get() {
+            return;
+        }
         let Some((_, category_id)) = self
             .dashboard
             .rule_offer
@@ -1314,13 +1335,24 @@ impl Shell {
                     ),
             )
             .child(match body {
-                DashboardBody::NoData => div()
+                // 5.3: an empty database is also where a restore begins,
+                // so the empty state offers it beside the import hint.
+                DashboardBody::NoData => v_flex()
                     .flex_1()
-                    .flex()
                     .items_center()
                     .justify_center()
+                    .gap_2()
                     .text_color(muted)
                     .child("Drop an Amex or Simplii CSV export here, or press ⌘O")
+                    .child(
+                        Button::new("restore-from-export")
+                            .link()
+                            .label("Restore from export…")
+                            .debug_selector(|| "dashboard:restore-link".into())
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.restore_backup(window, cx);
+                            })),
+                    )
                     .into_any_element(),
                 _ => {
                     v_flex()

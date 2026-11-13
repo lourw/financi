@@ -142,6 +142,11 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // 5.3 review fix: refuse writes while an export/restore is in
+        // flight — the group's row ids may name different rows after it.
+        if self.writes_blocked.get() {
+            return;
+        }
         let Some(picker) = self.queue.pickers.get(&merchant).cloned() else {
             return;
         };
