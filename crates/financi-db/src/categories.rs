@@ -205,9 +205,10 @@ pub fn move_child(conn: &Connection, child_id: i64, new_parent_id: i64) -> Resul
 }
 
 /// Delete a category after moving its transactions and rules to
-/// `reassign_to`, which must be an existing child. Deleting a parent
-/// requires it to have no children. System categories can't be deleted.
-/// The reassignment and the delete happen in one SQL transaction.
+/// `reassign_to`, which must be an existing child of the same kind (3.70:
+/// reassigning across kinds would turn spend into income). Deleting a
+/// parent requires it to have no children. System categories can't be
+/// deleted. The reassignment and the delete happen in one SQL transaction.
 pub fn delete_category(conn: &Connection, id: i64, reassign_to: i64) -> Result<()> {
     let tx = conn.unchecked_transaction()?;
     let category = fetch_category(&tx, id)?;
@@ -223,6 +224,12 @@ pub fn delete_category(conn: &Connection, id: i64, reassign_to: i64) -> Result<(
     let target = fetch_category(&tx, reassign_to)?;
     if target.parent_id.is_none() {
         return Err(DbError::ParentCategoryNotAssignable(target.name));
+    }
+    if target.kind != category.kind {
+        return Err(DbError::CategoryKindMismatch {
+            child: category.name,
+            parent: target.name,
+        });
     }
     let children: i64 = tx.query_row(
         "SELECT COUNT(*) FROM categories WHERE parent_id = ?1",
@@ -619,6 +626,51 @@ mod tests {
             )
             .unwrap();
         assert_eq!(kept, 1, "nothing moved or deleted after the refusals");
+    }
+
+    /// 3.70: a reassign target of another kind would turn spend into income,
+    /// so `delete_category` refuses it the way `move_child` does.
+    #[test]
+    fn delete_into_a_category_of_the_other_kind_is_refused() {
+        let conn = open_in_memory().unwrap();
+        let food = create_parent(&conn, "Food", CategoryKind::Expense).unwrap();
+        let coffee = create_child(&conn, food, "Coffee").unwrap();
+        let salary = create_parent(&conn, "Salary", CategoryKind::Income).unwrap();
+        let paycheck = create_child(&conn, salary, "Paycheck").unwrap();
+        let spend = add_transaction(&conn, Some(coffee));
+        let income = add_transaction(&conn, Some(paycheck));
+
+        let err = delete_category(&conn, coffee, paycheck).unwrap_err();
+        assert!(
+            matches!(&err, DbError::CategoryKindMismatch { child, parent }
+                if child == "Coffee" && parent == "Paycheck"),
+            "{err}"
+        );
+        let err = delete_category(&conn, paycheck, coffee).unwrap_err();
+        assert!(
+            matches!(&err, DbError::CategoryKindMismatch { child, parent }
+                if child == "Paycheck" && parent == "Coffee"),
+            "{err}"
+        );
+
+        for (tx, category) in [(spend, coffee), (income, paycheck)] {
+            let kept: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM transactions WHERE id = ?1 AND category_id = ?2",
+                    (tx, category),
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(kept, 1, "the refusal moved nothing");
+        }
+        let alive: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM categories WHERE id IN (?1, ?2)",
+                (coffee, paycheck),
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(alive, 2, "the refusal deleted nothing");
     }
 
     #[test]

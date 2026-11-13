@@ -6,7 +6,7 @@ Runs beside the UI queue, in the order listed. Backend only: don't read the UI d
 
 Runs beside the UI queue. 5.1 and 5.2 (in M5) follow 3.90.
 
-- [ ] **3.70 Database guard rails.** (Code review, 2026-11-11.) Small
+- [x] **3.70 Database guard rails.** (Code review, 2026-11-11.) Small
   `financi-db` fixes, one commit each or together:
   - **Undo names its import.** `undo_last_import(account_id)` deletes
     whatever import is newest; the UI looks the account up from the row
