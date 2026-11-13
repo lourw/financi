@@ -392,8 +392,9 @@ impl Shell {
         // The live "matches N transactions" preview runs on every pattern
         // keystroke (ui-conventions, Categories page).
         shell._subs.extend(shell.subscribe_rule_row(window, cx));
-        shell.load_date_range(window, cx);
-        shell.load_include_transfers(window, cx);
+        // 3.65: exactly one refresh at launch. The saved date range and
+        // transfers setting load inside its query (see `refresh`), so the
+        // first data frame already uses them and nothing re-queries.
         shell.refresh(window, cx);
         shell
     }
@@ -455,6 +456,12 @@ impl Shell {
         let excluded = self.dashboard.excluded_accounts.clone();
         let mut view_filter = self.dashboard.view_filter.clone();
         view_filter.include_transfers = self.dashboard.include_transfers;
+        // 3.65: the very first refresh also loads the saved settings in the
+        // same round trip — the date range and the transfers checkbox. The
+        // query below runs with them applied, and the continuation puts
+        // them on the state and the filter controls, so launch is one
+        // refresh whose first frame shows the saved range.
+        let startup = std::mem::take(&mut self.dashboard.startup_settings);
         // The table-only filters (3.4): search, the two toggles and the sort,
         // folded into the query alongside the shared date-range/accounts/
         // transfers filter. The category slot carries the legend selection
@@ -490,6 +497,19 @@ impl Shell {
         let generation = self.refresh_started;
         self.refresh_task = Some(cx.spawn_in(window, async move |this, cx| {
             let result = on_db(&db, move |c| {
+                // 3.65: launch settings first — the queries below run with
+                // them, so the first frame is already the saved view.
+                let startup = if startup {
+                    let range = settings::date_range(c)?;
+                    let transfers = settings::include_transfers(c)?;
+                    let (from, to) = range.range(Shell::today());
+                    view_filter.from = from;
+                    view_filter.to = to;
+                    view_filter.include_transfers = transfers;
+                    Some((range, transfers))
+                } else {
+                    None
+                };
                 let accounts = list_accounts(c)?;
                 // Resolve the account filter against those accounts: the
                 // ids the user has not excluded. Empty `account_ids` means
@@ -558,6 +578,7 @@ impl Shell {
                     uses,
                     queue,
                     reviews,
+                    startup,
                 ))
             })
             .await;
@@ -577,6 +598,7 @@ impl Shell {
                         uses,
                         queue,
                         reviews,
+                        startup,
                     )) => {
                         // Shared data (3.74): the lists every page renders
                         // from.
@@ -584,6 +606,15 @@ impl Shell {
                         // Keep the shared `ViewFilter` in step with the
                         // checkboxes: empty means all accounts.
                         this.sync_account_filter();
+                        // 3.65: the launch settings the query already used
+                        // land on the state and the filter controls before
+                        // the data of the same round trip is applied, so
+                        // the first frame shows the saved range everywhere.
+                        if let Some((range, include_transfers)) = startup {
+                            this.set_date_range(range, window, cx);
+                            this.dashboard.include_transfers = include_transfers;
+                            this.dashboard.view_filter.include_transfers = include_transfers;
+                        }
                         // Then each page applies its own part of the result.
                         this.apply_imports(history, cx);
                         this.apply_categories(tree, counts);

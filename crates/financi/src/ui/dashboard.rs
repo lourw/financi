@@ -484,6 +484,10 @@ pub(super) struct DashboardState {
     /// The "Include transfers" flag persisted as `ui.include_transfers`.
     pub(super) include_transfers: bool,
     pub(super) include_transfers_task: Option<Task<()>>,
+    /// 3.65: true until the first refresh has loaded the saved settings
+    /// (`ui.date_range`, `ui.include_transfers`) inside its own query; the
+    /// first `refresh` consumes it, so later refreshes skip the reads.
+    pub(super) startup_settings: bool,
     /// The search term and the table-only toggles and sort. Empty / false /
     /// the default sort mean "no narrowing". (The category and month the
     /// query also supports are chosen from the chart and legend in 3.5/3.6.)
@@ -675,6 +679,7 @@ impl DashboardState {
             excluded_accounts: Vec::new(),
             include_transfers: false,
             include_transfers_task: None,
+            startup_settings: true,
             search_input,
             search: String::new(),
             uncategorized_only: false,
@@ -811,9 +816,15 @@ impl Shell {
         chrono::Local::now().date_naive()
     }
 
-    /// Apply a date range to the state and the controls without
-    /// persisting; user changes persist on top via [`Self::persist_date_range`].
-    fn apply_date_range(&mut self, range: DateRange, window: &mut Window, cx: &mut Context<Self>) {
+    /// Put a date range on the state and the controls without persisting
+    /// and without refreshing (3.65: split from `apply_date_range` so the
+    /// launch settings can land inside the refresh that loaded them).
+    pub(super) fn set_date_range(
+        &mut self,
+        range: DateRange,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.dashboard.date_range = range;
         let (from, to) = range.range(Self::today());
         self.dashboard.view_filter.from = from;
@@ -834,8 +845,13 @@ impl Shell {
                 picker.set_date(CalendarDate::Single(Some(to)), window, cx);
             });
         }
-        // The table now reads the date range, so it re-queries (the launch
-        // restore path refreshes right after, so this is cheap there too).
+    }
+
+    /// Apply a date range to the state and the controls without
+    /// persisting; user changes persist on top via [`Self::persist_date_range`].
+    /// The table reads the date range, so this re-queries.
+    fn apply_date_range(&mut self, range: DateRange, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_date_range(range, window, cx);
         self.refresh(window, cx);
         cx.notify();
     }
@@ -898,20 +914,6 @@ impl Shell {
         self.persist_date_range(cx);
     }
 
-    /// Restore the persisted `ui.date_range` (default Last 3 months) at
-    /// launch; the controls and `view_filter` follow the saved value.
-    pub(super) fn load_date_range(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let db = self.db.clone();
-        self.dashboard.date_range_task = Some(cx.spawn_in(window, async move |this, cx| {
-            let saved = on_db(&db, |c| settings::date_range(c)).await;
-            let _ = this.update_in(cx, |this, window, cx| {
-                if let Ok(range) = saved {
-                    this.apply_date_range(range, window, cx);
-                }
-            });
-        }));
-    }
-
     /// The accounts checked in the filter dropdown: every account whose id
     /// is not in `excluded_accounts` (task 3.3).
     fn selected_account_ids(&self) -> Vec<i64> {
@@ -948,6 +950,9 @@ impl Shell {
             self.dashboard.excluded_accounts.push(id);
         }
         self.sync_account_filter();
+        // 3.65: the checkbox repaints with this click, not when the
+        // answer comes back.
+        cx.notify();
         self.refresh(window, cx);
     }
 
@@ -968,6 +973,8 @@ impl Shell {
         self.dashboard.include_transfers_task = Some(cx.spawn(async move |_, _| {
             let _ = on_db(&db, move |c| settings::set_include_transfers(c, on)).await;
         }));
+        // 3.65: the checkbox and the Options label repaint with this click.
+        cx.notify();
         self.refresh(window, cx);
     }
 
@@ -978,6 +985,8 @@ impl Shell {
             return;
         }
         self.dashboard.search = term.to_string();
+        // 3.65: the box repaints with the keystroke, not with the answer.
+        cx.notify();
         self.refresh(window, cx);
     }
 
@@ -1004,6 +1013,8 @@ impl Shell {
             self.dashboard.legend_selection = None;
             self.dashboard.summary_month = None;
         }
+        // 3.65: the box and any cleared legend highlight repaint at once.
+        cx.notify();
         self.refresh(window, cx);
     }
 
@@ -1018,6 +1029,8 @@ impl Shell {
             return;
         }
         self.dashboard.show_hidden = on;
+        // 3.65: the checkbox repaints with this click, not with the answer.
+        cx.notify();
         self.refresh(window, cx);
     }
 
@@ -1034,6 +1047,8 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         self.dashboard.tx_sort = sort;
+        // 3.65: the header icon repaints with this click.
+        cx.notify();
         self.refresh(window, cx);
     }
 
@@ -1043,6 +1058,8 @@ impl Shell {
         self.dashboard.chart_parent = None;
         self.dashboard.legend_selection = None;
         self.dashboard.summary_month = None;
+        // 3.65: the legend repaints with this click, not with the answer.
+        cx.notify();
         self.refresh(window, cx);
     }
 
@@ -1070,23 +1087,6 @@ impl Shell {
         self.dashboard.legend_selection = None;
         self.dashboard.summary_month = None;
         self.refresh(window, cx);
-    }
-
-    /// Restore the persisted `ui.include_transfers` (default off) at
-    /// launch; unlike the date range the table query reads the filter, so
-    /// a saved "on" refreshes the rows.
-    pub(super) fn load_include_transfers(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let db = self.db.clone();
-        self.dashboard.include_transfers_task = Some(cx.spawn_in(window, async move |this, cx| {
-            let saved = on_db(&db, |c| settings::include_transfers(c)).await;
-            let _ = this.update_in(cx, |this, window, cx| {
-                if let Ok(true) = saved {
-                    this.dashboard.include_transfers = true;
-                    this.dashboard.view_filter.include_transfers = true;
-                    this.refresh(window, cx);
-                }
-            });
-        }));
     }
 
     /// Change one transaction's category from the row menu (2.9). `set_category`

@@ -72,9 +72,8 @@ impl Shell {
                     .children(ids.iter().zip(labels.iter()).map(|(id, name)| {
                         let id = *id;
                         let shell = shell.clone();
-                        checkbox(format!("account-{id}"))
+                        filter_checkbox(format!("account-{id}"), !excluded.contains(&id))
                             .label(name.clone())
-                            .checked(!excluded.contains(&id))
                             .on_click(move |on: &bool, window, cx| {
                                 shell.update(cx, |this, cx| {
                                     this.set_account_checked(id, *on, window, cx);
@@ -113,9 +112,8 @@ impl Shell {
                 v_flex()
                     .gap_2()
                     .child(
-                        checkbox("include-transfers")
+                        filter_checkbox("include-transfers", transfers)
                             .label("Include transfers")
-                            .checked(transfers)
                             .on_click(move |on: &bool, window, cx| {
                                 s1.update(cx, |this, cx| {
                                     this.set_include_transfers(*on, window, cx);
@@ -123,9 +121,8 @@ impl Shell {
                             }),
                     )
                     .child(
-                        checkbox("uncategorized-only")
+                        filter_checkbox("uncategorized-only", uncategorized)
                             .label("Uncategorized only")
-                            .checked(uncategorized)
                             .on_click(move |on: &bool, window, cx| {
                                 s2.update(cx, |this, cx| {
                                     this.set_uncategorized_only(*on, window, cx);
@@ -133,9 +130,8 @@ impl Shell {
                             }),
                     )
                     .child(
-                        checkbox("show-hidden")
+                        filter_checkbox("show-hidden", hidden)
                             .label("Show hidden")
-                            .checked(hidden)
                             .on_click(move |on: &bool, window, cx| {
                                 s3.update(cx, |this, cx| {
                                     this.set_show_hidden(*on, window, cx);

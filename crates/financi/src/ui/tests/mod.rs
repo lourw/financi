@@ -151,6 +151,26 @@ fn wait_idle(cx: &mut TestAppContext, shell: &Entity<Shell>) {
     }
 }
 
+/// 3.65: hold the DB worker on a sleeping job. Every job a test triggers
+/// afterwards queues behind the blocker, so the UI can be drawn while its
+/// refresh is *still in flight* — the exact moment 3.65 is about. Keep the
+/// returned sender alive while the worker must stay blocked; dropping it
+/// finishes the blocker and the queued jobs run. In-memory test databases
+/// have no reader thread, so all jobs queue behind this one deterministically.
+fn block_worker(cx: &mut TestAppContext, shell: &Entity<Shell>) -> std::sync::mpsc::Sender<()> {
+    let db = shell.update(cx, |s, _| s.db.clone());
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = block_on(db.call(move |_| {
+            started_tx.send(()).ok();
+            let _ = done_rx.recv();
+        }));
+    });
+    started_rx.recv().expect("the blocker job started");
+    done_tx
+}
+
 fn with_window<R>(
     cx: &mut TestAppContext,
     handle: AnyWindowHandle,
@@ -762,7 +782,9 @@ fn page_switches_paint_only_the_current_page(cx: &mut TestAppContext) {
         "page:page-queue",
         "page:page-categories",
         "page:page-rules",
-        "checkbox:account-1",
+        // 3.65: the account checkbox's selector carries its checked state;
+        // the seeded account is checked.
+        "checkbox:account-1:checked",
     ];
     let painted = |window: &mut VisualTestContext| -> Vec<&'static str> {
         PAINTED
@@ -804,7 +826,7 @@ fn page_switches_paint_only_the_current_page(cx: &mut TestAppContext) {
     click(cx, handle, "accounts:filter");
     draw_frame(cx, handle);
     assert!(
-        painted(&mut window).contains(&"checkbox:account-1"),
+        painted(&mut window).contains(&"checkbox:account-1:checked"),
         "the popover opened on the Dashboard"
     );
     cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Categories, cx)));

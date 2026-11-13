@@ -15,7 +15,7 @@ Steps 1–15 of `docs/tasks/gpui.md` → *GPUI best practices*, task by task.
   panics in `plain_job` the same way, so a panicking UI job reports a
   job panic through `DbWorker`; test a panicking job over the UI path.
 
-- [ ] **3.65 Filter clicks redraw at once.** (Code review, 2026-11-11.)
+- [x] **3.65 Filter clicks redraw at once.** (Code review, 2026-11-11.)
   The dashboard setters (`set_account_checked`, `set_include_transfers`,
   `apply_search`, `set_uncategorized_only`, `set_show_hidden`,
   `set_tx_sort`, `click_legend_row`, `show_all_categories`,
