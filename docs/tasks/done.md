@@ -1015,6 +1015,32 @@ the UI; tests cover 2.1–2.9.
     `replacements` in a new migration; update on replace, restore on
     undo; test it.
 
+- [x] **3.69 Paired transfers stay consistent.** (Code review,
+  2026-11-11.) In `financi-db` (`overrides.rs`, `transfers.rs`,
+  `import.rs`):
+  - **Editing one side unpairs both.** Totals exclude transfers by
+    category kind, so `set_category` on a paired row to "Rent" makes that
+    side spend while its partner stays a transfer, and the link icon
+    stays. `set_category` on a paired row clears `transfer_pair_id` on
+    both sides in the same transaction; the edited row keeps its manual
+    category; the partner is unlocked and rules re-run on it.
+  - **Unpair keeps manual choices.** `unpair_transaction` calls
+    `clear_override` on both sides, discarding a manual category. Only
+    clear the override on a side whose category is still transfer-kind.
+  - **Undo re-pairs.** `undo_last_import` doesn't re-run pairing, so
+    partners released by the undo stay unpaired until the next import,
+    and reviews can point at deleted rows. Run pairing at the end of the
+    undo, and drop reviews left with fewer than two live candidates in
+    `list_transfer_reviews`.
+  - **Pairing settles.** `pair_mutuals` makes one pass, so a row whose
+    only competitor was paired in the same run stays unpaired with no
+    review. Repeat until nothing changes.
+  - **Card-payment pairs need one card and one chequing row.**
+    `pair_categories_for` returns Card Payment when either side is a card,
+    so a stale review could pair two card rows. Require exactly one of
+    each.
+  - Tests for each bullet.
+
 - [x] **3.73 Imports and undo stay fast as data grows.** (Code review,
   2026-11-11; cheap fixes now, timed budgets in 3.55.)
   - **Compile rules once per import.** `categorize_new_rows`
