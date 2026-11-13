@@ -21,6 +21,8 @@ pub use accounts::{
 
 pub mod categories;
 
+pub mod export;
+
 pub mod import;
 
 pub mod master_csv;
