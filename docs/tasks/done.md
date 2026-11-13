@@ -958,6 +958,33 @@ the UI; tests cover 2.1–2.9.
     refreshes); Cancel is disabled while an import commits and a second
     drop is ignored; opening ten files leaves one import subscription.
 
+- [x] **3.65 Filter clicks redraw at once.** (Code review, 2026-11-11.)
+  The dashboard setters (`set_account_checked`, `set_include_transfers`,
+  `apply_search`, `set_uncategorized_only`, `set_show_hidden`,
+  `set_tx_sort`, `click_legend_row`, `show_all_categories`,
+  `clear_category_selection`, `click_summary_cell`) change state and call
+  `refresh`, which only spawns a task; the only `cx.notify()` is in the
+  task's continuation. gpui-component's `Checkbox` is controlled ("the
+  owner must write the requested value and call `cx.notify()`",
+  `gpui-component-0.9.0/src/checkbox.rs:105`), so a ticked box, the
+  "Options · N" label, the legend highlight and the summary cell
+  highlight stay unchanged until every page's queries return. This is a
+  large part of the "really slow filters" report.
+  - Every setter calls `cx.notify()` right after changing state; only
+    the data waits for the DB.
+  - **One refresh at startup:** `Shell::new` starts `load_date_range`,
+    `load_include_transfers` and `refresh` separately, so launch runs up
+    to three full refreshes and the first frame shows the default range.
+    Read both settings in the first refresh's DB job (or in `main.rs`
+    before the window opens, like `open_db`), apply them, and run exactly
+    one refresh.
+  - Tests: click the real Options checkbox (`simulate_click` on its
+    bounds), draw once without letting the DB job finish, and the box
+    paints checked and the label reads "Options · 1"; the same for an
+    account checkbox and a legend row; with a saved Custom range, launch
+    issues one refresh job (count jobs with a test hook) and the first
+    data frame uses the saved range.
+
 - [x] **3.66 Simplii card payments only on the card.** (Code review,
   2026-11-11.) `Simplii::is_card_payment` (`financi-parsers/src/simplii.rs`)
   only sees the `RawTransaction`, so the Visa rule ("money in whose
