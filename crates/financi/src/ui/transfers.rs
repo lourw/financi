@@ -54,7 +54,7 @@ impl Shell {
                     Ok(_) => this.notify_ok("Paired transfer.", cx),
                     Err(e) => this.notify_err(format!("Could not pair: {e}"), cx),
                 }
-                this.refresh(window, cx);
+                this.changed(Domains::TRANSFERS_TX, window, cx);
             });
         })
         .detach();
@@ -84,7 +84,7 @@ impl Shell {
                     Ok(_) => this.notify_ok("Marked as not a transfer.", cx),
                     Err(e) => this.notify_err(format!("Could not update: {e}"), cx),
                 }
-                this.refresh(window, cx);
+                this.changed(Domains::TRANSFERS_TX, window, cx);
             });
         })
         .detach();
@@ -111,7 +111,7 @@ impl Shell {
                     Ok(_) => this.notify_ok("Unpaired transaction.", cx),
                     Err(e) => this.notify_err(format!("Could not unpair: {e}"), cx),
                 }
-                this.refresh(window, cx);
+                this.changed(Domains::TRANSFERS_TX, window, cx);
             });
         })
         .detach();

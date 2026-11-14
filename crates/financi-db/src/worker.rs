@@ -213,6 +213,9 @@ struct Inner {
     /// in memory (a second connection could not see it); reads then run on
     /// the writer.
     reader: Option<Arc<Queue>>,
+    /// Names recorded by [`QueryLog::record`] (3.78 test hook).
+    #[cfg(debug_assertions)]
+    queries: Arc<Mutex<Vec<String>>>,
 }
 
 impl Drop for Inner {
@@ -221,6 +224,37 @@ impl Drop for Inner {
         if let Some(reader) = &self.reader {
             reader.quit();
         }
+    }
+}
+
+/// Handle to the query log ([`DbWorker::query_log`], 3.78). Reload closures
+/// call [`record`](Self::record) with each query's name as they run it;
+/// tests read [`names`](Self::names) to assert what an action reloaded.
+/// In release builds there is no log and `record` compiles to nothing.
+#[derive(Clone)]
+pub struct QueryLog {
+    #[cfg(debug_assertions)]
+    inner: Arc<Mutex<Vec<String>>>,
+}
+
+impl QueryLog {
+    /// Note that a named query ran. Zero-cost in release builds.
+    #[inline]
+    pub fn record(&self, _name: &str) {
+        #[cfg(debug_assertions)]
+        self.inner.lock().unwrap().push(_name.to_string());
+    }
+
+    /// The names recorded so far, oldest first.
+    #[cfg(debug_assertions)]
+    pub fn names(&self) -> Vec<String> {
+        self.inner.lock().unwrap().clone()
+    }
+
+    /// Forget everything recorded so far.
+    #[cfg(debug_assertions)]
+    pub fn clear(&self) {
+        self.inner.lock().unwrap().clear();
     }
 }
 
@@ -316,7 +350,24 @@ impl DbWorker {
         });
 
         Self {
-            inner: Arc::new(Inner { writer, reader }),
+            inner: Arc::new(Inner {
+                writer,
+                reader,
+                #[cfg(debug_assertions)]
+                queries: Arc::new(Mutex::new(Vec::new())),
+            }),
+        }
+    }
+
+    /// A handle to the query log (3.78): the names every reload records as
+    /// its queries run. Tests use it to assert that an action reloaded
+    /// exactly the data it should — and none of what it should not. The
+    /// log is shared by every clone of this worker; in release builds the
+    /// handle is empty and recording compiles to nothing.
+    pub fn query_log(&self) -> QueryLog {
+        QueryLog {
+            #[cfg(debug_assertions)]
+            inner: Arc::clone(&self.inner.queries),
         }
     }
 

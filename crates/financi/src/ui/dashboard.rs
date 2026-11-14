@@ -791,7 +791,7 @@ impl Shell {
         if stale {
             // Re-query with the corrected filter so the table, chart and
             // state agree again.
-            self.refresh(window, cx);
+            self.changed_deferred(Domains::TX, window, cx);
         }
         self.total_visible = sidebar.0;
         self.uncategorized_visible = sidebar.1;
@@ -866,7 +866,7 @@ impl Shell {
     /// The table reads the date range, so this re-queries.
     fn apply_date_range(&mut self, range: DateRange, window: &mut Window, cx: &mut Context<Self>) {
         self.set_date_range(range, window, cx);
-        self.refresh(window, cx);
+        self.changed(Domains::SETTINGS, window, cx);
         cx.notify();
     }
 
@@ -971,7 +971,7 @@ impl Shell {
         // 3.65: the checkbox repaints with this click, not when the
         // answer comes back.
         cx.notify();
-        self.refresh(window, cx);
+        self.changed(Domains::SETTINGS, window, cx);
     }
 
     /// The "Include transfers" checkbox: update the filter, refresh the
@@ -997,7 +997,7 @@ impl Shell {
         }));
         // 3.65: the checkbox and the Options label repaint with this click.
         cx.notify();
-        self.refresh(window, cx);
+        self.changed(Domains::SETTINGS, window, cx);
     }
 
     /// The search box changed: re-run the table query with the new term.
@@ -1009,7 +1009,7 @@ impl Shell {
         self.dashboard.search = term.to_string();
         // 3.65: the box repaints with the keystroke, not with the answer.
         cx.notify();
-        self.refresh(window, cx);
+        self.changed(Domains::SETTINGS, window, cx);
     }
 
     /// The "Uncategorized only" checkbox: narrow the table to rows with no
@@ -1037,7 +1037,7 @@ impl Shell {
         }
         // 3.65: the box and any cleared legend highlight repaint at once.
         cx.notify();
-        self.refresh(window, cx);
+        self.changed(Domains::SETTINGS, window, cx);
     }
 
     /// The "Show hidden" checkbox: include hidden rows in the table (greyed).
@@ -1053,7 +1053,7 @@ impl Shell {
         self.dashboard.show_hidden = on;
         // 3.65: the checkbox repaints with this click, not with the answer.
         cx.notify();
-        self.refresh(window, cx);
+        self.changed(Domains::SETTINGS, window, cx);
     }
 
     /// A header sort icon was clicked: adopt the new ordering and re-query.
@@ -1071,7 +1071,7 @@ impl Shell {
         self.dashboard.tx_sort = sort;
         // 3.65: the header icon repaints with this click.
         cx.notify();
-        self.refresh(window, cx);
+        self.changed(Domains::SETTINGS, window, cx);
     }
 
     /// Click the "← All categories" row: back to the parent level with no
@@ -1082,7 +1082,7 @@ impl Shell {
         self.dashboard.summary_month = None;
         // 3.65: the legend repaints with this click, not with the answer.
         cx.notify();
-        self.refresh(window, cx);
+        self.changed(Domains::SETTINGS, window, cx);
     }
 
     /// Esc (the `dashboard::ClearCategorySelection` action): clear the
@@ -1111,7 +1111,7 @@ impl Shell {
         // 3.65: the drill-down, legend highlight and summary-cell highlight
         // repaint with this Esc, not with the answer.
         cx.notify();
-        self.refresh(window, cx);
+        self.changed(Domains::SETTINGS, window, cx);
     }
 
     /// Change one transaction's category from the row menu (2.9). `set_category`
@@ -1155,7 +1155,7 @@ impl Shell {
                     }
                     Err(e) => this.notify_err(e, cx),
                 }
-                this.refresh(window, cx);
+                this.changed(Domains::TX, window, cx);
             });
         })
         .detach();
@@ -1190,7 +1190,7 @@ impl Shell {
                 if let Err(e) = result {
                     this.notify_err(e, cx);
                 }
-                this.refresh(window, cx);
+                this.changed(Domains::TX, window, cx);
             });
         })
         .detach();
@@ -1231,7 +1231,7 @@ impl Shell {
                     }
                     Err(e) => this.notify_err(e, cx),
                 }
-                this.refresh(window, cx);
+                this.changed(Domains::RULES_TX, window, cx);
             });
         })
         .detach();
@@ -1415,6 +1415,6 @@ impl Shell {
         // 3.65: the cleared box, legend highlight and summary-cell highlight
         // repaint with this click, not with the answer.
         cx.notify();
-        self.refresh(window, cx);
+        self.changed(Domains::SETTINGS, window, cx);
     }
 }
