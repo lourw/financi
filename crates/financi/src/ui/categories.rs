@@ -270,16 +270,28 @@ impl Shell {
 impl Shell {
     /// Recompute the derived choice lists after a refresh and drop stale
     /// selection state.
-    pub(super) fn sync_category_choices(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn sync_category_choices(
+        &mut self,
+        generation: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let known = |id: i64| {
             self.categories
                 .iter()
                 .any(|p| p.id == id || p.children.iter().any(|c| c.id == id))
         };
-        if self
-            .categories_page
-            .selected_category
-            .is_some_and(|id| !known(id))
+        // 3.78 review fix: the tree this refresh loaded is older than the
+        // category the add wrote — the read and the write run on different
+        // queues, and a reader job queued before the write can land after
+        // it. Dropping the selection then loses a row the user just added
+        // and is looking at, so the generation that carried the new
+        // selection settles first and this stale pass leaves it alone.
+        if generation >= self.category_selection_settled
+            && self
+                .categories_page
+                .selected_category
+                .is_some_and(|id| !known(id))
         {
             self.categories_page.selected_category = None;
             self.categories_page.renaming = false;
@@ -451,6 +463,10 @@ impl Shell {
 
     pub(super) fn select_category(&mut self, id: i64, window: &mut Window, cx: &mut Context<Self>) {
         let changed = self.categories_page.selected_category != Some(id);
+        // 3.78 review fix: from the next dispatch on, a refresh result
+        // was queried with this selection in mind and may prune it;
+        // results of older dispatches may not (see the field docs).
+        self.category_selection_settled = self.refresh_started + 1;
         self.categories_page.selected_category = Some(id);
         self.categories_page.renaming = false;
         self.categories_page.confirm_delete_category = None;

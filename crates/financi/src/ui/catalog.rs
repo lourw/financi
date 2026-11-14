@@ -211,6 +211,16 @@ pub(super) struct Catalog {
     /// The full reload's waiter. A newer full reload replaces it; the
     /// writer thread runs the jobs in order.
     full_task: Option<Task<()>>,
+    /// 3.78 review fix: the newest generation whose result has been
+    /// applied to each section bit. The queues order *jobs*, not the
+    /// continuations that apply their results: a finished job's result
+    /// waits in the entity queue, and a newer dispatch — same key on the
+    /// reader queue (its supersede only reaches pending and running jobs),
+    /// or any partial against a writer-queue full reload — can run to
+    /// completion and land first. A result whose dispatch is older than
+    /// what a bit has already applied is stale and must not write that
+    /// bit; it may still write the rest.
+    applied_gen: [u64; 8],
 }
 
 impl Catalog {
@@ -219,6 +229,7 @@ impl Catalog {
             db,
             snap: Snapshot::default(),
             full_task: None,
+            applied_gen: [0; 8],
         }
     }
 
@@ -256,25 +267,35 @@ impl Catalog {
             });
             return;
         }
-        let (ids, none_selected) = self.resolved_account_ids(&filters.excluded);
+        // The account list the dashboard queries resolve against: a
+        // reload that includes S_ACCOUNTS resolves against the accounts it
+        // just loaded (`Fresh`); a change that cannot have added an
+        // account uses the snapshot's list, which is current. (3.78 review
+        // fix: this used the snapshot's list even when the reload also
+        // loaded accounts — fine while only the full reload reached
+        // Accounts, wrong for any future writer that reports them.)
+        let dash = if sections & S_ACCOUNTS != 0 {
+            DashAccounts::Fresh
+        } else {
+            let (ids, none_selected) = self.resolved_account_ids(&filters.excluded);
+            DashAccounts::Resolved { ids, none_selected }
+        };
         let db = self.db.clone();
         let log = db.query_log();
         let key = format!("catalog:{sections}");
         cx.spawn_in(window, async move |this, cx| {
             let result = db
                 .call_keyed(&key, move |c| {
-                    load_sections(
-                        c,
-                        &log,
-                        sections,
-                        filters,
-                        DashAccounts::Resolved { ids, none_selected },
-                    )
+                    load_sections(c, &log, sections, filters, dash)
                 })
                 .await;
             let _ = this.update_in(cx, |this, _window, cx| match result {
                 Ok(snapshot) => {
-                    this.merge(sections, snapshot);
+                    // Staleness guard (3.78 review fix): merge only the
+                    // bits no newer dispatch has applied yet; the emit
+                    // still settles the generation either way.
+                    let fresh = this.fresh(sections, generation);
+                    this.merge(fresh, snapshot);
                     cx.emit(DataChanged {
                         domains,
                         generation,
@@ -339,22 +360,32 @@ impl Catalog {
                 Ok::<_, DbError>((snap, startup))
             })
             .await;
-            let _ = this.update_in(cx, |this, _window, cx| match result {
-                Ok((snap, startup)) => {
-                    this.snap = snap;
-                    cx.emit(DataChanged {
+            let _ = this.update_in(cx, |this, _window, cx| {
+                match result {
+                    Ok((snap, startup)) => {
+                        // Cross-queue guard (3.78 review fix): the keyed
+                        // jobs dispatched while this writer-queue job ran
+                        // can land on the reader queue first, and this
+                        // job's own result can still wait in the entity
+                        // queue behind theirs. Merge every bit no newer
+                        // dispatch has applied — the rest of the snapshot
+                        // is still the only copy of that data.
+                        let fresh = this.fresh(S_ALL, generation);
+                        this.merge(fresh, snap);
+                        cx.emit(DataChanged {
+                            domains,
+                            generation,
+                            error: None,
+                            startup,
+                        });
+                    }
+                    Err(e) => cx.emit(DataChanged {
                         domains,
                         generation,
-                        error: None,
-                        startup,
-                    });
+                        error: Some(e),
+                        startup: None,
+                    }),
                 }
-                Err(e) => cx.emit(DataChanged {
-                    domains,
-                    generation,
-                    error: Some(e),
-                    startup: None,
-                }),
             });
         }));
     }
@@ -373,6 +404,21 @@ impl Catalog {
             .collect();
         let none_selected = ids.is_empty() && !self.snap.accounts.is_empty();
         (ids, none_selected)
+    }
+
+    /// The section bits a result of dispatch `generation` may still write,
+    /// recorded as applied at that generation: a bit a newer dispatch has
+    /// already applied is stale (see [`Catalog::applied_gen`]).
+    fn fresh(&mut self, sections: u16, generation: u64) -> u16 {
+        let mut fresh_bits = 0;
+        for b in 0..8 {
+            let bit = 1u16 << b;
+            if sections & bit != 0 && self.applied_gen[b] < generation {
+                self.applied_gen[b] = generation;
+                fresh_bits |= bit;
+            }
+        }
+        fresh_bits
     }
 
     fn merge(&mut self, sections: u16, s: Snapshot) {

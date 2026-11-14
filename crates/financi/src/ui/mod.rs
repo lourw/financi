@@ -375,6 +375,13 @@ pub struct Shell {
     /// nothing, which is why the subscriber stamps the maximum rather
     /// than counting events.
     refresh_started: u64,
+    /// 3.78 review fix: the first dispatch generation whose result may
+    /// drop the category selection. [`Shell::select_category`] sets it to
+    /// the generation of the reload that follows the selection, so a
+    /// reload whose queries ran before that selection — and which lands
+    /// after it, the queues carrying no order between them — cannot clear
+    /// it (or an add's claim of it) as "stale".
+    category_selection_settled: u64,
     refresh_applied: u64,
     /// 3.64: there is deliberately no shared task slot. A mutation whose
     /// result must always be applied runs detached (`cx.spawn_in(..).detach()`)
@@ -543,6 +550,7 @@ impl Shell {
             restoring: false,
             writes_blocked: Rc::new(Cell::new(false)),
             refresh_started: 0,
+            category_selection_settled: 0,
             refresh_applied: 0,
             dashboard,
             queue,
@@ -752,7 +760,7 @@ impl Shell {
             self.apply_transfers(reviews);
         }
         if sections & (S_CATEGORIES | S_RULES) != 0 {
-            self.sync_category_choices(window, cx);
+            self.sync_category_choices(event.generation, window, cx);
         }
         if sections & S_QUEUE != 0 {
             self.sync_queue(window, cx);

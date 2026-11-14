@@ -1053,7 +1053,7 @@ impl Shell {
         self.dashboard.show_hidden = on;
         // 3.65: the checkbox repaints with this click, not with the answer.
         cx.notify();
-        self.changed(Domains::TX, window, cx);
+        self.changed(Domains::SETTINGS, window, cx);
     }
 
     /// A header sort icon was clicked: adopt the new ordering and re-query.
@@ -1071,7 +1071,7 @@ impl Shell {
         self.dashboard.tx_sort = sort;
         // 3.65: the header icon repaints with this click.
         cx.notify();
-        self.changed(Domains::TX, window, cx);
+        self.changed(Domains::SETTINGS, window, cx);
     }
 
     /// Click the "← All categories" row: back to the parent level with no
@@ -1082,7 +1082,7 @@ impl Shell {
         self.dashboard.summary_month = None;
         // 3.65: the legend repaints with this click, not with the answer.
         cx.notify();
-        self.changed(Domains::TX, window, cx);
+        self.changed(Domains::SETTINGS, window, cx);
     }
 
     /// Esc (the `dashboard::ClearCategorySelection` action): clear the
@@ -1111,7 +1111,7 @@ impl Shell {
         // 3.65: the drill-down, legend highlight and summary-cell highlight
         // repaint with this Esc, not with the answer.
         cx.notify();
-        self.changed(Domains::TX, window, cx);
+        self.changed(Domains::SETTINGS, window, cx);
     }
 
     /// Change one transaction's category from the row menu (2.9). `set_category`

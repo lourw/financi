@@ -94,6 +94,67 @@ fn a_full_reload_loads_every_section(cx: &mut TestAppContext) {
     }
 }
 
+/// 3.78 review fix, reproduced: the full reload runs on the writer queue
+/// and the keyed partial reloads on the reader queue, with no ordering
+/// between the two (worker.rs). A full reload dispatched first can land
+/// *after* a newer keyed reload — and must then keep its rows, queried
+/// with filters the user has since changed, off the screen. The in-memory
+/// test databases (one FIFO queue) can never invert, so this drives the
+/// inversion over a file DB — real reader thread — with the writer held
+/// by `block_worker` to delay the full reload's landing.
+#[gpui::test]
+fn a_full_reload_superseded_mid_flight_keeps_the_newer_rows(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell_on_file(cx, |conn| {
+        let acct = create_account(conn, "amex", "Cobalt", AccountKind::CreditCard).unwrap();
+        conn.execute(
+            "INSERT INTO imports (account_id, parser_id, file_name, imported_at, header_raw,
+                                  encoding, has_bom, line_ending, trailing_newline, row_count)
+             VALUES (?1, 'amex', 'seed.csv', '2026-11-08', X'00', 'utf-8', 0, 'lf', 0, 3)",
+            [acct],
+        )
+        .unwrap();
+        let import = conn.last_insert_rowid();
+        for line in 0..3 {
+            seed_txn(
+                conn,
+                import,
+                acct,
+                line,
+                "2026-11-05",
+                -1_000,
+                "COFFEE STAND",
+            );
+        }
+    });
+    wait_idle(cx, &shell);
+    cx.update(|cx| assert_eq!(shell.read(cx).dashboard.row_count, 3));
+    // Hold the writer thread, then start the full reload: it waits behind
+    // the blocker, its filters snapshotted at dispatch (no search yet).
+    let blocker = block_worker(cx, &shell);
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| s.refresh(window, cx));
+    });
+    // The user searches while the writer is held: the keyed reload runs on
+    // the idle reader and the table shows the user's (empty) result.
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| s.apply_search("no such merchant", window, cx));
+    });
+    wait_until(cx, "the search's reload lands", |cx| {
+        shell.read(cx).dashboard.row_count == 0
+    });
+    // Release the writer: the full reload runs now and lands late with the
+    // three rows its stale filter returned.
+    drop(blocker);
+    wait_idle(cx, &shell);
+    cx.update(|cx| {
+        assert_eq!(
+            shell.read(cx).dashboard.row_count,
+            0,
+            "a superseded full reload resurrected rows the user's search removed"
+        );
+    });
+}
+
 /// Switching pages reads only what is already loaded: not one query
 /// leaves the shell (3.78's page-switch invariant).
 #[gpui::test]
