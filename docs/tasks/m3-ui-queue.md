@@ -6,7 +6,7 @@ Do these in the order listed (`docs/tasks.md` → *Picking the next task*). Each
 
 Steps 1–15 of `docs/tasks/gpui.md` → *GPUI best practices*, task by task.
 
-- [ ] **3.92 UI worker calls report panics.** (Review note, 2026-11-12,
+- [x] **3.92 UI worker calls report panics.** (Review note, 2026-11-12,
   during 3.70.) The UI still runs every job through untyped `on_db`
   (`ui/widgets.rs`), so a panicking undo or category edit still surfaces
   `WorkerGone` to the user although typed jobs resolve with
