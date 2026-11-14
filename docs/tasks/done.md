@@ -1339,6 +1339,15 @@ the UI; tests cover 2.1–2.9.
     table.
 
 ---
+- [x] **3.92 UI worker calls report panics.** (Review note, 2026-11-12,
+  during 3.70.) The UI still runs every job through untyped `on_db`
+  (`ui/widgets.rs`), so a panicking undo or category edit still surfaces
+  `WorkerGone` to the user although typed jobs resolve with
+  `DbError::JobPanicked` and the worker survives (3.77). Migrate the
+  call sites in `crates/financi/src/ui/` to the typed path, or classify
+  panics in `plain_job` the same way, so a panicking UI job reports a
+  job panic through `DbWorker`; test a panicking job over the UI path.
+
 - [x] **3.94 CSV loading runs off the UI thread.** (Follow-up split from
   3.67, 2026-11-12; run after 3.74 has merged — it touches
   `ui/imports.rs`.) `Shell::open_file` calls `flow::load_file` on the UI
