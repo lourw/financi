@@ -2,6 +2,7 @@
 //! constants pages agree on (split from `ui.rs` by 3.62).
 
 use super::*;
+use financi_db::{DbError, on_db_typed};
 
 /// Every checkbox in the app is built through here (3.14) so they are all
 /// constructed alike: the check mark itself arrives with the icon assets
@@ -338,14 +339,25 @@ impl Shell {
 }
 
 /// Run `f` on the database thread, flattening worker and query errors.
+///
+/// 3.92: dispatches through the typed path ([`on_db_typed`]), so a job
+/// that *panics* resolves [`DbError::JobPanicked`] — the user sees "the
+/// database job panicked; the worker survived" instead of the old
+/// worker-gone text, which a dropped result sender produced on the
+/// untyped path. `WorkerGone` keeps meaning the worker thread actually
+/// went away, and a job that fails normally passes its own message
+/// through unchanged.
 pub(super) async fn on_db<R, E, F>(db: &DbWorker, f: F) -> Result<R, String>
 where
     R: Send + 'static,
     E: std::fmt::Display + Send + 'static,
     F: FnOnce(&mut Connection) -> Result<R, E> + Send + 'static,
 {
-    match db.call(move |c| f(c).map_err(|e| e.to_string())).await {
+    // The wrapper never returns `Err` on its own: the only errors
+    // `on_db_typed` can produce here are `JobPanicked` and `WorkerGone`.
+    let wrapped = move |c: &mut Connection| Ok::<_, DbError>(f(c).map_err(|e| e.to_string()));
+    match on_db_typed(db, wrapped).await {
         Ok(result) => result,
-        Err(gone) => Err(gone.to_string()),
+        Err(e) => Err(e.to_string()),
     }
 }

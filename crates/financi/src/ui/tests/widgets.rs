@@ -92,3 +92,49 @@ fn a_checked_box_finds_its_check_glyph() {
         .expect("the app registers the icon a checked Checkbox draws for its mark");
     assert!(std::str::from_utf8(&svg).is_ok_and(|s| s.contains("<svg")));
 }
+
+// 3.92: every UI job reaches the worker through `on_db`. A panicking job
+// (an undo or a category edit that blows up) must report the *job panic*
+// — the toast text the user sees — not the old worker-gone message a
+// dropped result sender produced, and the worker must keep serving the
+// next job. Worker-layer twin: `panicking_typed_job_reports_job_panicked`.
+
+#[test]
+fn a_panicking_on_db_job_reports_the_job_panic() {
+    use crate::ui::widgets::on_db;
+    let db = DbWorker::spawn(open_in_memory().unwrap());
+    let err = block_on(on_db(&db, |c| -> Result<i64, std::io::Error> {
+        c.execute_batch("BEGIN; INSERT INTO settings (key, value) VALUES ('x', '1');")
+            .unwrap();
+        panic!("boom")
+    }))
+    .expect_err("a panicking job fails");
+    assert!(err.contains("panicked"), "{err}");
+    assert!(!err.contains("gone"), "{err}");
+
+    // The worker survives the panic and still answers reads.
+    let rows = block_on(on_db(&db, |c| {
+        c.query_row("SELECT COUNT(*) FROM settings", [], |r| r.get::<_, i64>(0))
+    }))
+    .expect("the worker still serves jobs after a panic");
+    assert_eq!(rows, 0, "the panicking job's transaction was rolled back");
+}
+
+/// 3.92: only panics are re-classified — a job that fails normally keeps
+/// passing its own message through, unchanged from the untyped path.
+#[test]
+fn on_db_passes_ordinary_job_errors_through_unchanged() {
+    use crate::ui::widgets::on_db;
+    let db = DbWorker::spawn(open_in_memory().unwrap());
+    let err = block_on(on_db(&db, |_c| -> Result<i64, std::io::Error> {
+        Err(std::io::Error::other("nope"))
+    }))
+    .expect_err("the job fails");
+    assert_eq!(err, "nope");
+
+    let value = block_on(on_db(&db, |c| {
+        c.query_row("SELECT 1", [], |r| r.get::<_, i64>(0))
+    }))
+    .expect("a job that succeeds still returns its value");
+    assert_eq!(value, 1);
+}
