@@ -133,8 +133,19 @@ fn the_transfers_page_offers_every_candidate_for_a_tie_and_pairs_the_chosen_one(
     with_window(cx, handle, |window, cx| {
         shell.update(cx, |s, cx| s.set_include_transfers(true, window, cx));
     });
-    wait_until(cx, "all three rows in the table", |cx| {
-        table_rows(&shell, cx).len() == 3
+    // Wait for the paired content, not just the count: the pre-pairing
+    // table also holds three rows, so `len() == 3` alone can be satisfied
+    // by that stale snapshot while the dashboard's now-separate reload
+    // (3.56) is still in flight.
+    wait_until(cx, "the paired rows in the table", |cx| {
+        let rows = table_rows(&shell, cx);
+        rows.len() == 3
+            && rows
+                .iter()
+                .any(|r| r.id == debit && r.transfer_pair_id == Some(credit_b))
+            && rows
+                .iter()
+                .any(|r| r.id == credit_b && r.transfer_pair_id == Some(debit))
     });
     cx.update(|cx| {
         assert_eq!(
@@ -173,15 +184,19 @@ fn marking_a_review_not_a_transfer_clears_it_and_blocks_re_pairing(cx: &mut Test
     with_window(cx, handle, |window, cx| {
         shell.update(cx, |s, cx| s.set_include_transfers(true, window, cx));
     });
-    wait_until(cx, "all three rows in the table", |cx| {
-        table_rows(&shell, cx).len() == 3
-    });
+    // These rows look the same with the toggle on or off, so no content
+    // distinguishes the reload's rows from the ones already on screen —
+    // settle the worker instead of waiting on a row count that the
+    // dashboard's now-separate reload (3.56) could satisfy with a stale
+    // snapshot before it lands.
+    wait_idle(cx, &shell);
     cx.update(|cx| {
         assert_eq!(
             last_toast(&shell, cx),
             Some(("Marked as not a transfer.".into(), false))
         );
         let rows = table_rows(&shell, cx);
+        assert_eq!(rows.len(), 3, "all three rows in the table");
         assert!(
             rows.iter().all(|r| r.transfer_pair_id.is_none()),
             "a marked-as-not-a-transfer row never pairs again"

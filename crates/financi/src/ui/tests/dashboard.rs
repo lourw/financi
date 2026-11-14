@@ -1,5 +1,6 @@
 //! Tests for `ui/dashboard.rs` (3.62 split from `ui_tests.rs`).
 
+use gpui_kit::component::input::InputEvent;
 use gpui_kit::component::menu::PopupMenu;
 
 use super::*;
@@ -50,7 +51,7 @@ fn the_dashboard_shows_the_imported_totals_without_touching_the_range(cx: &mut T
         settings::set(c, UI_DATE_RANGE, "all").unwrap();
     });
     wait_until(cx, "all-time range restored", |cx| {
-        shell.read(cx).dashboard.date_range == DateRange::Preset(DatePreset::AllTime)
+        shell.read(cx).dashboard.filter.date_range == DateRange::Preset(DatePreset::AllTime)
     });
 
     import_demo_file(cx, handle, &shell, "amex-sep-nov.csv", "Amex");
@@ -116,7 +117,7 @@ fn a_range_that_excludes_everything_shows_no_matches_not_the_import_prompt(
     });
     wait_until(cx, "custom range restored", |cx| {
         matches!(
-            shell.read(cx).dashboard.date_range,
+            shell.read(cx).dashboard.filter.date_range,
             DateRange::Custom { .. }
         )
     });
@@ -164,7 +165,7 @@ fn clear_filters_restores_a_table_emptied_by_search(cx: &mut TestAppContext) {
         settings::set(c, UI_DATE_RANGE, "all").unwrap();
     });
     wait_until(cx, "all-time range restored", |cx| {
-        shell.read(cx).dashboard.date_range == DateRange::Preset(DatePreset::AllTime)
+        shell.read(cx).dashboard.filter.date_range == DateRange::Preset(DatePreset::AllTime)
     });
     import_demo_file(cx, handle, &shell, "amex-sep-nov.csv", "Amex");
     wait_until(cx, "import shows", |cx| {
@@ -193,7 +194,7 @@ fn clear_filters_restores_a_table_emptied_by_search(cx: &mut TestAppContext) {
     cx.update(|cx| {
         let s = shell.read(cx);
         assert_eq!(s.dashboard_body(), DashboardBody::Rows);
-        assert!(s.dashboard.search.is_empty());
+        assert!(s.dashboard.filter.search.is_empty());
         assert!(
             s.dashboard.search_input.read(cx).value().is_empty(),
             "the search box clears with the filter"
@@ -304,7 +305,7 @@ fn the_dashboard_panels_name_themselves(cx: &mut TestAppContext) {
         settings::set(c, UI_DATE_RANGE, "all").unwrap();
     });
     wait_until(cx, "all-time range restored", |cx| {
-        shell.read(cx).dashboard.date_range == DateRange::Preset(DatePreset::AllTime)
+        shell.read(cx).dashboard.filter.date_range == DateRange::Preset(DatePreset::AllTime)
     });
     import_demo_file(cx, handle, &shell, "amex-sep-nov.csv", "Amex");
     wait_until(cx, "dashboard shows the import", |cx| {
@@ -332,7 +333,7 @@ fn open_dashboard_for_geometry(
         settings::set(c, UI_DATE_RANGE, "all").unwrap();
     });
     wait_until(cx, "all-time range restored", |cx| {
-        shell.read(cx).dashboard.date_range == DateRange::Preset(DatePreset::AllTime)
+        shell.read(cx).dashboard.filter.date_range == DateRange::Preset(DatePreset::AllTime)
     });
     import_demo_file(cx, handle, &shell, "amex-sep-nov.csv", "Amex");
     wait_until(cx, "dashboard shows the import", |cx| {
@@ -450,7 +451,7 @@ fn the_dashboard_stays_aligned_with_a_custom_date_range(cx: &mut TestAppContext)
         });
         wait_until(cx, "custom range open", |cx| {
             matches!(
-                shell.read(cx).dashboard.date_range,
+                shell.read(cx).dashboard.filter.date_range,
                 DateRange::Custom { .. }
             )
         });
@@ -753,16 +754,17 @@ fn applying_the_row_offer_categorizes_the_whole_merchant(cx: &mut TestAppContext
         shell.read(cx).dashboard.rule_offer.is_none()
             && shell.read(cx).rules.iter().any(|r| r.pattern == m)
     });
-    let rows = cx.update(|cx| table_rows(&shell, cx));
-    for id in &group {
-        assert_eq!(
+    // 3.56: the rules list lands with the rule write, the table rows with
+    // the dashboard job it triggers, so wait for the rows themselves.
+    wait_until(cx, "every row of the merchant is Online", |cx| {
+        let rows = table_rows(&shell, cx);
+        group.iter().all(|id| {
             rows.iter()
                 .find(|r| r.id == *id)
-                .and_then(|r| r.category.as_deref()),
-            Some("Online"),
-            "every row of {m} is now Online"
-        );
-    }
+                .and_then(|r| r.category.as_deref())
+                == Some("Online")
+        })
+    });
 }
 
 #[gpui::test]
@@ -814,7 +816,7 @@ fn shell_starts_on_the_default_last_three_months(cx: &mut TestAppContext) {
     let state = cx.update(|cx| {
         let s = shell.read(cx);
         (
-            s.dashboard.date_range,
+            s.dashboard.filter.date_range,
             s.dashboard.view_filter.from,
             s.dashboard.view_filter.to,
         )
@@ -844,7 +846,7 @@ fn choosing_a_preset_updates_the_filter_and_persists(cx: &mut TestAppContext) {
     let state = cx.update(|cx| {
         let s = shell.read(cx);
         (
-            s.dashboard.date_range,
+            s.dashboard.filter.date_range,
             s.dashboard.view_filter.from,
             s.dashboard.view_filter.to,
         )
@@ -1015,7 +1017,7 @@ fn a_saved_custom_range_is_restored_at_launch(cx: &mut TestAppContext) {
         settings::set(c, UI_DATE_RANGE, "custom:2026-03-01..2026-03-31").unwrap();
     });
     wait_until(cx, "custom range restored", |cx| {
-        shell.read(cx).dashboard.date_range == DateRange::Custom { from, to }
+        shell.read(cx).dashboard.filter.date_range == DateRange::Custom { from, to }
     });
     let state = cx.update(|cx| {
         let s = shell.read(cx);
@@ -1024,10 +1026,11 @@ fn a_saved_custom_range_is_restored_at_launch(cx: &mut TestAppContext) {
     assert_eq!(state, (from, to));
 }
 
-/// 3.65: launch issues exactly one refresh, and that refresh already
-/// applies the saved settings — the first data frame shows the saved
-/// custom range, and nothing re-queries. `job_count` counts every job the
-/// worker accepted, so one launch query means one job.
+/// 3.65: launch issues one full reload plus the dashboard's own load
+/// (3.56) — two jobs, no more — and the dashboard's load already applies
+/// the saved settings: the first data frame shows the saved custom
+/// range, and nothing re-queries. `job_count` counts every job the
+/// worker accepted, so two launch jobs mean no fix-up refresh.
 #[gpui::test]
 fn launch_runs_one_refresh_with_the_saved_date_range(cx: &mut TestAppContext) {
     let (_handle, shell) = open_shell(cx, |c| {
@@ -1046,12 +1049,12 @@ fn launch_runs_one_refresh_with_the_saved_date_range(cx: &mut TestAppContext) {
         let s = shell.read(cx);
         (
             s.db.job_count(),
-            s.dashboard.date_range,
+            s.dashboard.filter.date_range,
             s.dashboard.view_filter.from,
             s.dashboard.view_filter.to,
         )
     });
-    assert_eq!(jobs, 1, "one launch, one query");
+    assert_eq!(jobs, 2, "one launch = the full reload + the dashboard load");
     let day = NaiveDate::from_ymd_opt(2026, 11, 5).unwrap();
     assert_eq!(range, DateRange::Custom { from: day, to: day });
     assert_eq!(
@@ -1069,7 +1072,7 @@ fn a_garbage_setting_falls_back_to_the_default(cx: &mut TestAppContext) {
     wait_until(cx, "garbage replaced by default", |cx| {
         shell.read(cx).dashboard.view_filter.from > ViewFilter::default().from
     });
-    let range = cx.update(|cx| shell.read(cx).dashboard.date_range);
+    let range = cx.update(|cx| shell.read(cx).dashboard.filter.date_range);
     assert_eq!(range, DateRange::Preset(DatePreset::Last3Months));
 }
 
@@ -1104,7 +1107,7 @@ fn picking_a_custom_range_persists_and_normalizes(cx: &mut TestAppContext) {
     let state = cx.update(|cx| {
         let s = shell.read(cx);
         (
-            s.dashboard.date_range,
+            s.dashboard.filter.date_range,
             s.dashboard.view_filter.from,
             s.dashboard.view_filter.to,
         )
@@ -1220,7 +1223,7 @@ fn toggling_include_transfers_filters_rows_and_persists(cx: &mut TestAppContext)
     });
     cx.update(|cx| {
         let s = shell.read(cx);
-        assert!(!s.dashboard.include_transfers, "default off");
+        assert!(!s.dashboard.filter.include_transfers, "default off");
         assert!(!s.dashboard.view_filter.include_transfers);
     });
     // The default is not persisted; the setting only appears on change.
@@ -1274,12 +1277,13 @@ fn clicking_the_include_transfers_checkbox_toggles_it(cx: &mut TestAppContext) {
     }
     click(cx, handle, "checkbox:include-transfers");
     wait_until(cx, "click checks the box and shows the transfer", |cx| {
-        shell.read(cx).dashboard.include_transfers && shell.read(cx).dashboard.row_count == 3
+        shell.read(cx).dashboard.filter.include_transfers && shell.read(cx).dashboard.row_count == 3
     });
     // 3.65: a checked box answers to `checkbox:<id>:checked`.
     click(cx, handle, "checkbox:include-transfers:checked");
     wait_until(cx, "clicking again unchecks", |cx| {
-        !shell.read(cx).dashboard.include_transfers && shell.read(cx).dashboard.row_count == 2
+        !shell.read(cx).dashboard.filter.include_transfers
+            && shell.read(cx).dashboard.row_count == 2
     });
 }
 
@@ -1301,7 +1305,8 @@ fn the_options_button_counts_the_toggles_that_are_on(cx: &mut TestAppContext) {
     click(cx, handle, "checkbox:include-transfers");
     click(cx, handle, "checkbox:uncategorized-only");
     wait_until(cx, "both toggles on", |cx| {
-        shell.read(cx).dashboard.include_transfers && shell.read(cx).dashboard.uncategorized_only
+        shell.read(cx).dashboard.filter.include_transfers
+            && shell.read(cx).dashboard.filter.uncategorized_only
     });
     draw_frame(cx, handle);
     assert!(
@@ -1319,7 +1324,7 @@ fn a_saved_include_transfers_setting_is_restored_at_launch(cx: &mut TestAppConte
     // A fresh shell over the stored "1" re-opens with transfers included,
     // and the table query follows the restored filter.
     wait_until(cx, "saved transfers flag restored", |cx| {
-        shell.read(cx).dashboard.include_transfers && shell.read(cx).dashboard.row_count == 3
+        shell.read(cx).dashboard.filter.include_transfers && shell.read(cx).dashboard.row_count == 3
     });
     cx.update(|cx| assert!(shell.read(cx).dashboard.view_filter.include_transfers));
 }
@@ -1333,7 +1338,7 @@ fn unchecking_an_account_filters_the_table(cx: &mut TestAppContext) {
     let (cobalt, gold) = cx.update(|cx| {
         let s = shell.read(cx);
         assert!(
-            s.dashboard.excluded_accounts.is_empty(),
+            s.dashboard.filter.excluded_accounts.is_empty(),
             "default: all checked"
         );
         assert!(
@@ -1469,7 +1474,7 @@ fn an_import_that_adds_an_account_shows_it_with_every_box_unchecked(cx: &mut Tes
     });
     wait_until(cx, "Gold loaded and the all-time range restored", |cx| {
         shell.read(cx).accounts.len() == 1
-            && shell.read(cx).dashboard.date_range == DateRange::Preset(DatePreset::AllTime)
+            && shell.read(cx).dashboard.filter.date_range == DateRange::Preset(DatePreset::AllTime)
     });
 
     // Uncheck the only account: nothing is selected, so the views are
@@ -1479,7 +1484,7 @@ fn an_import_that_adds_an_account_shows_it_with_every_box_unchecked(cx: &mut Tes
         shell.update(cx, |s, cx| s.set_account_checked(gold, false, window, cx));
     });
     wait_until(cx, "no account checked", |cx| {
-        shell.read(cx).dashboard.excluded_accounts == [gold]
+        shell.read(cx).dashboard.filter.excluded_accounts == [gold]
             && shell.read(cx).dashboard.row_count == 0
     });
 
@@ -1500,7 +1505,7 @@ fn an_import_that_adds_an_account_shows_it_with_every_box_unchecked(cx: &mut Tes
             .find(|a| a.name == "Amex")
             .expect("the import created Amex");
         assert!(
-            !s.dashboard.excluded_accounts.contains(&amex.id),
+            !s.dashboard.filter.excluded_accounts.contains(&amex.id),
             "a new account starts checked"
         );
         assert!(
@@ -1582,7 +1587,7 @@ fn a_refresh_resolves_the_account_filter_against_the_accounts_it_loads(cx: &mut 
             // unchecked every account the previous refresh showed — which
             // knew only Gold, not the account the import added.
             s.accounts.retain(|a| a.id == gold);
-            s.dashboard.excluded_accounts = vec![gold];
+            s.dashboard.filter.excluded_accounts = vec![gold];
             s.sync_account_filter();
             s.refresh(window, cx);
         });
@@ -1692,13 +1697,245 @@ fn search_filters_the_table_rows(cx: &mut TestAppContext) {
     });
 }
 
+/// 3.56: a filter change runs the dashboard's one load and nothing
+/// else — the QueryLog shows exactly its two queries, none of the other
+/// pages', and exactly one worker job is accepted.
+#[gpui::test]
+fn a_filter_change_runs_only_the_dashboard_job(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_table_filter_rows);
+    wait_until(cx, "three visible rows", |cx| {
+        shell.read(cx).dashboard.row_count == 3
+    });
+    let jobs_before = cx.update(|cx| {
+        let s = shell.read(cx);
+        s.db.query_log().clear();
+        assert!(s.db.query_log().names().is_empty());
+        s.db.job_count()
+    });
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| s.apply_search("cafe", window, cx));
+    });
+    // Not `wait_idle`: its drain probes would be counted as jobs.
+    wait_until(cx, "search applied", |cx| {
+        shell.read(cx).dashboard.row_count == 1
+    });
+    let (names, jobs) = cx.update(|cx| {
+        let s = shell.read(cx);
+        (s.db.query_log().names(), s.db.job_count())
+    });
+    assert_eq!(
+        names,
+        vec![
+            "list_transactions_filtered".to_string(),
+            "dashboard".to_string()
+        ],
+        "a filter change must run the dashboard's one load and nothing else"
+    );
+    assert_eq!(jobs, jobs_before + 1, "one filter change, one job");
+}
+
+/// 3.56: typing debounces — five keystrokes replace one another and run
+/// one query after the last key, not five. The clock is virtual, so
+/// nothing fires until the test advances it.
+#[gpui::test]
+fn typing_debounces_into_one_query(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_table_filter_rows);
+    wait_until(cx, "three visible rows", |cx| {
+        shell.read(cx).dashboard.row_count == 3
+    });
+    let jobs_before = cx.update(|cx| shell.read(cx).db.job_count());
+    // Five keystrokes, all inside the debounce window.
+    for text in ["c", "ca", "caf", "cafe", "cafe "] {
+        with_window(cx, handle, |window, cx| {
+            shell.update(cx, |s, cx| {
+                s.dashboard.search_input.update(cx, |i, cx| {
+                    i.set_value(text, window, cx);
+                    cx.emit(InputEvent::Change);
+                });
+            });
+        });
+    }
+    // No query yet: each keystroke replaced the pending one.
+    cx.run_until_parked();
+    cx.update(|cx| {
+        let s = shell.read(cx);
+        assert_eq!(
+            s.db.job_count(),
+            jobs_before,
+            "typing must not query before the debounce settles"
+        );
+        assert!(
+            s.dashboard.filter.search.is_empty(),
+            "the search filter is still unset while typing"
+        );
+    });
+    // Just short of the deadline: still nothing.
+    cx.executor().advance_clock(Duration::from_millis(150));
+    cx.run_until_parked();
+    assert_eq!(
+        cx.update(|cx| shell.read(cx).db.job_count()),
+        jobs_before,
+        "the debounce has not expired yet"
+    );
+    // Past it: one job, for the final text only.
+    cx.executor().advance_clock(Duration::from_millis(100));
+    wait_until(cx, "the last keystroke's query ran", |cx| {
+        shell.read(cx).dashboard.row_count == 1
+    });
+    let jobs = cx.update(|cx| shell.read(cx).db.job_count());
+    assert_eq!(jobs, jobs_before + 1, "five keystrokes, one job");
+    cx.update(|cx| {
+        assert_eq!(table_rows(&shell, cx)[0].description, "CORNER CAFE");
+    });
+}
+
+/// 3.56: a burst of filter changes ends with the newest filter's rows —
+/// a superseded load never overwrites them.
+#[gpui::test]
+fn a_burst_of_filter_changes_lands_the_last_one(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_table_filter_rows);
+    wait_until(cx, "three visible rows", |cx| {
+        shell.read(cx).dashboard.row_count == 3
+    });
+    // Three changes dispatched back to back, no settling between them.
+    for term in ["fresh", "payroll", "cafe"] {
+        with_window(cx, handle, |window, cx| {
+            shell.update(cx, |s, cx| s.apply_search(term, window, cx));
+        });
+    }
+    wait_until(cx, "the last search's rows", |cx| {
+        let rows = table_rows(&shell, cx);
+        rows.len() == 1 && rows[0].description == "CORNER CAFE"
+    });
+    // With everything idle — every in-flight and superseded job has
+    // resolved — the screen still shows the newest filter's rows.
+    wait_idle(cx, &shell);
+    cx.update(|cx| {
+        let s = shell.read(cx);
+        assert_eq!(s.dashboard.filter.search, "cafe");
+        let rows = table_rows(&shell, cx);
+        assert_eq!(
+            rows.len(),
+            1,
+            "a superseded result overwrote the newest one: {rows:?}"
+        );
+        assert_eq!(rows[0].description, "CORNER CAFE");
+    });
+}
+
+/// 3.56: Enter applies the search at once — it does not wait for the
+/// debounce — and the pending debounced task is cancelled, not fired
+/// later on top of the applied result.
+#[gpui::test]
+fn enter_applies_the_search_at_once(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_table_filter_rows);
+    wait_until(cx, "three visible rows", |cx| {
+        shell.read(cx).dashboard.row_count == 3
+    });
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.dashboard.search_input.update(cx, |i, cx| {
+                i.set_value("payroll", window, cx);
+                cx.emit(InputEvent::Change);
+            });
+        });
+    });
+    // Enter jumps the queue: the term applies without the clock moving.
+    with_window(cx, handle, |_window, cx| {
+        shell.update(cx, |s, cx| {
+            s.dashboard.search_input.update(cx, |_, cx| {
+                cx.emit(InputEvent::PressEnter {
+                    secondary: false,
+                    shift: false,
+                });
+            });
+        });
+    });
+    wait_until(cx, "Enter applied the term at once", |cx| {
+        let rows = table_rows(&shell, cx);
+        rows.len() == 1 && rows[0].description == "PAYROLL DEPOSIT"
+    });
+    // Past the debounce window: the cancelled task fires nothing.
+    let jobs = cx.update(|cx| shell.read(cx).db.job_count());
+    cx.executor().advance_clock(Duration::from_millis(500));
+    cx.run_until_parked();
+    assert_eq!(
+        cx.update(|cx| shell.read(cx).db.job_count()),
+        jobs,
+        "the debounced task Enter replaced still fired a query"
+    );
+}
+
+/// 3.56: "Clear filters" inside the search's 200 ms debounce window drops
+/// the pending task — the cleared box must not be undone by the dead term's
+/// query firing after the click.
+#[gpui::test]
+fn clearing_filters_cancels_the_pending_search(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_table_filter_rows);
+    wait_until(cx, "three visible rows", |cx| {
+        shell.read(cx).dashboard.row_count == 3
+    });
+    let jobs_before = cx.update(|cx| {
+        let s = shell.read(cx);
+        s.db.query_log().clear();
+        s.db.job_count()
+    });
+    // One keystroke: the debounced query is pending, nothing has run.
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.dashboard.search_input.update(cx, |i, cx| {
+                i.set_value("cafe", window, cx);
+                cx.emit(InputEvent::Change);
+            });
+        });
+    });
+    // Inside the window — 150 ms after the keystroke — Clear wins.
+    cx.executor().advance_clock(Duration::from_millis(150));
+    cx.run_until_parked();
+    assert_eq!(
+        cx.update(|cx| shell.read(cx).db.job_count()),
+        jobs_before,
+        "the debounce has not expired yet"
+    );
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| s.clear_filters(window, cx));
+    });
+    // Past the window: the dropped task fires nothing, and only Clear's
+    // own re-query runs.
+    cx.executor().advance_clock(Duration::from_millis(500));
+    cx.run_until_parked();
+    wait_until(cx, "the clear's re-query ran", |cx| {
+        shell
+            .read(cx)
+            .db
+            .query_log()
+            .names()
+            .iter()
+            .any(|n| n == "dashboard")
+    });
+    cx.update(|cx| {
+        let s = shell.read(cx);
+        assert_eq!(
+            s.db.job_count(),
+            jobs_before + 1,
+            "Clear runs its own one re-query; the cancelled debounce must add none"
+        );
+        assert!(
+            s.dashboard.search_input.read(cx).value().is_empty(),
+            "the search box stays empty"
+        );
+        assert!(s.dashboard.filter.search.is_empty());
+        assert_eq!(s.dashboard.row_count, 3, "the rows stay unfiltered");
+    });
+}
+
 #[gpui::test]
 fn uncategorized_only_toggle_filters_the_table(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, seed_table_filter_rows);
     wait_until(cx, "three rows", |cx| {
         shell.read(cx).dashboard.row_count == 3
     });
-    cx.update(|cx| assert!(!shell.read(cx).dashboard.uncategorized_only));
+    cx.update(|cx| assert!(!shell.read(cx).dashboard.filter.uncategorized_only));
 
     with_window(cx, handle, |window, cx| {
         shell.update(cx, |s, cx| s.set_uncategorized_only(true, window, cx));
@@ -1707,7 +1944,7 @@ fn uncategorized_only_toggle_filters_the_table(cx: &mut TestAppContext) {
         shell.read(cx).dashboard.row_count == 2
     });
     cx.update(|cx| {
-        assert!(shell.read(cx).dashboard.uncategorized_only);
+        assert!(shell.read(cx).dashboard.filter.uncategorized_only);
         assert!(
             table_rows(&shell, cx)
                 .iter()
@@ -1731,7 +1968,7 @@ fn show_hidden_toggle_reveals_hidden_rows(cx: &mut TestAppContext) {
         shell.read(cx).dashboard.row_count == 3
     });
     cx.update(|cx| {
-        assert!(!shell.read(cx).dashboard.show_hidden);
+        assert!(!shell.read(cx).dashboard.filter.show_hidden);
         assert!(table_rows(&shell, cx).iter().all(|r| !r.hidden));
     });
 
@@ -1789,7 +2026,7 @@ fn sorting_the_amount_header_reorders_rows_without_a_reentrant_panic(cx: &mut Te
     // descending: +3000, -500, -1200.
     cx.update(|cx| {
         assert_eq!(
-            shell.read(cx).dashboard.tx_sort,
+            shell.read(cx).dashboard.filter.tx_sort,
             TxSort {
                 column: TxSortColumn::Amount,
                 descending: true,
@@ -1892,7 +2129,12 @@ fn every_transactions_table_column_sorts(cx: &mut TestAppContext) {
     let assert_sorted = |cx: &mut TestAppContext, want: TxSort, order: [&str; 3], col_ix: usize| {
         wait_until(cx, "rows re-sorted", |cx| descriptions(cx) == order);
         cx.update(|cx| {
-            assert_eq!(shell.read(cx).dashboard.tx_sort, want, "{:?}", want.column);
+            assert_eq!(
+                shell.read(cx).dashboard.filter.tx_sort,
+                want,
+                "{:?}",
+                want.column
+            );
             // The active header shows the direction the rows are in.
             assert_eq!(
                 table.read(cx).delegate().column(col_ix, cx).sort,
@@ -2049,12 +2291,12 @@ fn click_chart_legend(
     let (ix, selected) = cx.update(|cx| {
         let s = shell.read(cx);
         let ix = s.dashboard.chart_rows.iter().position(|r| r.id == id);
-        let selected = match (id, s.dashboard.legend_selection) {
+        let selected = match (id, s.dashboard.filter.legend_selection) {
             (None, _) => {
                 matches!(
-                    s.dashboard.legend_selection,
+                    s.dashboard.filter.legend_selection,
                     Some(LegendSelection::Uncategorized)
-                ) || s.dashboard.uncategorized_only
+                ) || s.dashboard.filter.uncategorized_only
             }
             (Some(id), Some(LegendSelection::Category(c))) => c == id,
             _ => false,
@@ -2116,7 +2358,7 @@ fn clicking_a_parent_drills_the_chart_and_filters_the_table(cx: &mut TestAppCont
 
     click_chart_legend(cx, handle, &shell, Some(food));
     wait_until(cx, "chart drilled to Food's children", |cx| {
-        shell.read(cx).dashboard.chart_parent == Some(food)
+        shell.read(cx).dashboard.filter.chart_parent == Some(food)
             && shell.read(cx).dashboard.row_count == 2
     });
     cx.update(|cx| {
@@ -2129,7 +2371,7 @@ fn clicking_a_parent_drills_the_chart_and_filters_the_table(cx: &mut TestAppCont
             .collect();
         assert_eq!(names, ["Groceries", "Restaurants"]);
         assert_eq!(
-            shell.read(cx).dashboard.legend_selection,
+            shell.read(cx).dashboard.filter.legend_selection,
             Some(LegendSelection::Category(food))
         );
         let rows = table_rows(&shell, cx);
@@ -2148,17 +2390,18 @@ fn all_categories_row_clears_drill_and_filter(cx: &mut TestAppContext) {
     let food = cx.update(|cx| top_category_id(&shell, cx, "Food"));
     click_chart_legend(cx, handle, &shell, Some(food));
     wait_until(cx, "drilled", |cx| {
-        shell.read(cx).dashboard.chart_parent == Some(food)
+        shell.read(cx).dashboard.filter.chart_parent == Some(food)
     });
 
     with_window(cx, handle, |window, cx| {
         shell.update(cx, |s, cx| s.show_all_categories(window, cx));
     });
     wait_until(cx, "back to parents and all rows", |cx| {
-        shell.read(cx).dashboard.chart_parent.is_none() && shell.read(cx).dashboard.row_count == 4
+        shell.read(cx).dashboard.filter.chart_parent.is_none()
+            && shell.read(cx).dashboard.row_count == 4
     });
     cx.update(|cx| {
-        assert_eq!(shell.read(cx).dashboard.legend_selection, None);
+        assert_eq!(shell.read(cx).dashboard.filter.legend_selection, None);
         assert_eq!(shell.read(cx).dashboard.chart_rows.len(), 3);
     });
 }
@@ -2172,7 +2415,7 @@ fn child_click_filters_further_and_a_second_click_clears(cx: &mut TestAppContext
     let food = cx.update(|cx| top_category_id(&shell, cx, "Food"));
     click_chart_legend(cx, handle, &shell, Some(food));
     wait_until(cx, "drilled into Food", |cx| {
-        shell.read(cx).dashboard.chart_parent == Some(food)
+        shell.read(cx).dashboard.filter.chart_parent == Some(food)
     });
     // The chart's *rows* follow on the refresh the click started; the
     // child is only a legend row once they have landed.
@@ -2186,19 +2429,19 @@ fn child_click_filters_further_and_a_second_click_clears(cx: &mut TestAppContext
     cx.update(|cx| {
         assert_eq!(table_rows(&shell, cx)[0].description, "GROCER STORE");
         assert_eq!(
-            shell.read(cx).dashboard.legend_selection,
+            shell.read(cx).dashboard.filter.legend_selection,
             Some(LegendSelection::Category(groceries))
         );
         // The chart stays on the children.
-        assert_eq!(shell.read(cx).dashboard.chart_parent, Some(food));
+        assert_eq!(shell.read(cx).dashboard.filter.chart_parent, Some(food));
     });
 
     click_chart_legend(cx, handle, &shell, Some(groceries));
     wait_until(cx, "filter cleared, children still shown", |cx| {
-        shell.read(cx).dashboard.legend_selection.is_none()
+        shell.read(cx).dashboard.filter.legend_selection.is_none()
             && shell.read(cx).dashboard.row_count == 4
     });
-    cx.update(|cx| assert_eq!(shell.read(cx).dashboard.chart_parent, Some(food)));
+    cx.update(|cx| assert_eq!(shell.read(cx).dashboard.filter.chart_parent, Some(food)));
 }
 
 #[gpui::test]
@@ -2215,11 +2458,11 @@ fn uncategorized_legend_row_filters_the_table(cx: &mut TestAppContext) {
     cx.update(|cx| {
         assert_eq!(table_rows(&shell, cx)[0].description, "Mystery Vendor");
         assert_eq!(
-            shell.read(cx).dashboard.legend_selection,
+            shell.read(cx).dashboard.filter.legend_selection,
             Some(LegendSelection::Uncategorized)
         );
         // The pseudo-row never drills the chart.
-        assert!(shell.read(cx).dashboard.chart_parent.is_none());
+        assert!(shell.read(cx).dashboard.filter.chart_parent.is_none());
         assert_eq!(shell.read(cx).dashboard.chart_rows.len(), 3);
     });
 
@@ -2227,7 +2470,7 @@ fn uncategorized_legend_row_filters_the_table(cx: &mut TestAppContext) {
     wait_until(cx, "all rows back", |cx| {
         shell.read(cx).dashboard.row_count == 4
     });
-    cx.update(|cx| assert!(shell.read(cx).dashboard.legend_selection.is_none()));
+    cx.update(|cx| assert!(shell.read(cx).dashboard.filter.legend_selection.is_none()));
 }
 
 /// 3.65: a legend click paints the row's highlight in the very next frame,
@@ -2277,8 +2520,9 @@ fn escape_clears_the_drill_and_the_selection(cx: &mut TestAppContext) {
     let food = cx.update(|cx| top_category_id(&shell, cx, "Food"));
     click_chart_legend(cx, handle, &shell, Some(food));
     wait_until(cx, "drilled with a selection", |cx| {
-        shell.read(cx).dashboard.chart_parent == Some(food)
-            && shell.read(cx).dashboard.legend_selection == Some(LegendSelection::Category(food))
+        shell.read(cx).dashboard.filter.chart_parent == Some(food)
+            && shell.read(cx).dashboard.filter.legend_selection
+                == Some(LegendSelection::Category(food))
     });
 
     // Actions dispatch along the focus path, so focus the search input
@@ -2299,8 +2543,8 @@ fn escape_clears_the_drill_and_the_selection(cx: &mut TestAppContext) {
     // The state clears synchronously in the action handler; the rows
     // follow when the refresh it started lands, so wait for both.
     wait_until(cx, "drill, selection and rows cleared", |cx| {
-        shell.read(cx).dashboard.chart_parent.is_none()
-            && shell.read(cx).dashboard.legend_selection.is_none()
+        shell.read(cx).dashboard.filter.chart_parent.is_none()
+            && shell.read(cx).dashboard.filter.legend_selection.is_none()
             && shell.read(cx).dashboard.row_count == 4
     });
 }
@@ -2318,7 +2562,7 @@ fn escape_clears_the_legend_highlight_before_the_answer(cx: &mut TestAppContext)
     // the chart, so its selector stays visible throughout.
     click_chart_legend(cx, handle, &shell, None);
     wait_until(cx, "Uncategorized selected", |cx| {
-        shell.read(cx).dashboard.legend_selection == Some(LegendSelection::Uncategorized)
+        shell.read(cx).dashboard.filter.legend_selection == Some(LegendSelection::Uncategorized)
             && shell.read(cx).dashboard.row_count == 1
     });
     let ix = cx.update(|cx| {
@@ -2847,8 +3091,8 @@ fn a_filter_change_drops_the_stale_legend_selection(cx: &mut TestAppContext) {
     // the selection (and the table filter) stay on Gifts.
     click_chart_legend(cx, handle, &shell, Some(gifts));
     wait_until(cx, "Gifts selected, table filtered", |cx| {
-        shell.read(cx).dashboard.legend_selection == Some(LegendSelection::Category(gifts))
-            && shell.read(cx).dashboard.chart_parent.is_none()
+        shell.read(cx).dashboard.filter.legend_selection == Some(LegendSelection::Category(gifts))
+            && shell.read(cx).dashboard.filter.chart_parent.is_none()
             && shell.read(cx).dashboard.row_count == 1
     });
 
@@ -2860,8 +3104,8 @@ fn a_filter_change_drops_the_stale_legend_selection(cx: &mut TestAppContext) {
         });
     });
     wait_until(cx, "selection and drill cleared, rows back", |cx| {
-        shell.read(cx).dashboard.legend_selection.is_none()
-            && shell.read(cx).dashboard.chart_parent.is_none()
+        shell.read(cx).dashboard.filter.legend_selection.is_none()
+            && shell.read(cx).dashboard.filter.chart_parent.is_none()
             // Four rows remain this month: two Food, one Transport, one
             // uncategorized (the October Gifts row is out of range).
             && shell.read(cx).dashboard.row_count == 4
@@ -2895,8 +3139,9 @@ fn the_uncategorized_toggle_and_a_category_selection_are_exclusive(cx: &mut Test
     // the category again.
     click_chart_legend(cx, handle, &shell, Some(food));
     wait_until(cx, "Food filters the table", |cx| {
-        !shell.read(cx).dashboard.uncategorized_only
-            && shell.read(cx).dashboard.legend_selection == Some(LegendSelection::Category(food))
+        !shell.read(cx).dashboard.filter.uncategorized_only
+            && shell.read(cx).dashboard.filter.legend_selection
+                == Some(LegendSelection::Category(food))
             && shell.read(cx).dashboard.row_count == 2
     });
 
@@ -2904,12 +3149,12 @@ fn the_uncategorized_toggle_and_a_category_selection_are_exclusive(cx: &mut Test
     // chart stays drilled) instead of stacking both clauses.
     set_uncategorized_only(cx, handle, &shell, true);
     wait_until(cx, "uncategorized only again", |cx| {
-        shell.read(cx).dashboard.uncategorized_only
-            && shell.read(cx).dashboard.legend_selection.is_none()
+        shell.read(cx).dashboard.filter.uncategorized_only
+            && shell.read(cx).dashboard.filter.legend_selection.is_none()
             && shell.read(cx).dashboard.row_count == 1
     });
     cx.update(|cx| {
-        assert_eq!(shell.read(cx).dashboard.chart_parent, Some(food));
+        assert_eq!(shell.read(cx).dashboard.filter.chart_parent, Some(food));
         let rows = table_rows(&shell, cx);
         assert!(rows.iter().all(|r| r.category_id.is_none()));
     });
@@ -3155,23 +3400,23 @@ fn clicking_a_summary_cell_filters_the_table_to_category_and_month(cx: &mut Test
         descs.sort_unstable();
         assert_eq!(descs, ["CORNER CAFE MAR", "GROCER STORE MAR"]);
         assert_eq!(
-            shell.read(cx).dashboard.summary_month.as_deref(),
+            shell.read(cx).dashboard.filter.summary_month.as_deref(),
             Some("2026-03")
         );
         assert_eq!(
-            shell.read(cx).dashboard.legend_selection,
+            shell.read(cx).dashboard.filter.legend_selection,
             Some(LegendSelection::Category(food))
         );
         // The parent is visible at the top level, so the chart stays put.
-        assert!(shell.read(cx).dashboard.chart_parent.is_none());
+        assert!(shell.read(cx).dashboard.filter.chart_parent.is_none());
     });
 
     // Clicking the same cell again clears both halves of the filter.
     click_summary_cell(cx, handle, &shell, Some(food), Some("2026-03"));
     wait_until(cx, "all rows back", |cx| {
         shell.read(cx).dashboard.row_count == 7
-            && shell.read(cx).dashboard.summary_month.is_none()
-            && shell.read(cx).dashboard.legend_selection.is_none()
+            && shell.read(cx).dashboard.filter.summary_month.is_none()
+            && shell.read(cx).dashboard.filter.legend_selection.is_none()
     });
 }
 
@@ -3195,16 +3440,16 @@ fn clicking_a_child_summary_cell_drills_the_chart_to_its_parent(cx: &mut TestApp
     cx.update(|cx| {
         assert_eq!(table_rows(&shell, cx)[0].description, "GROCER STORE APR");
         assert_eq!(
-            shell.read(cx).dashboard.legend_selection,
+            shell.read(cx).dashboard.filter.legend_selection,
             Some(LegendSelection::Category(groceries))
         );
         assert_eq!(
-            shell.read(cx).dashboard.summary_month.as_deref(),
+            shell.read(cx).dashboard.filter.summary_month.as_deref(),
             Some("2026-04")
         );
         // The selection must be one of the legend's rows, so the chart
         // drills to the child's parent and stays there across refreshes.
-        assert_eq!(shell.read(cx).dashboard.chart_parent, Some(food));
+        assert_eq!(shell.read(cx).dashboard.filter.chart_parent, Some(food));
     });
 }
 
@@ -3284,8 +3529,8 @@ fn clearing_the_legend_selection_clears_the_summary_month(cx: &mut TestAppContex
     click_chart_legend(cx, handle, &shell, Some(groceries));
     wait_until(cx, "the month goes with the selection", |cx| {
         shell.read(cx).dashboard.row_count == 7
-            && shell.read(cx).dashboard.legend_selection.is_none()
-            && shell.read(cx).dashboard.summary_month.is_none()
+            && shell.read(cx).dashboard.filter.legend_selection.is_none()
+            && shell.read(cx).dashboard.filter.summary_month.is_none()
     });
 
     // Re-clicking the `Uncategorized` legend row: the same.
@@ -3296,8 +3541,8 @@ fn clearing_the_legend_selection_clears_the_summary_month(cx: &mut TestAppContex
     click_chart_legend(cx, handle, &shell, None);
     wait_until(cx, "the month goes with the uncategorized row", |cx| {
         shell.read(cx).dashboard.row_count == 7
-            && shell.read(cx).dashboard.legend_selection.is_none()
-            && shell.read(cx).dashboard.summary_month.is_none()
+            && shell.read(cx).dashboard.filter.legend_selection.is_none()
+            && shell.read(cx).dashboard.filter.summary_month.is_none()
     });
 
     // "← All categories".
@@ -3310,8 +3555,8 @@ fn clearing_the_legend_selection_clears_the_summary_month(cx: &mut TestAppContex
     });
     wait_until(cx, "the month goes with all-categories", |cx| {
         shell.read(cx).dashboard.row_count == 7
-            && shell.read(cx).dashboard.legend_selection.is_none()
-            && shell.read(cx).dashboard.summary_month.is_none()
+            && shell.read(cx).dashboard.filter.legend_selection.is_none()
+            && shell.read(cx).dashboard.filter.summary_month.is_none()
     });
 
     // Turning on "Uncategorized only" over a category selection. Without
@@ -3323,9 +3568,9 @@ fn clearing_the_legend_selection_clears_the_summary_month(cx: &mut TestAppContex
     });
     set_uncategorized_only(cx, handle, &shell, true);
     wait_until(cx, "uncategorized rows without the month", |cx| {
-        shell.read(cx).dashboard.legend_selection.is_none()
-            && shell.read(cx).dashboard.summary_month.is_none()
-            && shell.read(cx).dashboard.uncategorized_only
+        shell.read(cx).dashboard.filter.legend_selection.is_none()
+            && shell.read(cx).dashboard.filter.summary_month.is_none()
+            && shell.read(cx).dashboard.filter.uncategorized_only
             && table_rows(&shell, cx)
                 .iter()
                 .map(|r| r.description.as_str())

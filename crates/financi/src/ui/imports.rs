@@ -1174,9 +1174,9 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.dashboard.legend_selection = None;
-        self.dashboard.summary_month = None;
-        self.dashboard.chart_parent = None;
+        self.dashboard.filter.legend_selection = None;
+        self.dashboard.filter.summary_month = None;
+        self.dashboard.filter.chart_parent = None;
         self.dashboard.rule_offer = None;
         self.queue.pickers.clear();
         self.queue.picker_subs.clear();

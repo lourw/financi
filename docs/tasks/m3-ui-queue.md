@@ -6,7 +6,7 @@ Do these in the order listed (`docs/tasks.md` → *Picking the next task*). Each
 
 Steps 1–15 of `docs/tasks/gpui.md` → *GPUI best practices*, task by task.
 
-- [ ] **3.56 Dashboard filters apply at once.** Changing a dashboard
+- [x] **3.56 Dashboard filters apply at once.** Changing a dashboard
   filter (date range, accounts, search, the Options toggles, a legend /
   summary click) takes effect "really, really slowly" (user report,
   2026-11-11). Rewritten 2026-11-11 for the page-entity architecture:

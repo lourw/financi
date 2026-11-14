@@ -38,8 +38,7 @@ fn a_rule_edit_reloads_only_the_sections_it_touches(cx: &mut TestAppContext) {
         "list_rules",
         "rule_use_stats",
         "list_transactions_filtered",
-        "spend_by_category",
-        "monthly_summary",
+        "dashboard",
         "sidebar_counts",
         "uncategorized_by_merchant",
         "list_categories",
@@ -50,7 +49,15 @@ fn a_rule_edit_reloads_only_the_sections_it_touches(cx: &mut TestAppContext) {
             "a rule edit must reload {expected}; ran {names:?}"
         );
     }
-    for forbidden in ["list_imports", "list_transfer_reviews", "list_accounts"] {
+    for forbidden in [
+        "list_imports",
+        "list_transfer_reviews",
+        "list_accounts",
+        // 3.56: the dashboard's one load replaced the separate chart and
+        // summary queries at the top level.
+        "spend_by_category",
+        "monthly_summary",
+    ] {
         assert!(
             !names.contains(&forbidden.to_string()),
             "a rule edit must not reload {forbidden}; ran {names:?}"
@@ -59,8 +66,9 @@ fn a_rule_edit_reloads_only_the_sections_it_touches(cx: &mut TestAppContext) {
 }
 
 /// The full reload — what launch and the import / undo / restore flows
-/// run — still loads every section: all twelve queries, including the
-/// history and the reviews the partial reloads leave alone.
+/// run — still loads every section: the nine catalog queries, including
+/// the history and the reviews the partial reloads leave alone, plus the
+/// dashboard's own load alongside (3.56).
 #[gpui::test]
 fn a_full_reload_loads_every_section(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, |c| {
@@ -84,8 +92,7 @@ fn a_full_reload_loads_every_section(cx: &mut TestAppContext) {
         "list_transfer_reviews",
         "list_imports",
         "list_transactions_filtered",
-        "spend_by_category",
-        "monthly_summary",
+        "dashboard",
     ] {
         assert!(
             names.contains(&expected.to_string()),
@@ -94,14 +101,16 @@ fn a_full_reload_loads_every_section(cx: &mut TestAppContext) {
     }
 }
 
-/// 3.78 review fix, reproduced: the full reload runs on the writer queue
-/// and the keyed partial reloads on the reader queue, with no ordering
-/// between the two (worker.rs). A full reload dispatched first can land
-/// *after* a newer keyed reload — and must then keep its rows, queried
-/// with filters the user has since changed, off the screen. The in-memory
-/// test databases (one FIFO queue) can never invert, so this drives the
-/// inversion over a file DB — real reader thread — with the writer held
-/// by `block_worker` to delay the full reload's landing.
+/// 3.78 review fix, reproduced — and 3.56 keeps the invariant: the full
+/// reload runs on the writer queue and the keyed dashboard load on the
+/// reader queue, with no ordering between the two (worker.rs). A full
+/// reload dispatched first can land *after* the user's newer filter
+/// change — and must keep the screen showing the user's rows: since 3.56
+/// the full reload carries no rows at all, so the rows the keyed load
+/// left are the rows that stay. The in-memory test databases (one FIFO
+/// queue) can never invert, so this drives the inversion over a file DB —
+/// real reader thread — with the writer held by `block_worker` to delay
+/// the full reload's landing.
 #[gpui::test]
 fn a_full_reload_superseded_mid_flight_keeps_the_newer_rows(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell_on_file(cx, |conn| {

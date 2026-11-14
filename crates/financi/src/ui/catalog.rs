@@ -95,35 +95,35 @@ pub(super) const S_SIDEBAR: u16 = 1 << 3; // sidebar_counts
 pub(super) const S_QUEUE: u16 = 1 << 4; // uncategorized_by_merchant
 pub(super) const S_TRANSFERS: u16 = 1 << 5; // list_transfer_reviews
 pub(super) const S_IMPORTS: u16 = 1 << 6; // list_imports
-pub(super) const S_DASHBOARD: u16 = 1 << 7; // rows + chart + monthly summary
-const S_ALL: u16 = 0xFF;
+const S_ALL: u16 = 0x7F;
 
 /// The reader dependency map (3.78): which sections a change to `domains`
 /// can invalidate. Over-fetching is fine where nothing forbids it (a
 /// change to one domain may load a little more than strictly needed);
-/// under-fetching is not. The dashboard reads from everything, so any
-/// domain that can move a transaction row reloads it — but the Imports
-/// history answers to Imports alone and the transfer reviews to Transfers
-/// alone, which is what keeps a rule edit off both.
+/// under-fetching is not. The dashboard is not in this map (3.56): its
+/// rows, chart and summary are a keyed load of their own, started by
+/// [`Shell`](crate::ui::Shell) whenever a domain it reads — or one of its
+/// own filter controls — changes. The Imports history answers to Imports
+/// alone and the transfer reviews to Transfers alone, which is what keeps
+/// a rule edit off both.
 fn sections_for(domains: Domains) -> u16 {
     let mut s: u16 = 0;
     if domains.contains(Domain::Accounts) {
-        // A new account joins the filter checkboxes; the sidebar counts
-        // and the dashboard's account resolution follow.
-        s |= S_ACCOUNTS | S_SIDEBAR | S_DASHBOARD;
+        // A new account joins the filter checkboxes, and the sidebar
+        // counts count its rows.
+        s |= S_ACCOUNTS | S_SIDEBAR;
     }
     if domains.contains(Domain::Categories) {
-        // The tree, its per-category counts, and everything the dashboard
-        // groups by category.
-        s |= S_CATEGORIES | S_DASHBOARD;
+        // The tree and its per-category counts.
+        s |= S_CATEGORIES;
     }
     if domains.contains(Domain::Rules) {
-        s |= S_RULES | S_DASHBOARD;
+        s |= S_RULES;
     }
     if domains.contains(Domain::Transactions) {
         // Counts, rule uses, sidebar totals and the queue all read the
         // transaction rows.
-        s |= S_CATEGORIES | S_RULES | S_SIDEBAR | S_QUEUE | S_DASHBOARD;
+        s |= S_CATEGORIES | S_RULES | S_SIDEBAR | S_QUEUE;
     }
     if domains.contains(Domain::Imports) {
         s |= S_ALL;
@@ -134,7 +134,8 @@ fn sections_for(domains: Domains) -> u16 {
         s |= S_TRANSFERS;
     }
     if domains.contains(Domain::Settings) {
-        s |= S_DASHBOARD;
+        // View settings move the dashboard only, and that is the
+        // dashboard loader's job now (3.56).
     }
     s
 }
@@ -154,30 +155,6 @@ pub(super) struct Snapshot {
     pub queue: Vec<UncategorizedGroup>,
     pub reviews: Vec<TransferReview>,
     pub imports: Vec<ImportEntry>,
-    pub rows: Vec<TransactionRow>,
-    pub chart: Vec<CategorySpend>,
-    pub summary: Option<MonthlySummary>,
-}
-
-/// The query inputs for one reload, snapshotted by `Shell` at dispatch:
-/// the account checkboxes and the dashboard's filter values, so the job
-/// runs with exactly the filters the screen shows.
-#[derive(Clone, Debug, Default)]
-pub(super) struct LoadFilters {
-    pub excluded: Vec<i64>,
-    pub view_filter: ViewFilter,
-    pub table_filter: TxTableFilter,
-    pub chart_parent: Option<i64>,
-}
-
-/// Where the dashboard queries' account ids come from (task 3.17: the
-/// filter must resolve against accounts as fresh as the rows it queries).
-enum DashAccounts {
-    /// Resolved against the accounts the catalog already had — this
-    /// change cannot have added an account.
-    Resolved { ids: Vec<i64>, none_selected: bool },
-    /// This load also loads the accounts; resolve against those.
-    Fresh,
 }
 
 /// What a reload finished with. `Shell` subscribes once and applies the
@@ -191,10 +168,10 @@ pub(super) struct DataChanged {
     pub generation: u64,
     /// The reload failed; pages keep the previous data.
     pub error: Option<String>,
-    /// The launch settings (3.65) the full job loaded and already ran
-    /// its queries with: the date range, the transfers toggle, and a
-    /// master-CSV self-check failure to toast.
-    pub startup: Option<(DateRange, bool, Option<String>)>,
+    /// A launch-load master-CSV self-check failure to toast (3.76). The
+    /// launch *settings* moved to the dashboard's own load (3.56), which
+    /// is where the filter controls need them.
+    pub startup: Option<String>,
 }
 
 impl EventEmitter<DataChanged> for Catalog {}
@@ -220,7 +197,7 @@ pub(super) struct Catalog {
     /// completion and land first. A result whose dispatch is older than
     /// what a bit has already applied is stale and must not write that
     /// bit; it may still write the rest.
-    applied_gen: [u64; 8],
+    applied_gen: [u64; 7],
 }
 
 impl Catalog {
@@ -229,7 +206,7 @@ impl Catalog {
             db,
             snap: Snapshot::default(),
             full_task: None,
-            applied_gen: [0; 8],
+            applied_gen: [0; 7],
         }
     }
 
@@ -238,22 +215,21 @@ impl Catalog {
         sections_for(domains)
     }
 
-    /// A write reported `domains`: reload only the sections they touch,
-    /// then emit [`DataChanged`]. `filters` is the screen's filter state,
-    /// snapshotted by `Shell` at dispatch. The job is keyed by its section
-    /// set, so a burst of the same kind of change runs once (3.77) while
-    /// different section sets still run side by side.
+    /// A write landed: report the sections `domains` touch, reload them,
+    /// then emit [`DataChanged`]. The job is keyed by its section set, so
+    /// a burst of the same kind of change runs once (3.77) while different
+    /// section sets still run side by side. The dashboard is not one of
+    /// these sections (3.56) — `Shell` starts its keyed load alongside.
     pub(super) fn changed(
         &mut self,
         domains: Domains,
         generation: u64,
-        filters: LoadFilters,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let sections = sections_for(domains);
         if sections == S_ALL {
-            self.reload_full(domains, generation, filters, None, window, cx);
+            self.reload_full(domains, generation, None, window, cx);
             return;
         }
         if sections == 0 {
@@ -267,27 +243,12 @@ impl Catalog {
             });
             return;
         }
-        // The account list the dashboard queries resolve against: a
-        // reload that includes S_ACCOUNTS resolves against the accounts it
-        // just loaded (`Fresh`); a change that cannot have added an
-        // account uses the snapshot's list, which is current. (3.78 review
-        // fix: this used the snapshot's list even when the reload also
-        // loaded accounts — fine while only the full reload reached
-        // Accounts, wrong for any future writer that reports them.)
-        let dash = if sections & S_ACCOUNTS != 0 {
-            DashAccounts::Fresh
-        } else {
-            let (ids, none_selected) = self.resolved_account_ids(&filters.excluded);
-            DashAccounts::Resolved { ids, none_selected }
-        };
         let db = self.db.clone();
         let log = db.query_log();
         let key = format!("catalog:{sections}");
         cx.spawn_in(window, async move |this, cx| {
             let result = db
-                .call_keyed(&key, move |c| {
-                    load_sections(c, &log, sections, filters, dash)
-                })
+                .call_keyed(&key, move |c| load_sections(c, &log, sections))
                 .await;
             let _ = this.update_in(cx, |this, _window, cx| match result {
                 Ok(snapshot) => {
@@ -317,16 +278,16 @@ impl Catalog {
         .detach();
     }
 
-    /// Reload everything in one writer-thread job: the launch load (with
-    /// the saved settings folded in, 3.65) and the import / undo / restore
-    /// flows, where every part of the read model really is suspect. One
-    /// job, so `job_count` stays at one for the launch invariant.
-    /// `startup` is `Some(master CSV root)` only for the launch load.
+    /// Reload everything in one writer-thread job: the launch load and the
+    /// import / undo / restore flows, where every part of the read model
+    /// really is suspect. One job, so `job_count` stays at one for the
+    /// launch invariant — the dashboard's own load is the second job of a
+    /// launch (3.56). `startup` is `Some(master CSV root)` only for the
+    /// launch load.
     pub(super) fn reload_full(
         &mut self,
         domains: Domains,
         generation: u64,
-        mut filters: LoadFilters,
         startup: Option<PathBuf>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -335,29 +296,22 @@ impl Catalog {
         let log = db.query_log();
         self.full_task = Some(cx.spawn_in(window, async move |this, cx| {
             let result = on_db(&db, move |c| {
-                // 3.65: launch settings first — the queries below run
-                // with them, so the first frame is already the saved
-                // view. 3.76: the master-CSV self-check rides this same
-                // job when it is the launch one.
-                let startup = if let Some(csv_root) = startup {
-                    log.record("settings::date_range");
-                    let range = settings::date_range(c)?;
-                    log.record("settings::include_transfers");
-                    let transfers = settings::include_transfers(c)?;
-                    log.record("master_csv::self_check");
-                    let csv_check = financi_db::master_csv::self_check(c, &csv_root)
-                        .err()
-                        .map(|e| e.to_string());
-                    let (from, to) = range.range(Shell::today());
-                    filters.view_filter.from = from;
-                    filters.view_filter.to = to;
-                    filters.view_filter.include_transfers = transfers;
-                    Some((range, transfers, csv_check))
-                } else {
-                    None
+                // 3.76: the master-CSV self-check rides this job when it
+                // is the launch one, so startup stays a single worker job
+                // and the window shows at once. (3.56: the launch
+                // settings moved to the dashboard's load, where the
+                // filter controls consume them.)
+                let csv_check = match startup {
+                    Some(csv_root) => {
+                        log.record("master_csv::self_check");
+                        financi_db::master_csv::self_check(c, &csv_root)
+                            .err()
+                            .map(|e| e.to_string())
+                    }
+                    None => None,
                 };
-                let snap = load_sections(c, &log, S_ALL, filters, DashAccounts::Fresh)?;
-                Ok::<_, DbError>((snap, startup))
+                let snap = load_sections(c, &log, S_ALL)?;
+                Ok::<_, DbError>((snap, csv_check))
             })
             .await;
             let _ = this.update_in(cx, |this, _window, cx| {
@@ -390,28 +344,12 @@ impl Catalog {
         }));
     }
 
-    /// The account ids the dashboard queries use: every account the
-    /// checkboxes have not excluded. `none_selected` is the "nothing
-    /// checked" case — with accounts present but none selected the
-    /// queries are skipped entirely.
-    fn resolved_account_ids(&self, excluded: &[i64]) -> (Vec<i64>, bool) {
-        let ids: Vec<i64> = self
-            .snap
-            .accounts
-            .iter()
-            .filter(|a| !excluded.contains(&a.id))
-            .map(|a| a.id)
-            .collect();
-        let none_selected = ids.is_empty() && !self.snap.accounts.is_empty();
-        (ids, none_selected)
-    }
-
     /// The section bits a result of dispatch `generation` may still write,
     /// recorded as applied at that generation: a bit a newer dispatch has
     /// already applied is stale (see [`Catalog::applied_gen`]).
     fn fresh(&mut self, sections: u16, generation: u64) -> u16 {
         let mut fresh_bits = 0;
-        for b in 0..8 {
+        for b in 0..7 {
             let bit = 1u16 << b;
             if sections & bit != 0 && self.applied_gen[b] < generation {
                 self.applied_gen[b] = generation;
@@ -446,23 +384,13 @@ impl Catalog {
         if sections & S_IMPORTS != 0 {
             self.snap.imports = s.imports;
         }
-        if sections & S_DASHBOARD != 0 {
-            self.snap.rows = s.rows;
-            self.snap.chart = s.chart;
-            self.snap.summary = s.summary;
-        }
     }
 }
 
 /// Run the sections' queries on the worker thread, recording each name so
-/// a test can see exactly what ran (the query-count hook, 3.78).
-fn load_sections(
-    c: &mut Connection,
-    log: &QueryLog,
-    sections: u16,
-    f: LoadFilters,
-    dash: DashAccounts,
-) -> Result<Snapshot, DbError> {
+/// a test can see exactly what ran (the query-count hook, 3.78). The
+/// dashboard's own queries (3.56) live in `dashboard.rs`, not here.
+fn load_sections(c: &mut Connection, log: &QueryLog, sections: u16) -> Result<Snapshot, DbError> {
     let mut snap = Snapshot::default();
     if sections & S_ACCOUNTS != 0 {
         log.record("list_accounts");
@@ -502,48 +430,6 @@ fn load_sections(
     if sections & S_IMPORTS != 0 {
         log.record("list_imports");
         snap.imports = list_imports(c)?;
-    }
-    if sections & S_DASHBOARD != 0 {
-        let (ids, none_selected) = match &dash {
-            DashAccounts::Resolved { ids, none_selected } => (ids.clone(), *none_selected),
-            DashAccounts::Fresh => {
-                let ids: Vec<i64> = snap
-                    .accounts
-                    .iter()
-                    .filter(|a| !f.excluded.contains(&a.id))
-                    .map(|a| a.id)
-                    .collect();
-                let none_selected = ids.is_empty() && !snap.accounts.is_empty();
-                (ids, none_selected)
-            }
-        };
-        // Keep the shared `ViewFilter` in step with the checkboxes:
-        // empty means all accounts.
-        let mut view_filter = f.view_filter.clone();
-        view_filter.account_ids = if f.excluded.is_empty() {
-            Vec::new()
-        } else {
-            ids
-        };
-        if none_selected {
-            snap.rows = Vec::new();
-            snap.chart = Vec::new();
-            snap.summary = Some(MonthlySummary {
-                months: Vec::new(),
-                rows: Vec::new(),
-            });
-        } else {
-            log.record("list_transactions_filtered");
-            snap.rows = list_transactions_filtered(c, &view_filter, &f.table_filter)?;
-            // Chart and legend rows: parents, or the drilled-in parent's
-            // children (3.5).
-            log.record("spend_by_category");
-            snap.chart = spend_by_category(c, &view_filter, f.chart_parent)?;
-            // The monthly summary grid (3.6): the same filter as the
-            // chart, one query for the whole panel.
-            log.record("monthly_summary");
-            snap.summary = Some(monthly_summary(c, &view_filter)?);
-        }
     }
     Ok(snap)
 }

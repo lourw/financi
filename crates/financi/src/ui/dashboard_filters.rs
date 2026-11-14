@@ -47,8 +47,8 @@ impl Shell {
     /// nothing is unchecked, otherwise how many of the accounts remain.
     pub(super) fn account_filter_label(&self) -> String {
         let total = self.accounts.len();
-        let selected = total.saturating_sub(self.dashboard.excluded_accounts.len());
-        if self.dashboard.excluded_accounts.is_empty() {
+        let selected = total.saturating_sub(self.dashboard.filter.excluded_accounts.len());
+        if self.dashboard.filter.excluded_accounts.is_empty() {
             ALL_ACCOUNTS.to_string()
         } else if selected == 0 {
             "No accounts".to_string()
@@ -63,7 +63,7 @@ impl Shell {
         let shell = cx.entity();
         let ids: Vec<i64> = self.accounts.iter().map(|a| a.id).collect();
         let labels = account_labels(&self.accounts);
-        let excluded = self.dashboard.excluded_accounts.clone();
+        let excluded = self.dashboard.filter.excluded_accounts.clone();
         Popover::new("accounts-filter")
             .trigger(Button::new("accounts-filter-trigger").label(self.account_filter_label()))
             .content(move |_, _, _| {
@@ -88,9 +88,9 @@ impl Shell {
     pub(super) fn options_popover(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let shell = cx.entity();
         let (transfers, uncategorized, hidden) = (
-            self.dashboard.include_transfers,
-            self.dashboard.uncategorized_only,
-            self.dashboard.show_hidden,
+            self.dashboard.filter.include_transfers,
+            self.dashboard.filter.uncategorized_only,
+            self.dashboard.filter.show_hidden,
         );
         let on = [transfers, uncategorized, hidden]
             .iter()
