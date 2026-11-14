@@ -231,7 +231,11 @@ impl TableDelegate for TxTable {
         window: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) -> PopupMenu {
-        let row = &self.rows[row_ix];
+        // 3.76: a detached write can empty or shorten `rows` while a menu
+        // for an old index opens; offer nothing instead of panicking.
+        let Some(row) = self.rows.get(row_ix) else {
+            return menu;
+        };
         let (txn, current) = (row.id, row.category_id);
         let on_change = self.on_set_category.clone();
         let submenu = PopupMenu::build(window, cx, {
@@ -300,6 +304,11 @@ impl TableDelegate for TxTable {
         _: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
+        // 3.76: a repaint can arrive with a row index a refresh already
+        // removed (the table keeps its scroll position); render nothing.
+        if row_ix >= self.rows.len() {
+            return div().into_any_element();
+        }
         if col_ix == 3 {
             let row = &self.rows[row_ix];
             let merchant = financi_core::parse::merchant(&row.description);
@@ -537,46 +546,51 @@ pub(super) struct DashboardState {
 
 impl DashboardState {
     pub(super) fn new(window: &mut Window, cx: &mut Context<Shell>) -> Self {
+        // 3.76: the table's callbacks capture the shell *weakly* — the
+        // table is a child entity, and a strong handle here would form a
+        // reference cycle that keeps every Shell alive for the whole app.
         let on_set_category = {
-            let shell = cx.entity();
+            let shell = cx.weak_entity();
             Rc::new(
                 move |txn: i64, category: i64, window: &mut Window, cx: &mut App| {
-                    shell.update(cx, |this, cx| {
+                    let _ = shell.update(cx, |this, cx| {
                         this.change_row_category(txn, category, window, cx);
                     });
                 },
             ) as Rc<dyn Fn(i64, i64, &mut Window, &mut App)>
         };
         let on_set_hidden = {
-            let shell = cx.entity();
+            let shell = cx.weak_entity();
             Rc::new(
                 move |txn: i64, hidden: bool, window: &mut Window, cx: &mut App| {
-                    shell.update(cx, |this, cx| this.set_row_hidden(txn, hidden, window, cx));
+                    let _ = shell.update(cx, |this, cx| {
+                        this.set_row_hidden(txn, hidden, window, cx);
+                    });
                 },
             ) as Rc<dyn Fn(i64, bool, &mut Window, &mut App)>
         };
         let on_apply_rule = {
-            let shell = cx.entity();
+            let shell = cx.weak_entity();
             Rc::new(move |txn: i64, window: &mut Window, cx: &mut App| {
-                shell.update(cx, |this, cx| this.apply_row_rule(txn, window, cx));
+                let _ = shell.update(cx, |this, cx| this.apply_row_rule(txn, window, cx));
             }) as Rc<dyn Fn(i64, &mut Window, &mut App)>
         };
         let on_sort = {
-            let shell = cx.entity();
+            let shell = cx.weak_entity();
             Rc::new(move |sort: TxSort, window: &mut Window, cx: &mut App| {
-                shell.update(cx, |this, cx| this.set_tx_sort(sort, window, cx));
+                let _ = shell.update(cx, |this, cx| this.set_tx_sort(sort, window, cx));
             }) as Rc<dyn Fn(TxSort, &mut Window, &mut App)>
         };
         let on_unpair = {
-            let shell = cx.entity();
+            let shell = cx.weak_entity();
             Rc::new(move |txn: i64, window: &mut Window, cx: &mut App| {
-                shell.update(cx, |this, cx| this.unpair_row(txn, window, cx));
+                let _ = shell.update(cx, |this, cx| this.unpair_row(txn, window, cx));
             }) as UnpairFn
         };
         let on_show_rule = {
-            let shell = cx.entity();
+            let shell = cx.weak_entity();
             Rc::new(move |rule: i64, window: &mut Window, cx: &mut App| {
-                shell.update(cx, |this, cx| this.show_rule(rule, window, cx));
+                let _ = shell.update(cx, |this, cx| this.show_rule(rule, window, cx));
             }) as ShowRuleFn
         };
         let table = cx.new(|cx| {

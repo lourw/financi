@@ -858,10 +858,13 @@ pub(super) struct ImportsState {
 
 impl ImportsState {
     pub(super) fn new(window: &mut Window, cx: &mut Context<Shell>) -> Self {
+        // 3.76: weak, like the dashboard table's callbacks — a strong
+        // handle from a child entity's callback into the Shell would form
+        // a cycle that keeps every Shell alive.
         let on_undo = {
-            let shell = cx.entity();
+            let shell = cx.weak_entity();
             Rc::new(move |id: i64, window: &mut Window, cx: &mut App| {
-                shell.update(cx, |this, cx| this.undo_import(id, window, cx));
+                let _ = shell.update(cx, |this, cx| this.undo_import(id, window, cx));
             }) as Rc<dyn Fn(i64, &mut Window, &mut App)>
         };
         let history_table = cx.new(|cx| {
