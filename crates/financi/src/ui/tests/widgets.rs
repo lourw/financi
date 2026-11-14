@@ -4,8 +4,8 @@ use super::*;
 
 use crate::ui::widgets::{
     Col, ColAlign, DataCol, DataItem, DataList, LIST_GROUP_HEIGHT, LIST_HEADING_HEIGHT,
-    LIST_ROW_HEIGHT, SortState, filter_row, inline_form, page_header, panel, row_action_button,
-    swatch, type_tag,
+    LIST_ROW_HEIGHT, ListCell, SortState, filter_row, inline_form, page_header, panel,
+    row_action_button, swatch, type_tag,
 };
 use gpui_kit::component::theme::ActiveTheme as _;
 
@@ -31,6 +31,9 @@ struct ListHost {
     /// Paint every cell with a 400-character label instead of its short
     /// synthetic one, to show columns keep their widths.
     long: bool,
+    /// When set, the `Col::Flex` column's cells are [`ListCell::text`]
+    /// carrying this full text, to show the list's ellipsis tooltip.
+    tip: Option<String>,
 }
 
 impl Render for ListHost {
@@ -68,7 +71,12 @@ impl Render for ListHost {
                         .columns
                         .iter()
                         .enumerate()
-                        .map(|(c, _)| {
+                        .map(|(c, col)| -> ListCell {
+                            if let Some(tip) = &view.tip
+                                && matches!(col.width, Col::Flex)
+                            {
+                                return ListCell::text(tip.clone());
+                            }
                             let text = if view.long && c > 0 {
                                 "x".repeat(400)
                             } else {
@@ -85,6 +93,7 @@ impl Render for ListHost {
                                     move || s.clone()
                                 })
                                 .into_any_element()
+                                .into()
                         })
                         .collect(),
                     DataItem::Group { selector, .. } => vec![
@@ -94,7 +103,8 @@ impl Render for ListHost {
                                 let s = format!("{selector}:sum");
                                 move || s.clone()
                             })
-                            .into_any_element(),
+                            .into_any_element()
+                            .into(),
                     ],
                 }
             });
@@ -140,6 +150,9 @@ impl Render for ListHost {
         }
         v_flex()
             .size_full()
+            // A base-text probe (the theme's 16 px): row cells must
+            // measure at the heading's `text_sm`, not at this size.
+            .child(div().debug_selector(|| "wh:base-text".into()).child("base"))
             .child(list.heading_selectors("wh").selector("wh:list"))
     }
 }
@@ -162,6 +175,7 @@ fn wh_host(rows: usize) -> ListHost {
         sort: false,
         sorted: None,
         long: false,
+        tip: None,
     }
 }
 
@@ -321,6 +335,70 @@ fn a_long_label_stays_in_its_flex_column(cx: &mut TestAppContext) {
     assert!(
         (amount.origin.x - amount_head.origin.x).abs().as_f32() <= 1.,
         "a long label pushed the Amount column: cell {amount:?} vs heading {amount_head:?}",
+    );
+}
+
+/// Tokens → Typography: a list is a data region, so row cells paint at
+/// `text_sm` like the heading, never at the base size. (The 3.89 review
+/// measured 22.5 px heading text vs 26 px row text; the assertion is the
+/// relation — row cell like the heading, clearly below the base-text
+/// probe — not absolute pixels, which depend on the font.)
+#[gpui::test]
+fn row_cells_paint_at_the_heading_text_size(cx: &mut TestAppContext) {
+    let host = wh_host(1);
+    let (_handle, mut vtc, _entity) = open_list_host(cx, host);
+    let h = |vtc: &mut VisualTestContext, s: &str| {
+        let s = leaked(s.to_string());
+        vtc.debug_bounds(s)
+            .unwrap_or_else(|| panic!("{s} does not paint"))
+            .size
+            .height
+    };
+    let base = h(&mut vtc, "wh:base-text");
+    let heading = h(&mut vtc, "wh:heading:Date");
+    let cell = h(&mut vtc, "wh:row:0:c0");
+    assert!(
+        (heading - cell).abs().as_f32() <= 1.,
+        "row cells must paint at the heading's text size: heading {heading} vs row cell {cell}",
+    );
+    assert!(
+        (base - cell).as_f32() >= 2.,
+        "row cells still inherit the base text size: base {base} vs row cell {cell}",
+    );
+}
+
+/// Components → `DataList`: a Flex text cell carries a tooltip holding
+/// the full text, attached by the list itself (`ListCell::text`), not by
+/// the page. Hover the flex column of a row — the heading cell gives the
+/// column's x, the row its y — and the tooltip must paint with the
+/// cell's full text (the tooltip body carries a `financi:tooltip:<text>`
+/// debug selector, like [`filter_tip`]).
+#[gpui::test]
+fn a_flex_text_cell_tooltips_its_full_text(cx: &mut TestAppContext) {
+    let tip = "COSTCO COFFEE #1234 SEATTLE WA".to_string();
+    let mut host = wh_host(1);
+    host.tip = Some(tip.clone());
+    let (handle, mut vtc, _entity) = open_list_host(cx, host);
+    let head = vtc
+        .debug_bounds("wh:heading:Description")
+        .unwrap_or_else(|| panic!("the flex heading paints"));
+    let row = vtc
+        .debug_bounds("wh:row:0")
+        .unwrap_or_else(|| panic!("row 0 paints"));
+    vtc.simulate_mouse_move(
+        point(
+            head.origin.x + head.size.width / 2.,
+            row.origin.y + row.size.height / 2.,
+        ),
+        None,
+        Modifiers::default(),
+    );
+    cx.executor().advance_clock(Duration::from_millis(600));
+    cx.run_until_parked();
+    draw_frame(cx, handle);
+    assert!(
+        paints(cx, handle, format!("financi:tooltip:{tip}")),
+        "hovering the flex text cell shows no tooltip with the full text",
     );
 }
 

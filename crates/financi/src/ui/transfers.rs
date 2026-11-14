@@ -211,22 +211,16 @@ impl Shell {
                         DataItem::Row { id, .. } => {
                             let c = &candidates[*id].1;
                             vec![
-                                div().child(c.posted_date.clone()).into_any_element(),
+                                div().child(c.posted_date.clone()).into_any_element().into(),
+                                // Account and description are text cells:
+                                // the list ellipsizes them and attaches
+                                // the full-text tooltip (3.89 review).
+                                ListCell::text(c.account.clone()),
+                                ListCell::text(c.description.clone()),
                                 div()
-                                    .w_full()
-                                    .min_w_0()
-                                    .overflow_hidden()
-                                    .text_ellipsis()
-                                    .child(c.account.clone())
-                                    .into_any_element(),
-                                div()
-                                    .w_full()
-                                    .min_w_0()
-                                    .overflow_hidden()
-                                    .text_ellipsis()
-                                    .child(c.description.clone())
-                                    .into_any_element(),
-                                div().child(flow::money(c.amount_cents)).into_any_element(),
+                                    .child(flow::money(c.amount_cents))
+                                    .into_any_element()
+                                    .into(),
                             ]
                         }
                         DataItem::Group { id, .. } => {
@@ -235,7 +229,7 @@ impl Shell {
                                 .find(|(t, _)| *t == *id)
                                 .map(|(_, a)| *a)
                                 .unwrap_or(0);
-                            vec![div().child(flow::money(amount)).into_any_element()]
+                            vec![div().child(flow::money(amount)).into_any_element().into()]
                         }
                     }
                 })

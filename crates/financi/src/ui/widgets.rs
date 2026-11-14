@@ -175,6 +175,68 @@ impl DataCol {
     }
 }
 
+/// One cell of a painted line (see [`DataList::cells`]): an element, plus
+/// the full text a *text* cell carries so the list itself — not the page —
+/// attaches the ellipsis tooltip (ui-conventions *Components*: a `Flex`
+/// text column "ellipsizes with a tooltip holding the full text").
+pub(super) struct ListCell {
+    el: AnyElement,
+    tooltip: Option<SharedString>,
+}
+
+impl ListCell {
+    /// A text cell: ellipsized to fit its column, with the list wrapping
+    /// it in a tooltip holding the full text. Text in a fixed column can
+    /// clip too, so every text cell carries its tooltip, not just the
+    /// `Flex` column's.
+    pub fn text(text: impl Into<SharedString>) -> Self {
+        let text = text.into();
+        Self {
+            el: div()
+                .w_full()
+                .min_w_0()
+                .overflow_hidden()
+                .text_ellipsis()
+                .child(text.clone())
+                .into_any_element(),
+            tooltip: Some(text),
+        }
+    }
+}
+
+impl From<AnyElement> for ListCell {
+    /// A non-text cell (a date, an amount, a button): painted as-is.
+    fn from(el: AnyElement) -> Self {
+        Self { el, tooltip: None }
+    }
+}
+
+/// Wrap one painted [`ListCell`] in its column's width and alignment, and
+/// a text cell additionally in a tooltip holding the full text (through
+/// gpui's own tooltip, like [`filter_tip`]). `line` is the line's test
+/// selector, which makes the tooltip trigger's element id unique, and `j`
+/// the column index.
+fn list_cell(col: &DataCol, cell: ListCell, line: &str, j: usize) -> AnyElement {
+    let wrap = col_cell(col, div().flex_shrink_0());
+    let Some(text) = cell.tooltip else {
+        return wrap.child(cell.el).into_any_element();
+    };
+    let sel = format!("financi:tooltip:{text}");
+    wrap.id(SharedString::from(format!("financi-cell-{line}-c{j}")))
+        .tooltip(move |window, cx| {
+            let text = text.clone();
+            let sel = sel.clone();
+            Tooltip::element(move |_, _| {
+                let text = text.clone();
+                let sel = sel.clone();
+                div().debug_selector(move || sel).child(text)
+            })
+            .build(window, cx)
+        })
+        .child(cell.el)
+        .into_any_element()
+}
+
 /// Wrap `el` in its column's width and alignment.
 fn col_cell(col: &DataCol, el: Div) -> Div {
     let el = match col.width {
@@ -219,9 +281,10 @@ pub(super) enum DataItem {
     },
 }
 
-/// Paints one line's cells (see [`DataList::cells`]) or actions (see
-/// [`DataList::actions`]).
-type CellsFn<V> = Rc<dyn Fn(&V, &DataItem, &mut Window, &mut Context<V>) -> Vec<AnyElement>>;
+/// Paints one line's cells (see [`DataList::cells`]).
+type CellsFn<V> = Rc<dyn Fn(&V, &DataItem, &mut Window, &mut Context<V>) -> Vec<ListCell>>;
+/// Paints one line's actions (see [`DataList::actions`]).
+type ActionsFn<V> = Rc<dyn Fn(&V, &DataItem, &mut Window, &mut Context<V>) -> Vec<AnyElement>>;
 /// A group header's chevron callback (see [`DataList::toggle`]).
 type ToggleFn<V> = Rc<dyn Fn(&mut V, i64, &mut Window, &mut Context<V>)>;
 /// A heading click's sort callback (see [`DataList::sort`]).
@@ -237,12 +300,14 @@ pub(super) enum SortState {
 }
 
 /// The shared list (ui-conventions *Lists*): a 32 px heading row over
-/// virtualised 40 px rows with dividers, `list_hover` on hover and a
-/// hover-revealed actions column, plus 36 px collapsible group headers on
-/// `muted`. The page holds no row styling of its own: it flattens its
-/// data into [`DataItem`]s and paints each line's cells through
-/// [`DataList::cells`]. Host view `V` is the page's state entity — the
-/// same pattern `v_virtual_list` uses.
+/// virtualised 40 px `text_sm` rows with dividers, `list_hover` on hover
+/// and a hover-revealed actions column, plus 36 px collapsible group
+/// headers on `muted`. Every line pads `px_3`, and text cells built with
+/// [`ListCell::text`] carry the spec's full-text tooltip, attached by the
+/// list itself so pages never wire tooltips up. The page holds no row
+/// styling of its own: it flattens its data into [`DataItem`]s and paints
+/// each line's cells through [`DataList::cells`]. Host view `V` is the
+/// page's state entity — the same pattern `v_virtual_list` uses.
 #[derive(IntoElement)]
 pub(super) struct DataList<V: Render> {
     host: Entity<V>,
@@ -251,7 +316,7 @@ pub(super) struct DataList<V: Render> {
     sizes: Rc<Vec<Size<Pixels>>>,
     cells: CellsFn<V>,
     actions_width: Option<f32>,
-    actions: Option<CellsFn<V>>,
+    actions: Option<ActionsFn<V>>,
     on_toggle: Option<ToggleFn<V>>,
     sort: Option<SortFn<V>>,
     sorted_by: Option<(&'static str, SortState)>,
@@ -295,13 +360,14 @@ impl<V: Render> DataList<V> {
     }
 
     /// Paint every line through `f`. For a [`DataItem::Row`] return one
-    /// element per column, in column order; for a
-    /// [`DataItem::Group`] return the trailing cells only (a sum, say),
-    /// which line up with the list's last `n` columns. Each element is
-    /// wrapped in its column's width and alignment.
+    /// cell per column, in column order; for a [`DataItem::Group`] return
+    /// the trailing cells only (a sum, say), which line up with the
+    /// list's last `n` columns. Each cell is wrapped in its column's
+    /// width and alignment; a [`ListCell::text`] cell additionally gets
+    /// the tooltip holding its full text.
     pub fn cells(
         mut self,
-        f: impl Fn(&V, &DataItem, &mut Window, &mut Context<V>) -> Vec<AnyElement> + 'static,
+        f: impl Fn(&V, &DataItem, &mut Window, &mut Context<V>) -> Vec<ListCell> + 'static,
     ) -> Self {
         self.cells = Rc::new(f);
         self
@@ -437,7 +503,7 @@ impl<V: Render> RenderOnce for DataList<V> {
         let heading = h_flex()
             .w_full()
             .h(px(LIST_HEADING_HEIGHT))
-            .px_4()
+            .px_3()
             .gap_4()
             .items_end()
             .text_sm()
@@ -483,10 +549,11 @@ impl<V: Render> RenderOnce for DataList<V> {
                             let mut row = div()
                                 .w_full()
                                 .h(px(LIST_ROW_HEIGHT))
-                                .px_4()
+                                .px_3()
                                 .gap_4()
                                 .flex()
                                 .items_center()
+                                .text_sm()
                                 .when(!is_last, |r| r.border_b_1().border_color(border))
                                 .hover(move |s| if selected { s } else { s.bg(list_hover) })
                                 .when(selected, |s| s.bg(list_active))
@@ -495,12 +562,8 @@ impl<V: Render> RenderOnce for DataList<V> {
                                     let s = selector.clone();
                                     move || s.clone()
                                 })
-                                .children(painted.into_iter().enumerate().map(|(j, el)| {
-                                    col_cell(
-                                        &columns[j.min(columns.len() - 1)],
-                                        div().flex_shrink_0(),
-                                    )
-                                    .child(el)
+                                .children(painted.into_iter().enumerate().map(|(j, cell)| {
+                                    list_cell(&columns[j.min(columns.len() - 1)], cell, selector, j)
                                 }));
                             if let (Some(f), Some(w)) = (&actions, actions_width) {
                                 let painted = f(view, item, window, cx);
@@ -530,10 +593,11 @@ impl<V: Render> RenderOnce for DataList<V> {
                             let mut head = div()
                                 .w_full()
                                 .h(px(LIST_GROUP_HEIGHT))
-                                .px_4()
+                                .px_3()
                                 .gap_4()
                                 .flex()
                                 .items_center()
+                                .text_sm()
                                 .bg(muted_bg)
                                 .when(!is_last, |r| r.border_b_1().border_color(border))
                                 .group(group.as_str())
@@ -574,9 +638,7 @@ impl<V: Render> RenderOnce for DataList<V> {
                                         .child(name.clone()),
                                 )
                                 .when_some(count.clone(), |el, c| {
-                                    el.child(
-                                        div().flex_none().text_sm().text_color(muted_fg).child(c),
-                                    )
+                                    el.child(div().flex_none().text_color(muted_fg).child(c))
                                 });
                             // Trailing cells reuse the last columns'
                             // wrappers, so a group's sums line up with
@@ -586,10 +648,9 @@ impl<V: Render> RenderOnce for DataList<V> {
                             if k < n {
                                 head = head.child(div().flex_1().min_w_0());
                             }
-                            for (j, el) in painted.into_iter().enumerate() {
-                                head = head.child(
-                                    col_cell(&columns[n - k + j], div().flex_shrink_0()).child(el),
-                                );
+                            for (j, cell) in painted.into_iter().enumerate() {
+                                head =
+                                    head.child(list_cell(&columns[n - k + j], cell, selector, j));
                             }
                             if let (Some(f), Some(w)) = (&actions, actions_width) {
                                 let painted = f(view, item, window, cx);
