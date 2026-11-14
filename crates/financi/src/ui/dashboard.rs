@@ -1562,7 +1562,7 @@ impl Shell {
                                     self.no_matches_panel(cx)
                                 } else {
                                     DataTable::new(&self.dashboard.table)
-                                        .stripe(true)
+                                        .stripe(false)
                                         .into_any_element()
                                 }),
                         )

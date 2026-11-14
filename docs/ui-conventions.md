@@ -108,8 +108,8 @@ category tree and lists.
 
 ## 3. Components
 
-*(Built in task 3.89 in `crates/financi/src/ui/widgets.rs`; until then,
-match this by hand.)* Pages compose these; don't restyle them per page.
+Pages compose these; don't restyle them per page. They live in
+`crates/financi/src/ui/widgets.rs`.
 
 - **`Panel`** — `border_1` `border`, `rounded(theme.radius)`, no fill
   (background `background`). Optional title row: `text_sm`
