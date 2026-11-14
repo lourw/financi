@@ -892,6 +892,48 @@ the UI; tests cover 2.1–2.9.
 
     Update the *Categories* row of `ui-conventions.md`.
 
+- [x] **3.56 Dashboard filters apply at once.** Changing a dashboard
+  filter (date range, accounts, search, the Options toggles, a legend /
+  summary click) takes effect "really, really slowly" (user report,
+  2026-11-11). Rewritten 2026-11-11 for the page-entity architecture:
+  3.65 already redraws the control at once, 3.77 adds keyed latest-wins
+  DB jobs and timing logs, and 3.78 adds `Catalog` and `Domain` events.
+  This task gives the dashboard its own loader.
+  - **One filter value.** Today the filter is spread over separate
+    fields, partly duplicated (`include_transfers` on `Shell` and in
+    `view_filter`; accounts in `excluded_accounts` and
+    `view_filter.account_ids`), and `refresh` assembles a `TxTableFilter`
+    each time. Put one `DashboardFilter` struct (`Clone + PartialEq +
+    Default`-ish: date range, accounts, search, the three toggles, category
+    selection, month, drill-down, sort) on the dashboard state.
+  - **A dashboard-only loader.** Every filter, selection and sort change
+    runs one keyed read job (`call_keyed("dashboard", …)` on the reader,
+    3.77) for the filtered transactions, chart rows, monthly summary and
+    count only, using 3.88's shared `dashboard()` query. A burst of
+    changes runs at most the in-flight job plus the newest; a superseded
+    result is dropped.
+  - **Search waits for a pause:** debounce 200 ms (a `Timer` task
+    replaced on each keystroke); Enter applies at once. Other controls
+    apply at once.
+  - **Stale selection:** when a result shows the selected category is
+    gone, correct the selection and start a new load, and return without
+    applying the stale rows (today `refresh` calls itself from its own
+    continuation and then applies the stale rows anyway).
+  - A dashboard-only result updates only the table, chart and summary,
+    never the history table, queue pickers, rule lists or category
+    pickers.
+  - Measure with 3.77's `FINANCI_TIMINGS=1` on the dev seed and a
+    throwaway local 10 000-row / 300-rule seed (don't commit it); numbers
+    in the commit message. Target: a filter change shows its result
+    within 100 ms on a year of data (the timed test is written in 3.55).
+  - Tests:
+    - a filter change runs only the dashboard job (query-count hook);
+    - five rapid search keystrokes run one job, after the debounce;
+    - a burst of three filter changes ends with the last filter's rows,
+      and a late superseded result doesn't overwrite them;
+    - an import still reloads every page;
+    - the existing filter, sort and selection tests pass.
+
 - [x] **3.61 The import preview names the institution.** From `plan.md`
   → *Make account selection on import clearer* (never made a task; user
   confirmed 2026-11-11). The account picker already lists "Institution ·
