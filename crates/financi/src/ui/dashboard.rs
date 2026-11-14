@@ -1577,6 +1577,10 @@ impl Shell {
     /// chart drill-down. `set_value` doesn't emit `InputEvent::Change`, so
     /// `self.dashboard.filter.search` is cleared here too before the single re-query.
     pub(super) fn clear_filters(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // A keystroke within the last 200 ms left a debounced search pending
+        // that would re-apply the dead query right after this reset, so drop
+        // it with the text.
+        self.dashboard.search_task = None;
         self.dashboard
             .search_input
             .update(cx, |input, cx| input.set_value("", window, cx));

@@ -1866,6 +1866,69 @@ fn enter_applies_the_search_at_once(cx: &mut TestAppContext) {
     );
 }
 
+/// 3.56: "Clear filters" inside the search's 200 ms debounce window drops
+/// the pending task — the cleared box must not be undone by the dead term's
+/// query firing after the click.
+#[gpui::test]
+fn clearing_filters_cancels_the_pending_search(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_table_filter_rows);
+    wait_until(cx, "three visible rows", |cx| {
+        shell.read(cx).dashboard.row_count == 3
+    });
+    let jobs_before = cx.update(|cx| {
+        let s = shell.read(cx);
+        s.db.query_log().clear();
+        s.db.job_count()
+    });
+    // One keystroke: the debounced query is pending, nothing has run.
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.dashboard.search_input.update(cx, |i, cx| {
+                i.set_value("cafe", window, cx);
+                cx.emit(InputEvent::Change);
+            });
+        });
+    });
+    // Inside the window — 150 ms after the keystroke — Clear wins.
+    cx.executor().advance_clock(Duration::from_millis(150));
+    cx.run_until_parked();
+    assert_eq!(
+        cx.update(|cx| shell.read(cx).db.job_count()),
+        jobs_before,
+        "the debounce has not expired yet"
+    );
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| s.clear_filters(window, cx));
+    });
+    // Past the window: the dropped task fires nothing, and only Clear's
+    // own re-query runs.
+    cx.executor().advance_clock(Duration::from_millis(500));
+    cx.run_until_parked();
+    wait_until(cx, "the clear's re-query ran", |cx| {
+        shell
+            .read(cx)
+            .db
+            .query_log()
+            .names()
+            .iter()
+            .any(|n| n == "dashboard")
+    });
+    cx.update(|cx| {
+        let s = shell.read(cx);
+        assert_eq!(
+            s.db.job_count(),
+            jobs_before + 1,
+            "Clear runs its own one re-query; the cancelled debounce must add none"
+        );
+        assert!(
+            s.dashboard.search_input.read(cx).value().is_empty(),
+            "the search box stays empty"
+        );
+        assert!(s.dashboard.filter.search.is_empty());
+        assert_eq!(s.dashboard.row_count, 3, "the rows stay unfiltered");
+    });
+}
+
 #[gpui::test]
 fn uncategorized_only_toggle_filters_the_table(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, seed_table_filter_rows);
