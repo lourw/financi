@@ -6,33 +6,6 @@ Do these in the order listed (`docs/tasks.md` → *Picking the next task*). Each
 
 Steps 1–15 of `docs/tasks/gpui.md` → *GPUI best practices*, task by task.
 
-- [x] **3.78 A shared data model that announces changes.** (Architecture,
-  user decision 2026-11-11.) Today one `refresh` re-queries every page
-  (a 13-part tuple) and ~30 call sites decide when to call it; each new
-  view (v1.1–v1.3) would have to be added to every path. Invert it:
-  writers say what they changed, readers say what they depend on.
-  - `enum Domain { Accounts, Categories, Rules, Transactions, Imports,
-    Transfers, Settings }` as a bitset type `Domains`.
-  - Each mutation's UI handler reports the domains it changed, from one
-    table in code (doc comment on `Domain`): rule add/edit/delete/move →
-    `Rules | Transactions`; set category, hide, unhide →
-    `Transactions`; category add/rename/move/delete → `Categories |
-    Rules | Transactions`; pair/unpair/review → `Transfers |
-    Transactions`; import/undo/restore → all.
-  - A `Catalog` entity (`impl EventEmitter<DataChanged>`) owns the shared
-    data: accounts, the category tree, `child_choices` and their `Names`
-    (built once, shared via `Rc`/`SharedString`), rules, rule-use stats,
-    sidebar counts. `Catalog::changed(domains, cx)` reloads only the
-    parts tied to those domains (keyed jobs, 3.77), then emits
-    `DataChanged(domains)`.
-  - Pages still on `Shell` react through one mapping `Shell` keeps until
-    they're extracted (3.79–3.83): each page section declares the
-    domains it depends on and reloads only on a matching event. Delete
-    the full `refresh` except for import/undo/restore.
-  - Tests: a rule edit reloads rules, rule stats and the dashboard but
-    not imports history or transfer reviews (query-count hook); an import
-    reloads everything; a page switch issues no query.
-
 - [ ] **3.56 Dashboard filters apply at once.** Changing a dashboard
   filter (date range, accounts, search, the Options toggles, a legend /
   summary click) takes effect "really, really slowly" (user report,
