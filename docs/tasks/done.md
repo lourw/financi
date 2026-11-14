@@ -1420,6 +1420,29 @@ the UI; tests cover 2.1–2.9.
   - Tests: all existing view tests pass unchanged; one test checks the
     three queries agree on totals for the same filter.
 
+- [x] **3.89 Shared UI components.** (Design system, user decision
+  2026-11-11.) Build the components `docs/ui-conventions.md` →
+  *Components* describes, in `crates/financi/src/ui/widgets.rs`, so pages
+  stop being styled by hand: `Panel`, `PageHeader`, `DataList` (heading
+  row + virtual list; typed columns `Fixed(px) | Flex` with alignment
+  shared by heading and rows; 40 px rows with dividers and hover; 36 px
+  group headers; a hover-revealed actions column whose width is
+  reserved), `FilterRow`, `InlineForm`, `Swatch`, `TypeTag` (on
+  gpui-component's outline `Tag`), `control_slot`, `row_action_button`.
+  - Each is a `RenderOnce` (or builder fn) with no page state, tested on
+    its own in a headless window: heading and column left edges match,
+    rows are the token heights, actions don't shift the row, a long label
+    ellipsizes.
+  - Prove them on the smallest pages: move the Transfers list and the
+    Imports page header and history onto them, and set the DataTables to
+    dividers instead of stripes (`stripe(false)`, row borders). The
+    invisible `.opacity(0.0)` spacer buttons that align headings today go
+    away where a `DataList` replaces them.
+  - Later restyle tasks (3.34, 3.49, 3.51, 3.52, 3.58) build on these;
+    don't restyle those pages here.
+  - Remove the "(built in task 3.89; until then, match this by hand)"
+    note from `docs/ui-conventions.md` → *Components*.
+
 - [x] **3.90 Build and tooling.** (Code review, 2026-11-11.) A `chore:`
   filler for any free slot.
   - Drop `spikes/*` from the workspace `members` (keep the directory, as
