@@ -6,6 +6,7 @@ use super::dashboard_filters::{
 };
 use super::*;
 use crate::ui::widgets::*;
+use financi_db::QueryLog;
 
 /// Callbacks from a transaction row's context menu back to the [`Shell`]
 /// (2.9): set a category, hide/unhide, and apply the post-edit rule offer.
@@ -485,46 +486,208 @@ pub(super) struct SummaryRowView {
     pub(super) cells: Vec<i64>,
 }
 
-/// This page's state (3.74): the filters, the chart and summary panels'
-/// selections, the date-range pickers and the transaction table.
-pub(super) struct DashboardState {
+/// 3.56: the dashboard's whole filter state in one comparable value —
+/// every input its queries take, from the date range down to the sort.
+/// A change to any filter control updates this and starts the dashboard's
+/// one keyed load; the table, chart and summary are its three results.
+/// `PartialEq` is what makes "did anything actually change?" one check.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(super) struct DashboardFilter {
+    /// The saved date range shown by the preset picker.
+    pub(super) date_range: DateRange,
     /// The accounts the user unchecked in the dropdown (empty = all).
     pub(super) excluded_accounts: Vec<i64>,
+    /// The search term. Empty means "no narrowing".
+    pub(super) search: String,
     /// The "Include transfers" flag persisted as `ui.include_transfers`.
     pub(super) include_transfers: bool,
-    pub(super) include_transfers_task: Option<Task<()>>,
-    /// 3.65: true until the first refresh has loaded the saved settings
-    /// (`ui.date_range`, `ui.include_transfers`) inside its own query; the
-    /// first `refresh` consumes it, so later refreshes skip the reads.
-    pub(super) startup_settings: bool,
-    /// The search term and the table-only toggles and sort. Empty / false /
-    /// the default sort mean "no narrowing". (The category and month the
-    /// query also supports are chosen from the chart and legend in 3.5/3.6.)
-    pub(super) search_input: Entity<InputState>,
-    pub(super) search: String,
+    /// The "Uncategorized only" and "Show hidden" table toggles.
     pub(super) uncategorized_only: bool,
     pub(super) show_hidden: bool,
-    pub(super) tx_sort: TxSort,
-    /// The chart and legend drill into (`None` = the parent level), the one
-    /// legend selection that drives the table's category filter, and the
-    /// `spend_by_category` rows behind the chart and legend.
-    pub(super) chart_parent: Option<i64>,
+    /// The legend selection (3.5) and the summary-cell month (3.6) —
+    /// the dashboard's category and month narrowing — and the chart and
+    /// legend's drill-down level (`None` = the parent level).
     pub(super) legend_selection: Option<LegendSelection>,
+    pub(super) summary_month: Option<String>,
+    pub(super) chart_parent: Option<i64>,
+    /// The table's column sort (3.4).
+    pub(super) tx_sort: TxSort,
+}
+
+impl DashboardFilter {
+    /// The shared [`ViewFilter`] for a run of the queries: the range's
+    /// dates as of `today`, the accounts the checkboxes still include,
+    /// and the transfers flag. An empty exclusion list means all
+    /// accounts — an empty `account_ids` too.
+    fn view_filter(&self, today: NaiveDate, account_ids: Vec<i64>) -> ViewFilter {
+        let (from, to) = self.date_range.range(today);
+        ViewFilter {
+            from,
+            to,
+            account_ids: if self.excluded_accounts.is_empty() {
+                Vec::new()
+            } else {
+                account_ids
+            },
+            include_transfers: self.include_transfers,
+        }
+    }
+
+    /// The table's extra filters (3.4): search, the two toggles and the
+    /// sort, plus the legend selection (3.5) — the `Uncategorized` row
+    /// rides `uncategorized_only` — and the summary-cell month (3.6).
+    fn table_filter(&self) -> TxTableFilter {
+        TxTableFilter {
+            category_id: match self.legend_selection {
+                Some(LegendSelection::Category(id)) => Some(id),
+                Some(LegendSelection::Uncategorized) | None => None,
+            },
+            month: self.summary_month.clone(),
+            search: if self.search.is_empty() {
+                None
+            } else {
+                Some(self.search.clone())
+            },
+            uncategorized_only: self.uncategorized_only
+                || matches!(self.legend_selection, Some(LegendSelection::Uncategorized)),
+            show_hidden: self.show_hidden,
+            sort: self.tx_sort,
+        }
+    }
+}
+
+/// The result of the dashboard's one load (3.56): everything the page
+/// renders from the database, and the [`ViewFilter`] the queries actually
+/// ran with — the shell stamps it as the record of the last applied
+/// query. `settings` carries the persisted pair the launch load reads
+/// inside its own query (3.65), so the first frame shows the saved view.
+pub(super) struct DashboardData {
+    pub(super) rows: Vec<TransactionRow>,
+    pub(super) chart: Vec<CategorySpend>,
+    pub(super) summary: MonthlySummary,
+    pub(super) view_filter: ViewFilter,
+    pub(super) settings: Option<(DateRange, bool)>,
+}
+
+/// The dashboard's job body (3.56): resolve the checked accounts against
+/// the account list, then run the filtered table query and the one
+/// category/summary aggregation — or, drilled into a parent, the child
+/// chart and the grid alone. `startup` reads the two persisted view
+/// settings in the same trip and queries *with* them (3.65).
+///
+/// `accounts` is the shell's mirror when a filter control changed (the
+/// list is on screen already); `None` makes the job read the list itself,
+/// which is what the launch and the after-a-write reloads need
+/// so account changes resolve in the same round trip (3.17).
+pub(super) fn load_dashboard(
+    c: &mut Connection,
+    log: &QueryLog,
+    mut filter: DashboardFilter,
+    accounts: Option<Vec<Account>>,
+    startup: bool,
+) -> Result<DashboardData, DbError> {
+    let settings = if startup {
+        log.record("settings::date_range");
+        let range = settings::date_range(c)?;
+        log.record("settings::include_transfers");
+        let transfers = settings::include_transfers(c)?;
+        // The queries below run with the saved values, so the first
+        // frame is already the saved view.
+        filter.date_range = range;
+        filter.include_transfers = transfers;
+        Some((range, transfers))
+    } else {
+        None
+    };
+    let fetched;
+    let accounts: &[Account] = match &accounts {
+        Some(list) => list,
+        None => {
+            log.record("list_accounts");
+            fetched = list_accounts(c)?;
+            &fetched
+        }
+    };
+    let ids: Vec<i64> = accounts
+        .iter()
+        .filter(|a| !filter.excluded_accounts.contains(&a.id))
+        .map(|a| a.id)
+        .collect();
+    // "Nothing checked" with accounts present: empty results, no queries.
+    if ids.is_empty() && !accounts.is_empty() {
+        let view_filter = filter.view_filter(Shell::today(), ids);
+        return Ok(DashboardData {
+            rows: Vec::new(),
+            chart: Vec::new(),
+            summary: MonthlySummary {
+                months: Vec::new(),
+                rows: Vec::new(),
+            },
+            view_filter,
+            settings,
+        });
+    }
+    let view_filter = filter.view_filter(Shell::today(), ids);
+    let table_filter = filter.table_filter();
+    log.record("list_transactions_filtered");
+    let rows = list_transactions_filtered(c, &view_filter, &table_filter)?;
+    let (chart, summary) = match filter.chart_parent {
+        None => {
+            // Both aggregations in one pass (3.88).
+            log.record("dashboard");
+            financi_db::dashboard(c, &view_filter)?
+        }
+        Some(parent) => {
+            log.record("spend_by_category");
+            let chart = spend_by_category(c, &view_filter, Some(parent))?;
+            log.record("monthly_summary");
+            let summary = monthly_summary(c, &view_filter)?;
+            (chart, summary)
+        }
+    };
+    Ok(DashboardData {
+        rows,
+        chart,
+        summary,
+        view_filter,
+        settings,
+    })
+}
+
+/// This page's state (3.74): the filter, the chart and summary panels'
+/// data, the date-range pickers and the transaction table.
+pub(super) struct DashboardState {
+    /// 3.56: the whole filter state, one comparable value (see
+    /// [`DashboardFilter`]).
+    pub(super) filter: DashboardFilter,
+    /// The write-behind task for `ui.include_transfers`.
+    pub(super) include_transfers_task: Option<Task<()>>,
+    /// 3.65: true until the first dashboard load has loaded the saved
+    /// settings (`ui.date_range`, `ui.include_transfers`) inside its own
+    /// query; the first load consumes it, so later ones skip the reads.
+    pub(super) startup_settings: bool,
+    /// The search box.
+    pub(super) search_input: Entity<InputState>,
+    /// 3.56: the pending debounced search. Each keystroke replaces it, so
+    /// a burst of typing runs one query after the last key; Enter and the
+    /// other controls apply at once (dropping this).
+    pub(super) search_task: Option<Task<()>>,
+    /// The rows behind the chart and legend (top level or the drilled-in
+    /// parent's children).
     pub(super) chart_rows: Vec<CategorySpend>,
-    /// The panel, the parents whose child rows are expanded, and the month
-    /// chosen from a summary cell (fed into the table's `month` filter; the
-    /// `Total` column and "no month narrowing" are both `None`).
+    /// The summary panel and the parents whose child rows are expanded.
     pub(super) summary: MonthlySummary,
     pub(super) expanded_parents: HashSet<i64>,
-    pub(super) summary_month: Option<String>,
     /// One horizontal scroll handle for the whole month strip of the
     /// dashboard summary (3.30): the header's month row and every row's
     /// month cells track it, so they scroll together, while the name
     /// column and the `Total` column stay pinned.
     pub(super) summary_scroll: ScrollHandle,
-    /// The saved date range and the picker entities.
-    pub(super) date_range: DateRange,
+    /// The [`ViewFilter`] the newest applied load ran with — the record
+    /// of what produced the rows on screen (3.56). The pickers and the
+    /// checkbox handlers keep it mirrored so it can be read directly.
     pub(super) view_filter: ViewFilter,
+    /// The date-range picker entities.
     pub(super) date_preset_select: Entity<SelectState<Names>>,
     pub(super) date_from_picker: Entity<DatePickerState>,
     pub(super) date_to_picker: Entity<DatePickerState>,
@@ -670,46 +833,53 @@ impl DashboardState {
                 }
             },
         );
-        // The dashboard search box filters the table on every keystroke.
+        // The dashboard search box (3.56): typing debounces 200 ms — each
+        // keystroke replaces the pending task, so a burst of keys runs
+        // one query after the last one. Enter applies at once.
         let search_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("Search transactions"));
         let search_sub = cx.subscribe_in(
             &search_input,
             window,
-            |this, _, ev: &InputEvent, window, cx| {
-                if matches!(ev, InputEvent::Change) {
-                    let value = this
-                        .dashboard
-                        .search_input
-                        .read(cx)
-                        .value()
-                        .trim()
-                        .to_string();
-                    this.apply_search(&value, window, cx);
+            |this, input, ev: &InputEvent, window, cx| {
+                match ev {
+                    InputEvent::Change => {
+                        let value = input.read(cx).value().trim().to_string();
+                        this.dashboard.search_task =
+                            Some(cx.spawn_in(window, async move |this, cx| {
+                                cx.background_executor()
+                                    .timer(std::time::Duration::from_millis(200))
+                                    .await;
+                                let _ = this.update_in(cx, move |this, window, cx| {
+                                    this.dashboard.search_task = None;
+                                    this.apply_search(&value, window, cx);
+                                });
+                            }));
+                    }
+                    InputEvent::PressEnter { .. } => {
+                        // Enter means "now": cancel the pending debounce
+                        // and apply the current text.
+                        this.dashboard.search_task = None;
+                        let value = input.read(cx).value().trim().to_string();
+                        this.apply_search(&value, window, cx);
+                    }
+                    _ => {}
                 }
             },
         );
         Self {
-            excluded_accounts: Vec::new(),
-            include_transfers: false,
+            filter: DashboardFilter::default(),
             include_transfers_task: None,
             startup_settings: true,
             search_input,
-            search: String::new(),
-            uncategorized_only: false,
-            show_hidden: false,
-            tx_sort: TxSort::default(),
-            chart_parent: None,
-            legend_selection: None,
+            search_task: None,
             chart_rows: Vec::new(),
             summary: MonthlySummary {
                 months: Vec::new(),
                 rows: Vec::new(),
             },
             expanded_parents: HashSet::new(),
-            summary_month: None,
             summary_scroll: ScrollHandle::new(),
-            date_range: DateRange::default(),
             view_filter: ViewFilter::default(),
             date_preset_select,
             date_from_picker,
@@ -725,89 +895,91 @@ impl DashboardState {
 }
 
 impl Shell {
-    /// Apply the dashboard's part of a refresh result (3.74), last: the
-    /// table's delegate reads the child choices and card-payment category
-    /// `sync_category_choices` just set.
-    pub(super) fn apply_dashboard(
+    /// Apply the dashboard's one load result (3.56), last: the table's
+    /// delegate reads the child choices and card-payment category
+    /// `sync_category_choices` just set. A selection the new data no
+    /// longer supports is corrected and the load restarted — and the
+    /// half-matched rows are *not* applied (3.56: the screen never shows
+    /// rows queried under a filter the controls no longer hold).
+    pub(super) fn apply_dashboard_rows(
         &mut self,
-        rows: Vec<TransactionRow>,
-        chart_rows: Vec<CategorySpend>,
-        summary: MonthlySummary,
-        sidebar: (i64, i64),
+        data: DashboardData,
         window: &mut Window,
         cx: &mut Context<Shell>,
     ) {
-        self.dashboard.row_count = rows.len();
-        self.dashboard.chart_rows = chart_rows;
-        // A range change shows new months: park the month strip (3.30) at
-        // its right end so the most recent month sits beside the pinned
-        // `Total` column. The huge negative offset clamps to the true
-        // maximum when the strip next paints.
-        if self.dashboard.summary.months != summary.months {
-            self.dashboard
-                .summary_scroll
-                .set_offset(point(px(-1_000_000.), px(0.)));
-        }
-        self.dashboard.summary = summary;
         // Revalidate the legend state against the rows we can actually
-        // show: a date/accounts change can empty the chart out from under a
-        // selection or a drill-down, and the table filter must not keep
+        // show: a date/accounts change can empty the chart out from under
+        // a selection or a drill-down, and the table filter must not keep
         // narrowing by a category that is no longer there.
         let mut stale = false;
-        let drilled = self.dashboard.chart_parent;
-        if drilled.is_some() && self.dashboard.chart_rows.is_empty() {
-            self.dashboard.chart_parent = None;
+        let drilled = self.dashboard.filter.chart_parent;
+        if drilled.is_some() && data.chart.is_empty() {
+            self.dashboard.filter.chart_parent = None;
             stale = true;
         }
-        let selection_gone = match self.dashboard.legend_selection {
+        let selection_gone = match self.dashboard.filter.legend_selection {
             Some(LegendSelection::Category(id)) => {
                 // While drilled, the selected parent itself is not among
                 // the child rows — it stays.
-                drilled != Some(id) && !self.dashboard.chart_rows.iter().any(|r| r.id == Some(id))
+                drilled != Some(id) && !data.chart.iter().any(|r| r.id == Some(id))
             }
             Some(LegendSelection::Uncategorized) => {
-                self.dashboard.chart_parent.is_none()
-                    && !self.dashboard.chart_rows.iter().any(|r| r.id.is_none())
+                self.dashboard.filter.chart_parent.is_none()
+                    && !data.chart.iter().any(|r| r.id.is_none())
             }
             None => false,
         };
         if selection_gone {
-            self.dashboard.legend_selection = None;
+            self.dashboard.filter.legend_selection = None;
             stale = true;
         }
         // The month selection (3.6) goes the same way when the grid no
         // longer contains that month.
-        if self.dashboard.summary_month.is_some()
-            && !self
-                .dashboard
+        if self.dashboard.filter.summary_month.is_some()
+            && !data
                 .summary
                 .months
                 .iter()
-                .any(|m| Some(m.as_str()) == self.dashboard.summary_month.as_deref())
+                .any(|m| Some(m.as_str()) == self.dashboard.filter.summary_month.as_deref())
         {
-            self.dashboard.summary_month = None;
+            self.dashboard.filter.summary_month = None;
             stale = true;
         }
         if stale {
             // Re-query with the corrected filter so the table, chart and
-            // state agree again.
-            self.changed_deferred(Domains::TX, window, cx);
+            // state agree again. The half-matched rows are dropped: the
+            // new load's result takes their place.
+            self.start_dashboard(None, false, window, cx);
+            return;
         }
-        self.total_visible = sidebar.0;
-        self.uncategorized_visible = sidebar.1;
-        // The rule offer follows a row the user just edited; a refresh
+        self.dashboard.row_count = data.rows.len();
+        self.dashboard.chart_rows = data.chart;
+        // A range change shows new months: park the month strip (3.30) at
+        // its right end so the most recent month sits beside the pinned
+        // `Total` column. The huge negative offset clamps to the true
+        // maximum when the strip next paints.
+        if self.dashboard.summary.months != data.summary.months {
+            self.dashboard
+                .summary_scroll
+                .set_offset(point(px(-1_000_000.), px(0.)));
+        }
+        self.dashboard.summary = data.summary;
+        // Record the filter the applied rows were queried with (3.56).
+        self.dashboard.view_filter = data.view_filter;
+        // The rule offer follows a row the user just edited; a load
         // that drops the row (hidden, filtered out, deleted) drops the
         // offer with it.
         if self
             .dashboard
             .rule_offer
-            .is_some_and(|(id, _)| !rows.iter().any(|r| r.id == id))
+            .is_some_and(|(id, _)| !data.rows.iter().any(|r| r.id == id))
         {
             self.dashboard.rule_offer = None;
         }
+        let rows = data.rows;
         let child_choices = self.child_choices.clone();
         let rule_offer = self.dashboard.rule_offer.map(|(id, _)| id);
-        let sort = self.dashboard.tx_sort;
+        let sort = self.dashboard.filter.tx_sort;
         let rules = self.rules.clone();
         let card_payment = self.card_payment_category;
         self.dashboard.table.update(cx, |t, cx| {
@@ -839,7 +1011,7 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.dashboard.date_range = range;
+        self.dashboard.filter.date_range = range;
         let (from, to) = range.range(Self::today());
         self.dashboard.view_filter.from = from;
         self.dashboard.view_filter.to = to;
@@ -878,7 +1050,7 @@ impl Shell {
             return;
         }
         let db = self.db.clone();
-        let range = self.dashboard.date_range;
+        let range = self.dashboard.filter.date_range;
         self.dashboard.date_range_task = Some(cx.spawn(async move |_, _| {
             let _ = on_db(&db, move |c| settings::set_date_range(c, &range)).await;
         }));
@@ -911,7 +1083,7 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let (from, to) = match self.dashboard.date_range {
+        let (from, to) = match self.dashboard.filter.date_range {
             DateRange::Custom { from, to } => {
                 if is_end {
                     (from, day)
@@ -937,7 +1109,7 @@ impl Shell {
     fn selected_account_ids(&self) -> Vec<i64> {
         self.accounts
             .iter()
-            .filter(|a| !self.dashboard.excluded_accounts.contains(&a.id))
+            .filter(|a| !self.dashboard.filter.excluded_accounts.contains(&a.id))
             .map(|a| a.id)
             .collect()
     }
@@ -947,11 +1119,12 @@ impl Shell {
     /// collapses to empty, which reads as "all" to the chart queries; the
     /// table path handles that case itself in [`Self::refresh`].
     pub(super) fn sync_account_filter(&mut self) {
-        self.dashboard.view_filter.account_ids = if self.dashboard.excluded_accounts.is_empty() {
-            Vec::new()
-        } else {
-            self.selected_account_ids()
-        };
+        self.dashboard.view_filter.account_ids =
+            if self.dashboard.filter.excluded_accounts.is_empty() {
+                Vec::new()
+            } else {
+                self.selected_account_ids()
+            };
     }
 
     /// Check or uncheck one account in the filter dropdown; the table
@@ -963,9 +1136,9 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.dashboard.excluded_accounts.retain(|x| *x != id);
+        self.dashboard.filter.excluded_accounts.retain(|x| *x != id);
         if !on {
-            self.dashboard.excluded_accounts.push(id);
+            self.dashboard.filter.excluded_accounts.push(id);
         }
         self.sync_account_filter();
         // 3.65: the checkbox repaints with this click, not when the
@@ -986,10 +1159,10 @@ impl Shell {
         if self.writes_blocked.get() {
             return;
         }
-        if on == self.dashboard.include_transfers {
+        if on == self.dashboard.filter.include_transfers {
             return;
         }
-        self.dashboard.include_transfers = on;
+        self.dashboard.filter.include_transfers = on;
         self.dashboard.view_filter.include_transfers = on;
         let db = self.db.clone();
         self.dashboard.include_transfers_task = Some(cx.spawn(async move |_, _| {
@@ -1003,10 +1176,10 @@ impl Shell {
     /// The search box changed: re-run the table query with the new term.
     /// Empty text clears the search.
     pub(super) fn apply_search(&mut self, term: &str, window: &mut Window, cx: &mut Context<Self>) {
-        if term == self.dashboard.search {
+        if term == self.dashboard.filter.search {
             return;
         }
-        self.dashboard.search = term.to_string();
+        self.dashboard.filter.search = term.to_string();
         // 3.65: the box repaints with the keystroke, not with the answer.
         cx.notify();
         self.changed(Domains::SETTINGS, window, cx);
@@ -1022,18 +1195,18 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if on == self.dashboard.uncategorized_only {
+        if on == self.dashboard.filter.uncategorized_only {
             return;
         }
-        self.dashboard.uncategorized_only = on;
+        self.dashboard.filter.uncategorized_only = on;
         if on
             && matches!(
-                self.dashboard.legend_selection,
+                self.dashboard.filter.legend_selection,
                 Some(LegendSelection::Category(_))
             )
         {
-            self.dashboard.legend_selection = None;
-            self.dashboard.summary_month = None;
+            self.dashboard.filter.legend_selection = None;
+            self.dashboard.filter.summary_month = None;
         }
         // 3.65: the box and any cleared legend highlight repaint at once.
         cx.notify();
@@ -1047,10 +1220,10 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if on == self.dashboard.show_hidden {
+        if on == self.dashboard.filter.show_hidden {
             return;
         }
-        self.dashboard.show_hidden = on;
+        self.dashboard.filter.show_hidden = on;
         // 3.65: the checkbox repaints with this click, not with the answer.
         cx.notify();
         self.changed(Domains::SETTINGS, window, cx);
@@ -1068,7 +1241,7 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.dashboard.tx_sort = sort;
+        self.dashboard.filter.tx_sort = sort;
         // 3.65: the header icon repaints with this click.
         cx.notify();
         self.changed(Domains::SETTINGS, window, cx);
@@ -1077,9 +1250,9 @@ impl Shell {
     /// Click the "← All categories" row: back to the parent level with no
     /// category filter on the table.
     pub(super) fn show_all_categories(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.dashboard.chart_parent = None;
-        self.dashboard.legend_selection = None;
-        self.dashboard.summary_month = None;
+        self.dashboard.filter.chart_parent = None;
+        self.dashboard.filter.legend_selection = None;
+        self.dashboard.filter.summary_month = None;
         // 3.65: the legend repaints with this click, not with the answer.
         cx.notify();
         self.changed(Domains::SETTINGS, window, cx);
@@ -1099,15 +1272,15 @@ impl Shell {
             self.cancel_edit_rule(cx);
             return;
         }
-        if self.dashboard.chart_parent.is_none()
-            && self.dashboard.legend_selection.is_none()
-            && self.dashboard.summary_month.is_none()
+        if self.dashboard.filter.chart_parent.is_none()
+            && self.dashboard.filter.legend_selection.is_none()
+            && self.dashboard.filter.summary_month.is_none()
         {
             return;
         }
-        self.dashboard.chart_parent = None;
-        self.dashboard.legend_selection = None;
-        self.dashboard.summary_month = None;
+        self.dashboard.filter.chart_parent = None;
+        self.dashboard.filter.legend_selection = None;
+        self.dashboard.filter.summary_month = None;
         // 3.65: the drill-down, legend highlight and summary-cell highlight
         // repaint with this Esc, not with the answer.
         cx.notify();
@@ -1277,7 +1450,7 @@ impl Shell {
                     // (floor 110 px) when the row runs out of room, so the
                     // custom range fits the minimum window (3.25, 3.35).
                     .when(
-                        matches!(self.dashboard.date_range, DateRange::Custom { .. }),
+                        matches!(self.dashboard.filter.date_range, DateRange::Custom { .. }),
                         |g| {
                             g.child(
                                 div()
@@ -1402,16 +1575,16 @@ impl Shell {
     /// "Clear filters": drop every filter that narrows the table — search,
     /// "Uncategorized only", and the category/month selection with its
     /// chart drill-down. `set_value` doesn't emit `InputEvent::Change`, so
-    /// `self.dashboard.search` is cleared here too before the single re-query.
+    /// `self.dashboard.filter.search` is cleared here too before the single re-query.
     pub(super) fn clear_filters(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.dashboard
             .search_input
             .update(cx, |input, cx| input.set_value("", window, cx));
-        self.dashboard.search.clear();
-        self.dashboard.uncategorized_only = false;
-        self.dashboard.chart_parent = None;
-        self.dashboard.legend_selection = None;
-        self.dashboard.summary_month = None;
+        self.dashboard.filter.search.clear();
+        self.dashboard.filter.uncategorized_only = false;
+        self.dashboard.filter.chart_parent = None;
+        self.dashboard.filter.legend_selection = None;
+        self.dashboard.filter.summary_month = None;
         // 3.65: the cleared box, legend highlight and summary-cell highlight
         // repaint with this click, not with the answer.
         cx.notify();

@@ -52,11 +52,11 @@ use financi_db::rules::{
 };
 use financi_db::settings::{self, DateRange};
 use financi_db::{
-    Account, CategorySpend, DbWorker, MonthlySummary, TransferReview, TxSort, TxSortColumn,
-    TxTableFilter, ViewFilter, apply_rule_from_merchant, create_account, list_accounts,
-    list_transactions_filtered, list_transfer_reviews, monthly_summary, resolve_transfer_review,
-    rusqlite::Connection, set_category, set_hidden, sidebar_counts, spend_by_category,
-    unpair_transaction,
+    Account, CategorySpend, DbError, DbWorker, MonthlySummary, TransferReview, TxSort,
+    TxSortColumn, TxTableFilter, ViewFilter, apply_rule_from_merchant, create_account,
+    list_accounts, list_transactions_filtered, list_transfer_reviews, monthly_summary,
+    resolve_transfer_review, rusqlite::Connection, set_category, set_hidden, sidebar_counts,
+    spend_by_category, unpair_transaction,
 };
 use gpui_kit::assets::IconName;
 use gpui_kit::base::{
@@ -88,8 +88,8 @@ use crate::flow::{self, LoadedFile, PlanSummary};
 // 3.78: the shared data model. The page modules reach `Domains` through
 // the `use super::*` they all carry.
 use catalog::{
-    Catalog, DataChanged, Domains, LoadFilters, S_ACCOUNTS, S_CATEGORIES, S_DASHBOARD, S_IMPORTS,
-    S_QUEUE, S_RULES, S_SIDEBAR, S_TRANSFERS,
+    Catalog, DataChanged, Domain, Domains, S_ACCOUNTS, S_CATEGORIES, S_IMPORTS, S_QUEUE, S_RULES,
+    S_SIDEBAR, S_TRANSFERS,
 };
 
 type Names = Vec<SharedString>;
@@ -383,6 +383,10 @@ pub struct Shell {
     /// it (or an add's claim of it) as "stale".
     category_selection_settled: u64,
     refresh_applied: u64,
+    /// 3.56: the dispatch generation of the newest dashboard load. A
+    /// result whose dispatch is older than this was overtaken — the newer
+    /// load's result replaces it, so the stale one is dropped whole.
+    dash_gen: u64,
     /// 3.64: there is deliberately no shared task slot. A mutation whose
     /// result must always be applied runs detached (`cx.spawn_in(..).detach()`)
     /// so a later action can never cancel it mid-flight; its handler checks
@@ -552,6 +556,7 @@ impl Shell {
             refresh_started: 0,
             category_selection_settled: 0,
             refresh_applied: 0,
+            dash_gen: 0,
             dashboard,
             queue,
             categories_page,
@@ -600,27 +605,33 @@ impl Shell {
         cx.notify();
     }
 
-    /// Re-query everything the pages show — the full reload. 3.78 left it
-    /// two callers: the launch load and the import / undo / restore flows,
-    /// where every part of the read model really is suspect. Every other
-    /// write reports its [`Domain`]s to [`Shell::changed`], which reloads
-    /// only the sections they touch.
+    /// Re-query everything the pages show — the full reload, plus the
+    /// dashboard's own load alongside it (3.56). 3.78 left it two callers:
+    /// the launch load and the import / undo / restore flows, where every
+    /// part of the read model really is suspect. Every other write reports
+    /// its [`Domain`]s to [`Shell::changed`], which reloads only the
+    /// sections they touch.
     fn refresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        // 3.65: the very first refresh also loads the saved settings in the
-        // same round trip — the date range and the transfers checkbox. The
-        // queries run with them applied, and the subscriber puts them on
-        // the state and the filter controls, so launch is one refresh
-        // whose first frame shows the saved range.
+        // 3.65: the very first load also reads the saved settings in the
+        // same round trip — the date range and the transfers checkbox.
+        // That read moved to the dashboard's load (3.56), whose queries
+        // run with the saved values applied; the landing puts them on the
+        // state and the filter controls, so launch is still one round
+        // trip whose first frame shows the saved range.
         let startup = std::mem::take(&mut self.dashboard.startup_settings);
         // 3.76: the master-CSV self-check rides this job when it is the
         // launch one, so startup stays a single worker job and the window
         // shows at once.
         let csv_root = startup.then(|| self.csv_root.clone());
         let generation = self.next_generation();
-        let filters = self.load_filters();
         self.catalog.update(cx, |catalog, cx| {
-            catalog.reload_full(Domains::ALL, generation, filters, csv_root, window, cx);
+            catalog.reload_full(Domains::ALL, generation, csv_root, window, cx);
         });
+        // 3.56: the dashboard's rows, chart and summary ride their own
+        // keyed job, started alongside; `None` makes it read the account
+        // list itself, so launch and the after-an-import reload resolve
+        // the checkboxes in the same round trip (3.17).
+        self.start_dashboard(None, startup, window, cx);
     }
 
     /// 3.75: generation counter for `wait_idle` in the tests. Every reload
@@ -632,71 +643,121 @@ impl Shell {
         self.refresh_started
     }
 
-    /// The query inputs, snapshotted at dispatch (3.78) so every reload
-    /// runs with exactly the filters the screen shows: the account
-    /// checkboxes and the dashboard's filter values.
-    fn load_filters(&self) -> LoadFilters {
-        let mut view_filter = self.dashboard.view_filter.clone();
-        view_filter.include_transfers = self.dashboard.include_transfers;
-        // The table-only filters (3.4): search, the two toggles and the sort,
-        // folded into the query alongside the shared date-range/accounts/
-        // transfers filter. The category slot carries the legend selection
-        // (3.5), shared with the summary cells (3.6); the `Uncategorized`
-        // legend row rides `uncategorized_only`. The month is the summary
-        // cell selection (3.6).
-        let table_filter = TxTableFilter {
-            category_id: match self.dashboard.legend_selection {
-                Some(LegendSelection::Category(id)) => Some(id),
-                Some(LegendSelection::Uncategorized) | None => None,
-            },
-            month: self.dashboard.summary_month.clone(),
-            search: if self.dashboard.search.is_empty() {
+    /// A write landed, or a dashboard control changed: report the
+    /// [`Domain`]s it changed (the table on [`Domain`]) and reload only
+    /// the sections they touch (3.78). This is the entry point the page
+    /// handlers call instead of the old whole-screen `refresh`; a page
+    /// switch never calls it, so switching pages issues no queries.
+    ///
+    /// 3.56: the dashboard is reloaded here too whenever a domain it
+    /// reads changes — its own keyed job takes its rows, chart and
+    /// summary, so a filter change never runs anyone else's queries and a
+    /// burst of changes leaves the newest one in charge.
+    fn changed(&mut self, domains: Domains, window: &mut Window, cx: &mut Context<Self>) {
+        let generation = self.next_generation();
+        self.catalog.update(cx, |catalog, cx| {
+            catalog.changed(domains, generation, window, cx);
+        });
+        if Self::dash_touched(domains) {
+            // The job resolves the checkboxes against the account list.
+            // A write that can have changed the list (a new account, an
+            // import) makes the job read it fresh; otherwise the mirror
+            // on screen is current and goes along for the ride.
+            let stale_accounts =
+                domains.contains(Domain::Accounts) || domains.contains(Domain::Imports);
+            let accounts = if stale_accounts {
                 None
             } else {
-                Some(self.dashboard.search.clone())
-            },
-            uncategorized_only: self.dashboard.uncategorized_only
-                || matches!(
-                    self.dashboard.legend_selection,
-                    Some(LegendSelection::Uncategorized)
-                ),
-            show_hidden: self.dashboard.show_hidden,
-            sort: self.dashboard.tx_sort,
-        };
-        LoadFilters {
-            excluded: self.dashboard.excluded_accounts.clone(),
-            view_filter,
-            table_filter,
-            chart_parent: self.dashboard.chart_parent,
+                Some(self.accounts.clone())
+            };
+            self.start_dashboard(accounts, false, window, cx);
         }
     }
 
-    /// A write landed: report the [`Domain`]s it changed (the table on
-    /// [`Domain`]) and reload only the sections they touch (3.78). This is
-    /// the entry point the page handlers call instead of the old
-    /// whole-screen `refresh`; a page switch never calls it, so switching
-    /// pages issues no queries.
-    fn changed(&mut self, domains: Domains, window: &mut Window, cx: &mut Context<Self>) {
-        let generation = self.next_generation();
-        let filters = self.load_filters();
-        self.catalog.update(cx, |catalog, cx| {
-            catalog.changed(domains, generation, filters, window, cx);
-        });
+    /// Does a change to `domains` move the dashboard's rows, chart or
+    /// summary? The rows answer to almost everything; the transfer
+    /// reviews do not appear on the dashboard at all, so pairing never
+    /// re-runs its queries.
+    fn dash_touched(domains: Domains) -> bool {
+        domains.contains(Domain::Accounts)
+            || domains.contains(Domain::Categories)
+            || domains.contains(Domain::Rules)
+            || domains.contains(Domain::Transactions)
+            || domains.contains(Domain::Imports)
+            || domains.contains(Domain::Settings)
     }
 
-    /// [`Shell::changed`] scheduled for the end of the frame, for the one
-    /// caller that cannot call it directly: the stale-selection re-query
-    /// inside `apply_dashboard`, which runs while the catalog is still
-    /// being updated (GPUI forbids re-entering an entity's update). The
-    /// generation is taken now so `wait_idle` still waits for this.
-    fn changed_deferred(&mut self, domains: Domains, window: &mut Window, cx: &mut Context<Self>) {
+    /// 3.56: start the dashboard's one load — filtered rows, chart and
+    /// summary in a single keyed job (3.77: a burst of filter changes
+    /// leaves at most one in flight plus the newest, and every replaced
+    /// job resolves `Superseded` without touching the screen). The filter
+    /// is snapshotted now, so the load runs with exactly what the
+    /// controls showed when it started.
+    ///
+    /// `accounts`: the shell's mirror with a filter-control change;
+    /// `None` reads the list in the job (launch, imports — 3.17).
+    /// `startup` reads the persisted settings in the same trip (3.65).
+    pub(super) fn start_dashboard(
+        &mut self,
+        accounts: Option<Vec<Account>>,
+        startup: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let generation = self.next_generation();
-        let filters = self.load_filters();
-        cx.defer_in(window, move |this, window, cx| {
-            this.catalog.update(cx, |catalog, cx| {
-                catalog.changed(domains, generation, filters, window, cx);
+        self.dash_gen = generation;
+        let filter = self.dashboard.filter.clone();
+        let db = self.db.clone();
+        let log = db.query_log();
+        // Detached (3.64): nothing may cancel the continuation between
+        // the query finishing and the result being guarded in.
+        cx.spawn_in(window, async move |this, cx| {
+            let result = db
+                .call_keyed("dashboard", move |c| {
+                    load_dashboard(c, &log, filter, accounts, startup)
+                })
+                .await;
+            let _ = this.update_in(cx, |this, window, cx| match result {
+                Ok(data) => this.finish_dashboard(generation, data, window, cx),
+                // A newer filter change took over while this ran; its
+                // result replaces this one's.
+                Err(DbError::Superseded) => {}
+                Err(e) => {
+                    this.notify_err(format!("Database error: {e}"), cx);
+                    this.refresh_applied = this.refresh_applied.max(generation);
+                }
             });
-        });
+        })
+        .detach();
+    }
+
+    /// A dashboard load came back: apply it, unless a newer load was
+    /// dispatched while it ran — then this result is stale whole, rows
+    /// included, and the newer load's landing replaces it (3.56).
+    fn finish_dashboard(
+        &mut self,
+        generation: u64,
+        mut data: DashboardData,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if generation < self.dash_gen {
+            return;
+        }
+        // 3.65: the launch settings the job already queried with land on
+        // the state and the filter controls before the data of the same
+        // round trip is applied, so the first frame shows the saved range
+        // everywhere. The guard above is what "the user changed it since,
+        // and their change wins" means here: a newer dispatch replaced
+        // this load, and its result carries the newer controls.
+        if let Some((range, include_transfers)) = data.settings {
+            self.set_date_range(range, window, cx);
+            self.dashboard.filter.include_transfers = include_transfers;
+            data.view_filter.include_transfers = include_transfers;
+        }
+        self.apply_dashboard_rows(data, window, cx);
+        self.refresh_applied = self.refresh_applied.max(generation);
+        cx.notify();
     }
 
     /// The one mapping (3.78): a reload settled, so mirror the snapshot's
@@ -716,22 +777,11 @@ impl Shell {
             // loaded (task 3.17).
             self.sync_account_filter();
         }
-        // 3.65: the launch settings the job already queried with land on
-        // the state and the filter controls before the data of the same
-        // round trip is applied, so the first frame shows the saved range
-        // everywhere. A newer dispatch supersedes them (the old code
-        // cancelled the launch job outright when anything else refreshed
-        // before it landed): the user has changed the range or the
-        // toggle since, and their change wins.
-        if let Some((range, include_transfers, csv_check)) = event.startup.clone() {
-            if let Some(e) = csv_check {
-                self.notify_err(format!("Master CSV check failed: {e}"), cx);
-            }
-            if event.generation >= self.refresh_started {
-                self.set_date_range(range, window, cx);
-                self.dashboard.include_transfers = include_transfers;
-                self.dashboard.view_filter.include_transfers = include_transfers;
-            }
+        // 3.56: the launch *settings* land with the dashboard's own load
+        // (`finish_dashboard`); only the master-CSV self-check failure
+        // still rides the full reload's event.
+        if let Some(e) = event.startup.clone() {
+            self.notify_err(format!("Master CSV check failed: {e}"), cx);
         }
         if sections & S_IMPORTS != 0 {
             let history = self.catalog.read(cx).snap.imports.clone();
@@ -772,21 +822,6 @@ impl Shell {
             };
             self.total_visible = total;
             self.uncategorized_visible = uncategorized;
-        }
-        if sections & S_DASHBOARD != 0 {
-            let (rows, chart_rows, summary, sidebar) = {
-                let cat = self.catalog.read(cx);
-                (
-                    cat.snap.rows.clone(),
-                    cat.snap.chart.clone(),
-                    cat.snap.summary.clone().unwrap_or(MonthlySummary {
-                        months: Vec::new(),
-                        rows: Vec::new(),
-                    }),
-                    (cat.snap.total, cat.snap.uncategorized),
-                )
-            };
-            self.apply_dashboard(rows, chart_rows, summary, sidebar, window, cx);
         }
         // 3.75: the idle marker. Generations only move forward, and the
         // newest dispatch always emits, so the maximum is what `wait_idle`

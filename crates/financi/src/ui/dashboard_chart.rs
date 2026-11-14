@@ -174,27 +174,29 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.dashboard.legend_selection = match id {
-            None => (self.dashboard.legend_selection != Some(LegendSelection::Uncategorized))
-                .then_some(LegendSelection::Uncategorized),
-            Some(id) if self.dashboard.chart_parent.is_none() => {
-                self.dashboard.chart_parent = Some(id);
+        self.dashboard.filter.legend_selection = match id {
+            None => (self.dashboard.filter.legend_selection
+                != Some(LegendSelection::Uncategorized))
+            .then_some(LegendSelection::Uncategorized),
+            Some(id) if self.dashboard.filter.chart_parent.is_none() => {
+                self.dashboard.filter.chart_parent = Some(id);
                 Some(LegendSelection::Category(id))
             }
-            Some(id) => (self.dashboard.legend_selection != Some(LegendSelection::Category(id)))
-                .then_some(LegendSelection::Category(id)),
+            Some(id) => (self.dashboard.filter.legend_selection
+                != Some(LegendSelection::Category(id)))
+            .then_some(LegendSelection::Category(id)),
         };
         if matches!(
-            self.dashboard.legend_selection,
+            self.dashboard.filter.legend_selection,
             Some(LegendSelection::Category(_))
         ) {
-            self.dashboard.uncategorized_only = false;
+            self.dashboard.filter.uncategorized_only = false;
         }
         // The month only ever narrows a category selection (the cell
         // highlight and the chip read both from the pair), so clearing the
         // selection clears it too — Esc does the same for both.
-        if self.dashboard.legend_selection.is_none() {
-            self.dashboard.summary_month = None;
+        if self.dashboard.filter.legend_selection.is_none() {
+            self.dashboard.filter.summary_month = None;
         }
         // 3.65: the legend highlight paints with this click, not with the
         // answer (the rows and totals are the only part that waits).
@@ -216,26 +218,26 @@ impl Shell {
     ) {
         let same_category = match id {
             None => matches!(
-                self.dashboard.legend_selection,
+                self.dashboard.filter.legend_selection,
                 Some(LegendSelection::Uncategorized)
             ),
             Some(id) => {
-                matches!(self.dashboard.legend_selection, Some(LegendSelection::Category(c)) if c == id)
+                matches!(self.dashboard.filter.legend_selection, Some(LegendSelection::Category(c)) if c == id)
             }
         };
-        if same_category && self.dashboard.summary_month == month {
-            self.dashboard.legend_selection = None;
-            self.dashboard.summary_month = None;
+        if same_category && self.dashboard.filter.summary_month == month {
+            self.dashboard.filter.legend_selection = None;
+            self.dashboard.filter.summary_month = None;
         } else {
-            self.dashboard.legend_selection = Some(match id {
+            self.dashboard.filter.legend_selection = Some(match id {
                 None => LegendSelection::Uncategorized,
                 Some(id) => LegendSelection::Category(id),
             });
-            self.dashboard.summary_month = month;
+            self.dashboard.filter.summary_month = month;
             if id.is_some() {
                 // A real category and the uncategorized checkbox can't
                 // both narrow the table (the legend's rule).
-                self.dashboard.uncategorized_only = false;
+                self.dashboard.filter.uncategorized_only = false;
             }
             self.sync_chart_to_selection();
         }
@@ -249,16 +251,16 @@ impl Shell {
     /// refresh revalidation of `legend_selection` from dropping a
     /// summary-made selection.
     fn sync_chart_to_selection(&mut self) {
-        let Some(selection) = self.dashboard.legend_selection else {
+        let Some(selection) = self.dashboard.filter.legend_selection else {
             return;
         };
         match selection {
-            LegendSelection::Uncategorized => self.dashboard.chart_parent = None,
+            LegendSelection::Uncategorized => self.dashboard.filter.chart_parent = None,
             LegendSelection::Category(id) => {
                 if let Some(parent) = self.parent_of(id) {
-                    self.dashboard.chart_parent = Some(parent);
-                } else if self.dashboard.chart_parent != Some(id) {
-                    self.dashboard.chart_parent = None;
+                    self.dashboard.filter.chart_parent = Some(parent);
+                } else if self.dashboard.filter.chart_parent != Some(id) {
+                    self.dashboard.filter.chart_parent = None;
                 }
             }
         }
@@ -428,15 +430,16 @@ impl Shell {
         // preparation the tests exercise.
         let label_count = self.chart_label_plan().1;
         let rows = self.chart_bars(self.chart_plot_width(), &colors, muted);
-        let selection = self.dashboard.legend_selection;
+        let selection = self.dashboard.filter.legend_selection;
         // The `Uncategorized` row is active when the 3.4 checkbox drives the
         // same clause, so the legend never contradicts the toolbar.
         let uncategorized_active = matches!(selection, Some(LegendSelection::Uncategorized))
-            || self.dashboard.uncategorized_only;
+            || self.dashboard.filter.uncategorized_only;
         // The parent suffix of the tooltip text (" of Food" once drilled
         // in); empty at the top level.
         let parent_name = self
             .dashboard
+            .filter
             .chart_parent
             .and_then(|p| self.categories.iter().find(|n| n.id == p))
             .map(|n| format!(" of {}", n.name))
@@ -490,7 +493,7 @@ impl Shell {
             .min_h_0()
             .gap_1()
             .overflow_y_scroll()
-            .when(self.dashboard.chart_parent.is_some(), |list| {
+            .when(self.dashboard.filter.chart_parent.is_some(), |list| {
                 list.child(
                     div()
                         .id("legend-all")
@@ -657,8 +660,8 @@ impl Shell {
                 )
                 .into_any_element();
         }
-        let selection = self.dashboard.legend_selection;
-        let selected_month = self.dashboard.summary_month.clone();
+        let selection = self.dashboard.filter.legend_selection;
+        let selected_month = self.dashboard.filter.summary_month.clone();
         let month_values = self.dashboard.summary.months.clone();
         let rows = self.summary_rows();
 

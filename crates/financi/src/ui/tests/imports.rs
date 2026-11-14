@@ -62,6 +62,53 @@ fn drop_create_account_inline_and_import(cx: &mut TestAppContext) {
     });
 }
 
+/// 3.56: an import commit still reloads *everything* — the nine catalog
+/// queries plus the dashboard's own load alongside them. The keyed
+/// dashboard job is an addition to the full reload, not a replacement:
+/// the history, tree, rules, queue and reviews all follow an import.
+#[gpui::test]
+fn an_import_commit_still_reloads_every_page(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |_| {});
+    wait_idle(cx, &shell);
+    open_and_choose(cx, handle, &shell, "simplii-chequing.csv", NEW_ACCOUNT);
+    with_window(cx, handle, |window, cx| {
+        let p = panel(&shell, cx);
+        p.update(cx, |p, cx| {
+            p.new_name.update(cx, |input, cx| {
+                input.set_value("No Fee Chequing", window, cx)
+            });
+            p.create_account(window, cx);
+        });
+    });
+    wait_until(cx, "plan after creating account", |cx| {
+        plan_ready(&shell, cx)
+    });
+    cx.update(|cx| shell.read(cx).db.query_log().clear());
+    click_import(cx, handle, &shell);
+    wait_until(cx, "import finished and table refreshed", |cx| {
+        shell.read(cx).imports.import.is_none() && shell.read(cx).dashboard.row_count == 11
+    });
+    let names = cx.update(|cx| shell.read(cx).db.query_log().names());
+    for expected in [
+        "list_accounts",
+        "list_categories",
+        "transaction_counts",
+        "list_rules",
+        "rule_use_stats",
+        "sidebar_counts",
+        "uncategorized_by_merchant",
+        "list_transfer_reviews",
+        "list_imports",
+        "list_transactions_filtered",
+        "dashboard",
+    ] {
+        assert!(
+            names.contains(&expected.to_string()),
+            "an import must reload {expected}; ran {names:?}"
+        );
+    }
+}
+
 #[gpui::test]
 fn empty_account_name_is_refused(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, |_| {});
