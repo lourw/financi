@@ -2283,7 +2283,7 @@ fn escape_clears_the_drill_and_the_selection(cx: &mut TestAppContext) {
 
     // Actions dispatch along the focus path, so focus the search input
     // first — like a user who clicked into the window. The real Esc
-    // keybinding (registered in `Shell::new`) must map the keystroke to
+    // keybinding (registered in `ui::init`) must map the keystroke to
     // `ClearCategorySelection`; dispatching the action directly would not
     // test the binding.
     with_window(cx, handle, |window, cx| {

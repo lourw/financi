@@ -6,37 +6,6 @@ Do these in the order listed (`docs/tasks.md` → *Picking the next task*). Each
 
 Steps 1–15 of `docs/tasks/gpui.md` → *GPUI best practices*, task by task.
 
-- [x] **3.76 App wiring done once, without reference cycles.** (Code
-  review, 2026-11-11.)
-  - **Global setup out of the view.** `Shell::new` calls `cx.bind_keys`,
-    `cx.set_menus` and registers global `cx.on_action` listeners holding
-    a strong `Entity<Shell>`; GPUI has no way to remove those listeners
-    (`gpui-pre-0.3.11/src/app.rs:2758`), so a second Shell (a second
-    window, or a test opening two) duplicates every handler (⌘O opens two
-    pickers). Move them into `ui::init(cx)`, called once from `main.rs`;
-    the handlers find the window's Shell through a `Global` holding a
-    `WeakEntity<Shell>` (or the active window's root).
-  - **Weak captures.** The six `TxTable` callbacks capture a strong
-    `cx.entity()`, a cycle that keeps `Shell` alive forever. Capture
-    `cx.weak_entity()` and `update(..).ok()`. Better: have `TxTable` emit
-    events the Shell subscribes to, which also removes the re-entrancy
-    risk of updating the Shell from inside the table's own update.
-  - **Stale row indexes.** `TxTable::context_menu` and `render_td` index
-    `self.rows[row_ix]`; use `.get()` and return the menu unchanged when
-    the row is gone (the index can be stale across a refresh).
-  - **macOS reopen.** The default quit mode leaves the app running with
-    no window after the window closes, and there's no `on_reopen`. Add
-    `on_reopen` to open the window again (or quit on last window closed;
-    pick reopen, the macOS norm).
-  - **Startup.** `main.rs` runs `master_csv::self_check` and the dev seed
-    before the window opens; move `self_check` into the first `DbWorker`
-    job so the window shows at once. A startup error (`open_db()?`) only
-    prints to stderr, so on macOS the app just vanishes: also write it to
-    `<data dir>/financi.log` and show it in a minimal error window.
-  - Tests: two Shells register one set of handlers (⌘O fires once);
-    dropping the window drops the Shell (a `WeakEntity` upgrade fails); a
-    context menu on a row index past the end doesn't panic.
-
 - [ ] **3.78 A shared data model that announces changes.** (Architecture,
   user decision 2026-11-11.) Today one `refresh` re-queries every page
   (a 13-part tuple) and ~30 call sites decide when to call it; each new

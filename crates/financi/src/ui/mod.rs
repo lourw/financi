@@ -428,7 +428,7 @@ impl Render for Shell {
             .bg(background)
             .text_color(foreground)
             // Esc clears the dashboard category selection (3.5); the binding
-            // is registered in `Shell::new`.
+            // is registered in `ui::init`.
             .on_action(
                 cx.listener(|this, action: &ClearCategorySelection, window, cx| {
                     this.clear_category_selection(action, window, cx);
