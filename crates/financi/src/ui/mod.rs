@@ -7,6 +7,7 @@
 //! `sidebar`, `dashboard`, `queue`, `categories`, `rules`, `transfers`
 //! and `imports`.
 
+mod catalog;
 mod categories;
 mod dashboard;
 mod dashboard_chart;
@@ -84,6 +85,12 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::flow::{self, LoadedFile, PlanSummary};
+// 3.78: the shared data model. The page modules reach `Domains` through
+// the `use super::*` they all carry.
+use catalog::{
+    Catalog, DataChanged, Domains, LoadFilters, S_ACCOUNTS, S_CATEGORIES, S_DASHBOARD, S_IMPORTS,
+    S_QUEUE, S_RULES, S_SIDEBAR, S_TRANSFERS,
+};
 
 type Names = Vec<SharedString>;
 
@@ -280,8 +287,13 @@ pub struct Shell {
     db: DbWorker,
     db_path: PathBuf,
     csv_root: PathBuf,
-    // -- Shared data (3.74): the lists every page renders from. Moves to
-    // `Catalog` in 3.78.
+    /// 3.78: the shared data model. Every reload runs there; the fields
+    /// below mirror its snapshot for the pages until each page is its own
+    /// view (3.79–3.83), updated in one place — [`Shell::data_changed`].
+    catalog: Entity<Catalog>,
+    // -- Shared data (3.74): the lists every page renders from. 3.78
+    // moved the loading to `Catalog`; these are its mirrors, dropped when
+    // the pages own their data (3.79–3.83).
     accounts: Vec<Account>,
     page: Page,
     // -- Responsive chart (3.15): the window's current width in pixels,
@@ -344,7 +356,6 @@ pub struct Shell {
     toast_next_id: u64,
     toast_clock: Instant,
     toast_task: Option<Task<()>>,
-    refresh_task: Option<Task<()>>,
     /// 5.3: an export or a restore in flight (including its open file
     /// dialog). Both refuse to start while either is set — the archive
     /// must be a consistent snapshot, taken while nothing else touches
@@ -356,12 +367,13 @@ pub struct Shell {
     /// included — queues behind an archive job. A queued write may name
     /// rows the restore replaces (dense ids land on different rows).
     writes_blocked: Rc<Cell<bool>>,
-    /// 3.75: idle markers for the tests. `refresh_started` counts calls to
-    /// `refresh` (the generation number); `refresh_applied` holds the
-    /// generation of the last refresh whose result was applied — the shell
-    /// is idle once the two agree (`wait_idle`). A refresh replaced by a
-    /// later one is cancelled, which is why the continuation stamps rather
-    /// than counts.
+    /// 3.75: idle markers for the tests. `refresh_started` counts every
+    /// reload dispatched — the full `refresh` and the partial `changed`
+    /// calls alike (3.78); `refresh_applied` holds the generation of the
+    /// last reload whose result was applied — the shell is idle once the
+    /// two agree (`wait_idle`). A reload replaced by a later one emits
+    /// nothing, which is why the subscriber stamps the maximum rather
+    /// than counting events.
     refresh_started: u64,
     refresh_applied: u64,
     /// 3.64: there is deliberately no shared task slot. A mutation whose
@@ -369,8 +381,9 @@ pub struct Shell {
     /// so a later action can never cancel it mid-flight; its handler checks
     /// the state it touches is still current before applying. Only work that
     /// *should* be replaced when the user moves on keeps a slot — one per
-    /// purpose: `refresh_task`, `rule_task` (live preview), `toast_task`, and
-    /// the settings writes in `dashboard`.
+    /// purpose: `rule_task` (live preview), `toast_task`, and
+    /// the settings writes in `dashboard`; the reload slots live in
+    /// `Catalog`.
     // -- Page state (3.74): each page's fields live with its page module,
     // built by its own `new` and updated by its own `apply_*` in the
     // `refresh` continuation.
@@ -493,10 +506,13 @@ impl Shell {
         let rules_page = RulesPageState::new(window, cx);
         let transfers = TransfersState::new(window, cx);
         let imports = ImportsState::new(window, cx);
+        // 3.78: one shared data model, fed by the same worker.
+        let catalog = cx.new(|_| Catalog::new(db.clone()));
         let mut shell = Self {
             db,
             db_path,
             csv_root,
+            catalog: catalog.clone(),
             accounts: Vec::new(),
             page: Page::Dashboard,
             window_width: window.bounds().size.width.as_f32(),
@@ -523,7 +539,6 @@ impl Shell {
             toast_next_id: 0,
             toast_clock: Instant::now(),
             toast_task: None,
-            refresh_task: None,
             exporting: false,
             restoring: false,
             writes_blocked: Rc::new(Cell::new(false)),
@@ -540,6 +555,13 @@ impl Shell {
         // The live "matches N transactions" preview runs on every pattern
         // keystroke (ui-conventions, Categories page).
         shell._subs.extend(shell.subscribe_rule_row(window, cx));
+        // 3.78: the one mapping. Every reload the catalog finishes lands
+        // here, and this applies the page sections its domains touched.
+        shell._subs.push(
+            cx.subscribe_in(&catalog, window, |this, _, event, window, cx| {
+                this.data_changed(event, window, cx);
+            }),
+        );
         // 3.65: exactly one refresh at launch. The saved date range and
         // transfers setting load inside its query (see `refresh`), so the
         // first data frame already uses them and nothing re-queries.
@@ -570,30 +592,44 @@ impl Shell {
         cx.notify();
     }
 
-    /// Re-query everything the pages show: accounts and transactions for
-    /// the dashboard, sidebar counts, and the page lists. The shared lists
-    /// are set here; each page then applies its own part of the result in
-    /// its `apply_*` (3.74), keeping this one DB round-trip.
+    /// Re-query everything the pages show — the full reload. 3.78 left it
+    /// two callers: the launch load and the import / undo / restore flows,
+    /// where every part of the read model really is suspect. Every other
+    /// write reports its [`Domain`]s to [`Shell::changed`], which reloads
+    /// only the sections they touch.
     fn refresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let db = self.db.clone();
-        // The account filter resolves against the accounts loaded *inside*
-        // this refresh (task 3.17): an import can add accounts while every
-        // existing checkbox is unchecked, and reading `self.accounts` here
-        // would read "nothing selected" from the previous refresh and blank
-        // every view until some other filter changes.
-        let excluded = self.dashboard.excluded_accounts.clone();
-        let mut view_filter = self.dashboard.view_filter.clone();
-        view_filter.include_transfers = self.dashboard.include_transfers;
         // 3.65: the very first refresh also loads the saved settings in the
         // same round trip — the date range and the transfers checkbox. The
-        // query below runs with them applied, and the continuation puts
-        // them on the state and the filter controls, so launch is one
-        // refresh whose first frame shows the saved range.
+        // queries run with them applied, and the subscriber puts them on
+        // the state and the filter controls, so launch is one refresh
+        // whose first frame shows the saved range.
         let startup = std::mem::take(&mut self.dashboard.startup_settings);
         // 3.76: the master-CSV self-check rides this job when it is the
         // launch one, so startup stays a single worker job and the window
         // shows at once.
-        let csv_root = self.csv_root.clone();
+        let csv_root = startup.then(|| self.csv_root.clone());
+        let generation = self.next_generation();
+        let filters = self.load_filters();
+        self.catalog.update(cx, |catalog, cx| {
+            catalog.reload_full(Domains::ALL, generation, filters, csv_root, window, cx);
+        });
+    }
+
+    /// 3.75: generation counter for `wait_idle` in the tests. Every reload
+    /// dispatch takes the next number; the subscriber stamps the newest
+    /// one that has landed into `refresh_applied`, and a reload replaced
+    /// before it finishes never emits at all.
+    fn next_generation(&mut self) -> u64 {
+        self.refresh_started += 1;
+        self.refresh_started
+    }
+
+    /// The query inputs, snapshotted at dispatch (3.78) so every reload
+    /// runs with exactly the filters the screen shows: the account
+    /// checkboxes and the dashboard's filter values.
+    fn load_filters(&self) -> LoadFilters {
+        let mut view_filter = self.dashboard.view_filter.clone();
+        view_filter.include_transfers = self.dashboard.include_transfers;
         // The table-only filters (3.4): search, the two toggles and the sort,
         // folded into the query alongside the shared date-range/accounts/
         // transfers filter. The category slot carries the legend selection
@@ -619,168 +655,136 @@ impl Shell {
             show_hidden: self.dashboard.show_hidden,
             sort: self.dashboard.tx_sort,
         };
-        let chart_parent = self.dashboard.chart_parent;
-        // 3.75: generation counter for `wait_idle` in the tests. A refresh
-        // replaced before it completes is cancelled and its continuation
-        // never runs, so the continuation stamps its own generation into
-        // `refresh_applied`; the two agree only once the *latest* refresh
-        // has landed.
-        self.refresh_started += 1;
-        let generation = self.refresh_started;
-        self.refresh_task = Some(cx.spawn_in(window, async move |this, cx| {
-            let result = on_db(&db, move |c| {
-                // 3.65: launch settings first — the queries below run with
-                // them, so the first frame is already the saved view.
-                let startup = if startup {
-                    let range = settings::date_range(c)?;
-                    let transfers = settings::include_transfers(c)?;
-                    // 3.76: the master-CSV self-check ran in `main` before
-                    // the window existed; it is DB work, so it runs here,
-                    // in the first job. The database is the source of
-                    // truth: a failure only reports, and the message rides
-                    // back to a toast.
-                    let csv_check = financi_db::master_csv::self_check(c, &csv_root)
-                        .err()
-                        .map(|e| e.to_string());
-                    let (from, to) = range.range(Shell::today());
-                    view_filter.from = from;
-                    view_filter.to = to;
-                    view_filter.include_transfers = transfers;
-                    Some((range, transfers, csv_check))
-                } else {
-                    None
-                };
-                let accounts = list_accounts(c)?;
-                // Resolve the account filter against those accounts: the
-                // ids the user has not excluded. Empty `account_ids` means
-                // *all* accounts (the `ViewFilter` convention); "no
-                // accounts checked" is handled by skipping the queries.
-                let account_ids: Vec<i64> = accounts
-                    .iter()
-                    .filter(|a| !excluded.contains(&a.id))
-                    .map(|a| a.id)
-                    .collect();
-                let none_selected = account_ids.is_empty() && !accounts.is_empty();
-                view_filter.account_ids = if excluded.is_empty() {
-                    Vec::new()
-                } else {
-                    account_ids
-                };
-                let rows = if none_selected {
-                    Vec::new()
-                } else {
-                    list_transactions_filtered(c, &view_filter, &table_filter)?
-                };
-                // Chart and legend rows: parents, or the drilled-in parent's
-                // children (3.5).
-                let chart_rows = if none_selected {
-                    Vec::new()
-                } else {
-                    spend_by_category(c, &view_filter, chart_parent)?
-                };
-                // The monthly summary grid (3.6): the same filter as the
-                // chart, one query for the whole panel.
-                let summary = if none_selected {
-                    MonthlySummary {
+        LoadFilters {
+            excluded: self.dashboard.excluded_accounts.clone(),
+            view_filter,
+            table_filter,
+            chart_parent: self.dashboard.chart_parent,
+        }
+    }
+
+    /// A write landed: report the [`Domain`]s it changed (the table on
+    /// [`Domain`]) and reload only the sections they touch (3.78). This is
+    /// the entry point the page handlers call instead of the old
+    /// whole-screen `refresh`; a page switch never calls it, so switching
+    /// pages issues no queries.
+    fn changed(&mut self, domains: Domains, window: &mut Window, cx: &mut Context<Self>) {
+        let generation = self.next_generation();
+        let filters = self.load_filters();
+        self.catalog.update(cx, |catalog, cx| {
+            catalog.changed(domains, generation, filters, window, cx);
+        });
+    }
+
+    /// [`Shell::changed`] scheduled for the end of the frame, for the one
+    /// caller that cannot call it directly: the stale-selection re-query
+    /// inside `apply_dashboard`, which runs while the catalog is still
+    /// being updated (GPUI forbids re-entering an entity's update). The
+    /// generation is taken now so `wait_idle` still waits for this.
+    fn changed_deferred(&mut self, domains: Domains, window: &mut Window, cx: &mut Context<Self>) {
+        let generation = self.next_generation();
+        let filters = self.load_filters();
+        cx.defer_in(window, move |this, window, cx| {
+            this.catalog.update(cx, |catalog, cx| {
+                catalog.changed(domains, generation, filters, window, cx);
+            });
+        });
+    }
+
+    /// The one mapping (3.78): a reload settled, so mirror the snapshot's
+    /// reloaded sections into the state the pages render from and run the
+    /// pages' `apply_*` for exactly those sections — the order the old
+    /// single `refresh` continuation used.
+    fn data_changed(&mut self, event: &DataChanged, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(e) = &event.error {
+            self.notify_err(format!("Database error: {e}"), cx);
+        }
+        let sections = Catalog::sections_for(event.domains);
+        // Each read of the snapshot is short-lived: it borrows `cx`, and
+        // the `apply_*` calls below need `cx` mutably.
+        if sections & S_ACCOUNTS != 0 {
+            self.accounts = self.catalog.read(cx).snap.accounts.clone();
+            // The account filter resolves against the accounts just
+            // loaded (task 3.17).
+            self.sync_account_filter();
+        }
+        // 3.65: the launch settings the job already queried with land on
+        // the state and the filter controls before the data of the same
+        // round trip is applied, so the first frame shows the saved range
+        // everywhere. A newer dispatch supersedes them (the old code
+        // cancelled the launch job outright when anything else refreshed
+        // before it landed): the user has changed the range or the
+        // toggle since, and their change wins.
+        if let Some((range, include_transfers, csv_check)) = event.startup.clone() {
+            if let Some(e) = csv_check {
+                self.notify_err(format!("Master CSV check failed: {e}"), cx);
+            }
+            if event.generation >= self.refresh_started {
+                self.set_date_range(range, window, cx);
+                self.dashboard.include_transfers = include_transfers;
+                self.dashboard.view_filter.include_transfers = include_transfers;
+            }
+        }
+        if sections & S_IMPORTS != 0 {
+            let history = self.catalog.read(cx).snap.imports.clone();
+            self.apply_imports(history, cx);
+        }
+        if sections & S_CATEGORIES != 0 {
+            let (tree, counts) = {
+                let cat = self.catalog.read(cx);
+                (cat.snap.tree.clone(), cat.snap.counts.clone())
+            };
+            self.apply_categories(tree, counts);
+        }
+        if sections & S_RULES != 0 {
+            let (rules, uses) = {
+                let cat = self.catalog.read(cx);
+                (cat.snap.rules.clone(), cat.snap.uses.clone())
+            };
+            self.apply_rules(rules, uses);
+        }
+        if sections & S_QUEUE != 0 {
+            let queue = self.catalog.read(cx).snap.queue.clone();
+            self.apply_queue(queue);
+        }
+        if sections & S_TRANSFERS != 0 {
+            let reviews = self.catalog.read(cx).snap.reviews.clone();
+            self.apply_transfers(reviews);
+        }
+        if sections & (S_CATEGORIES | S_RULES) != 0 {
+            self.sync_category_choices(window, cx);
+        }
+        if sections & S_QUEUE != 0 {
+            self.sync_queue(window, cx);
+        }
+        if sections & S_SIDEBAR != 0 {
+            let (total, uncategorized) = {
+                let cat = self.catalog.read(cx);
+                (cat.snap.total, cat.snap.uncategorized)
+            };
+            self.total_visible = total;
+            self.uncategorized_visible = uncategorized;
+        }
+        if sections & S_DASHBOARD != 0 {
+            let (rows, chart_rows, summary, sidebar) = {
+                let cat = self.catalog.read(cx);
+                (
+                    cat.snap.rows.clone(),
+                    cat.snap.chart.clone(),
+                    cat.snap.summary.clone().unwrap_or(MonthlySummary {
                         months: Vec::new(),
                         rows: Vec::new(),
-                    }
-                } else {
-                    monthly_summary(c, &view_filter)?
-                };
-                let (total, uncategorized) = sidebar_counts(c)?;
-                let history = list_imports(c)?;
-                let tree = list_categories(c)?;
-                let counts = transaction_counts(c)?;
-                let rules = list_rules(c)?;
-                // 3.28: the Rules page Uses column (how many unlocked rows
-                // each rule's match decides). 3.87 adds per-rule totals;
-                // the page still shows counts only, so keep just those.
-                let uses: HashMap<i64, usize> = rule_use_stats(c)?
-                    .into_iter()
-                    .map(|(id, stats)| (id, stats.count))
-                    .collect();
-                let queue = uncategorized_by_merchant(c)?;
-                // Open transfer reviews (4.2) for the sidebar pill and the
-                // Transfers page.
-                let reviews = list_transfer_reviews(c)?;
-                Ok::<_, financi_db::DbError>((
-                    accounts,
-                    rows,
-                    chart_rows,
-                    summary,
-                    total,
-                    uncategorized,
-                    history,
-                    tree,
-                    counts,
-                    rules,
-                    uses,
-                    queue,
-                    reviews,
-                    startup,
-                ))
-            })
-            .await;
-            let _ = this.update_in(cx, |this, window, cx| {
-                match result {
-                    Ok((
-                        accounts,
-                        rows,
-                        chart_rows,
-                        summary,
-                        total,
-                        uncategorized,
-                        history,
-                        tree,
-                        counts,
-                        rules,
-                        uses,
-                        queue,
-                        reviews,
-                        startup,
-                    )) => {
-                        // Shared data (3.74): the lists every page renders
-                        // from.
-                        this.accounts = accounts;
-                        // Keep the shared `ViewFilter` in step with the
-                        // checkboxes: empty means all accounts.
-                        this.sync_account_filter();
-                        // 3.65: the launch settings the query already used
-                        // land on the state and the filter controls before
-                        // the data of the same round trip is applied, so
-                        // the first frame shows the saved range everywhere.
-                        if let Some((range, include_transfers, csv_check)) = startup {
-                            if let Some(e) = csv_check {
-                                this.notify_err(format!("Master CSV check failed: {e}"), cx);
-                            }
-                            this.set_date_range(range, window, cx);
-                            this.dashboard.include_transfers = include_transfers;
-                            this.dashboard.view_filter.include_transfers = include_transfers;
-                        }
-                        // Then each page applies its own part of the result.
-                        this.apply_imports(history, cx);
-                        this.apply_categories(tree, counts);
-                        this.apply_rules(rules, uses);
-                        this.apply_queue(queue);
-                        this.apply_transfers(reviews);
-                        this.sync_category_choices(window, cx);
-                        this.sync_queue(window, cx);
-                        this.apply_dashboard(
-                            rows,
-                            chart_rows,
-                            summary,
-                            (total, uncategorized),
-                            window,
-                            cx,
-                        );
-                    }
-                    Err(e) => this.notify_err(format!("Database error: {e}"), cx),
-                }
-                this.refresh_applied = generation;
-                cx.notify();
-            });
-        }));
+                    }),
+                    (cat.snap.total, cat.snap.uncategorized),
+                )
+            };
+            self.apply_dashboard(rows, chart_rows, summary, sidebar, window, cx);
+        }
+        // 3.75: the idle marker. Generations only move forward, and the
+        // newest dispatch always emits, so the maximum is what `wait_idle`
+        // waits for.
+        self.refresh_applied = self.refresh_applied.max(event.generation);
+        cx.notify();
     }
 
     fn go_page(&mut self, page: Page, cx: &mut Context<Self>) {

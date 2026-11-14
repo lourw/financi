@@ -199,7 +199,7 @@ impl Shell {
         // 3.65: the legend highlight paints with this click, not with the
         // answer (the rows and totals are the only part that waits).
         cx.notify();
-        self.refresh(window, cx);
+        self.changed(Domains::TX, window, cx);
     }
     /// Click a monthly summary cell (3.6): narrow the table to that
     /// category and month; clicking the same cell again clears both, the
@@ -241,7 +241,7 @@ impl Shell {
         }
         // 3.65: the cell and legend highlights paint with this click.
         cx.notify();
-        self.refresh(window, cx);
+        self.changed(Domains::TX, window, cx);
     }
     /// Move the chart so a selection made outside the legend (a summary
     /// cell) is visible in the legend rows: a parent shows at the top

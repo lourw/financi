@@ -175,7 +175,7 @@ impl Shell {
                     }
                     Err(e) => this.queue.error = Some(e),
                 }
-                this.refresh(window, cx);
+                this.changed(Domains::RULES_TX, window, cx);
             });
         })
         .detach();

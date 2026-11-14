@@ -6,7 +6,7 @@ Do these in the order listed (`docs/tasks.md` → *Picking the next task*). Each
 
 Steps 1–15 of `docs/tasks/gpui.md` → *GPUI best practices*, task by task.
 
-- [ ] **3.78 A shared data model that announces changes.** (Architecture,
+- [x] **3.78 A shared data model that announces changes.** (Architecture,
   user decision 2026-11-11.) Today one `refresh` re-queries every page
   (a 13-part tuple) and ~30 call sites decide when to call it; each new
   view (v1.1–v1.3) would have to be added to every path. Invert it:

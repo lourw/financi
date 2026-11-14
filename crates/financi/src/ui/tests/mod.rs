@@ -44,6 +44,7 @@ use super::{
 };
 use crate::ui::sidebar::NAV_ROW_INSET;
 
+mod catalog;
 mod categories;
 mod dashboard;
 mod imports;
@@ -168,6 +169,10 @@ fn wait_idle(cx: &mut TestAppContext, shell: &Entity<Shell>) {
         cx.run_until_parked();
         let db = shell.update(cx, |s, _| s.db.clone());
         let _ = block_on(db.call(|_| ()));
+        // 3.78: partial reloads run as keyed *read* jobs; drain the reader
+        // queue too (in-memory test databases have none, and this is a
+        // no-op there).
+        let _ = block_on(db.call_read(|_| ()));
         cx.run_until_parked();
         let (started, applied) = shell.update(cx, |s, _| (s.refresh_started, s.refresh_applied));
         if started == applied {

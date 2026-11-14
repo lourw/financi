@@ -563,7 +563,7 @@ impl Shell {
                     }
                     Err(e) => this.categories_page.cat_error = Some(e),
                 }
-                this.refresh(window, cx);
+                this.changed(Domains::CATEGORIES_RULES_TX, window, cx);
             });
         })
         .detach();
@@ -618,7 +618,7 @@ impl Shell {
                     }
                     Err(e) => this.categories_page.cat_error = Some(e),
                 }
-                this.refresh(window, cx);
+                this.changed(Domains::CATEGORIES_RULES_TX, window, cx);
             });
         })
         .detach();
@@ -673,7 +673,7 @@ impl Shell {
                     }
                     Err(e) => this.categories_page.cat_error = Some(e),
                 }
-                this.refresh(window, cx);
+                this.changed(Domains::CATEGORIES_RULES_TX, window, cx);
             });
         })
         .detach();
@@ -710,7 +710,7 @@ impl Shell {
                     Ok(()) => this.categories_page.cat_error = None,
                     Err(e) => this.categories_page.cat_error = Some(e),
                 }
-                this.refresh(window, cx);
+                this.changed(Domains::CATEGORIES_RULES_TX, window, cx);
             });
         })
         .detach();
@@ -763,7 +763,7 @@ impl Shell {
                     }
                     Err(e) => this.categories_page.cat_error = Some(e),
                 }
-                this.refresh(window, cx);
+                this.changed(Domains::CATEGORIES_RULES_TX, window, cx);
             });
         })
         .detach();

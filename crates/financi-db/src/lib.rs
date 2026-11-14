@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use rusqlite::Connection;
 
 mod worker;
-pub use worker::{DbWorker, WorkerGone, on_db_typed};
+pub use worker::{DbWorker, QueryLog, WorkerGone, on_db_typed};
 
 pub mod accounts;
 pub use accounts::{

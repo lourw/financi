@@ -367,7 +367,7 @@ impl Shell {
                     Err(e) if own => this.report_rule_error(e, cx),
                     Err(_) => {}
                 }
-                this.refresh(window, cx);
+                this.changed(Domains::RULES_TX, window, cx);
             });
         })
         .detach();
@@ -478,7 +478,7 @@ impl Shell {
                         }
                     }
                 }
-                this.refresh(window, cx);
+                this.changed(Domains::RULES_TX, window, cx);
             });
         })
         .detach();
@@ -521,7 +521,7 @@ impl Shell {
                         // `report_rule_error` toasts it while one is open.
                         Err(e) => this.report_rule_error(e, cx),
                     }
-                    this.refresh(window, cx);
+                    this.changed(Domains::RULES_TX, window, cx);
                 });
             })
             .detach();
@@ -925,7 +925,7 @@ impl Shell {
                     }
                     Err(e) => this.rules_page.rules_move_error = Some(e.into()),
                 }
-                this.refresh(window, cx);
+                this.changed(Domains::RULES_TX, window, cx);
             });
         })
         .detach();
