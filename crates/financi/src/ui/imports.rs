@@ -705,19 +705,15 @@ impl Render for ImportPanel {
                     // 3.61: the institution in an outline `TypeTag`
                     // (ui-conventions, *Import preview*), replacing the
                     // muted "Detected format: …" that was easy to miss.
+                    // 3.89: the shared `type_tag` component; the wrapper
+                    // keeps the `imports:institution:` test selector.
                     .children((!self.institution.is_empty()).then(|| {
                         let institution = self.institution.clone();
                         let sel = institution.clone();
                         div()
                             .flex_shrink_0()
-                            .text_sm()
-                            .px_2()
-                            .py_0p5()
-                            .border_1()
-                            .border_color(theme.border)
-                            .rounded(theme.radius)
                             .debug_selector(move || format!("imports:institution:{sel}"))
-                            .child(institution)
+                            .child(type_tag(institution))
                     }))
                     .child(div().flex_1())
                     .child(
@@ -1283,7 +1279,6 @@ impl Shell {
     // -- categories --------------------------------------------------------
 
     pub(super) fn render_imports(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let muted = cx.theme().muted_foreground;
         // The page exposes every file action (3.7): the native menu may be
         // absent (Linux), so Import, Undo, Export and Restore live here.
         // 3.32: each button carries its Lucide icon left of the label, and
@@ -1297,88 +1292,72 @@ impl Shell {
         } else {
             "Undo"
         };
+        // 3.89: the shared page header; every button keeps its own
+        // `imports:header:` test selector.
+        let actions = vec![
+            Button::new("pick-file")
+                .label("Import CSV")
+                .icon(IconName::FileUp)
+                .primary()
+                .debug_selector(|| {
+                    format!("imports:header:{}:{}", "Import CSV", "icons/file-up.svg")
+                })
+                .on_click(cx.listener(|this, _, window, cx| this.pick_file(window, cx)))
+                .into_any_element(),
+            Button::new("undo-last-import")
+                .label(undo_label)
+                .icon(IconName::Undo2)
+                .disabled(latest_undo_id.is_none())
+                .debug_selector(move || {
+                    format!("imports:header:{}:{}", undo_label, "icons/undo-2.svg")
+                })
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.undo_last_import(window, cx);
+                }))
+                .into_any_element(),
+            Button::new("export-data")
+                .label("Export")
+                .icon(IconName::Download)
+                // 3.64: busy while an export or restore runs.
+                .loading(self.exporting)
+                .disabled(self.exporting || self.restoring)
+                .debug_selector(|| format!("imports:header:{}:{}", "Export", "icons/download.svg"))
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.export_data(window, cx);
+                }))
+                .into_any_element(),
+            Button::new("restore-backup")
+                .label("Restore")
+                .icon(IconName::ArchiveRestore)
+                .loading(self.restoring)
+                .disabled(self.exporting || self.restoring)
+                .debug_selector(|| {
+                    format!(
+                        "imports:header:{}:{}",
+                        "Restore", "icons/archive-restore.svg"
+                    )
+                })
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.restore_backup(window, cx);
+                }))
+                .into_any_element(),
+        ];
         v_flex()
             .flex_1()
             .min_h_0()
             .gap_3()
-            .child(
-                h_flex()
-                    .gap_2()
-                    .items_center()
-                    .child(
-                        div()
-                            .text_lg()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child("Imports"),
-                    )
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(muted)
-                            .child(format!("{} imports", self.imports.import_history.len())),
-                    )
-                    .child(div().flex_1())
-                    .child(
-                        Button::new("pick-file")
-                            .label("Import CSV")
-                            .icon(IconName::FileUp)
-                            .primary()
-                            .debug_selector(|| {
-                                format!("imports:header:{}:{}", "Import CSV", "icons/file-up.svg")
-                            })
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.pick_file(window, cx)),
-                            ),
-                    )
-                    .child(
-                        Button::new("undo-last-import")
-                            .label(undo_label)
-                            .icon(IconName::Undo2)
-                            .disabled(latest_undo_id.is_none())
-                            .debug_selector(move || {
-                                format!("imports:header:{}:{}", undo_label, "icons/undo-2.svg")
-                            })
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.undo_last_import(window, cx);
-                            })),
-                    )
-                    .child(
-                        Button::new("export-data")
-                            .label("Export")
-                            .icon(IconName::Download)
-                            // 3.64: busy while an export or restore runs.
-                            .loading(self.exporting)
-                            .disabled(self.exporting || self.restoring)
-                            .debug_selector(|| {
-                                format!("imports:header:{}:{}", "Export", "icons/download.svg")
-                            })
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.export_data(window, cx);
-                            })),
-                    )
-                    .child(
-                        Button::new("restore-backup")
-                            .label("Restore")
-                            .icon(IconName::ArchiveRestore)
-                            .loading(self.restoring)
-                            .disabled(self.exporting || self.restoring)
-                            .debug_selector(|| {
-                                format!(
-                                    "imports:header:{}:{}",
-                                    "Restore", "icons/archive-restore.svg"
-                                )
-                            })
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.restore_backup(window, cx);
-                            })),
-                    ),
-            )
+            .child(page_header(
+                cx,
+                "Imports",
+                format!("{} imports", self.imports.import_history.len()),
+                actions,
+            ))
             .children(self.imports.import.as_ref().map(|(p, _)| p.clone()))
             .child(
                 div()
                     .flex_1()
                     .min_h_0()
-                    .child(DataTable::new(&self.imports.history_table).stripe(true)),
+                    .child(DataTable::new(&self.imports.history_table).stripe(false)),
             )
             .into_any_element()
     }

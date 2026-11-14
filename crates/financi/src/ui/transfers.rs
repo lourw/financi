@@ -1,19 +1,31 @@
 //! The Transfers page (3.62).
 
+use std::collections::HashSet;
+
+use financi_db::TransferCandidate;
+
 use super::*;
 use crate::ui::widgets::*;
 
 /// This page's state (3.74): the open transfer reviews left behind by
 /// pairing. The sidebar pill counts them; the page lists each with its
-/// candidates.
+/// candidates. 3.89: the list is a shared [`DataList`] — one collapsible
+/// group per review — so the page also remembers which groups are
+/// collapsed and the list's scroll position.
 pub(super) struct TransfersState {
     pub(super) transfer_reviews: Vec<TransferReview>,
+    /// Review ids whose candidate rows are hidden (3.89).
+    collapsed: HashSet<i64>,
+    /// Keeps the list's scroll position across re-renders (3.89).
+    scroll: VirtualListScrollHandle,
 }
 
 impl TransfersState {
     pub(super) fn new(_window: &mut Window, _cx: &mut Context<Shell>) -> Self {
         Self {
             transfer_reviews: Vec::new(),
+            collapsed: HashSet::new(),
+            scroll: VirtualListScrollHandle::new(),
         }
     }
 }
@@ -90,6 +102,20 @@ impl Shell {
         .detach();
     }
 
+    /// 3.89: show or hide one review's candidate rows — the group
+    /// header's chevron calls this through the [`DataList`] toggle.
+    pub(super) fn toggle_review(
+        &mut self,
+        transaction_id: i64,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.transfers.collapsed.remove(&transaction_id) {
+            self.transfers.collapsed.insert(transaction_id);
+        }
+        cx.notify();
+    }
+
     /// Unpair a linked transaction from the row menu (4.2): both sides are
     /// cleared, rules re-apply, and the engine re-runs.
     pub(super) fn unpair_row(
@@ -117,136 +143,147 @@ impl Shell {
         .detach();
     }
 
-    /// The Transfers page (4.2): one bordered panel per open review — the
-    /// row under review, then every candidate with a *Pair* button, then a
-    /// *Not a transfer* opt-out. No banner, no sheet (ui-conventions,
+    /// The Transfers page (4.2), on the shared design system (3.89): one
+    /// panel holding one [`DataList`] — a collapsible group header per
+    /// open review (description, candidate count, amount, and a *Not a
+    /// transfer* action) over the review's candidate rows, each with a
+    /// hover-revealed *Pair* button. No banner, no sheet (ui-conventions,
     /// *Pages*, D8); the sidebar pill carries the count.
     pub(super) fn render_transfers(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let (muted, border, radius) = {
-            let theme = cx.theme();
-            (theme.muted_foreground, theme.border, theme.radius)
-        };
+        let muted = cx.theme().muted_foreground;
         let reviews = self.transfers.transfer_reviews.clone();
         let body: AnyElement = if reviews.is_empty() {
-            div()
-                .flex_1()
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_color(muted)
-                .child("No transfer reviews yet.")
+            panel(cx, false)
+                .child(
+                    div()
+                        .flex_1()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_color(muted)
+                        .child("No transfer reviews yet."),
+                )
                 .into_any_element()
         } else {
-            v_flex()
-                .id("transfer-reviews")
-                .flex_1()
-                .min_h_0()
-                .gap_3()
-                .overflow_y_scroll()
-                .children(reviews.into_iter().map(|r| {
-                    let txn = r.transaction_id;
-                    let candidates = r.candidates.clone();
-                    v_flex()
-                        .gap_2()
-                        .p_4()
-                        .rounded(radius)
-                        .border_1()
-                        .border_color(border)
-                        .debug_selector(move || format!("transfers:review:{txn}"))
-                        // The row under review.
-                        .child(
-                            h_flex()
-                                .gap_3()
-                                .items_center()
-                                .child(
-                                    div()
-                                        .font_weight(FontWeight::SEMIBOLD)
-                                        .child(r.account.clone()),
-                                )
-                                .child(div().text_color(muted).child(r.posted_date.clone()))
-                                .child(
-                                    div()
-                                        .min_w_0()
-                                        .overflow_hidden()
-                                        .text_ellipsis()
-                                        .child(r.description.clone()),
-                                )
-                                .child(div().flex_1())
-                                .child(div().flex_none().child(flow::money(r.amount_cents))),
-                        )
-                        .child(div().text_xs().text_color(muted).child("Pair with one of:"))
-                        // Every candidate offers one *Pair* button.
-                        .children(candidates.into_iter().map(|c| {
-                            let cand = c.id;
-                            h_flex()
-                                .gap_3()
-                                .items_center()
-                                .debug_selector(move || format!("transfers:candidate:{txn}:{cand}"))
-                                .child(div().flex_none().w(px(110.)).child(c.posted_date))
-                                .child(
-                                    div()
-                                        .w(px(200.))
-                                        .min_w_0()
-                                        .overflow_hidden()
-                                        .text_ellipsis()
-                                        .child(c.account),
-                                )
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .overflow_hidden()
-                                        .text_ellipsis()
-                                        .child(c.description),
-                                )
-                                .child(
-                                    div()
-                                        .flex_none()
-                                        .w(px(120.))
-                                        .text_right()
-                                        .child(flow::money(c.amount_cents)),
-                                )
-                                .child(
-                                    Button::new(SharedString::from(format!("pair-{txn}-{cand}")))
-                                        .label("Pair")
-                                        .compact()
-                                        .on_click(cx.listener(move |this, _, window, cx| {
-                                            this.pair_transfer(txn, cand, window, cx);
-                                        })),
-                                )
-                        }))
-                        // Opt out: never offer this row again.
-                        .child(
-                            Button::new(SharedString::from(format!("not-transfer-{txn}")))
-                                .label("Not a transfer")
-                                .link()
-                                .compact()
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.mark_not_transfer(txn, window, cx);
-                                })),
-                        )
-                }))
-                .into_any_element()
+            // One flat candidate list for the row cells and actions to
+            // index, and the list's lines: a group header per review
+            // followed by its candidates unless the group is collapsed.
+            let mut candidates: Vec<(i64, TransferCandidate)> = Vec::new();
+            let mut items: Vec<DataItem> = Vec::new();
+            for r in &reviews {
+                let txn = r.transaction_id;
+                let collapsed = self.transfers.collapsed.contains(&txn);
+                items.push(DataItem::Group {
+                    id: txn,
+                    collapsed,
+                    name: r.description.clone().into(),
+                    count: Some(flow::count(r.candidates.len() as i64).into()),
+                    selector: format!("transfers:review:{txn}"),
+                });
+                for c in &r.candidates {
+                    candidates.push((txn, c.clone()));
+                    if !collapsed {
+                        items.push(DataItem::Row {
+                            id: candidates.len() - 1,
+                            selected: false,
+                            selector: format!("transfers:candidate:{txn}:{}", c.id),
+                        });
+                    }
+                }
+            }
+            // Amounts per group, for the header's trailing amount.
+            let review_amounts: Vec<(i64, i64)> = reviews
+                .iter()
+                .map(|r| (r.transaction_id, r.amount_cents))
+                .collect();
+            let columns = vec![
+                DataCol::new("Date", Col::Fixed(110.), ColAlign::Left),
+                DataCol::new("Account", Col::Fixed(200.), ColAlign::Left),
+                DataCol::new("Description", Col::Flex, ColAlign::Left),
+                DataCol::new("Amount", Col::Fixed(120.), ColAlign::Right),
+            ];
+            let candidates = Rc::new(candidates);
+            let review_amounts = Rc::new(review_amounts);
+            let list = DataList::new(cx.entity(), columns, items)
+                .cells({
+                    let candidates = candidates.clone();
+                    move |_, item, _, _| match item {
+                        DataItem::Row { id, .. } => {
+                            let c = &candidates[*id].1;
+                            vec![
+                                div().child(c.posted_date.clone()).into_any_element().into(),
+                                // Account and description are text cells:
+                                // the list ellipsizes them and attaches
+                                // the full-text tooltip (3.89 review).
+                                ListCell::text(c.account.clone()),
+                                ListCell::text(c.description.clone()),
+                                div()
+                                    .child(flow::money(c.amount_cents))
+                                    .into_any_element()
+                                    .into(),
+                            ]
+                        }
+                        DataItem::Group { id, .. } => {
+                            let amount = review_amounts
+                                .iter()
+                                .find(|(t, _)| *t == *id)
+                                .map(|(_, a)| *a)
+                                .unwrap_or(0);
+                            vec![div().child(flow::money(amount)).into_any_element().into()]
+                        }
+                    }
+                })
+                .scroll(self.transfers.scroll.clone())
+                .heading_selectors("transfers")
+                .selector("transfers:list")
+                .toggle(|this, id, window, cx| this.toggle_review(id, window, cx))
+                .actions(120., {
+                    let candidates = candidates.clone();
+                    move |_, item, _, cx| match item {
+                        DataItem::Row { id, .. } => {
+                            let txn = candidates[*id].0;
+                            let cand = candidates[*id].1.id;
+                            vec![
+                                Button::new(SharedString::from(format!("pair-{txn}-{cand}")))
+                                    .label("Pair")
+                                    .xsmall()
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.pair_transfer(txn, cand, window, cx);
+                                    }))
+                                    .into_any_element(),
+                            ]
+                        }
+                        DataItem::Group { id, .. } => {
+                            let txn = *id;
+                            vec![
+                                Button::new(SharedString::from(format!("not-transfer-{txn}")))
+                                    .label("Not a transfer")
+                                    .ghost()
+                                    .xsmall()
+                                    .tooltip("Never offer this row for pairing")
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.mark_not_transfer(txn, window, cx);
+                                    }))
+                                    .into_any_element(),
+                            ]
+                        }
+                    }
+                });
+            panel(cx, false).child(list).into_any_element()
         };
         v_flex()
             .flex_1()
             .min_h_0()
             .gap_3()
-            .child(
-                h_flex()
-                    .gap_2()
-                    .items_center()
-                    .child(
-                        div()
-                            .text_lg()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child("Transfers"),
-                    )
-                    .child(div().text_sm().text_color(muted).child(format!(
-                        "{} to review",
-                        flow::count(self.transfers.transfer_reviews.len() as i64)
-                    ))),
-            )
+            .child(page_header(
+                cx,
+                "Transfers",
+                format!(
+                    "{} to review",
+                    flow::count(self.transfers.transfer_reviews.len() as i64)
+                ),
+                Vec::new(),
+            ))
             .child(body)
             .into_any_element()
     }

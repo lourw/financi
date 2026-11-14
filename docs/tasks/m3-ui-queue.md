@@ -6,7 +6,7 @@ Do these in the order listed (`docs/tasks.md` → *Picking the next task*). Each
 
 Steps 1–15 of `docs/tasks/gpui.md` → *GPUI best practices*, task by task.
 
-- [ ] **3.89 Shared UI components.** (Design system, user decision
+- [x] **3.89 Shared UI components.** (Design system, user decision
   2026-11-11.) Build the components `docs/ui-conventions.md` →
   *Components* describes, in `crates/financi/src/ui/widgets.rs`, so pages
   stop being styled by hand: `Panel`, `PageHeader`, `DataList` (heading

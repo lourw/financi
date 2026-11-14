@@ -1,8 +1,10 @@
 //! Shared view helpers: small widgets, labels, toasts and the width
-//! constants pages agree on (split from `ui.rs` by 3.62).
+//! constants pages agree on (split from `ui.rs` by 3.62), plus the 3.89
+//! design-system components (`docs/ui-conventions.md` → *Components*).
 
 use super::*;
 use financi_db::{DbError, on_db_typed};
+use gpui_kit::component::tag::Tag;
 
 /// Every checkbox in the app is built through here (3.14) so they are all
 /// constructed alike: the check mark itself arrives with the icon assets
@@ -111,6 +113,688 @@ pub(super) fn filter_tip(
             .build(window, cx)
         })
         .child(control)
+}
+
+// -- Design-system components (3.89) -------------------------------------
+//
+// One shared implementation of every repeated shape (`docs/ui-conventions.md`
+// → *Components*): panel, page header, filter strip, list, group header,
+// category swatch and the income/expense tag. Page modules call these
+// instead of restyling each page by hand; none of them holds page state —
+// a plain builder function, or for [`DataList`] a `RenderOnce` element the
+// page owns and feeds.
+
+/// Height of a [`DataList`] heading row (ui-conventions *Lists*).
+pub(super) const LIST_HEADING_HEIGHT: f32 = 32.;
+/// Height of a [`DataList`] collapsible group header.
+pub(super) const LIST_GROUP_HEIGHT: f32 = 36.;
+/// Height of a [`DataList`] data row.
+pub(super) const LIST_ROW_HEIGHT: f32 = 40.;
+
+/// How a [`DataList`] column takes its width.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum Col {
+    /// A fixed width in px.
+    Fixed(f32),
+    /// Whatever width is left; a list has at most one flex column.
+    Flex,
+}
+
+/// How a [`DataList`] column aligns its contents — the heading and the
+/// rows share the definition, so they always line up.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum ColAlign {
+    /// Text runs from the left edge (labels, dates).
+    Left,
+    /// Amounts and counts run to the right edge.
+    Right,
+    /// Toggles and actions centre in their column. (No page uses it
+    /// yet; the later milestones that adopt the shared list will.)
+    #[allow(dead_code)]
+    Center,
+}
+
+/// One column of a [`DataList`]: heading text, width and alignment.
+#[derive(Clone, Debug)]
+pub(super) struct DataCol {
+    /// Heading text; also what [`DataList::sorted_by`] names a column by.
+    pub title: &'static str,
+    /// Width: fixed px, or the one flex column.
+    pub width: Col,
+    /// Alignment, shared by heading and rows.
+    pub align: ColAlign,
+}
+
+impl DataCol {
+    pub fn new(title: &'static str, width: Col, align: ColAlign) -> Self {
+        Self {
+            title,
+            width,
+            align,
+        }
+    }
+}
+
+/// One cell of a painted line (see [`DataList::cells`]): an element, plus
+/// the full text a *text* cell carries so the list itself — not the page —
+/// attaches the ellipsis tooltip (ui-conventions *Components*: a `Flex`
+/// text column "ellipsizes with a tooltip holding the full text").
+pub(super) struct ListCell {
+    el: AnyElement,
+    tooltip: Option<SharedString>,
+}
+
+impl ListCell {
+    /// A text cell: ellipsized to fit its column, with the list wrapping
+    /// it in a tooltip holding the full text. Text in a fixed column can
+    /// clip too, so every text cell carries its tooltip, not just the
+    /// `Flex` column's.
+    pub fn text(text: impl Into<SharedString>) -> Self {
+        let text = text.into();
+        Self {
+            el: div()
+                .w_full()
+                .min_w_0()
+                .overflow_hidden()
+                .text_ellipsis()
+                .child(text.clone())
+                .into_any_element(),
+            tooltip: Some(text),
+        }
+    }
+}
+
+impl From<AnyElement> for ListCell {
+    /// A non-text cell (a date, an amount, a button): painted as-is.
+    fn from(el: AnyElement) -> Self {
+        Self { el, tooltip: None }
+    }
+}
+
+/// Wrap one painted [`ListCell`] in its column's width and alignment, and
+/// a text cell additionally in a tooltip holding the full text (through
+/// gpui's own tooltip, like [`filter_tip`]). `line` is the line's test
+/// selector, which makes the tooltip trigger's element id unique, and `j`
+/// the column index.
+fn list_cell(col: &DataCol, cell: ListCell, line: &str, j: usize) -> AnyElement {
+    let wrap = col_cell(col, div().flex_shrink_0());
+    let Some(text) = cell.tooltip else {
+        return wrap.child(cell.el).into_any_element();
+    };
+    let sel = format!("financi:tooltip:{text}");
+    wrap.id(SharedString::from(format!("financi-cell-{line}-c{j}")))
+        .tooltip(move |window, cx| {
+            let text = text.clone();
+            let sel = sel.clone();
+            Tooltip::element(move |_, _| {
+                let text = text.clone();
+                let sel = sel.clone();
+                div().debug_selector(move || sel).child(text)
+            })
+            .build(window, cx)
+        })
+        .child(cell.el)
+        .into_any_element()
+}
+
+/// Wrap `el` in its column's width and alignment.
+fn col_cell(col: &DataCol, el: Div) -> Div {
+    let el = match col.width {
+        Col::Fixed(w) => el.w(px(w)).flex_shrink_0(),
+        Col::Flex => el.flex_1().min_w_0(),
+    };
+    let el = el.overflow_hidden();
+    match col.align {
+        ColAlign::Left => el,
+        ColAlign::Right => el.items_end().justify_end().text_right(),
+        ColAlign::Center => el.items_center().justify_center(),
+    }
+}
+
+/// A line of a [`DataList`]: a data row, or a group header starting a
+/// collapsible group of rows.
+#[derive(Debug)]
+pub(super) enum DataItem {
+    /// A data row.
+    Row {
+        /// The row's index into the page's own row data.
+        id: usize,
+        /// Whether the row draws with `list_active`.
+        selected: bool,
+        /// Test selector for the row element, e.g. `transfers:candidate:7:9`.
+        selector: String,
+    },
+    /// A collapsible group header: the chevron toggles `collapsed`, and
+    /// the trailing cells the `cells` callback returns for it line up
+    /// with the list's last columns.
+    Group {
+        /// Stable id the [`DataList::toggle`] callback receives.
+        id: i64,
+        /// Whether the group is collapsed (its rows hidden).
+        collapsed: bool,
+        /// Group name, drawn semibold and ellipsized.
+        name: SharedString,
+        /// Optional muted text after the name, e.g. `3 candidates`.
+        count: Option<SharedString>,
+        /// Test selector for the header element.
+        selector: String,
+    },
+}
+
+/// Paints one line's cells (see [`DataList::cells`]).
+type CellsFn<V> = Rc<dyn Fn(&V, &DataItem, &mut Window, &mut Context<V>) -> Vec<ListCell>>;
+/// Paints one line's actions (see [`DataList::actions`]).
+type ActionsFn<V> = Rc<dyn Fn(&V, &DataItem, &mut Window, &mut Context<V>) -> Vec<AnyElement>>;
+/// A group header's chevron callback (see [`DataList::toggle`]).
+type ToggleFn<V> = Rc<dyn Fn(&mut V, i64, &mut Window, &mut Context<V>)>;
+/// A heading click's sort callback (see [`DataList::sort`]).
+type SortFn<V> = Rc<dyn Fn(&mut V, &'static str, SortState, &mut Window, &mut Context<V>)>;
+
+/// What direction a [`DataList`] heading sorts by (3.89).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum SortState {
+    /// Ascending.
+    Ascending,
+    /// Descending.
+    Descending,
+}
+
+/// The shared list (ui-conventions *Lists*): a 32 px heading row over
+/// virtualised 40 px `text_sm` rows with dividers, `list_hover` on hover
+/// and a hover-revealed actions column, plus 36 px collapsible group
+/// headers on `muted`. Every line pads `px_3`, and text cells built with
+/// [`ListCell::text`] carry the spec's full-text tooltip, attached by the
+/// list itself so pages never wire tooltips up. The page holds no row
+/// styling of its own: it flattens its data into [`DataItem`]s and paints
+/// each line's cells through [`DataList::cells`]. Host view `V` is the
+/// page's state entity — the same pattern `v_virtual_list` uses.
+#[derive(IntoElement)]
+pub(super) struct DataList<V: Render> {
+    host: Entity<V>,
+    columns: Rc<[DataCol]>,
+    items: Rc<Vec<DataItem>>,
+    sizes: Rc<Vec<Size<Pixels>>>,
+    cells: CellsFn<V>,
+    actions_width: Option<f32>,
+    actions: Option<ActionsFn<V>>,
+    on_toggle: Option<ToggleFn<V>>,
+    sort: Option<SortFn<V>>,
+    sorted_by: Option<(&'static str, SortState)>,
+    heading_selectors: Option<SharedString>,
+    selector: Option<SharedString>,
+    scroll: VirtualListScrollHandle,
+}
+
+impl<V: Render> DataList<V> {
+    /// A new list over `items` (rows and, between them, group headers)
+    /// with the given columns. `host` is the page's own state entity.
+    pub fn new(host: Entity<V>, columns: Vec<DataCol>, items: Vec<DataItem>) -> Self {
+        let items = Rc::new(items);
+        let sizes = Rc::new(
+            items
+                .iter()
+                .map(|item| {
+                    let h = match item {
+                        DataItem::Row { .. } => LIST_ROW_HEIGHT,
+                        DataItem::Group { .. } => LIST_GROUP_HEIGHT,
+                    };
+                    size(px(0.), px(h))
+                })
+                .collect(),
+        );
+        Self {
+            host,
+            columns: Rc::from(columns),
+            items,
+            sizes,
+            cells: Rc::new(|_, _, _, _| Vec::new()),
+            actions_width: None,
+            actions: None,
+            on_toggle: None,
+            sort: None,
+            sorted_by: None,
+            heading_selectors: None,
+            selector: None,
+            scroll: VirtualListScrollHandle::new(),
+        }
+    }
+
+    /// Paint every line through `f`. For a [`DataItem::Row`] return one
+    /// cell per column, in column order; for a [`DataItem::Group`] return
+    /// the trailing cells only (a sum, say), which line up with the
+    /// list's last `n` columns. Each cell is wrapped in its column's
+    /// width and alignment; a [`ListCell::text`] cell additionally gets
+    /// the tooltip holding its full text.
+    pub fn cells(
+        mut self,
+        f: impl Fn(&V, &DataItem, &mut Window, &mut Context<V>) -> Vec<ListCell> + 'static,
+    ) -> Self {
+        self.cells = Rc::new(f);
+        self
+    }
+
+    /// Reserve `width` px at the line's right edge for actions and paint
+    /// them through `f` (rows and group headers alike). They are
+    /// invisible until the pointer is over the line, and reserving their
+    /// space up front means they never shift the columns.
+    pub fn actions(
+        mut self,
+        width: f32,
+        f: impl Fn(&V, &DataItem, &mut Window, &mut Context<V>) -> Vec<AnyElement> + 'static,
+    ) -> Self {
+        self.actions_width = Some(width);
+        self.actions = Some(Rc::new(f));
+        self
+    }
+
+    /// Call `f` with the group id when a group header's chevron is
+    /// clicked. The click is bound to the chevron alone, so action
+    /// buttons in the header never trigger it.
+    pub fn toggle(
+        mut self,
+        f: impl Fn(&mut V, i64, &mut Window, &mut Context<V>) + 'static,
+    ) -> Self {
+        self.on_toggle = Some(Rc::new(f));
+        self
+    }
+
+    /// Make the headings clickable: clicking the heading for column
+    /// `title` calls `f` with the direction to sort by next. (No page
+    /// sorts through the shared list yet; 3.58 wires the history.)
+    #[allow(dead_code)]
+    pub fn sort(
+        mut self,
+        f: impl Fn(&mut V, &'static str, SortState, &mut Window, &mut Context<V>) + 'static,
+    ) -> Self {
+        self.sort = Some(Rc::new(f));
+        self
+    }
+
+    /// Mark the column the list is sorted by; its heading shows an
+    /// arrow and a repeat click flips the direction.
+    #[allow(dead_code)]
+    pub fn sorted_by(mut self, title: &'static str, state: SortState) -> Self {
+        self.sorted_by = Some((title, state));
+        self
+    }
+
+    /// Prefix the heading cells' test selectors with `prefix`, giving
+    /// `{prefix}:heading:{column}` per column (e.g.
+    /// `transfers:heading:Date`).
+    pub fn heading_selectors(mut self, prefix: &str) -> Self {
+        self.heading_selectors = Some(SharedString::from(prefix));
+        self
+    }
+
+    /// Test selector for the list element itself.
+    pub fn selector(mut self, selector: impl Into<SharedString>) -> Self {
+        self.selector = Some(selector.into());
+        self
+    }
+
+    /// Keep the scroll position across re-renders with the page's own
+    /// handle (one [`VirtualListScrollHandle`] per list, in page state).
+    pub fn scroll(mut self, handle: VirtualListScrollHandle) -> Self {
+        self.scroll = handle;
+        self
+    }
+
+    fn heading_cell(&self, col: &DataCol) -> AnyElement {
+        let sorted = self.sorted_by.filter(|(t, _)| *t == col.title);
+        let inner = h_flex()
+            .gap_1()
+            .items_center()
+            .child(div().child(col.title));
+        let inner = match (&self.sort, sorted) {
+            (None, _) => inner.into_any_element(),
+            (Some(_), state) => {
+                let next = match state {
+                    Some((_, SortState::Ascending)) => SortState::Descending,
+                    _ => SortState::Ascending,
+                };
+                let f = self.sort.clone().unwrap();
+                let host = self.host.clone();
+                let title = col.title;
+                inner
+                    .id(SharedString::from(format!(
+                        "financi-heading-{}",
+                        col.title.replace(' ', "-")
+                    )))
+                    .cursor_pointer()
+                    .hover(|s| s.underline())
+                    .on_click(move |_, window, cx| {
+                        host.update(cx, |v, cx| f(v, title, next, window, cx));
+                    })
+                    .child(
+                        div().flex_none().child(
+                            Icon::new(match state {
+                                Some((_, SortState::Descending)) => IconName::SortDescending,
+                                _ => IconName::SortAscending,
+                            })
+                            .xsmall(),
+                        ),
+                    )
+                    .into_any_element()
+            }
+        };
+        let cell = col_cell(col, div()).child(inner);
+        match &self.heading_selectors {
+            Some(prefix) => {
+                let sel = format!("{prefix}:heading:{}", col.title);
+                cell.debug_selector(move || sel.clone()).into_any_element()
+            }
+            None => cell.into_any_element(),
+        }
+    }
+}
+
+impl<V: Render> RenderOnce for DataList<V> {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let (border, muted_bg, muted_fg, list_hover, list_active) = {
+            let theme = cx.theme();
+            (
+                theme.border,
+                theme.muted,
+                theme.muted_foreground,
+                theme.list_hover,
+                theme.list_active,
+            )
+        };
+        let heading = h_flex()
+            .w_full()
+            .h(px(LIST_HEADING_HEIGHT))
+            .px_3()
+            .gap_4()
+            .items_end()
+            .text_sm()
+            .font_weight(FontWeight::SEMIBOLD)
+            .text_color(muted_fg)
+            .border_b_1()
+            .border_color(border)
+            .children(self.columns.iter().map(|col| self.heading_cell(col)))
+            .when_some(self.actions_width, |el, w| {
+                el.child(div().w(px(w)).flex_shrink_0())
+            });
+        let heading = match &self.heading_selectors {
+            Some(prefix) => {
+                let sel = format!("{prefix}:heading");
+                heading.debug_selector(move || sel.clone())
+            }
+            None => heading,
+        };
+
+        let columns = self.columns.clone();
+        let items = self.items.clone();
+        let cells = self.cells.clone();
+        let actions = self.actions.clone();
+        let actions_width = self.actions_width;
+        let on_toggle = self.on_toggle.clone();
+        let total = items.len();
+        let list = v_virtual_list(
+            self.host.clone(),
+            "financi-data-list",
+            self.sizes.clone(),
+            move |view, range, window, cx| {
+                let start = range.start;
+                let mut lines = Vec::with_capacity(range.len());
+                for (i, item) in items[range].iter().enumerate() {
+                    let is_last = start + i + 1 == total;
+                    let painted = cells(view, item, window, cx);
+                    let line = match item {
+                        DataItem::Row {
+                            selected, selector, ..
+                        } => {
+                            let group = format!("financi-list-row-{selector}");
+                            let selected = *selected;
+                            let mut row = div()
+                                .w_full()
+                                .h(px(LIST_ROW_HEIGHT))
+                                .px_3()
+                                .gap_4()
+                                .flex()
+                                .items_center()
+                                .text_sm()
+                                .when(!is_last, |r| r.border_b_1().border_color(border))
+                                .hover(move |s| if selected { s } else { s.bg(list_hover) })
+                                .when(selected, |s| s.bg(list_active))
+                                .group(group.as_str())
+                                .debug_selector({
+                                    let s = selector.clone();
+                                    move || s.clone()
+                                })
+                                .children(painted.into_iter().enumerate().map(|(j, cell)| {
+                                    list_cell(&columns[j.min(columns.len() - 1)], cell, selector, j)
+                                }));
+                            if let (Some(f), Some(w)) = (&actions, actions_width) {
+                                let painted = f(view, item, window, cx);
+                                row = row.child(
+                                    div()
+                                        .w(px(w))
+                                        .flex_shrink_0()
+                                        .flex()
+                                        .items_center()
+                                        .justify_end()
+                                        .gap_1()
+                                        .invisible()
+                                        .group_hover(group.as_str(), |s| s.visible())
+                                        .children(painted),
+                                );
+                            }
+                            row.into_any_element()
+                        }
+                        DataItem::Group {
+                            id,
+                            collapsed,
+                            name,
+                            count,
+                            selector,
+                        } => {
+                            let group = format!("financi-list-group-{selector}");
+                            let mut head = div()
+                                .w_full()
+                                .h(px(LIST_GROUP_HEIGHT))
+                                .px_3()
+                                .gap_4()
+                                .flex()
+                                .items_center()
+                                .text_sm()
+                                .bg(muted_bg)
+                                .when(!is_last, |r| r.border_b_1().border_color(border))
+                                .group(group.as_str())
+                                .debug_selector({
+                                    let s = selector.clone();
+                                    move || s.clone()
+                                });
+                            let toggle_sel = format!("{selector}:toggle");
+                            let chevron = div()
+                                .id(SharedString::from(format!("financi-group-toggle-{id}")))
+                                .flex_none()
+                                .cursor_pointer()
+                                .debug_selector(move || toggle_sel.clone())
+                                .child(Icon::new(if *collapsed {
+                                    IconName::ChevronRight
+                                } else {
+                                    IconName::ChevronDown
+                                }));
+                            head = head.child(match &on_toggle {
+                                None => chevron.into_any_element(),
+                                Some(f) => {
+                                    let f = f.clone();
+                                    let id = *id;
+                                    chevron
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            f(this, id, window, cx)
+                                        }))
+                                        .into_any_element()
+                                }
+                            });
+                            head = head
+                                .child(
+                                    div()
+                                        .min_w_0()
+                                        .overflow_hidden()
+                                        .text_ellipsis()
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .child(name.clone()),
+                                )
+                                .when_some(count.clone(), |el, c| {
+                                    el.child(div().flex_none().text_color(muted_fg).child(c))
+                                });
+                            // Trailing cells reuse the last columns'
+                            // wrappers, so a group's sums line up with
+                            // the rows below by construction.
+                            let n = columns.len();
+                            let k = painted.len().min(n);
+                            if k < n {
+                                head = head.child(div().flex_1().min_w_0());
+                            }
+                            for (j, cell) in painted.into_iter().enumerate() {
+                                head =
+                                    head.child(list_cell(&columns[n - k + j], cell, selector, j));
+                            }
+                            if let (Some(f), Some(w)) = (&actions, actions_width) {
+                                let painted = f(view, item, window, cx);
+                                head = head.child(
+                                    div()
+                                        .w(px(w))
+                                        .flex_shrink_0()
+                                        .flex()
+                                        .items_center()
+                                        .justify_end()
+                                        .gap_1()
+                                        .invisible()
+                                        .group_hover(group.as_str(), |s| s.visible())
+                                        .children(painted),
+                                );
+                            }
+                            head.into_any_element()
+                        }
+                    };
+                    lines.push(line);
+                }
+                lines
+            },
+        )
+        .track_scroll(&self.scroll)
+        .flex_1()
+        .min_h_0();
+
+        let root = div()
+            .w_full()
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .child(heading)
+            .child(list);
+        match self.selector {
+            Some(s) => root
+                .debug_selector(move || s.to_string())
+                .into_any_element(),
+            None => root.into_any_element(),
+        }
+    }
+}
+
+/// A panel (`docs/ui-conventions.md` → *Panels*): bordered, rounded,
+/// never filled, filling the space the page gives it. `padded` adds the
+/// standard 16 px of inner padding (`p_4`).
+pub(super) fn panel(cx: &App, padded: bool) -> Div {
+    let (border, radius) = {
+        let theme = cx.theme();
+        (theme.border, theme.radius)
+    };
+    div()
+        .flex_1()
+        .min_h_0()
+        .flex()
+        .flex_col()
+        .rounded(radius)
+        .border_1()
+        .border_color(border)
+        .overflow_hidden()
+        .when(padded, |el| el.p_4())
+}
+
+/// The page header (ui-conventions *Pages*): `text_lg` semibold title,
+/// a `text_sm muted` summary beside it, and the page's actions pushed to
+/// the right edge.
+pub(super) fn page_header(
+    cx: &App,
+    title: impl Into<SharedString>,
+    summary: impl Into<SharedString>,
+    actions: Vec<AnyElement>,
+) -> Div {
+    let muted = cx.theme().muted_foreground;
+    let title: SharedString = title.into();
+    let summary: SharedString = summary.into();
+    h_flex()
+        .w_full()
+        .gap_2()
+        .items_center()
+        .child(
+            div()
+                .text_lg()
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(title),
+        )
+        .child(div().text_sm().text_color(muted).child(summary))
+        .child(div().flex_1())
+        .children(actions)
+}
+
+/// The filter strip (ui-conventions *Filtering*): one 32 px row of
+/// controls with the standard 8 px gap. (Built ahead of the pages that
+/// move onto it; 3.51 and 3.52 adopt it.)
+#[allow(dead_code)]
+pub(super) fn filter_row() -> Div {
+    h_flex().w_full().h(px(32.)).gap_2().items_center()
+}
+
+/// An inline add/edit form (ui-conventions *Forms*): a bordered row of
+/// controls with the standard padding, so a form reads as one unit
+/// without a modal. (Built ahead of the pages that move onto it.)
+#[allow(dead_code)]
+pub(super) fn inline_form(cx: &App) -> Div {
+    let (border, radius) = {
+        let theme = cx.theme();
+        (theme.border, theme.radius)
+    };
+    h_flex()
+        .w_full()
+        .gap_2()
+        .items_end()
+        .p_3()
+        .rounded(radius)
+        .border_1()
+        .border_color(border)
+}
+
+/// A category color swatch (ui-conventions *Category colors*): a 10 px
+/// square with a 2 px radius beside the category name. (Built ahead of
+/// the pages that move onto it; 3.51 adopts it.)
+#[allow(dead_code)]
+pub(super) fn swatch(color: Hsla) -> Div {
+    div().size(px(10.)).flex_none().rounded(px(2.)).bg(color)
+}
+
+/// The income/expense tag (ui-conventions *Components*): an outline Tag,
+/// the same widget wherever a flow type is labelled.
+pub(super) fn type_tag(label: impl Into<SharedString>) -> Tag {
+    Tag::new().outline().child(label.into())
+}
+
+/// A row action: a ghost xsmall icon button with a tooltip naming it
+/// (ui-conventions *Interaction* — icon-only actions always explain
+/// themselves on hover). (Built ahead of the pages that move onto it.)
+#[allow(dead_code)]
+pub(super) fn row_action_button(
+    id: impl Into<SharedString>,
+    icon: IconName,
+    tooltip: impl Into<SharedString>,
+) -> Button {
+    let id: SharedString = id.into();
+    Button::new(id).ghost().xsmall().icon(icon).tooltip(tooltip)
 }
 
 // -- Responsive chart labels (3.15) -------------------------------------
