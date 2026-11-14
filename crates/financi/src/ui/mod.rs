@@ -131,6 +131,151 @@ fn app_menus() -> Vec<Menu> {
     ])]
 }
 
+/// One-time global UI wiring (3.76): the key bindings, the macOS menu bar
+/// and the global file-action listeners. `main` calls this once before the
+/// first window; the test harness calls it once per test `App`.
+///
+/// It is idempotent because `App::on_action` listeners can never be
+/// removed: registering them per `Shell` (as before) doubled every ⌘
+/// action once a second window existed, and each listener kept its
+/// `Shell` alive forever. They are registered here once and resolve the
+/// window's `Shell` at dispatch time (see [`route_to_shell`]).
+pub fn init(cx: &mut App) {
+    if cx.try_global::<UiInitialized>().is_some() {
+        return;
+    }
+    // Esc clears the dashboard's category selection (3.5); the root view
+    // handles the action in `Render::render`.
+    cx.bind_keys([KeyBinding::new("escape", ClearCategorySelection, None)]);
+    // ⌘ shortcuts for the file actions (3.7); `cmd` is ⌘ on macOS and
+    // Super on Linux. The same actions reach the user through the
+    // Imports page header on every platform.
+    cx.bind_keys([
+        KeyBinding::new("cmd-o", ImportCsv, None),
+        KeyBinding::new("cmd-e", ExportData, None),
+        KeyBinding::new("cmd-q", QuitApp, None),
+    ]);
+    // The native menu bar (macOS; a no-op store elsewhere). Key
+    // equivalents are read from the keymap, so bind first.
+    cx.set_menus(app_menus());
+    // The file actions are handled globally, not on the root element:
+    // the native menu dispatches them without a focused element, and
+    // `App::is_action_available` — what macOS uses to enable menu
+    // items — only counts global listeners in that case.
+    cx.on_action(|_: &ImportCsv, cx| {
+        route_to_shell(cx, |this, window, cx| this.pick_file(window, cx));
+    });
+    cx.on_action(|_: &UndoLastImport, cx| {
+        route_to_shell(cx, |this, window, cx| this.undo_last_import(window, cx));
+    });
+    cx.on_action(|_: &ExportData, cx| {
+        route_to_shell(cx, |this, window, cx| this.export_data(window, cx));
+    });
+    cx.on_action(|_: &RestoreBackup, cx| {
+        route_to_shell(cx, |this, window, cx| this.restore_backup(window, cx));
+    });
+    cx.on_action(|_: &QuitApp, cx| cx.quit());
+    cx.set_global(UiInitialized);
+}
+
+struct UiInitialized;
+
+impl Global for UiInitialized {}
+
+/// Run `handler` on the `Shell` of the window that owns the action —
+/// the active window's, resolved from its root view at dispatch time and
+/// never stored, so nothing keeps a closed or replaced `Shell` alive
+/// (3.76). A window whose root is not the `Shell` (the startup-error
+/// window, a popover left open over nothing) simply has no file actions.
+///
+/// Global listeners run inside the window's update loop, so the work is
+/// deferred out of it (same pattern as `Window::dispatch_action`). The
+/// test platform never activates a window, so with no active window the
+/// application's own windows are tried in turn.
+fn route_to_shell(
+    cx: &mut App,
+    handler: impl Fn(&mut Shell, &mut Window, &mut Context<Shell>) + 'static,
+) {
+    cx.defer(move |cx| {
+        let candidates: Vec<AnyWindowHandle> = match cx.active_window() {
+            Some(window) => vec![window],
+            None => cx.windows(),
+        };
+        for window in candidates {
+            let handled = window
+                .update(cx, |root, window, cx| {
+                    // gpui-kit windows wrap the app view in the kit's
+                    // `Root`, so unwrap two layers: Root, then `Shell`.
+                    let Ok(root) = root.downcast::<gpui_kit::base::Root>() else {
+                        return false;
+                    };
+                    let Some(shell) = root.read(cx).view().clone().downcast::<Shell>().ok() else {
+                        return false;
+                    };
+                    shell.update(cx, |this, cx| handler(this, window, cx));
+                    true
+                })
+                .unwrap_or(false);
+            if handled {
+                return;
+            }
+        }
+    });
+}
+
+/// A minimal window naming a startup failure (3.76). It is what the user
+/// sees when the database could not be opened, so it must need nothing
+/// from the database: themed text and one button.
+struct StartupError {
+    message: SharedString,
+}
+
+impl Render for StartupError {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
+        v_flex()
+            .size_full()
+            .bg(theme.background)
+            .text_color(theme.foreground)
+            .items_center()
+            .justify_center()
+            .gap_4()
+            .child(
+                v_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(div().text_sm().child("financi could not start"))
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(theme.muted_foreground)
+                            .child(self.message.clone()),
+                    ),
+            )
+            .child(
+                Button::new("startup-error-close")
+                    .label("Close")
+                    .primary()
+                    .on_click(|_, window, _cx| window.remove_window()),
+            )
+    }
+}
+
+/// Open the startup-error window (3.76) with `message`. Used by `main`
+/// when the database could not be opened, so the reason is on screen and
+/// not only in the terminal and `<data dir>/financi.log`.
+pub fn open_error_window(message: impl Into<SharedString>, cx: &mut App) {
+    let message = message.into();
+    let options = WindowOptions {
+        window_bounds: Some(WindowBounds::centered(size(px(480.), px(240.)), cx)),
+        window_min_size: Some(size(px(360.), px(180.))),
+        ..Default::default()
+    };
+    let _ = cx.open_window(options, move |_window, cx| {
+        cx.new(|_cx| StartupError { message })
+    });
+}
+
 pub struct Shell {
     db: DbWorker,
     db_path: PathBuf,
@@ -321,21 +466,9 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> Self {
         let csv_root = financi_db::master_csv::root_for_db(&db_path);
-        // Esc clears the dashboard's category selection (3.5); the root
-        // view handles the action in `Render::render`.
-        cx.bind_keys([KeyBinding::new("escape", ClearCategorySelection, None)]);
-        // ⌘ shortcuts for the file actions (3.7); `cmd` is ⌘ on macOS and
-        // Super on Linux. The same actions reach the user through the
-        // Imports page header on every platform.
-        cx.bind_keys([
-            KeyBinding::new("cmd-o", ImportCsv, None),
-            KeyBinding::new("cmd-e", ExportData, None),
-            KeyBinding::new("cmd-q", QuitApp, None),
-        ]);
-        // The native menu bar (macOS; a no-op store elsewhere). Key
-        // equivalents are read from the keymap, so bind first.
-        cx.set_menus(app_menus());
-        Self::wire_file_actions(&cx.entity(), window.window_handle(), cx);
+        // 3.76: the global wiring (key bindings, menus, file-action
+        // listeners) lives in `ui::init` now — once per app, not once per
+        // window.
         // The add-rule row and its editor (3.24, 3.28): rendered by both
         // the Categories page and the Rules page, so their controls stay on
         // `Shell` (3.78 moves them with the rule data).
@@ -414,26 +547,6 @@ impl Shell {
         shell
     }
 
-    /// The file actions are handled globally, not on the root element:
-    /// the native menu dispatches them without a focused element, and
-    /// `App::is_action_available` — what macOS uses to enable menu
-    /// items — only counts global listeners in that case.
-    fn wire_file_actions(shell: &Entity<Shell>, window: AnyWindowHandle, cx: &mut App) {
-        Self::on_shell_action(shell, window, cx, |this, _: &ImportCsv, window, cx| {
-            this.pick_file(window, cx);
-        });
-        Self::on_shell_action(shell, window, cx, |this, _: &UndoLastImport, window, cx| {
-            this.undo_last_import(window, cx);
-        });
-        Self::on_shell_action(shell, window, cx, |this, _: &ExportData, window, cx| {
-            this.export_data(window, cx);
-        });
-        Self::on_shell_action(shell, window, cx, |this, _: &RestoreBackup, window, cx| {
-            this.restore_backup(window, cx);
-        });
-        Self::on_shell_action(shell, window, cx, |_, _: &QuitApp, _, cx| cx.quit());
-    }
-
     /// A window resize re-flexes the two tables' columns (3.20, 3.25) and
     /// re-renders for the chart's label plan (3.15).
     fn window_bounds_changed(&mut self, window: &mut Window, cx: &mut Context<Shell>) {
@@ -477,6 +590,10 @@ impl Shell {
         // them on the state and the filter controls, so launch is one
         // refresh whose first frame shows the saved range.
         let startup = std::mem::take(&mut self.dashboard.startup_settings);
+        // 3.76: the master-CSV self-check rides this job when it is the
+        // launch one, so startup stays a single worker job and the window
+        // shows at once.
+        let csv_root = self.csv_root.clone();
         // The table-only filters (3.4): search, the two toggles and the sort,
         // folded into the query alongside the shared date-range/accounts/
         // transfers filter. The category slot carries the legend selection
@@ -517,11 +634,19 @@ impl Shell {
                 let startup = if startup {
                     let range = settings::date_range(c)?;
                     let transfers = settings::include_transfers(c)?;
+                    // 3.76: the master-CSV self-check ran in `main` before
+                    // the window existed; it is DB work, so it runs here,
+                    // in the first job. The database is the source of
+                    // truth: a failure only reports, and the message rides
+                    // back to a toast.
+                    let csv_check = financi_db::master_csv::self_check(c, &csv_root)
+                        .err()
+                        .map(|e| e.to_string());
                     let (from, to) = range.range(Shell::today());
                     view_filter.from = from;
                     view_filter.to = to;
                     view_filter.include_transfers = transfers;
-                    Some((range, transfers))
+                    Some((range, transfers, csv_check))
                 } else {
                     None
                 };
@@ -625,7 +750,10 @@ impl Shell {
                         // land on the state and the filter controls before
                         // the data of the same round trip is applied, so
                         // the first frame shows the saved range everywhere.
-                        if let Some((range, include_transfers)) = startup {
+                        if let Some((range, include_transfers, csv_check)) = startup {
+                            if let Some(e) = csv_check {
+                                this.notify_err(format!("Master CSV check failed: {e}"), cx);
+                            }
                             this.set_date_range(range, window, cx);
                             this.dashboard.include_transfers = include_transfers;
                             this.dashboard.view_filter.include_transfers = include_transfers;
@@ -678,34 +806,5 @@ impl Shell {
         self.rules_page.rules_reveal = None;
         self.rules_page.rules_focus_pending.set(page == Page::Rules);
         cx.notify();
-    }
-
-    /// Run `handler` on the shell in `window`. The global file-action
-    /// listeners (3.7) funnel through this, so they work from any focus
-    /// state — including none, as the native menu leaves it.
-    fn on_shell_action<A: Action>(
-        shell: &Entity<Shell>,
-        window: AnyWindowHandle,
-        cx: &mut App,
-        handler: impl Fn(&mut Shell, &A, &mut Window, &mut Context<Shell>) + 'static,
-    ) {
-        let shell = shell.clone();
-        let handler = std::rc::Rc::new(handler);
-        cx.on_action(move |action: &A, cx: &mut App| {
-            let shell = shell.clone();
-            let handler = handler.clone();
-            // The listener runs inside the window's update loop, so the
-            // shell update has to be deferred out of it (same pattern as
-            // `Window::dispatch_action`).
-            let action = action.boxed_clone();
-            cx.defer(move |cx| {
-                let Some(action) = action.as_any().downcast_ref::<A>() else {
-                    return;
-                };
-                let _ = window.update(cx, |_, window, cx| {
-                    shell.update(cx, |this, cx| handler(this, action, window, cx));
-                });
-            });
-        });
     }
 }

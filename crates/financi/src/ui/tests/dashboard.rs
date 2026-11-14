@@ -1,5 +1,7 @@
 //! Tests for `ui/dashboard.rs` (3.62 split from `ui_tests.rs`).
 
+use gpui_kit::component::menu::PopupMenu;
+
 use super::*;
 /// 3.25: the dashboard table's width plan — the flexed `Account`,
 /// `Description` and `Category` columns plus the fixed ones always sum to
@@ -573,6 +575,33 @@ fn menu_shows_hide_for_a_visible_row_and_unhide_only_for_a_hidden_one() {
         [RowMenuItem::ChangeCategory, RowMenuItem::Unhide],
         "an unpaired row never offers Unpair"
     );
+}
+
+/// 3.76: a menu or a cell asked for a row index the table no longer has
+/// — a detached write can empty `rows` between the click and the menu
+/// opening — yields nothing rather than a panic.
+#[gpui::test]
+fn row_menu_and_cells_past_the_end_are_empty(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |_| {});
+    wait_idle(cx, &shell);
+    with_window(cx, handle, |window, cx| {
+        let table = shell.read(cx).dashboard.table.clone();
+        assert!(
+            table.read(cx).delegate().rows.is_empty(),
+            "fresh table, no rows"
+        );
+        // `context_menu` takes an owned menu, and only `PopupMenu::build`
+        // hands one out — pass it to the delegate the way the table's own
+        // right-click wiring does.
+        let _menu = PopupMenu::build(window, cx, |menu, window, cx| {
+            table.update(cx, |table, cx| {
+                table.delegate_mut().context_menu(0, menu, window, cx)
+            })
+        });
+        table.update(cx, |table, cx| {
+            let _cell = table.delegate_mut().render_td(0, 0, window, cx);
+        });
+    });
 }
 
 /// 3.29: the *Show rule* item finds the rule that decided the row, or says

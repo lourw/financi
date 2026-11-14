@@ -1295,6 +1295,63 @@ fn cmd_o_opens_the_file_picker_and_the_preview(cx: &mut TestAppContext) {
     });
 }
 
+/// 3.76: the global wiring is installed once per app, not once per
+/// window. With two shells open, ⌘O opens exactly one dialog and drives
+/// the *active* window's shell — the other shell never sees the action.
+/// (Per-shell wiring let both shells answer every ⌘ action, and kept both
+/// shells alive forever.)
+#[gpui::test]
+fn cmd_o_fires_once_and_drives_the_active_shell(cx: &mut TestAppContext) {
+    let (handle_a, shell_a) = open_shell(cx, |_| {});
+    let (handle_b, shell_b) = open_shell(cx, |_| {});
+    wait_idle(cx, &shell_a);
+    wait_idle(cx, &shell_b);
+    // Like a click: window B becomes the platform's active window.
+    with_window(cx, handle_b, |window, _cx| window.activate_window());
+    cx.run_until_parked();
+
+    // ⌘O dispatched on window A — the active window still wins, and only
+    // one dialog opens.
+    with_window(cx, handle_a, |window, cx| {
+        window.dispatch_action(Box::new(ImportCsv), cx)
+    });
+    cx.run_until_parked();
+    assert!(cx.did_prompt_for_paths(), "⌘O opened a file picker");
+    let file = demo("simplii-chequing.csv");
+    cx.simulate_path_prompt_response(move |_| Some(vec![file]));
+    assert!(
+        !cx.did_prompt_for_paths(),
+        "⌘O opened exactly one file picker"
+    );
+
+    wait_until(cx, "the active shell shows the preview", |cx| {
+        shell_b.read(cx).imports.import.is_some()
+    });
+    // The inactive shell never acted: once B's work has settled, it has
+    // no panel of its own.
+    wait_idle(cx, &shell_a);
+    cx.update(|cx| {
+        assert!(
+            shell_a.read(cx).imports.import.is_none(),
+            "the inactive shell did not act on ⌘O"
+        );
+    });
+}
+
+/// 3.76: nothing outlives a window. The wiring holds no strong handle to
+/// the `Shell`, so removing the window drops the shell with it — a weak
+/// handle to it stops upgrading.
+#[gpui::test]
+fn closing_the_window_drops_the_shell(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |_| {});
+    wait_idle(cx, &shell);
+    let weak = shell.downgrade();
+    drop(shell);
+    with_window(cx, handle, |window, _cx| window.remove_window());
+    cx.run_until_parked();
+    assert!(weak.upgrade().is_none(), "the Shell outlived its window");
+}
+
 /// The `UndoLastImport` action (File menu item and Imports header button)
 /// runs the newest row's undo path: arm, then undo.
 #[gpui::test]

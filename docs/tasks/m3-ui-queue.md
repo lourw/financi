@@ -6,7 +6,7 @@ Do these in the order listed (`docs/tasks.md` → *Picking the next task*). Each
 
 Steps 1–15 of `docs/tasks/gpui.md` → *GPUI best practices*, task by task.
 
-- [ ] **3.76 App wiring done once, without reference cycles.** (Code
+- [x] **3.76 App wiring done once, without reference cycles.** (Code
   review, 2026-11-11.)
   - **Global setup out of the view.** `Shell::new` calls `cx.bind_keys`,
     `cx.set_menus` and registers global `cx.on_action` listeners holding

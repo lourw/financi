@@ -35,11 +35,12 @@ use super::dashboard_chart::{
 };
 use super::{
     BUTTON_PAD_X, CELL_PAD_X, CHART_CHAR_PX, DashboardBody, ExportData, HISTORY_DATES_W,
-    HISTORY_FLEX_MIN_W, HISTORY_ROWS_W, HISTORY_TIME_W, ImportPanel, LEGEND_W, LegendSelection,
-    NEW_ACCOUNT, NEW_CATEGORY, NEW_RULE, PAGE_PAD, Page, PendingRuleAction, PlanState,
-    RestoreBackup, RowMenuItem, RowShowRule, SIDEBAR_W, SUBCATEGORY_PH, Shell, SummaryRowKind,
-    TABLE_BORDER_X, TEXT_SM_CHAR_PX, TX_FIXED_W, UNDO_ICON_W, UNDO_LABEL_MAX, UndoLastImport,
-    history_flex_widths, history_undo_col_w, row_menu_items, row_show_rule, tx_flex_widths,
+    HISTORY_FLEX_MIN_W, HISTORY_ROWS_W, HISTORY_TIME_W, ImportCsv, ImportPanel, LEGEND_W,
+    LegendSelection, NEW_ACCOUNT, NEW_CATEGORY, NEW_RULE, PAGE_PAD, Page, PendingRuleAction,
+    PlanState, RestoreBackup, RowMenuItem, RowShowRule, SIDEBAR_W, SUBCATEGORY_PH, Shell,
+    SummaryRowKind, TABLE_BORDER_X, TEXT_SM_CHAR_PX, TX_FIXED_W, UNDO_ICON_W, UNDO_LABEL_MAX,
+    UndoLastImport, history_flex_widths, history_undo_col_w, row_menu_items, row_show_rule,
+    tx_flex_widths,
 };
 use crate::ui::sidebar::NAV_ROW_INSET;
 
@@ -117,6 +118,10 @@ fn open_shell_with_conn(
     // The DB worker answers from its own OS thread.
     cx.executor().allow_parking();
     cx.update(gpui_kit::init);
+    // 3.76: the global wiring is the app's, not the Shell's — the real
+    // main() does this once before the first window, and every test App
+    // needs it too (idempotent, so a second shell in one App is fine).
+    cx.update(crate::ui::init);
     let db = DbWorker::spawn(conn);
     cx.update(|cx| {
         let bounds = Bounds {
