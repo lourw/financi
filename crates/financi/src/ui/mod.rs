@@ -13,6 +13,7 @@ mod dashboard;
 mod dashboard_chart;
 mod dashboard_filters;
 mod imports;
+mod page;
 mod queue;
 mod rules;
 mod sidebar;
@@ -22,6 +23,7 @@ mod widgets;
 use self::categories::*;
 use self::dashboard::*;
 use self::imports::*;
+use self::page::{Cancel, PageEntity as _, PageEvent};
 use self::queue::*;
 use self::rules::*;
 use self::transfers::*;
@@ -88,8 +90,7 @@ use crate::flow::{self, LoadedFile, PlanSummary};
 // 3.78: the shared data model. The page modules reach `Domains` through
 // the `use super::*` they all carry.
 use catalog::{
-    Catalog, DataChanged, Domain, Domains, S_ACCOUNTS, S_CATEGORIES, S_IMPORTS, S_QUEUE, S_RULES,
-    S_SIDEBAR, S_TRANSFERS,
+    Catalog, DataChanged, Domain, Domains, S_ACCOUNTS, S_CATEGORIES, S_QUEUE, S_RULES, S_SIDEBAR,
 };
 
 type Names = Vec<SharedString>;
@@ -154,6 +155,14 @@ pub fn init(cx: &mut App) {
     // Esc clears the dashboard's category selection (3.5); the root view
     // handles the action in `Render::render`.
     cx.bind_keys([KeyBinding::new("escape", ClearCategorySelection, None)]);
+    // 3.79: Escape is each extracted page's own `Cancel` on its key
+    // context (the page root handles it in its `Render::render`); the
+    // context-less binding above still reaches the pages that have not
+    // been extracted, and the page's root wins the bubble for its own.
+    cx.bind_keys([
+        KeyBinding::new("escape", Cancel, Some("Transfers")),
+        KeyBinding::new("escape", Cancel, Some("Imports")),
+    ]);
     // ⌘ shortcuts for the file actions (3.7); `cmd` is ⌘ on macOS and
     // Super on Linux. The same actions reach the user through the
     // Imports page header on every platform.
@@ -356,16 +365,12 @@ pub struct Shell {
     toast_next_id: u64,
     toast_clock: Instant,
     toast_task: Option<Task<()>>,
-    /// 5.3: an export or a restore in flight (including its open file
-    /// dialog). Both refuse to start while either is set — the archive
-    /// must be a consistent snapshot, taken while nothing else touches
-    /// the files (3.64) — and the Imports header buttons render busy.
-    exporting: bool,
-    restoring: bool,
     /// 5.3 review fix: `exporting || restoring` as a cell shared with
-    /// every [`ImportPanel`], so no UI write dispatch — panel commits
-    /// included — queues behind an archive job. A queued write may name
-    /// rows the restore replaces (dense ids land on different rows).
+    /// every [`ImportPanel`] and with the Imports page, so no UI write
+    /// dispatch — panel commits included — queues behind an archive job.
+    /// A queued write may name rows the restore replaces (dense ids land
+    /// on different rows). The job flags themselves live on the Imports
+    /// page (3.79), which renders the busy header buttons.
     writes_blocked: Rc<Cell<bool>>,
     /// 3.75: idle markers for the tests. `refresh_started` counts every
     /// reload dispatched — the full `refresh` and the partial `changed`
@@ -397,13 +402,16 @@ pub struct Shell {
     /// `Catalog`.
     // -- Page state (3.74): each page's fields live with its page module,
     // built by its own `new` and updated by its own `apply_*` in the
-    // `refresh` continuation.
+    // `refresh` continuation. 3.79: the Transfers and Imports pages are
+    // entities of their own — they own their state, render themselves, and
+    // refresh from the `Catalog` (see `ui/page.rs`); `Shell` navigates
+    // them with `set_visible` and hears from them through `PageEvent`.
     dashboard: DashboardState,
     queue: QueueState,
     categories_page: CategoriesState,
     rules_page: RulesPageState,
-    transfers: TransfersState,
-    imports: ImportsState,
+    transfers: Entity<TransfersPage>,
+    imports: Entity<ImportsPage>,
     _subs: Vec<Subscription>,
 }
 
@@ -428,8 +436,10 @@ impl Render for Shell {
             Page::ToCategorize => self.render_queue(cx),
             Page::Categories => self.render_categories(cx),
             Page::Rules => self.render_rules(cx),
-            Page::Transfers => self.render_transfers(cx),
-            Page::Imports => self.render_imports(cx),
+            // 3.79: the extracted pages render themselves — the entity is
+            // the element.
+            Page::Transfers => self.transfers.clone().into_any_element(),
+            Page::Imports => self.imports.clone().into_any_element(),
         };
         // 3.11: key the page area by the page. A switch to another page
         // lands on a fresh element id, so GPUI cannot reuse the previous
@@ -515,10 +525,34 @@ impl Shell {
         let queue = QueueState::new(window, cx);
         let categories_page = CategoriesState::new(window, cx);
         let rules_page = RulesPageState::new(window, cx);
-        let transfers = TransfersState::new(window, cx);
-        let imports = ImportsState::new(window, cx);
         // 3.78: one shared data model, fed by the same worker.
         let catalog = cx.new(|_| Catalog::new(db.clone()));
+        // 3.79: the extracted pages are entities watching that model. Both
+        // start hidden and dirty; the `DataChanged` from the launch
+        // `refresh` below leaves them dirty (hidden), and the first visit
+        // applies.
+        let writes_blocked = Rc::new(Cell::new(false));
+        let transfers = cx
+            .new(|cx| TransfersPage::new(db.clone(), writes_blocked.clone(), catalog.clone(), cx));
+        let imports = cx.new(|cx| {
+            ImportsPage::new(
+                db.clone(),
+                csv_root.clone(),
+                writes_blocked.clone(),
+                &catalog,
+                window,
+                cx,
+            )
+        });
+        // 3.79: the one page → `Shell` listener: toasts, reloads, page
+        // resets and navigation arrive as `PageEvent`s on the page's own
+        // entity, never as a call into `Shell`.
+        let transfers_events = cx.subscribe_in(&transfers, window, |this, _, ev, window, cx| {
+            this.on_page_event(ev, window, cx);
+        });
+        let imports_events = cx.subscribe_in(&imports, window, |this, _, ev, window, cx| {
+            this.on_page_event(ev, window, cx);
+        });
         let mut shell = Self {
             db,
             db_path,
@@ -550,9 +584,7 @@ impl Shell {
             toast_next_id: 0,
             toast_clock: Instant::now(),
             toast_task: None,
-            exporting: false,
-            restoring: false,
-            writes_blocked: Rc::new(Cell::new(false)),
+            writes_blocked,
             refresh_started: 0,
             category_selection_settled: 0,
             refresh_applied: 0,
@@ -563,7 +595,7 @@ impl Shell {
             rules_page,
             transfers,
             imports,
-            _subs: vec![bounds_sub],
+            _subs: vec![bounds_sub, transfers_events, imports_events],
         };
         // The live "matches N transactions" preview runs on every pattern
         // keystroke (ui-conventions, Categories page).
@@ -591,12 +623,9 @@ impl Shell {
         }
         self.window_width = width;
         let page_w = (width - SIDEBAR_W - 2. * PAGE_PAD).max(0.);
-        let flex = history_flex_widths(page_w);
-        self.imports.history_table.update(cx, |t, cx| {
-            t.delegate_mut().flex_widths = flex;
-            // Re-read the delegate's columns with the new widths.
-            t.refresh(cx);
-        });
+        // 3.79: the Imports history table lives on its page entity now.
+        self.imports
+            .update(cx, |page, cx| page.widths_changed(page_w, cx));
         let flex = tx_flex_widths(page_w);
         self.dashboard.table.update(cx, |t, cx| {
             t.delegate_mut().flex_widths = flex;
@@ -783,10 +812,9 @@ impl Shell {
         if let Some(e) = event.startup.clone() {
             self.notify_err(format!("Master CSV check failed: {e}"), cx);
         }
-        if sections & S_IMPORTS != 0 {
-            let history = self.catalog.read(cx).snap.imports.clone();
-            self.apply_imports(history, cx);
-        }
+        // 3.79: the Imports and Transfers pages are entities and apply
+        // their own sections of the snapshot (see `ui/page.rs`), so this
+        // mapping only covers the state still shared across pages.
         if sections & S_CATEGORIES != 0 {
             let (tree, counts) = {
                 let cat = self.catalog.read(cx);
@@ -804,10 +832,6 @@ impl Shell {
         if sections & S_QUEUE != 0 {
             let queue = self.catalog.read(cx).snap.queue.clone();
             self.apply_queue(queue);
-        }
-        if sections & S_TRANSFERS != 0 {
-            let reviews = self.catalog.read(cx).snap.reviews.clone();
-            self.apply_transfers(reviews);
         }
         if sections & (S_CATEGORIES | S_RULES) != 0 {
             self.sync_category_choices(event.generation, window, cx);
@@ -836,7 +860,6 @@ impl Shell {
         // confirmations, the rule offer and the inline rename editor all
         // belong to the page they were opened on. 3.24: the rule editor and
         // the armed rule delete join that list.
-        self.imports.confirm_undo_import = None;
         self.dashboard.rule_offer = None;
         self.categories_page.renaming = false;
         self.categories_page.new_category_open = false;
@@ -852,6 +875,107 @@ impl Shell {
         self.rules_page.rules_move_error = None;
         self.rules_page.rules_reveal = None;
         self.rules_page.rules_focus_pending.set(page == Page::Rules);
+        // 3.79: the extracted pages follow the switch too — the one shown
+        // applies the snapshot if it drifted while hidden and takes focus,
+        // the hidden one marks itself dirty. The armed import Undo clears
+        // first (3.11) so the apply does not re-arm the history button.
+        self.imports.update(cx, |p, cx| {
+            p.confirm_undo_import = None;
+            p.set_visible(page == Page::Imports, cx);
+        });
+        self.transfers
+            .update(cx, |p, cx| p.set_visible(page == Page::Transfers, cx));
         cx.notify();
+    }
+
+    /// 3.79: the one page → `Shell` listener. Pages never reach the shell;
+    /// everything they need from it arrives as a [`PageEvent`] on their
+    /// own entity and is run here.
+    fn on_page_event(&mut self, event: &PageEvent, window: &mut Window, cx: &mut Context<Self>) {
+        match event {
+            PageEvent::Toast { message, error } => {
+                if *error {
+                    self.notify_err(message.clone(), cx);
+                } else {
+                    self.notify_ok(message.clone(), cx);
+                }
+            }
+            PageEvent::Changed(domains) => self.changed(*domains, window, cx),
+            PageEvent::Refresh => self.refresh(window, cx),
+            PageEvent::ResetPages => self.reset_pages_after_restore(window, cx),
+            PageEvent::Go(page) => self.go_page(*page, cx),
+        }
+    }
+
+    /// Drop every page's transient state after a restore replaced the
+    /// whole database behind the UI (5.3): row ids, open editors, armed
+    /// confirmations and picker selections all name rows that the new
+    /// file may not have, or — worse — ids reused for other rows. 3.79:
+    /// the extracted pages clear their own share.
+    pub(super) fn reset_pages_after_restore(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.dashboard.filter.legend_selection = None;
+        self.dashboard.filter.summary_month = None;
+        self.dashboard.filter.chart_parent = None;
+        self.dashboard.rule_offer = None;
+        self.queue.pickers.clear();
+        self.queue.picker_subs.clear();
+        self.queue.picker_items = None;
+        self.queue.error = None;
+        self.categories_page.selected_category = None;
+        self.categories_page.renaming = false;
+        self.categories_page.new_category_open = false;
+        self.categories_page.confirm_delete_category = None;
+        self.close_rule_editor();
+        self.armed_delete_rule = None;
+        self.rules_page.new_rule_open = false;
+        self.rules_page.selected_rules.clear();
+        self.rules_page.collapsed_rule_groups.clear();
+        self.rules_page.rules_move_error = None;
+        self.rules_page.rules_reveal = None;
+        // An armed Undo or a half-filled import panel would commit the
+        // old database's ids and categories into the restored one.
+        self.imports.update(cx, |p, cx| p.reset_after_restore(cx));
+        self.refresh(window, cx);
+    }
+
+    // -- Forwarders (3.79): the file actions live on the Imports page and
+    // transfer pairing on the Transfers page; the global action listeners
+    // and the drag-and-drop target reach them through here.
+
+    pub(super) fn open_file(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        self.imports
+            .update(cx, |p, cx| p.open_file(path, window, cx));
+    }
+
+    pub(super) fn pick_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.imports.update(cx, |p, cx| p.pick_file(window, cx));
+    }
+
+    pub(super) fn undo_last_import(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.imports
+            .update(cx, |p, cx| p.undo_last_import(window, cx));
+    }
+
+    pub(super) fn export_data(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.imports.update(cx, |p, cx| p.export_data(window, cx));
+    }
+
+    pub(super) fn restore_backup(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.imports
+            .update(cx, |p, cx| p.restore_backup(window, cx));
+    }
+
+    pub(super) fn unpair_row(
+        &mut self,
+        transaction_id: i64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.transfers
+            .update(cx, |p, cx| p.unpair_row(transaction_id, window, cx));
     }
 }

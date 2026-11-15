@@ -48,6 +48,7 @@ mod catalog;
 mod categories;
 mod dashboard;
 mod imports;
+mod page;
 mod queue;
 mod rules;
 mod sidebar;
@@ -199,6 +200,7 @@ fn panel(shell: &Entity<Shell>, cx: &App) -> Entity<ImportPanel> {
     shell
         .read(cx)
         .imports
+        .read(cx)
         .import
         .as_ref()
         .map(|(panel, _)| panel.clone())
@@ -209,6 +211,7 @@ fn plan_ready(shell: &Entity<Shell>, cx: &App) -> bool {
     shell
         .read(cx)
         .imports
+        .read(cx)
         .import
         .as_ref()
         .is_some_and(|(panel, _)| matches!(panel.read(cx).plan, PlanState::Ready(_)))
@@ -326,7 +329,7 @@ fn import_demo_file(
     });
     click_import(cx, handle, shell);
     wait_until(cx, "import finished", |cx| {
-        shell.read(cx).imports.import.is_none()
+        shell.read(cx).imports.read(cx).import.is_none()
     });
 }
 
@@ -873,7 +876,7 @@ fn go_page_closes_transient_ui(cx: &mut TestAppContext) {
     });
     cx.update(|cx| {
         shell.update(cx, |s, cx| {
-            s.imports.confirm_undo_import = Some(1);
+            s.imports.update(cx, |p, _| p.confirm_undo_import = Some(1));
             s.dashboard.rule_offer = Some((1, 2));
             s.categories_page.renaming = true;
             s.categories_page.confirm_delete_category = Some(1);
@@ -881,7 +884,7 @@ fn go_page_closes_transient_ui(cx: &mut TestAppContext) {
         });
         let s = shell.read(cx);
         assert!(
-            s.imports.confirm_undo_import.is_none(),
+            s.imports.read(cx).confirm_undo_import.is_none(),
             "undo confirmation cleared"
         );
         assert!(s.dashboard.rule_offer.is_none(), "rule offer cleared");
