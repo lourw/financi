@@ -61,9 +61,13 @@ fn a_late_category_add_never_steals_a_newer_selection(cx: &mut TestAppContext) {
     // the write is still running.
     with_window(cx, handle, |window, cx| {
         shell.update(cx, |s, cx| {
-            s.categories_page.new_parent_name.update(cx, |i, cx| {
-                i.set_value("Late", window, cx);
-            });
+            s.categories_view
+                .read(cx)
+                .new_parent_name
+                .clone()
+                .update(cx, |i, cx| {
+                    i.set_value("Late", window, cx);
+                });
             s.add_parent(window, cx);
             s.select_category(groceries, window, cx);
         });
@@ -75,7 +79,7 @@ fn a_late_category_add_never_steals_a_newer_selection(cx: &mut TestAppContext) {
     cx.update(|cx| {
         let s = shell.read(cx);
         assert_eq!(
-            s.categories_page.selected_category,
+            s.categories_view.read(cx).selected_category,
             Some(groceries),
             "the click owns the selection: the late add must not take it back"
         );
@@ -85,14 +89,22 @@ fn a_late_category_add_never_steals_a_newer_selection(cx: &mut TestAppContext) {
     // rename editor open on the old row closes with the move.
     with_window(cx, handle, |window, cx| {
         shell.update(cx, |s, cx| {
-            s.categories_page.new_parent_name.update(cx, |i, cx| {
-                i.set_value("Later", window, cx);
-            });
+            s.categories_view
+                .read(cx)
+                .new_parent_name
+                .clone()
+                .update(cx, |i, cx| {
+                    i.set_value("Later", window, cx);
+                });
             s.add_parent(window, cx);
-            s.categories_page.renaming = true;
-            s.categories_page.rename_input.update(cx, |i, cx| {
-                i.set_value("Groceries", window, cx);
-            });
+            s.categories_view.update(cx, |p, _| p.renaming = true);
+            s.categories_view
+                .read(cx)
+                .rename_input
+                .clone()
+                .update(cx, |i, cx| {
+                    i.set_value("Groceries", window, cx);
+                });
         });
     });
     wait_until(cx, "the second add lands", |cx| {
@@ -103,12 +115,12 @@ fn a_late_category_add_never_steals_a_newer_selection(cx: &mut TestAppContext) {
         let s = shell.read(cx);
         let later = s.categories.iter().find(|p| p.name == "Later").unwrap().id;
         assert_eq!(
-            s.categories_page.selected_category,
+            s.categories_view.read(cx).selected_category,
             Some(later),
             "an untouched selection still hands over to the new row"
         );
         assert!(
-            !s.categories_page.renaming,
+            !s.categories_view.read(cx).renaming,
             "the rename editor closed with the selection it belonged to, so \
              its Save can no longer rename the new category"
         );
@@ -169,7 +181,11 @@ fn delete_category_reassigns_transactions_and_rules(cx: &mut TestAppContext) {
     with_window(cx, handle, |window, cx| {
         shell.update(cx, |s, cx| s.arm_delete_category(window, cx));
         assert_eq!(
-            shell.read(cx).categories_page.confirm_delete_category,
+            shell
+                .read(cx)
+                .categories_view
+                .read(cx)
+                .confirm_delete_category,
             Some(online),
             "first click arms"
         );
@@ -201,7 +217,12 @@ fn s_ix(shell: &Entity<Shell>, cx: &App, child: i64) -> usize {
 }
 
 fn s_select(shell: &Entity<Shell>, cx: &mut App, ix: usize, window: &mut Window) {
-    let target = shell.read(cx).categories_page.delete_target.clone();
+    let target = shell
+        .read(cx)
+        .categories_view
+        .read(cx)
+        .delete_target
+        .clone();
     target.update(cx, |sel, cx| {
         sel.set_selected_index(Some(gpui_kit::component::IndexPath::new(ix)), window, cx)
     });
@@ -262,7 +283,7 @@ fn clicking_a_category_still_works_with_a_long_tree(cx: &mut TestAppContext) {
     cx.update(|cx| {
         let s = shell.read(cx);
         assert_eq!(
-            s.categories_page.selected_category,
+            s.categories_view.read(cx).selected_category,
             Some(deep),
             "the last child of the last parent selected"
         );
@@ -290,7 +311,7 @@ fn the_category_tree_keeps_its_scroll_offset(cx: &mut TestAppContext) {
     cx.update(|cx| {
         let s = shell.read(cx);
         assert_eq!(
-            s.categories_page.tree_scroll.offset(),
+            s.categories_view.read(cx).tree_scroll.offset(),
             Point::default(),
             "starts unscrolled"
         );
@@ -303,8 +324,9 @@ fn the_category_tree_keeps_its_scroll_offset(cx: &mut TestAppContext) {
     // Wheel down to the bottom (content is ~36 px a row for thousands of
     // rows); the offset clamps at the last row.
     for _ in 0..120 {
-        let centre =
-            cx.update(|cx| viewport_centre(shell.read(cx).categories_page.tree_scroll.bounds()));
+        let centre = cx.update(|cx| {
+            viewport_centre(shell.read(cx).categories_view.read(cx).tree_scroll.bounds())
+        });
         wheel(cx, handle, centre, 0., -2_000.);
         draw_frame(cx, handle);
     }
@@ -312,7 +334,7 @@ fn the_category_tree_keeps_its_scroll_offset(cx: &mut TestAppContext) {
         let s = shell.read(cx);
         let rows: usize = s.categories.iter().map(|p| 1 + p.children.len()).sum();
         assert!(
-            s.categories_page.tree_scroll.offset().y < px(0.),
+            s.categories_view.read(cx).tree_scroll.offset().y < px(0.),
             "the tree is scrolled down"
         );
         let (start, end) = s.categories_page.tree_range.get();
@@ -327,13 +349,21 @@ fn the_category_tree_keeps_its_scroll_offset(cx: &mut TestAppContext) {
         );
     });
     // An unrelated refresh must not scroll the tree back to the top.
-    let scrolled = cx.update(|cx| shell.read(cx).categories_page.tree_scroll.offset().y);
+    let scrolled = cx.update(|cx| {
+        shell
+            .read(cx)
+            .categories_view
+            .read(cx)
+            .tree_scroll
+            .offset()
+            .y
+    });
     cx.update(|cx| shell.update(cx, |_, cx| cx.notify()));
     draw_frame(cx, handle);
     cx.update(|cx| {
         let s = shell.read(cx);
         assert_eq!(
-            s.categories_page.tree_scroll.offset().y,
+            s.categories_view.read(cx).tree_scroll.offset().y,
             scrolled,
             "the offset survived an unrelated notify"
         );
@@ -361,7 +391,7 @@ fn the_rule_list_keeps_its_scroll_offset(cx: &mut TestAppContext) {
     cx.update(|cx| {
         let s = shell.read(cx);
         assert_eq!(
-            s.categories_page.rule_scroll.offset(),
+            s.categories_view.read(cx).rule_scroll.offset(),
             Point::default(),
             "starts unscrolled"
         );
@@ -371,12 +401,21 @@ fn the_rule_list_keeps_its_scroll_offset(cx: &mut TestAppContext) {
             "the first frame shows the top"
         );
         // Jump straight to the bottom; layout clamps to the scroll max.
-        s.categories_page
+        s.categories_view
+            .read(cx)
             .rule_scroll
             .set_offset(point(px(0.), px(-1_000_000.)));
     });
     draw_frame(cx, handle);
-    let scrolled = cx.update(|cx| shell.read(cx).categories_page.rule_scroll.offset().y);
+    let scrolled = cx.update(|cx| {
+        shell
+            .read(cx)
+            .categories_view
+            .read(cx)
+            .rule_scroll
+            .offset()
+            .y
+    });
     cx.update(|cx| {
         let s = shell.read(cx);
         assert!(scrolled < px(0.), "the rule list is scrolled down");
@@ -393,7 +432,7 @@ fn the_rule_list_keeps_its_scroll_offset(cx: &mut TestAppContext) {
     cx.update(|cx| {
         let s = shell.read(cx);
         assert_eq!(
-            s.categories_page.rule_scroll.offset().y,
+            s.categories_view.read(cx).rule_scroll.offset().y,
             scrolled,
             "the offset survived an unrelated notify"
         );
@@ -406,7 +445,7 @@ fn the_rule_list_keeps_its_scroll_offset(cx: &mut TestAppContext) {
     cx.update(|cx| {
         let s = shell.read(cx);
         assert_eq!(
-            s.categories_page.rule_scroll.offset(),
+            s.categories_view.read(cx).rule_scroll.offset(),
             Point::default(),
             "the selection change reset the rule list's scroll"
         );
@@ -507,7 +546,8 @@ fn the_categories_page_labels_its_controls(cx: &mut TestAppContext) {
         shell.update(cx, |s, cx| {
             s.select_category(parent_id, window, cx);
             // 3.23: the new-category form only paints once opened.
-            s.categories_page.new_category_open = true;
+            s.categories_view
+                .update(cx, |p, _| p.new_category_open = true);
         });
     });
     cx.run_until_parked();
@@ -616,14 +656,16 @@ fn the_categories_page_never_says_parent_or_child(cx: &mut TestAppContext) {
         want: &str,
     ) {
         with_window(cx, handle, |window, cx| {
-            shell.update(cx, |s, _| s.categories_page.cat_error = None);
+            shell.update(cx, |s, cx| {
+                s.categories_view.update(cx, |p, _| p.cat_error = None)
+            });
             trigger(window, cx);
         });
         wait_until(cx, &format!("the {what:?} error"), |cx| {
-            shell.read(cx).categories_page.cat_error.is_some()
+            shell.read(cx).categories_view.read(cx).cat_error.is_some()
         });
         let e = cx
-            .update(|cx| shell.read(cx).categories_page.cat_error.clone())
+            .update(|cx| shell.read(cx).categories_view.read(cx).cat_error.clone())
             .unwrap();
         assert_eq!(e, want, "the {what:?} error reads");
         assert!(
@@ -648,7 +690,8 @@ fn the_categories_page_never_says_parent_or_child(cx: &mut TestAppContext) {
             s.select_category(food_id, window, cx);
             // 3.23: the new-category form only paints once its button
             // opened it; open it so the scan covers its labels too.
-            s.categories_page.new_category_open = true;
+            s.categories_view
+                .update(cx, |p, _| p.new_category_open = true);
         });
     });
     cx.run_until_parked();
@@ -725,9 +768,12 @@ fn the_categories_page_never_says_parent_or_child(cx: &mut TestAppContext) {
     cx.update(|cx| {
         let s = shell.read(cx);
         for (what, input) in [
-            ("add-category", &s.categories_page.new_parent_name),
-            ("add-subcategory", &s.categories_page.new_child_name),
-            ("rename", &s.categories_page.rename_input),
+            ("add-category", &s.categories_view.read(cx).new_parent_name),
+            (
+                "add-subcategory",
+                &s.categories_view.read(cx).new_child_name,
+            ),
+            ("rename", &s.categories_view.read(cx).rename_input),
         ] {
             let p = input.read(cx).presentation().placeholder().to_string();
             assert!(
@@ -791,19 +837,23 @@ fn the_categories_page_never_says_parent_or_child(cx: &mut TestAppContext) {
     let duplicate = {
         with_window(cx, handle, |window, cx| {
             shell.update(cx, |s, cx| {
-                s.categories_page.cat_error = None;
+                s.categories_view.update(cx, |p, _| p.cat_error = None);
                 s.select_category(food_id, window, cx);
-                s.categories_page.new_child_name.update(cx, |i, cx| {
-                    i.set_value("Restaurants, Cafés & Takeaway", window, cx);
-                });
+                s.categories_view
+                    .read(cx)
+                    .new_child_name
+                    .clone()
+                    .update(cx, |i, cx| {
+                        i.set_value("Restaurants, Cafés & Takeaway", window, cx);
+                    });
                 s.add_child(window, cx);
             });
         });
         wait_until(cx, "the duplicate refusal", |cx| {
-            shell.read(cx).categories_page.cat_error.is_some()
+            shell.read(cx).categories_view.read(cx).cat_error.is_some()
         });
         let e = cx
-            .update(|cx| shell.read(cx).categories_page.cat_error.clone())
+            .update(|cx| shell.read(cx).categories_view.read(cx).cat_error.clone())
             .unwrap();
         assert_eq!(
             e,
@@ -817,7 +867,7 @@ fn the_categories_page_never_says_parent_or_child(cx: &mut TestAppContext) {
     // new words.
     with_window(cx, handle, |window, cx| {
         shell.update(cx, |s, cx| {
-            s.categories_page.cat_error = None;
+            s.categories_view.update(cx, |p, _| p.cat_error = None);
             s.select_category(food_id, window, cx);
         });
         shell.update(cx, |s, cx| s.arm_delete_category(window, cx));
@@ -826,10 +876,10 @@ fn the_categories_page_never_says_parent_or_child(cx: &mut TestAppContext) {
         shell.update(cx, |s, cx| s.arm_delete_category(window, cx));
     });
     wait_until(cx, "the has-subcategories refusal", |cx| {
-        shell.read(cx).categories_page.cat_error.is_some()
+        shell.read(cx).categories_view.read(cx).cat_error.is_some()
     });
     let has_sub = cx
-        .update(|cx| shell.read(cx).categories_page.cat_error.clone())
+        .update(|cx| shell.read(cx).categories_view.read(cx).cat_error.clone())
         .unwrap();
     assert_eq!(
         has_sub,
@@ -1156,12 +1206,17 @@ fn the_new_category_button_opens_and_closes_the_form(cx: &mut TestAppContext) {
         "Cancel closes the form"
     );
     // Reopen, then add a category: success closes the form too.
-    cx.update(|cx| shell.update(cx, |s, _cx| s.categories_page.new_category_open = true));
+    cx.update(|cx| {
+        shell.update(cx, |s, cx| {
+            s.categories_view
+                .update(cx, |p, _| p.new_category_open = true)
+        })
+    });
     draw_frame(cx, handle);
     add_parent(cx, handle, &shell, "Books");
     cx.update(|cx| {
         assert!(
-            !shell.read(cx).categories_page.new_category_open,
+            !shell.read(cx).categories_view.read(cx).new_category_open,
             "adding a category closes the form"
         );
     });
@@ -1171,7 +1226,12 @@ fn the_new_category_button_opens_and_closes_the_form(cx: &mut TestAppContext) {
         "the closed form paints nothing after the add"
     );
     // And it never survives a page switch.
-    cx.update(|cx| shell.update(cx, |s, _cx| s.categories_page.new_category_open = true));
+    cx.update(|cx| {
+        shell.update(cx, |s, cx| {
+            s.categories_view
+                .update(cx, |p, _| p.new_category_open = true)
+        })
+    });
     cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
     cx.run_until_parked();
     draw_frame(cx, handle);
@@ -1194,7 +1254,8 @@ fn the_categories_page_fits_the_minimum_window(cx: &mut TestAppContext) {
     // The widest state of every part: form open, long subcategory selected.
     with_window(cx, handle, |window, cx| {
         shell.update(cx, |s, cx| {
-            s.categories_page.new_category_open = true;
+            s.categories_view
+                .update(cx, |p, _| p.new_category_open = true);
             s.select_category(child, window, cx);
         });
     });
