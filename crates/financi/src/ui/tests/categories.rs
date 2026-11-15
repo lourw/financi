@@ -157,18 +157,26 @@ fn delete_category_reassigns_transactions_and_rules(cx: &mut TestAppContext) {
     // Categorize the top merchant's rows onto Online, so a delete has work to move.
     with_window(cx, handle, |window, cx| {
         shell.update(cx, |s, cx| {
-            s.rule_pattern.update(cx, |i, cx| {
-                i.set_value(merchant.clone(), window, cx);
+            s.rules_page.update(cx, |p, cx| {
+                p.rule_pattern.update(cx, |i, cx| {
+                    i.set_value(merchant.clone(), window, cx);
+                })
             });
             let ix = s
                 .child_choices
                 .iter()
                 .position(|(id, _)| *id == online)
                 .unwrap();
-            s.rule_target.update(cx, |sel, cx| {
-                sel.set_selected_index(Some(gpui_kit::component::IndexPath::new(ix)), window, cx);
+            s.rules_page.update(cx, |p, cx| {
+                p.rule_target.update(cx, |sel, cx| {
+                    sel.set_selected_index(
+                        Some(gpui_kit::component::IndexPath::new(ix)),
+                        window,
+                        cx,
+                    );
+                })
             });
-            s.add_rule(window, cx);
+            s.rules_page.update(cx, |p, cx| p.add_rule(window, cx));
         });
     });
     wait_until(cx, "rows on Online", |cx| {
@@ -1016,8 +1024,10 @@ fn a_selected_subcategory_adds_a_rule_without_a_picker(cx: &mut TestAppContext) 
     );
     with_window(cx, handle, |window, cx| {
         shell.update(cx, |s, cx| {
-            s.rule_pattern
-                .update(cx, |i, cx| i.set_value("PRET", window, cx));
+            s.rules_page.update(cx, |p, cx| {
+                p.rule_pattern
+                    .update(cx, |i, cx| i.set_value("PRET", window, cx))
+            });
         });
     });
     let btn = window
@@ -1088,18 +1098,20 @@ fn the_add_rule_picker_lists_the_selected_parents_children(cx: &mut TestAppConte
     draw_frame(cx, handle);
     with_window(cx, handle, |window, cx| {
         shell.update(cx, |s, cx| {
-            s.rule_pattern
-                .update(cx, |i, cx| i.set_value("UBER", window, cx));
+            s.rules_page.update(cx, |p, cx| {
+                p.rule_pattern
+                    .update(cx, |i, cx| i.set_value("UBER", window, cx))
+            });
         });
     });
     click(cx, handle, "cat:add-rule-btn:add");
     wait_until(cx, "the no-pick error", |cx| {
-        shell.read(cx).rule_error.is_some()
+        shell.read(cx).rules_page.read(cx).rule_error.is_some()
     });
     cx.update(|cx| {
         let s = shell.read(cx);
         assert_eq!(
-            s.rule_error.as_deref(),
+            s.rules_page.read(cx).rule_error.as_deref(),
             Some("Choose the subcategory the rule assigns."),
             "the error names the missing pick"
         );
@@ -1679,7 +1691,9 @@ fn the_regex_switch_lines_up_with_the_rule_fields(cx: &mut TestAppContext) {
     // The Rules page's add-rule row.
     cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Rules, cx)));
     cx.update(|cx| {
-        shell.update(cx, |s, _cx| s.rules_page.new_rule_open = true);
+        shell.update(cx, |s, cx| {
+            s.rules_page.update(cx, |p, _cx| p.new_rule_open = true)
+        });
     });
     draw_frame(cx, handle);
     aligned(

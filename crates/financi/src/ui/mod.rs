@@ -153,16 +153,28 @@ pub fn init(cx: &mut App) {
         return;
     }
     // Esc clears the dashboard's category selection (3.5); the root view
-    // handles the action in `Render::render`.
-    cx.bind_keys([KeyBinding::new("escape", ClearCategorySelection, None)]);
-    // 3.79 / 3.81: Escape is each extracted page's own `Cancel` on its key
+    // handles the action in `Render::render`. Scoped to the kit root's
+    // `Root` context (3.80): gpui resolves a context-less binding at the
+    // deepest context, so an unscoped Escape would outrank the pages'
+    // `Cancel` bindings whenever focus sits inside one (a context-bound
+    // binding only wins at or above the depth it names) — and the pages
+    // focus their inputs. `Root` bottoms out every window's context
+    // stack, so this still reaches the pages that have no context of
+    // their own, and any page context (depth ≥ 2) wins over it.
+    cx.bind_keys([KeyBinding::new(
+        "escape",
+        ClearCategorySelection,
+        Some("Root"),
+    )]);
+    // 3.79: Escape is each extracted page's own `Cancel` on its key
     // context (the page root handles it in its `Render::render`); the
-    // context-less binding above still reaches the pages that have not
-    // been extracted, and the page's root wins the bubble for its own.
+    // `Root`-scoped binding above still reaches the pages that have not
+    // been extracted, and each page's context outranks it for its own.
     cx.bind_keys([
         KeyBinding::new("escape", Cancel, Some("Categories")),
         KeyBinding::new("escape", Cancel, Some("Transfers")),
         KeyBinding::new("escape", Cancel, Some("Imports")),
+        KeyBinding::new("escape", Cancel, Some("Rules")),
     ]);
     // ⌘ shortcuts for the file actions (3.7); `cmd` is ⌘ on macOS and
     // Super on Linux. The same actions reach the user through the
@@ -324,38 +336,10 @@ pub struct Shell {
     /// in [`financi_db::categories::card_payment_category`]). `None` only
     /// before the first refresh.
     card_payment_category: Option<i64>,
-    // -- The add-rule row and its in-place editor (3.24, 3.28): rendered by
-    // both the Categories page and the Rules page, so this state stays
-    // shared until the rule data moves to `Catalog` (3.78).
-    rule_pattern: Entity<InputState>,
-    rule_regex: bool,
-    rule_target: Entity<SelectState<Names>>,
-    /// The add row's and the editor's shared "matches N transactions"
-    /// preview (the editor owns it while open; see [`Shell::preview_rule_match`]).
-    rule_match_count: Option<i64>,
-    rule_task: Option<Task<()>>,
-    rule_error: Option<String>,
-    /// 3.24: the rule whose row currently shows the in-place editor. One at
-    /// a time; `select_category` and `go_page` close it. `start_edit_rule`
-    /// loads the rule into the editor's own controls, so the editor is the
-    /// add-rule row's shape with the row swapped out.
-    editing_rule: Option<i64>,
-    /// 3.24: the rule whose Delete… button is armed ("Click again to
-    /// delete"). Armed per row; `select_category` and `go_page` disarm it
-    /// with the page's other transient confirmations.
-    armed_delete_rule: Option<i64>,
-    /// 3.40: which rule button is waiting on the DB (see
-    /// [`PendingRuleAction`]); rendered loading + disabled while set.
-    pending_rule_action: Option<PendingRuleAction>,
-    /// 3.24: the editor's own controls, separate entities from the add-rule
-    /// row's so the two never share an `InputState` on screen at once.
-    /// While the editor is open the shared `rule_match_count`
-    /// preview belongs to it (the add-rule row hides it, like `rule_error`)
-    /// and excludes that rule (2.5 re-run semantics); every close path
-    /// clears it, and `sync_category_choices` closes the editor when its
-    /// rule is gone.
-    rule_edit_pattern: Entity<InputState>,
-    rule_edit_regex: bool,
+    // 3.80: the add-rule row and its in-place editor moved to `RulesPage`,
+    // which also owns the list's search, filters, sort and checked rows.
+    // The Categories page renders the shared rule rows through thin
+    // wrappers here (see `ui/rules.rs`).
     // -- Feedback (3.27): toasts, never inline status lines
     // (`docs/ui-conventions.md`, *Feedback*). The manager owns the mounted
     // toasts, their per-toast timeouts and their lifecycle; it is advanced
@@ -398,8 +382,8 @@ pub struct Shell {
     /// so a later action can never cancel it mid-flight; its handler checks
     /// the state it touches is still current before applying. Only work that
     /// *should* be replaced when the user moves on keeps a slot — one per
-    /// purpose: `rule_task` (live preview), `toast_task`, and
-    /// the settings writes in `dashboard`; the reload slots live in
+    /// purpose: `toast_task`, the settings writes in `dashboard`, and the
+    /// Rules page's live-preview task; the reload slots live in
     /// `Catalog`.
     // -- Page state (3.74): each page's fields live with its page module,
     // built by its own `new` and updated by its own `apply_*` in the
@@ -407,6 +391,7 @@ pub struct Shell {
     // entities of their own — they own their state, render themselves, and
     // refresh from the `Catalog` (see `ui/page.rs`); `Shell` navigates
     // them with `set_visible` and hears from them through `PageEvent`.
+    // 3.80: the Rules page joins them.
     dashboard: DashboardState,
     queue: QueueState,
     /// 3.81: the Categories page is its own view, rendered like the other
@@ -416,35 +401,29 @@ pub struct Shell {
     /// lives on the Rules page: the selected category, and the rule picker
     /// this page drives. Task 3.80 moves the list; this scaffold goes then.
     categories_page: CategoriesState,
-    rules_page: RulesPageState,
+    rules_page: Entity<RulesPage>,
     transfers: Entity<TransfersPage>,
     imports: Entity<ImportsPage>,
     _subs: Vec<Subscription>,
 }
 
 impl Render for Shell {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (background, foreground) = {
             let theme = cx.theme();
             (theme.background, theme.foreground)
         };
-        // 3.28: opening the Rules page focuses its search box (D5). The
-        // focus waits for the end of the frame so the input's element
-        // exists first.
-        if self.rules_page.rules_focus_pending.take() {
-            let handle = self.rules_page.rules_search.focus_handle(cx);
-            window.defer(cx, move |window, cx| {
-                window.focus(&handle, cx);
-            });
-        }
+        // 3.28: opening the Rules page focuses its search box (D5) — the
+        // page itself defers the focus in its own `render` (3.80).
 
         let page_area: AnyElement = match self.page {
             Page::Dashboard => self.render_dashboard(cx),
             Page::ToCategorize => self.render_queue(cx),
-            Page::Rules => self.render_rules(cx),
-            // 3.79 / 3.81: the extracted pages render themselves — the
-            // entity is the element.
             Page::Categories => self.categories_view.clone().into_any_element(),
+            // 3.80: the Rules page renders itself.
+            Page::Rules => self.rules_page.clone().into_any_element(),
+            // 3.79: the extracted pages render themselves — the entity is
+            // the element.
             Page::Transfers => self.transfers.clone().into_any_element(),
             Page::Imports => self.imports.clone().into_any_element(),
         };
@@ -510,17 +489,6 @@ impl Shell {
         // 3.76: the global wiring (key bindings, menus, file-action
         // listeners) lives in `ui::init` now — once per app, not once per
         // window.
-        // The add-rule row and its editor (3.24, 3.28): rendered by both
-        // the Categories page and the Rules page, so their controls stay on
-        // `Shell` (3.78 moves them with the rule data).
-        let rule_pattern = cx.new(|cx| {
-            InputState::new(window, cx).placeholder("Text or regex a description must contain")
-        });
-        let rule_target = cx.new(|cx| SelectState::new(Names::new(), None, window, cx));
-        // 3.24: the editor's Pattern input, separate from the add row's.
-        let rule_edit_pattern = cx.new(|cx| {
-            InputState::new(window, cx).placeholder("Text or regex a description must contain")
-        });
         // The chart's label plan follows the window width (3.15), and so
         // do the Imports history table's (3.20) and the dashboard table's
         // flexible columns (3.25).
@@ -531,7 +499,6 @@ impl Shell {
         let dashboard = DashboardState::new(window, cx);
         let queue = QueueState::new(window, cx);
         let categories_page = CategoriesState::new(window, cx);
-        let rules_page = RulesPageState::new(window, cx);
         // 3.78: one shared data model, fed by the same worker.
         let catalog = cx.new(|_| Catalog::new(db.clone()));
         // 3.79: the extracted pages are entities watching that model. Both
@@ -551,15 +518,22 @@ impl Shell {
                 cx,
             )
         });
-        // 3.81: the Categories page is an entity too. Until 3.80 moves the
-        // rule list, it renders that list with `Shell`'s row renderers, so
-        // it keeps a weak handle back (see `CategoriesPage`'s doc).
+        // 3.80: the Rules page entity. Built after `catalog` so its
+        // watcher subscribes before the shell's below — on a reload the
+        // page applies before `sync_category_choices` refills its pickers.
+        let rules_page =
+            cx.new(|cx| RulesPage::new(db.clone(), writes_blocked.clone(), &catalog, window, cx));
+        // 3.81: the Categories page is an entity too. It renders the shared
+        // rule rows from the Rules page's entity and keeps a weak handle
+        // back to the shell for the scaffold it shares (see
+        // `CategoriesPage`'s doc).
         let shell_handle = cx.entity().downgrade();
         let categories = cx.new(|cx| {
             CategoriesPage::new(
                 db.clone(),
                 writes_blocked.clone(),
                 catalog.clone(),
+                rules_page.clone(),
                 shell_handle,
                 window,
                 cx,
@@ -580,6 +554,12 @@ impl Shell {
         let imports_events = cx.subscribe_in(&imports, window, |this, _, ev, window, cx| {
             this.on_page_event(ev, window, cx);
         });
+        let rules_events = cx.subscribe_in(&rules_page, window, |this, _, ev, window, cx| {
+            this.on_page_event(ev, window, cx);
+        });
+        // 3.80: the Categories page paints the shared rule rows from the
+        // Rules page's state, so a page notify repaints the shell.
+        let rules_paint = cx.observe(&rules_page, |_, _, cx| cx.notify());
         let mut shell = Self {
             db,
             db_path,
@@ -595,17 +575,6 @@ impl Shell {
             rules: Vec::new(),
             child_choices: Vec::new(),
             card_payment_category: None,
-            rule_pattern,
-            rule_regex: false,
-            rule_target,
-            rule_match_count: None,
-            rule_task: None,
-            rule_error: None,
-            editing_rule: None,
-            armed_delete_rule: None,
-            pending_rule_action: None,
-            rule_edit_pattern,
-            rule_edit_regex: false,
             toasts: ToastManager::new(ToastMotion::sonner()),
             toast_stack: ToastStackState::default(),
             toast_next_id: 0,
@@ -628,11 +597,10 @@ impl Shell {
                 categories_events,
                 transfers_events,
                 imports_events,
+                rules_events,
+                rules_paint,
             ],
         };
-        // The live "matches N transactions" preview runs on every pattern
-        // keystroke (ui-conventions, Categories page).
-        shell._subs.extend(shell.subscribe_rule_row(window, cx));
         // 3.78: the one mapping. Every reload the catalog finishes lands
         // here, and this applies the page sections its domains touched.
         shell._subs.push(
@@ -856,11 +824,10 @@ impl Shell {
             self.apply_categories(tree, counts);
         }
         if sections & S_RULES != 0 {
-            let (rules, uses) = {
-                let cat = self.catalog.read(cx);
-                (cat.snap.rules.clone(), cat.snap.uses.clone())
-            };
-            self.apply_rules(rules, uses);
+            // 3.80: the Rules page pulls its own rules and use-counts from
+            // the snapshot; the shell keeps only the mirror the dashboard's
+            // *Show rule* menu and the counts read.
+            self.rules = self.catalog.read(cx).snap.rules.clone();
         }
         if sections & S_QUEUE != 0 {
             let queue = self.catalog.read(cx).snap.queue.clone();
@@ -894,22 +861,20 @@ impl Shell {
         // belong to the page they were opened on. 3.24: the rule editor and
         // the armed rule delete join that list.
         self.dashboard.rule_offer = None;
-        self.close_rule_editor();
-        self.armed_delete_rule = None;
-        // 3.28: the Rules page's add row, ticked rows and move error belong
-        // to that page too; entering it focuses the search box (D5).
-        // 3.29: so does the *Show rule* highlight — it belongs to the row
-        // the menu was opened on.
-        self.rules_page.new_rule_open = false;
-        self.rules_page.selected_rules.clear();
-        self.rules_page.rules_move_error = None;
-        self.rules_page.rules_reveal = None;
-        self.rules_page.rules_focus_pending.set(page == Page::Rules);
-        // 3.79 / 3.81: the extracted pages follow the switch too — the one
-        // shown applies the snapshot if it drifted while hidden and takes
-        // focus, the hidden one marks itself dirty. The armed import Undo
-        // clears first (3.11) so the apply does not re-arm the history
-        // button.
+        // 3.80: the rule editor is shared with the Categories page (it may
+        // be open while the Rules page is hidden), so every switch runs
+        // through the page: close it, disarm deletes, then show or hide.
+        // `set_visible` clears the page-only transients, marks it dirty on
+        // hide, and queues the search focus on show (D5).
+        self.rules_page.update(cx, |p, cx| {
+            p.close_rule_editor();
+            p.armed_delete_rule = None;
+            p.set_visible(page == Page::Rules, cx);
+        });
+        // 3.79: the extracted pages follow the switch too — the one shown
+        // applies the snapshot if it drifted while hidden and takes focus,
+        // the hidden one marks itself dirty. The armed import Undo clears
+        // first (3.11) so the apply does not re-arm the history button.
         self.imports.update(cx, |p, cx| {
             p.confirm_undo_import = None;
             p.set_visible(page == Page::Imports, cx);
@@ -965,13 +930,10 @@ impl Shell {
         self.categories_page.selected_category = None;
         self.categories_view
             .update(cx, |p, cx| p.reset_after_restore(cx));
-        self.close_rule_editor();
-        self.armed_delete_rule = None;
-        self.rules_page.new_rule_open = false;
-        self.rules_page.selected_rules.clear();
-        self.rules_page.collapsed_rule_groups.clear();
-        self.rules_page.rules_move_error = None;
-        self.rules_page.rules_reveal = None;
+        // 3.80: the Rules page clears its own share — editor, armed
+        // delete, add row, ticks, collapsed groups, move error, highlight.
+        self.rules_page
+            .update(cx, |p, cx| p.reset_after_restore(cx));
         // An armed Undo or a half-filled import panel would commit the
         // old database's ids and categories into the restored one.
         self.imports.update(cx, |p, cx| p.reset_after_restore(cx));

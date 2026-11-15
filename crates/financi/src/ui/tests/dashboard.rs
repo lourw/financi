@@ -692,18 +692,26 @@ fn changing_a_rows_category_locks_it_and_offers_the_rule(cx: &mut TestAppContext
     // manually-set (locked) row.
     with_window(cx, handle, |window, cx| {
         shell.update(cx, |s, cx| {
-            s.rule_pattern.update(cx, |i, cx| {
-                i.set_value(m.clone(), window, cx);
+            s.rules_page.update(cx, |p, cx| {
+                p.rule_pattern.update(cx, |i, cx| {
+                    i.set_value(m.clone(), window, cx);
+                })
             });
             let ix = s
                 .child_choices
                 .iter()
                 .position(|(id, _)| *id == groceries)
                 .unwrap();
-            s.rule_target.update(cx, |sel, cx| {
-                sel.set_selected_index(Some(gpui_kit::component::IndexPath::new(ix)), window, cx);
+            s.rules_page.update(cx, |p, cx| {
+                p.rule_target.update(cx, |sel, cx| {
+                    sel.set_selected_index(
+                        Some(gpui_kit::component::IndexPath::new(ix)),
+                        window,
+                        cx,
+                    );
+                })
             });
-            s.add_rule(window, cx);
+            s.rules_page.update(cx, |p, cx| p.add_rule(window, cx));
         });
     });
     wait_until(cx, "siblings moved, locked target held", |cx| {

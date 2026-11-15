@@ -691,7 +691,10 @@ fn start_rule_edit(
     rule: i64,
 ) {
     with_window(cx, handle, |window, cx| {
-        shell.update(cx, |s, cx| s.start_edit_rule(rule, window, cx));
+        shell.update(cx, |s, cx| {
+            s.rules_page
+                .update(cx, |p, cx| p.start_edit_rule(rule, window, cx))
+        });
     });
 }
 

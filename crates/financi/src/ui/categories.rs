@@ -316,38 +316,22 @@ impl Shell {
             .iter()
             .map(|(_, n)| SharedString::from(n.clone()))
             .collect();
-        self.rule_target
-            .update(cx, |s, cx| s.set_items(names.clone(), window, cx));
         // 3.81: the page owns the delete picker; the shell feeds it.
         self.categories_view.update(cx, |page, cx| {
             page.delete_target
                 .update(cx, |s, cx| s.set_items(names.clone(), window, cx));
         });
-        // 3.28: the Move bar's picker offers the same child categories.
-        self.rules_page
-            .move_rules_target
-            .update(cx, |s, cx| s.set_items(names, window, cx));
-        // 3.28: a refresh that dropped a rule drops its checkbox with it;
-        // a deleted category drops its collapsed-group marker.
-        self.rules_page
-            .selected_rules
-            .retain(|id| self.rules.iter().any(|r| r.id == *id));
-        self.rules_page
-            .collapsed_rule_groups
-            .retain(|id| known(*id));
-        // 3.24: a refresh that dropped the rule (its category was deleted,
-        // say) drops the editor open on it and its armed delete with it,
-        // like the `rule_offer` check in `refresh`.
-        if let Some(id) = self.editing_rule
-            && !self.rules.iter().any(|r| r.id == id)
-        {
-            self.close_rule_editor();
-        }
-        if let Some(id) = self.armed_delete_rule
-            && !self.rules.iter().any(|r| r.id == id)
-        {
-            self.armed_delete_rule = None;
-        }
+        // 3.80: the Rules page owns its pickers, its checked rows and its
+        // editor; fold in any refresh it missed first, then refill the two
+        // pickers with the new child list. Pruning stale checks, collapsed
+        // groups and a vanished editor lives in its `apply`.
+        self.rules_page.update(cx, |p, cx| {
+            p.apply_if_dirty(cx);
+            p.rule_target
+                .update(cx, |s, cx| s.set_items(names.clone(), window, cx));
+            p.move_rules_target
+                .update(cx, |s, cx| s.set_items(names, window, cx));
+        });
         // 3.53: the Categories add-rule picker follows the selection and
         // the (possibly renamed) child list; the pick survives while its
         // id is one of the parent's children.
@@ -436,9 +420,11 @@ impl Shell {
         // 3.24: selecting another category closes the rule editor (with its
         // preview count) and disarms any armed rule delete — the same
         // "transient UI belongs to what it was opened on" rule as the page
-        // switch.
-        self.close_rule_editor();
-        self.armed_delete_rule = None;
+        // switch. 3.80: that editor state lives on the Rules page.
+        self.rules_page.update(cx, |p, _| {
+            p.close_rule_editor();
+            p.armed_delete_rule = None;
+        });
         // 3.53: the add-rule picker belongs to the selection: a
         // subcategory needs none, a parent picks among its own
         // children — never a default pick.
@@ -504,8 +490,14 @@ pub(super) struct CategoriesPage {
     /// and the rules off its snapshot, never a query of its own.
     catalog: Entity<Catalog>,
     /// 3.81 transitional: the rule rows, the add-rule row and the shared
-    /// palette live in `Shell` until 3.80 moves the rule list here.
+    /// palette live in `Shell`; the rule *state* is the Rules page's (3.80),
+    /// read and written through this handle.
     shell: WeakEntity<Shell>,
+    /// 3.80: the Rules page entity. The Categories page renders the shared
+    /// rule rows and the per-category add-rule editor against this page's
+    /// state (the same editor the Rules page opens), so the two stay in
+    /// step whichever page the click arrives on.
+    rules_page: Entity<RulesPage>,
     // `pub(super)` like the other extracted pages: the Escape tests focus
     // the page root the way `go_page` does (see `ui/tests/categories.rs`).
     pub(super) focus: FocusHandle,
@@ -592,6 +584,7 @@ impl CategoriesPage {
         db: DbWorker,
         writes_blocked: Rc<Cell<bool>>,
         catalog: Entity<Catalog>,
+        rules_page: Entity<RulesPage>,
         shell: WeakEntity<Shell>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -616,6 +609,7 @@ impl CategoriesPage {
             db,
             writes_blocked,
             catalog,
+            rules_page,
             shell,
             focus: cx.focus_handle(),
             // `Shell::new` marks the initial page visible right after
@@ -1244,15 +1238,16 @@ impl Render for CategoriesPage {
         // rows are fixed height (24 px), except the one row 3.24's editor
         // swapped in for, which reserves 68 px (labelled fields) — 92 px
         // while a validation error is open under it, one ellipsized line
-        // (`rule_editor_row`). The editor state is the shell's (the same
-        // editor the Rules page opens), read once per frame.
-        let editing = shell.read(cx).editing_rule;
-        let rule_error = shell.read(cx).rule_error.clone();
+        // (`rule_editor_row`). 3.80: the rule editor state lives on the
+        // Rules page entity, read once per frame.
+        let rp = self.rules_page.read(cx);
+        let editing = rp.editing_rule;
+        let rule_error = rp.rule_error.clone();
         let edit_error = rule_error.is_some();
-        let rule_match_count = shell.read(cx).rule_match_count;
-        let rule_pattern = shell.read(cx).rule_pattern.clone();
-        let rule_regex = shell.read(cx).rule_regex;
-        let add_pending = shell.read(cx).rule_action_pending(PendingRuleAction::Add);
+        let rule_match_count = rp.rule_match_count;
+        let rule_pattern = rp.rule_pattern.clone();
+        let rule_regex = rp.rule_regex;
+        let add_pending = rp.rule_action_pending(PendingRuleAction::Add);
         // 3.53: the parent-scoped add-rule picker is the scaffold's entity
         // (`sync_cat_rule_picker` feeds it); the page only renders it.
         let cat_rule_target = shell.read(cx).categories_page.cat_rule_target.clone();
@@ -1537,19 +1532,19 @@ impl Render for CategoriesPage {
                                                     Switch::new("rule-regex")
                                                         .label("regex")
                                                         .checked(rule_regex)
-                                                        .on_click(cx.listener(
-                                                            |this, checked: &bool, _, cx| {
-                                                                if let Some(shell) =
-                                                                    this.shell.upgrade()
-                                                                {
-                                                                    shell.update(cx, |shell, cx| {
-                                                                        shell.rule_regex = *checked;
-                                                                        shell.preview_rule_match(cx);
-                                                                        cx.notify();
-                                                                    });
-                                                                }
-                                                            },
-                                                        )),
+                                                        // 3.80: the add row's controls live on
+                                                        // the Rules page; the handler updates
+                                                        // the entity directly.
+                                                        .on_click({
+                                                            let page = self.rules_page.clone();
+                                                            move |checked: &bool, _, cx| {
+                                                                page.update(cx, |p, cx| {
+                                                                    p.rule_regex = *checked;
+                                                                    p.preview_rule_match(cx);
+                                                                    cx.notify();
+                                                                });
+                                                            }
+                                                        }),
                                                 ),
                                             )
                                             // 3.53: a parent selection adds
@@ -1683,7 +1678,12 @@ impl Render for CategoriesPage {
                                                 .take(range.len())
                                                 .map(|r| {
                                                     rule_shell.update(cx, |shell, cx| {
-                                                        if shell.editing_rule == Some(r.id) {
+                                                        if shell
+                                                            .rules_page
+                                                            .read(cx)
+                                                            .editing_rule
+                                                            == Some(r.id)
+                                                        {
                                                             shell.rule_editor_row(
                                                                 r, muted, danger, cx,
                                                             )
@@ -1790,10 +1790,8 @@ impl Render for CategoriesPage {
                 // an armed rule delete on a row; with nothing open Escape
                 // means nothing here and propagates (the dashboard's
                 // context-less binding stays behind it).
-                if let Some(shell) = this.shell.upgrade()
-                    && shell.read(cx).editing_rule.is_some()
-                {
-                    shell.update(cx, |shell, cx| shell.cancel_edit_rule(cx));
+                if this.rules_page.read(cx).editing_rule.is_some() {
+                    this.rules_page.update(cx, |p, cx| p.cancel_edit_rule(cx));
                     return;
                 }
                 if this.renaming {
@@ -1810,18 +1808,16 @@ impl Render for CategoriesPage {
                     cx.notify();
                     return;
                 }
-                if let Some(shell) = this.shell.upgrade() {
-                    let disarmed = shell.update(cx, |shell, cx| {
-                        if shell.armed_delete_rule.take().is_some() {
-                            cx.notify();
-                            true
-                        } else {
-                            false
-                        }
-                    });
-                    if disarmed {
-                        return;
+                let disarmed = this.rules_page.update(cx, |p, cx| {
+                    if p.armed_delete_rule.take().is_some() {
+                        cx.notify();
+                        true
+                    } else {
+                        false
                     }
+                });
+                if disarmed {
+                    return;
                 }
                 cx.propagate();
             }))
