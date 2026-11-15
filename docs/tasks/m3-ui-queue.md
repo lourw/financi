@@ -6,17 +6,6 @@ Do these in the order listed (`docs/tasks.md` → *Picking the next task*). Each
 
 Steps 1–15 of `docs/tasks/gpui.md` → *GPUI best practices*, task by task.
 
-- [x] **3.80 The Rules page becomes its own view.** (Architecture.) Same
-  pattern as 3.79, for `RulesPage`, before 3.58 restyles it.
-  - Owns search, filters, collapse, sort, checked rows, the editor and
-    pending actions; `DEPENDS = Rules | Categories | Transactions`.
-  - Moves the "focus the search when the page opens" side effect out of
-    `render` (`rules_focus_pending` + `window.defer`) into the page's
-    show hook.
-  - Show rule (from the dashboard's row menu) reaches it through an event
-    carrying the rule id.
-  - `Cancel` closes the editor, disarms a delete, clears the checked rows.
-
 - [ ] **3.82 The Dashboard becomes its own view.** (Architecture.) Same
   pattern as 3.79, for `DashboardPage`, after 3.56 and before 3.36. Owns
   the `DashboardFilter` (3.56), chart, summary, table and their loaders;

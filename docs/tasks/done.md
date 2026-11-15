@@ -1411,6 +1411,27 @@ the UI; tests cover 2.1–2.9.
   - No behaviour change otherwise; existing tests pass (selectors may
     move to the page).
 
+- [x] **3.80 The Rules page becomes its own view.** (Architecture.) Same
+  pattern as 3.79, for `RulesPage`, before 3.58 restyles it.
+  - Owns search, filters, collapse, sort, checked rows, the editor and
+    pending actions; `DEPENDS = Rules | Categories | Transactions`.
+  - Moves the "focus the search when the page opens" side effect out of
+    `render` (`rules_focus_pending` + `window.defer`) into the page's
+    show hook.
+  - Show rule (from the dashboard's row menu) reaches it through an event
+    carrying the rule id.
+  - `Cancel` closes the editor, disarms a delete, clears the checked rows.
+  - **Merged with 3.81 (semantic):** the shared rule rows, the per-category
+    add-rule editor and the armed-delete state live on the `RulesPage`
+    entity; the Categories page holds an `Entity<RulesPage>` handle and
+    paints them through it (the one row-renderer unification the 3.81 brief
+    deferred). *Keymap fix (accepted):* the global Escape →
+    `ClearCategorySelection` binding is rescoped to `Some("Root")` in
+    `ui::init`, because gpui resolves a context-less binding at the deepest
+    context — so an unscoped Escape outranked every page's `Cancel`
+    (a latent 3.79 bug, plus dialog/picker Escape). Page contexts (depth
+    ≥ 2) win over `Root`; any page Cancel chain relies on this.
+
 - [x] **3.81 The Categories page becomes its own view.** (Architecture.)
   Same pattern as 3.79, for `CategoriesPage`, before 3.48. Owns the
   selection, the new-category form, rename, the rule list's editor and
