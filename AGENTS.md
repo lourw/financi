@@ -96,11 +96,42 @@ Don't force-push. Remove the worktree only after the push succeeds.
 - **Don't re-read what you just wrote.** Edits either applied or failed.
 - **Hand off summaries, not transcripts.** Messages between roles follow
   the templates below and stay short (aim for under ~1,500 tokens).
+- **Keep files small enough to work on.** A file that takes too much
+  context to read or change safely should be split (see *File size* below).
 - **Budget checkpoints.** If you estimate you've used ~90k tokens:
   - Implementer: finish or revert the current edit so the tree builds,
     commit if tests pass, and return a `PARTIAL` report saying what's left.
   - Orchestrator: write a progress note (see *Resuming*) and stop; a fresh
     session picks up from it.
+
+### File size
+
+A file you can't hold in your head costs context on every task that
+touches it. Treat **~800 lines (~10k tokens)** as the point to consider a
+split, and split any file that has grown past that when you'd otherwise
+need to read most of it or edit regions far apart. Also split a file that
+mixes unrelated concerns, even if it's shorter.
+
+- **Tests go in their own module.** Don't grow a large inline
+  `#[cfg(test)] mod tests { … }` block. Move it to a sibling file:
+  `src/views.rs` declares `#[cfg(test)] mod tests;` and the tests live in
+  `src/views/tests.rs` (no `mod.rs` needed). Then a code change reads only
+  the code, and a test change reads only the tests it touches.
+- **Split big test files by feature,** e.g. `ui/tests/dashboard.rs` into
+  `ui/tests/dashboard/{chart,drill_down,…}.rs`, with shared helpers in the
+  parent module. New tests go next to related ones in the right sub-file.
+- **Split code along existing seams:** one page, widget, query group or
+  parser per file, keeping public paths stable with `pub use` re-exports.
+- **Splits are pure moves.** Do them in their own `refactor:` commit with no
+  behaviour change, before the task's real change, so the reviewer can check
+  the move separately. Build, clippy and tests must pass after the move.
+- **Coordinate with parallel work.** A split touches every region of the
+  file, so it conflicts with anything else in flight that edits that file.
+  An implementer splits a file only if the brief's REGIONS say no other
+  in-flight feature touches it; otherwise note it in the report. If a split
+  is too big to fold into the current task, the orchestrator adds it as its
+  own task in `docs/tasks.md` and runs it with nothing else touching that
+  file.
 
 ---
 
