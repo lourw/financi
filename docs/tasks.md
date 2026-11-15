@@ -80,8 +80,6 @@ worktree from the current `main`.
 - **Housekeeping (AGENTS.md → *File size*), run when a slot is free and
   nothing in flight touches the file** (pure moves, own `refactor:` commit,
   no behaviour change, no other change):
-  - **H2** split `ui/tests/imports.rs` (~2.4k lines) the same way.
-3. **Last in M3: 3.26** (scrollbars, in `docs/tasks/m3-features.md`), once
    the lanes are empty.
 4. **Then M5** (`docs/tasks/m5.md`: 5.3, 5.4 and whatever of 5.1 / 5.2 is left), **then the
    Final task** (`docs/tasks/final.md`: 3.55, performance at scale).
