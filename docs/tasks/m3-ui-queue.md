@@ -6,28 +6,6 @@ Do these in the order listed (`docs/tasks.md` → *Picking the next task*). Each
 
 Steps 1–15 of `docs/tasks/gpui.md` → *GPUI best practices*, task by task.
 
-- [x] **3.79 Transfers and Imports become their own views.** (Architecture,
-  user decision 2026-11-11.) The first page extractions, chosen because
-  they're the smallest; they set the pattern the others copy.
-  - `TransfersPage` and `ImportsPage` entities in their modules, owning
-    the state from 3.74's `TransfersState` / `ImportsState`, rendering
-    themselves, and subscribing to `Catalog`'s `DataChanged` for the
-    domains they depend on (`const DEPENDS: Domains`). On a matching
-    event a visible page reloads; a hidden one marks itself dirty and
-    reloads when shown. `Shell` keeps an `Entity` for each and renders it.
-  - Pages talk to `Shell` (navigation, toasts) through events, not by
-    holding the `Shell`.
-  - **Keyboard:** the page root has a `FocusHandle`, `track_focus` and a
-    `key_context("Transfers" | "Imports")`. Define one app-wide `Cancel`
-    action bound to `escape` per context (as gpui-component does,
-    `select.rs:35`); each page's `Cancel` handler closes its own
-    transient UI (the Imports page: the armed Undo confirm).
-  - Write the pattern down in `docs/tasks/gpui.md` → *Coding practices* (page
-    entity, `DEPENDS`, events to `Shell`, `Cancel`) so the next
-    extractions follow it.
-  - No behaviour change otherwise; existing tests pass (selectors may
-    move to the page).
-
 - [ ] **3.80 The Rules page becomes its own view.** (Architecture.) Same
   pattern as 3.79, for `RulesPage`, before 3.58 restyles it.
   - Owns search, filters, collapse, sort, checked rows, the editor and
