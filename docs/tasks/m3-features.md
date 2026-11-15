@@ -349,6 +349,9 @@ Start these only after both queues are done (`docs/tasks.md` → *Picking the ne
     placeholder is the label; `accessibility_label`s set). One form at a
     time: opening one closes another; Cancel, Escape, a successful
     action, selecting another category or leaving the page closes it.
+    Exception (2026-11-15): a successful Add subcategory clears the name
+    and keeps its form open, focused, with the parent still selected, so
+    several can be added in a row.
     The title-row button of the open form shows `.selected(true)`.
   - Remove the Organize and Delete sections and their `border_t_1`
     dividers. With no form open the panel is the title row, a divider,
@@ -665,6 +668,69 @@ Start these only after both queues are done (`docs/tasks.md` → *Picking the ne
     `docs/ui-conventions.md` (*Interaction*): every category picker is
     searchable and shows the category with each subcategory. Tick the
     `plan.md` box.
+
+- [ ] **3.95 Edit the rule while categorizing.** On To categorize, the
+  Categorize button always adds a substring rule equal to the merchant
+  name (`QueuePage::categorize_merchant` → `queue::categorize_group` →
+  `add_rule(merchant, false, …)`). The user wants to write the rule
+  there, e.g. a shorter pattern that also catches the merchant's other
+  spellings (user request, 2026-11-15).
+  - **Backend:** `categorize_group(conn, merchant, pattern: Option<&str>,
+    category_id)`. A blank or whitespace-only pattern means the merchant
+    name (today's behaviour). Otherwise trim it and add it as a substring
+    rule (case-insensitive, matched against the description like every
+    rule). Refuse a pattern that matches none of the group's transactions
+    (`CompiledPattern::is_match` over their `description_raw`) with
+    "That rule doesn't match <merchant>" and add nothing, so a typo can't
+    leave the row stuck in the queue while adding a rule. Substring only;
+    no regex toggle here (regex rules stay on the Rules page).
+  - **UI:** each row gets a small `Input` before the category picker,
+    placeholder = the row's merchant name (so blank visibly means "use
+    the merchant"), `accessibility_label` "Rule pattern". Created lazily
+    with the row's picker and pruned with it (3.83). Enter in the input
+    acts like the row's Categorize button when its picker has a category.
+    The button stays disabled until a category is picked; the pattern
+    never disables it. An error shows as the error toast; the input keeps
+    its text. On success the toast says "Categorized <merchant>"
+    (unchanged), plus "· rule: <pattern>" when it differs from the
+    merchant.
+  - **Layout:** the row must still fit 1200 × 720 with long merchant
+    names: the merchant column ellipsizes first; give the input a fixed
+    column width shared with the heading row (the `QUEUE_*` column
+    constants), heading "Rule". If it can't fit beside the picker and
+    button at the minimum width, stop and ask rather than wrapping.
+  - Tests: DB — blank and whitespace patterns add the merchant-name rule;
+    a shorter pattern adds that pattern and categorizes every queue row it
+    matches (including other merchants' rows); a non-matching pattern
+    errors and adds no rule. UI — the input's placeholder is the merchant
+    name; typing a pattern, picking a category and clicking Categorize
+    adds a rule with that pattern (visible on the Rules page); Enter in
+    the input does the same; a non-matching pattern shows the error and
+    the row stays; the row's columns line up with the heading (bounds).
+    Update the *To categorize* paragraph of `ui-conventions.md` and the
+    *To categorize queue* line of `plan.md`.
+
+- [ ] **3.96 Adding a subcategory keeps the parent selected.** On
+  Categories, adding a subcategory selects the new child
+  (`add_child` calls `select_category(id, …)`), so the detail panel
+  switches to it and the user has to go back to the parent to add the
+  next one (user request, 2026-11-15).
+  - After a successful add, the parent stays selected: drop the
+    `select_category` call in `add_child` (keep the 3.64 guards that
+    don't wipe a newer draft). Clear the name input (when unchanged) and
+    keep focus in it, so the user can type the next name and press Enter.
+    The new child appears in the tree under the parent (expand the parent
+    if it was collapsed) and in the parent's rule-target picker.
+  - If 3.51 has landed, the Add subcategory `InlineForm` stays open after
+    a successful add (it still closes on Cancel, Escape, selecting another
+    category or leaving the page). Adding a parent category (New
+    category) still selects the new category; only subcategories change.
+  - Tests: adding a subcategory leaves the parent selected and the
+    detail panel showing the parent; the input is empty and focused;
+    adding three in a row with Enter creates three children under the
+    parent, all visible in the tree; a failing add (duplicate name) keeps
+    the typed name and shows the error. Update the *Categories* paragraph
+    of `ui-conventions.md` if it says the new subcategory is selected.
 
 ## Last in M3
 

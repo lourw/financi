@@ -75,7 +75,7 @@ worktree from the current `main`.
    - **Lane B, Categories and Rules:** 3.58 → 3.48 → 3.50 + 3.51 (one
      branch) → 3.49 → 3.43 → 3.60 → 3.52 → 3.47 + 3.54 (one branch).
    - **Lane C, small tasks:** 3.63 → 3.37 → 3.61 → 3.59 (after 3.51 and
-     3.58).
+     3.58) → 3.95 → 3.96 (added 2026-11-15; 3.96 after 3.51).
    - Backend tasks left over from step 1 fill any idle slot.
 3. **Last in M3: 3.26** (scrollbars, in `docs/tasks/m3-features.md`), once
    the lanes are empty.
