@@ -1727,3 +1727,22 @@ the UI; tests cover 2.1–2.9.
 - Follow-up nit for the next task in `ui/rules.rs`: `start_edit_rule`'s
   doc comment still describes the pre-3.48 single-line shape with a
   Category picker.
+
+### 3.50 + 3.51 — Category detail panel forms ✅
+- 3.50: the always-visible **Organize** section dropped its heading and
+  field labels (placeholder is the label, `accessibility_label`s set);
+  one row per side, dividers kept (commit c117118).
+- 3.51: Organize/Delete are now title-row icon buttons (Add subcategory
+  on a parent, Move on a subcategory, Delete except system categories),
+  each opening a labelled-less `inline_form` under the title divider:
+  one at a time, `selected(true)` on the open button, closed by Cancel,
+  Escape (disarming any pending delete), a successful action, selecting
+  another category, or leaving the page. A successful Add subcategory
+  clears the name and keeps the form open and focused. Two-click delete
+  confirm unchanged. With no form open the panel is title row, divider,
+  then Rules at the remaining height.
+- Deviations accepted at review: `IconName::Trash` (no `trash-2` in the
+  pinned gpui-kit assets), and form order [control, Cancel, primary] per
+  `ui-conventions.md` → *Buttons*, which the spec sketch contradicted.
+  Someday: the *Buttons* example names `trash-2`, unattainable on this
+  dep version.
