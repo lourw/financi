@@ -125,7 +125,10 @@ look. Also split a file that mixes unrelated concerns, whatever its size.
   parser per file, keeping public paths stable with `pub use` re-exports.
 - **Splits are pure moves.** Do them in their own `refactor:` commit with no
   behaviour change, before the task's real change, so the reviewer can check
-  the move separately. Build, clippy and tests must pass after the move.
+  the move separately. Build, clippy and tests must pass after the move. In
+  the same commit, update paths the move changes in `docs/tasks.md` →
+  *Where things are*, open tasks under `docs/tasks/` and the other docs
+  (`grep -rn` the old path; skip `done.md`).
 - **Coordinate with parallel work.** A split touches every region of the
   file, so it conflicts with anything else in flight that edits that file.
   An implementer splits a file only if the brief's REGIONS say no other
@@ -232,7 +235,8 @@ neither depends on the other and they don't change the same functions or
 regions. Sharing a file is fine: UI work lands in the per-page modules under
 `crates/financi/src/ui/` and their tests under `ui/tests/`, and git merges
 separate parts of a file cleanly. Name the regions in each brief, and have implementers add
-new tests next to related tests, not at the end of the file. If you can't
+new tests next to related tests (in the matching sub-file once a test file
+is split), not at the end of the file. If you can't
 tell which regions a task will change, don't run it alongside another.
 
 If the next task can't run alongside the one in flight, don't wait for that

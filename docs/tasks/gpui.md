@@ -11,7 +11,9 @@ changes, and the task that does it, in implementation order. When a step's
 task merges, the rule becomes binding (see *Coding practices*).
 
 1. **Small files, one per page** (3.62, done). `ui.rs` / `ui_tests.rs` became
-   `ui/<page>.rs` modules and `ui/tests/<page>.rs`. Pure move.
+   `ui/<page>.rs` modules and `ui/tests/<page>.rs`. Pure move. A page or
+   its tests that outgrow one file split further into a `ui/<page>/` or
+   `ui/tests/<page>/` directory (`AGENTS.md` → *File size*).
 2. **State belongs to the page that owns it** (3.74). Page fields move
    into per-page state structs; `Shell::new` shrinks to wiring.
 3. **Tests drive the real UI and wait for real idleness** (3.75). A
