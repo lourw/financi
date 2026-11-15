@@ -65,9 +65,25 @@ impl Domains {
     pub(super) const TRANSFERS_TX: Self =
         Self(Domain::Transfers.bit() | Domain::Transactions.bit());
     pub(super) const SETTINGS: Self = Self(Domain::Settings.bit());
+    // The single-domain sets the page entities' `DEPENDS` (3.79) spell
+    // with [`Domains::union`].
+    pub(super) const IMPORTS: Self = Self(Domain::Imports.bit());
+    pub(super) const TRANSFERS: Self = Self(Domain::Transfers.bit());
 
     pub(super) fn contains(self, domain: Domain) -> bool {
         self.0 & domain.bit() != 0
+    }
+
+    /// Union of two sets, const-callable so a page's `DEPENDS` can be a
+    /// `const` (the `BitOr` impls are not const).
+    pub(super) const fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+
+    /// Do the two sets share a domain? A page's `DataChanged` filter (3.79)
+    /// is `event.domains.intersects(Self::DEPENDS)`.
+    pub(super) fn intersects(self, other: Self) -> bool {
+        self.0 & other.0 != 0
     }
 }
 

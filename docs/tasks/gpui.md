@@ -67,6 +67,18 @@ that task has merged; until then, don't make the old pattern worse.
 - **State lives on the page that owns it** *(from 3.74; page entities from
   3.79)*; shared data lives on `Catalog` *(from 3.78)*. Don't add fields to
   `Shell` for one page's needs.
+- **The page-entity pattern** *(3.79, `crates/financi/src/ui/page.rs`)*: a
+  page is an `Entity` owned by `Shell`, rendering itself. It declares
+  `const DEPENDS: Domains` and watches `Catalog` through `watch_catalog`:
+  a `DataChanged` in its domains applies the snapshot while shown, and
+  only marks the page `dirty` while hidden — `set_visible(true)` applies
+  and defers focus to the root (`focus_pending`, consumed in `render`).
+  Pages never hold `Shell` or run list queries of their own: navigation,
+  toasts and reloads are `PageEvent`s emitted on the page entity. Each
+  root takes `track_focus` + `key_context("<Page>")` and handles the
+  shared `Cancel` action (Escape) for its own transient UI. Code that
+  reads page state while the page may be hidden reads the `Catalog`
+  snapshot or calls `apply_if_dirty` first.
 - **Handles and widget state are created once,** in the owner's `new`,
   never in `render` (a scroll handle made in `render` resets every frame).
 - **A `Task` belongs to one purpose.** Mutations `.detach()` and update

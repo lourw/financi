@@ -94,11 +94,13 @@ fn the_transfers_page_offers_every_candidate_for_a_tie_and_pairs_the_chosen_one(
     };
 
     // The tie is not guessed: one review, carried by the debit, listing both
-    // credits in (posted_date, id) order; the pill counts it.
+    // credits in (posted_date, id) order; the pill counts it. 3.79: the
+    // hidden page defers applying, so show it first.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Transfers, cx)));
     wait_until(cx, "review appears", |cx| {
-        shell.read(cx).transfers.transfer_reviews.len() == 1
+        shell.read(cx).transfers.read(cx).transfer_reviews.len() == 1
     });
-    let review = cx.update(|cx| shell.read(cx).transfers.transfer_reviews[0].clone());
+    let review = cx.update(|cx| shell.read(cx).transfers.read(cx).transfer_reviews[0].clone());
     assert_eq!(review.transaction_id, debit);
     assert_eq!(
         review.candidates.iter().map(|c| c.id).collect::<Vec<_>>(),
@@ -125,10 +127,18 @@ fn the_transfers_page_offers_every_candidate_for_a_tie_and_pairs_the_chosen_one(
     // Choosing a candidate pairs exactly that couple, categorizes both sides
     // *Between Accounts*, and clears the review (and the pill).
     with_window(cx, handle, |window, cx| {
-        shell.update(cx, |s, cx| s.pair_transfer(debit, credit_b, window, cx));
+        shell.update(cx, |s, cx| {
+            s.transfers
+                .update(cx, |p, cx| p.pair_transfer(debit, credit_b, window, cx))
+        });
     });
     wait_until(cx, "review cleared", |cx| {
-        shell.read(cx).transfers.transfer_reviews.is_empty()
+        shell
+            .read(cx)
+            .transfers
+            .read(cx)
+            .transfer_reviews
+            .is_empty()
     });
     with_window(cx, handle, |window, cx| {
         shell.update(cx, |s, cx| s.set_include_transfers(true, window, cx));
@@ -171,15 +181,24 @@ fn marking_a_review_not_a_transfer_clears_it_and_blocks_re_pairing(cx: &mut Test
     let Some((debit, _, _)) = seeded else {
         unreachable!()
     };
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Transfers, cx)));
     wait_until(cx, "review appears", |cx| {
-        shell.read(cx).transfers.transfer_reviews.len() == 1
+        shell.read(cx).transfers.read(cx).transfer_reviews.len() == 1
     });
 
     with_window(cx, handle, |window, cx| {
-        shell.update(cx, |s, cx| s.mark_not_transfer(debit, window, cx));
+        shell.update(cx, |s, cx| {
+            s.transfers
+                .update(cx, |p, cx| p.mark_not_transfer(debit, window, cx))
+        });
     });
     wait_until(cx, "review gone", |cx| {
-        shell.read(cx).transfers.transfer_reviews.is_empty()
+        shell
+            .read(cx)
+            .transfers
+            .read(cx)
+            .transfer_reviews
+            .is_empty()
     });
     with_window(cx, handle, |window, cx| {
         shell.update(cx, |s, cx| s.set_include_transfers(true, window, cx));
@@ -235,7 +254,14 @@ fn unpairing_a_row_clears_both_sides_and_they_stay_apart(cx: &mut TestAppContext
             last_toast(&shell, cx),
             Some(("Unpaired transaction.".into(), false))
         );
-        assert!(shell.read(cx).transfers.transfer_reviews.is_empty());
+        assert!(
+            shell
+                .read(cx)
+                .transfers
+                .read(cx)
+                .transfer_reviews
+                .is_empty()
+        );
         let rows = table_rows(&shell, cx);
         let find = |id: i64| rows.iter().find(|r| r.id == id).unwrap();
         assert_eq!(find(out).category, None);
@@ -245,7 +271,14 @@ fn unpairing_a_row_clears_both_sides_and_they_stay_apart(cx: &mut TestAppContext
     // …and the engine's re-run leaves them apart: no new review, no pair.
     cx.run_until_parked();
     cx.update(|cx| {
-        assert!(shell.read(cx).transfers.transfer_reviews.is_empty());
+        assert!(
+            shell
+                .read(cx)
+                .transfers
+                .read(cx)
+                .transfer_reviews
+                .is_empty()
+        );
         let rows = table_rows(&shell, cx);
         assert!(rows.iter().all(|r| r.transfer_pair_id.is_none()));
     });

@@ -1,6 +1,8 @@
-//! The Imports page: the import panel and its history table (3.62).
+//! The Imports page: the import panel and its history table (3.62), a
+//! page entity since 3.79.
 
 use super::*;
+use crate::ui::page::{Cancel, PageEntity, PageEvent, watch_catalog};
 use crate::ui::widgets::*;
 use financi_db::export;
 
@@ -833,12 +835,26 @@ pub(super) fn history_flex_widths(page_w: f32) -> (f32, f32) {
     (flex / 2., flex / 2.)
 }
 
-/// This page's state (3.74): the import panel and the history table.
-pub(super) struct ImportsState {
-    /// The import panel, built once by [`Shell::import`] and kept so its
-    /// picked file survives page switches. 3.64: the panel's subscription
-    /// lives beside it — replacing the panel drops the subscription with
-    /// it, so opening many files can't accumulate subscriptions.
+/// The Imports page (3.74 state, 3.79 entity): the import panel, the
+/// history table and the export/restore jobs. 5.3 review fix: `
+/// writes_blocked` is a cell shared with the shell — while an export or
+/// restore dialog or job is in flight every UI write dispatch is refused
+/// (the archive must be a consistent snapshot, and a write queued behind
+/// the restore may name rows the replaced database numbers differently).
+pub(super) struct ImportsPage {
+    db: DbWorker,
+    csv_root: PathBuf,
+    writes_blocked: Rc<Cell<bool>>,
+    catalog: Entity<Catalog>,
+    pub(super) focus: FocusHandle,
+    visible: bool,
+    dirty: bool,
+    // -- State (3.74).
+    /// The import panel, built once by [`ImportsPage::open_file`] and kept
+    /// so its picked file survives page switches. 3.64: the panel's
+    /// subscription lives beside it — replacing the panel drops the
+    /// subscription with it, so opening many files can't accumulate
+    /// subscriptions.
     pub(super) import: Option<(Entity<ImportPanel>, Subscription)>,
     /// The history table's rows, newest first.
     pub(super) import_history: Vec<ImportEntry>,
@@ -850,17 +866,66 @@ pub(super) struct ImportsState {
     /// is still the newest, so dropping two files quickly previews the
     /// second exactly once — never an out-of-order pair of panels.
     load_generation: u64,
+    /// 5.3: an export or a restore in flight (including its open file
+    /// dialog). Both refuse to start while either is set — the archive
+    /// must be a consistent snapshot, taken while nothing else touches
+    /// the files (3.64) — and the header buttons render busy.
+    pub(super) exporting: bool,
+    pub(super) restoring: bool,
+    focus_pending: bool,
+    /// The `Catalog` subscription (3.79); lives as long as the page.
+    _catalog: Subscription,
 }
 
-impl ImportsState {
-    pub(super) fn new(window: &mut Window, cx: &mut Context<Shell>) -> Self {
+impl EventEmitter<PageEvent> for ImportsPage {}
+
+impl PageEntity for ImportsPage {
+    /// The history follows imports and undos; a new account appears in
+    /// the newest row's name.
+    const DEPENDS: Domains = Domains::IMPORTS;
+
+    fn visible(&self) -> bool {
+        self.visible
+    }
+
+    fn dirty(&self) -> bool {
+        self.dirty
+    }
+
+    fn set_dirty(&mut self, dirty: bool) {
+        self.dirty = dirty;
+    }
+
+    fn set_shown(&mut self, visible: bool) {
+        self.visible = visible;
+    }
+
+    fn set_focus_pending(&mut self, pending: bool) {
+        self.focus_pending = pending;
+    }
+
+    fn apply(&mut self, cx: &mut Context<Self>) {
+        let history = self.catalog.read(cx).snap.imports.clone();
+        self.apply_history(history, cx);
+    }
+}
+
+impl ImportsPage {
+    pub(super) fn new(
+        db: DbWorker,
+        csv_root: PathBuf,
+        writes_blocked: Rc<Cell<bool>>,
+        catalog: &Entity<Catalog>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         // 3.76: weak, like the dashboard table's callbacks — a strong
-        // handle from a child entity's callback into the Shell would form
-        // a cycle that keeps every Shell alive.
+        // handle from a child entity's callback into the page would form
+        // a cycle that keeps every page alive.
         let on_undo = {
-            let shell = cx.weak_entity();
+            let page = cx.weak_entity();
             Rc::new(move |id: i64, window: &mut Window, cx: &mut App| {
-                let _ = shell.update(cx, |this, cx| this.undo_import(id, window, cx));
+                let _ = page.update(cx, |this, cx| this.undo_import(id, window, cx));
             }) as Rc<dyn Fn(i64, &mut Window, &mut App)>
         };
         let history_table = cx.new(|cx| {
@@ -878,45 +943,75 @@ impl ImportsState {
                 cx,
             )
         });
+        let _catalog = watch_catalog(catalog, cx);
         Self {
+            db,
+            csv_root,
+            writes_blocked,
+            catalog: catalog.clone(),
+            focus: cx.focus_handle(),
+            // `Shell::new` marks the initial page visible right after
+            // construction; every page starts hidden.
+            visible: false,
+            dirty: true,
+            focus_pending: false,
             import: None,
             import_history: Vec::new(),
             history_table,
             confirm_undo_import: None,
             load_generation: 0,
+            exporting: false,
+            restoring: false,
+            _catalog,
         }
     }
-}
 
-impl Shell {
-    /// Apply this page's part of a refresh result (3.74).
-    pub(super) fn apply_imports(&mut self, history: Vec<ImportEntry>, cx: &mut Context<Shell>) {
+    /// Mirror a history list into the state and the table (3.74); the
+    /// armed confirmation survives only while its import is still in the
+    /// list.
+    fn apply_history(&mut self, history: Vec<ImportEntry>, cx: &mut App) {
         if !history
             .iter()
-            .any(|e| Some(e.id) == self.imports.confirm_undo_import)
+            .any(|e| Some(e.id) == self.confirm_undo_import)
         {
-            self.imports.confirm_undo_import = None;
+            self.confirm_undo_import = None;
         }
-        self.imports.import_history = history;
-        let confirm = self.imports.confirm_undo_import;
-        let history = self.imports.import_history.clone();
-        self.imports.history_table.update(cx, |t, cx| {
+        self.import_history = history;
+        let confirm = self.confirm_undo_import;
+        let history = self.import_history.clone();
+        self.history_table.update(cx, |t, cx| {
             let delegate = t.delegate_mut();
             delegate.rows = history;
             delegate.confirm_id = confirm;
             t.refresh(cx);
         });
     }
+
+    /// Re-flex the history table's columns for a new page width (3.20);
+    /// `Shell::window_bounds_changed` forwards resizes here.
+    pub(super) fn widths_changed(&mut self, page_w: f32, cx: &mut App) {
+        let flex = history_flex_widths(page_w);
+        self.history_table.update(cx, |t, cx| {
+            t.delegate_mut().flex_widths = flex;
+            // Re-read the delegate's columns with the new widths.
+            t.refresh(cx);
+        });
+    }
+
+    /// Feedback goes to the shell's toast stack (3.79: a page never owns
+    /// window chrome).
+    fn toast(&mut self, message: String, error: bool, cx: &mut Context<Self>) {
+        cx.emit(PageEvent::Toast { message, error });
+    }
 }
 
-impl Shell {
-    pub fn open_file(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+impl ImportsPage {
+    pub(super) fn open_file(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         // 3.64: while a commit is in flight the panel is still the record
         // of it — opening another file would replace it and strand the
         // result. The request is ignored (the Import button is likewise
         // disabled; the drop and ⌘O paths share this guard).
         if self
-            .imports
             .import
             .as_ref()
             .is_some_and(|(panel, _)| panel.read(cx).busy)
@@ -929,14 +1024,14 @@ impl Shell {
         // call sites here do. Only the newest open applies: a second
         // drop while the first is still loading supersedes it, so two
         // quick drops can never land their panels out of order.
-        self.imports.load_generation += 1;
-        let generation = self.imports.load_generation;
+        self.load_generation += 1;
+        let generation = self.load_generation;
         cx.spawn_in(window, async move |this, cx| {
             let file = cx
                 .background_spawn(async move { flow::load_file(&path) })
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
-                if this.imports.load_generation != generation {
+                if this.load_generation != generation {
                     return; // a newer open (or test reset) owns the panel now
                 }
                 // 3.64 guard re-applied inside the hop (the db93a52
@@ -946,12 +1041,7 @@ impl Shell {
                 // tuple here would drop it and strand the result with no
                 // toast and no refresh. Ignore the load silently, exactly
                 // as the synchronous guard in `open_file` does.
-                if this
-                    .imports
-                    .import
-                    .as_ref()
-                    .is_some_and(|(p, _)| p.read(cx).busy)
-                {
+                if this.import.as_ref().is_some_and(|(p, _)| p.read(cx).busy) {
                     return;
                 }
                 match file {
@@ -967,20 +1057,20 @@ impl Shell {
                         let sub = cx.subscribe_in(
                             &panel,
                             window,
-                            |this, _, ev: &ImportEvent, window, cx| {
+                            |this, _, ev: &ImportEvent, _window, cx| {
                                 match ev {
                                     ImportEvent::Imported { message, is_error } => {
-                                        if *is_error {
-                                            this.notify_err(message.clone(), cx);
-                                        } else {
-                                            this.notify_ok(message.clone(), cx);
-                                        }
-                                        this.imports.import = None;
+                                        cx.emit(PageEvent::Toast {
+                                            message: message.clone(),
+                                            error: *is_error,
+                                        });
+                                        this.import = None;
                                     }
-                                    ImportEvent::Cancelled => this.imports.import = None,
+                                    ImportEvent::Cancelled => this.import = None,
                                     ImportEvent::AccountsChanged => {}
                                 }
-                                this.refresh(window, cx);
+                                cx.emit(PageEvent::Refresh);
+                                cx.notify();
                             },
                         );
                         // 3.64: the subscription lives in the tuple, and gpui
@@ -990,12 +1080,15 @@ impl Shell {
                         // tuple is what unsubscribes the old panel: the pair that
                         // `replace` hands back drops right here. Ten opens leave
                         // exactly one live subscription.
-                        drop(this.imports.import.replace((panel, sub)));
+                        drop(this.import.replace((panel, sub)));
                         // Opening a file switches to the Imports page with the
                         // preview open (ui-conventions, *Pages*).
-                        this.page = Page::Imports;
+                        cx.emit(PageEvent::Go(Page::Imports));
                     }
-                    Err(e) => this.notify_err(e.to_string(), cx),
+                    Err(e) => cx.emit(PageEvent::Toast {
+                        message: e.to_string(),
+                        error: true,
+                    }),
                 }
                 cx.notify();
             });
@@ -1026,7 +1119,10 @@ impl Shell {
     /// Imports header button): the same path as the newest history row's
     /// Undo, two-click confirmation included; a no-op with no history.
     pub(super) fn undo_last_import(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(entry) = self.imports.import_history.first() {
+        // 3.79: the menu item and ⌘ can fire while this page is hidden,
+        // and a hidden page defers applying — catch the history up first.
+        self.apply_if_dirty(cx);
+        if let Some(entry) = self.import_history.first() {
             let id = entry.id;
             self.undo_import(id, window, cx);
         }
@@ -1040,7 +1136,7 @@ impl Shell {
     /// see the shell; both repaint for their button states.
     fn set_writes_blocked(&mut self, blocked: bool, cx: &mut Context<Self>) {
         self.writes_blocked.set(blocked);
-        if let Some((panel, _)) = self.imports.import.as_ref() {
+        if let Some((panel, _)) = self.import.as_ref() {
             panel.update(cx, |_, cx| cx.notify());
         }
         cx.notify();
@@ -1082,15 +1178,15 @@ impl Shell {
                 }
                 None => None,
             };
-            let _ = this.update_in(cx, |shell, _window, cx| {
-                shell.exporting = false;
-                shell.set_writes_blocked(false, cx);
+            let _ = this.update_in(cx, |this, _window, cx| {
+                this.exporting = false;
+                this.set_writes_blocked(false, cx);
                 match result {
                     Some((label, Ok(()))) => {
-                        shell.notify_ok(format!("Exported to {label}"), cx);
+                        this.toast(format!("Exported to {label}"), false, cx);
                     }
                     Some((_, Err(err))) => {
-                        shell.notify_err(format!("Export failed: {err}"), cx);
+                        this.toast(format!("Export failed: {err}"), true, cx);
                     }
                     // Cancelled prompt: nothing happened, nothing to say.
                     None => {}
@@ -1138,19 +1234,19 @@ impl Shell {
                 }
                 None => None,
             };
-            let _ = this.update_in(cx, |shell, window, cx| {
-                shell.restoring = false;
-                shell.set_writes_blocked(false, cx);
+            let _ = this.update_in(cx, |this, _window, cx| {
+                this.restoring = false;
+                this.set_writes_blocked(false, cx);
                 match result {
                     Some((label, Ok(_manifest))) => {
-                        shell.reset_pages_after_restore(window, cx);
-                        shell.notify_ok(format!("Restored from {label}"), cx);
+                        cx.emit(PageEvent::ResetPages);
+                        this.toast(format!("Restored from {label}"), false, cx);
                     }
                     Some((_, Err(err))) => {
                         // The live tree is untouched by a refused restore,
                         // but reload so the pages show exactly what survived.
-                        shell.notify_err(format!("Restore failed: {err}"), cx);
-                        shell.refresh(window, cx);
+                        this.toast(format!("Restore failed: {err}"), true, cx);
+                        cx.emit(PageEvent::Refresh);
                     }
                     None => {}
                 }
@@ -1159,41 +1255,15 @@ impl Shell {
         .detach();
     }
 
-    /// Drop every page's transient state after a restore replaced the
-    /// whole database behind the UI (5.3): row ids, open editors, armed
-    /// confirmations and picker selections all name rows that the new
-    /// file may not have, or — worse — ids reused for other rows. This is
-    /// what `Catalog::DataChanged(all)` will broadcast once it exists
-    /// (3.78); until then it is every reset plus a full `refresh`.
-    pub(super) fn reset_pages_after_restore(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.dashboard.filter.legend_selection = None;
-        self.dashboard.filter.summary_month = None;
-        self.dashboard.filter.chart_parent = None;
-        self.dashboard.rule_offer = None;
-        self.queue.pickers.clear();
-        self.queue.picker_subs.clear();
-        self.queue.picker_items = None;
-        self.queue.error = None;
-        self.categories_page.selected_category = None;
-        self.categories_page.renaming = false;
-        self.categories_page.new_category_open = false;
-        self.categories_page.confirm_delete_category = None;
-        self.close_rule_editor();
-        self.armed_delete_rule = None;
-        self.rules_page.new_rule_open = false;
-        self.rules_page.selected_rules.clear();
-        self.rules_page.collapsed_rule_groups.clear();
-        self.rules_page.rules_move_error = None;
-        self.rules_page.rules_reveal = None;
-        // An armed Undo or a half-filled import panel would commit the
-        // old database's ids and categories into the restored one.
-        self.imports.confirm_undo_import = None;
-        self.imports.import = None;
-        self.refresh(window, cx);
+    /// Drop this page's transient state after a restore replaced the
+    /// whole database behind the UI (5.3): an armed Undo or a half-filled
+    /// import panel would commit the old database's ids and categories
+    /// into the restored one. `Shell`'s `reset_pages_after_restore` calls
+    /// this on every page entity, then reloads.
+    pub(super) fn reset_after_restore(&mut self, cx: &mut Context<Self>) {
+        self.confirm_undo_import = None;
+        self.import = None;
+        cx.notify();
     }
 
     /// Undo an import from the history: the first click arms the button,
@@ -1209,17 +1279,16 @@ impl Shell {
         if self.writes_blocked.get() {
             return;
         }
-        if self.imports.confirm_undo_import != Some(import_id) {
-            self.imports.confirm_undo_import = Some(import_id);
-            self.imports.history_table.update(cx, |t, _| {
+        if self.confirm_undo_import != Some(import_id) {
+            self.confirm_undo_import = Some(import_id);
+            self.history_table.update(cx, |t, _| {
                 t.delegate_mut().confirm_id = Some(import_id);
             });
             cx.notify();
             return;
         }
-        self.imports.confirm_undo_import = None;
+        self.confirm_undo_import = None;
         let Some(account_id) = self
-            .imports
             .import_history
             .iter()
             .find(|e| e.id == import_id)
@@ -1249,49 +1318,63 @@ impl Shell {
             })
             .await;
             let _ =
-                this.update_in(cx, |this, window, cx| {
+                this.update_in(cx, |this, _window, cx| {
                     match result {
-                    Ok((Some(u), None)) => this.notify_ok(
+                    Ok((Some(u), None)) => this.toast(
                         format!("Undid import of {}: removed {} rows", u.file_name, u.removed),
+                        false,
                         cx,
                     ),
                     // The undo landed but the master CSV did not: the
                     // message is the same, flagged as an error.
-                    Ok((Some(u), Some(e))) => this.notify_err(
+                    Ok((Some(u), Some(e))) => this.toast(
                         format!(
                             "Undid import of {}: removed {} rows (master CSV update failed: {e})",
                             u.file_name, u.removed
                         ),
+                        true,
                         cx,
                     ),
                     Ok((None, _)) => {
-                        this.notify_ok("This account has no imports to undo.", cx);
+                        this.toast("This account has no imports to undo.".into(), false, cx);
                     }
-                    Err(e) => this.notify_err(e, cx),
+                    Err(e) => this.toast(e, true, cx),
                 }
-                    this.refresh(window, cx);
+                    cx.emit(PageEvent::Refresh);
                 });
         })
         .detach();
         cx.notify();
     }
+}
 
-    // -- categories --------------------------------------------------------
-
-    pub(super) fn render_imports(&mut self, cx: &mut Context<Self>) -> AnyElement {
+impl Render for ImportsPage {
+    /// The Imports page (3.62), on the shared design system (3.89): the
+    /// header's file actions, the import panel while a file is open, and
+    /// the history table. 3.79: the page's own key context, so Escape is
+    /// *this* page's [`Cancel`] (`ui::init` binds it per context); the
+    /// root takes focus when the page is shown.
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // 3.79: focusing the root when the page is shown waits for the end
+        // of the frame so its element exists first (same pattern as the
+        // Rules list, `rules_focus_pending`).
+        if self.focus_pending {
+            self.focus_pending = false;
+            let focus = self.focus.clone();
+            window.defer(cx, move |window, cx| window.focus(&focus, cx));
+        }
         // The page exposes every file action (3.7): the native menu may be
         // absent (Linux), so Import, Undo, Export and Restore live here.
         // 3.32: each button carries its Lucide icon left of the label, and
         // no ellipsis — the action runs straight away, any confirmation is
         // the button's own armed state, not a hidden dialog.
-        let latest_undo_id = self.imports.import_history.first().map(|e| e.id);
-        let undo_label = if self.imports.confirm_undo_import.is_some()
-            && self.imports.confirm_undo_import == latest_undo_id
-        {
-            "Click again to undo"
-        } else {
-            "Undo"
-        };
+        let latest_undo_id = self.import_history.first().map(|e| e.id);
+        let undo_label =
+            if self.confirm_undo_import.is_some() && self.confirm_undo_import == latest_undo_id {
+                "Click again to undo"
+            } else {
+                "Undo"
+            };
         // 3.89: the shared page header; every button keeps its own
         // `imports:header:` test selector.
         let actions = vec![
@@ -1343,21 +1426,38 @@ impl Shell {
                 .into_any_element(),
         ];
         v_flex()
+            // 3.79: the page's own key context, so Escape is *this* page's
+            // Cancel (`ui::init` binds it per context); the root takes
+            // focus when the page is shown.
+            .track_focus(&self.focus)
+            .key_context("Imports")
+            .on_action(cx.listener(|this, _: &Cancel, _, cx| {
+                // Close the armed Undo confirmation (3.79, *Interaction*:
+                // Escape closes transient UI); with nothing armed Escape
+                // means nothing here and propagates.
+                if this.confirm_undo_import.take().is_some() {
+                    this.history_table
+                        .update(cx, |t, _| t.delegate_mut().confirm_id = None);
+                    cx.notify();
+                } else {
+                    cx.propagate();
+                }
+            }))
             .flex_1()
             .min_h_0()
             .gap_3()
             .child(page_header(
                 cx,
                 "Imports",
-                format!("{} imports", self.imports.import_history.len()),
+                format!("{} imports", self.import_history.len()),
                 actions,
             ))
-            .children(self.imports.import.as_ref().map(|(p, _)| p.clone()))
+            .children(self.import.as_ref().map(|(p, _)| p.clone()))
             .child(
                 div()
                     .flex_1()
                     .min_h_0()
-                    .child(DataTable::new(&self.imports.history_table).stripe(false)),
+                    .child(DataTable::new(&self.history_table).stripe(false)),
             )
             .into_any_element()
     }

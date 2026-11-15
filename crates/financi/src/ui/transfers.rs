@@ -1,18 +1,35 @@
-//! The Transfers page (3.62).
+//! The Transfers page (3.62), a page entity since 3.79.
 
 use std::collections::HashSet;
 
 use financi_db::TransferCandidate;
 
 use super::*;
+use crate::ui::page::{Cancel, PageEntity, PageEvent, watch_catalog};
 use crate::ui::widgets::*;
 
-/// This page's state (3.74): the open transfer reviews left behind by
-/// pairing. The sidebar pill counts them; the page lists each with its
-/// candidates. 3.89: the list is a shared [`DataList`] — one collapsible
-/// group per review — so the page also remembers which groups are
-/// collapsed and the list's scroll position.
-pub(super) struct TransfersState {
+/// The Transfers page (3.74 state, 3.79 entity): the open transfer reviews
+/// left behind by pairing. The sidebar pill counts them (from the
+/// `Catalog` snapshot, so a hidden page's mirror being stale is fine); the
+/// page lists each with its candidates. 3.89: the list is a shared
+/// [`DataList`] — one collapsible group per review — so the page also
+/// remembers which groups are collapsed and the list's scroll position.
+pub(super) struct TransfersPage {
+    db: DbWorker,
+    /// The shared data model (3.78); `apply` reads the review list off its
+    /// snapshot, never a query of its own.
+    catalog: Entity<Catalog>,
+    /// 5.3 review fix: shared with the shell — while an export or restore
+    /// is in flight every write here is refused (the row ids may name
+    /// different transactions after it).
+    writes_blocked: Rc<Cell<bool>>,
+    focus: FocusHandle,
+    visible: bool,
+    dirty: bool,
+    focus_pending: bool,
+    /// The `Catalog` subscription (3.79); lives as long as the page.
+    _catalog: Subscription,
+    // -- State (3.74).
     pub(super) transfer_reviews: Vec<TransferReview>,
     /// Review ids whose candidate rows are hidden (3.89).
     collapsed: HashSet<i64>,
@@ -20,24 +37,63 @@ pub(super) struct TransfersState {
     scroll: VirtualListScrollHandle,
 }
 
-impl TransfersState {
-    pub(super) fn new(_window: &mut Window, _cx: &mut Context<Shell>) -> Self {
+impl EventEmitter<PageEvent> for TransfersPage {}
+
+impl PageEntity for TransfersPage {
+    /// The review list follows pairing writes and imports; the undo of an
+    /// import re-runs the engine and re-opens reviews, so the history too.
+    const DEPENDS: Domains = Domains::TRANSFERS.union(Domains::IMPORTS);
+
+    fn visible(&self) -> bool {
+        self.visible
+    }
+
+    fn dirty(&self) -> bool {
+        self.dirty
+    }
+
+    fn set_dirty(&mut self, dirty: bool) {
+        self.dirty = dirty;
+    }
+
+    fn set_shown(&mut self, visible: bool) {
+        self.visible = visible;
+    }
+
+    fn set_focus_pending(&mut self, pending: bool) {
+        self.focus_pending = pending;
+    }
+
+    fn apply(&mut self, cx: &mut Context<Self>) {
+        self.transfer_reviews = self.catalog.read(cx).snap.reviews.clone();
+    }
+}
+
+impl TransfersPage {
+    pub(super) fn new(
+        db: DbWorker,
+        writes_blocked: Rc<Cell<bool>>,
+        catalog: Entity<Catalog>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let _catalog = watch_catalog(&catalog, cx);
         Self {
+            db,
+            catalog,
+            writes_blocked,
+            focus: cx.focus_handle(),
+            // `Shell::new` marks the initial page visible right after
+            // construction; every page starts hidden.
+            visible: false,
+            dirty: true,
+            focus_pending: false,
+            _catalog,
             transfer_reviews: Vec::new(),
             collapsed: HashSet::new(),
             scroll: VirtualListScrollHandle::new(),
         }
     }
-}
 
-impl Shell {
-    /// Apply this page's part of a refresh result (3.74).
-    pub(super) fn apply_transfers(&mut self, reviews: Vec<TransferReview>) {
-        self.transfers.transfer_reviews = reviews;
-    }
-}
-
-impl Shell {
     /// Resolve an open transfer review by pairing its row with `candidate`
     /// (Transfers page, 4.2). The engine re-runs on the same commit, so a
     /// fresh review list and table come back on the next refresh.
@@ -61,12 +117,13 @@ impl Shell {
                 resolve_transfer_review(c, transaction_id, Some(candidate))
             })
             .await;
-            let _ = this.update_in(cx, |this, window, cx| {
+            let _ = this.update_in(cx, |this, _window, cx| {
                 match result {
-                    Ok(_) => this.notify_ok("Paired transfer.", cx),
-                    Err(e) => this.notify_err(format!("Could not pair: {e}"), cx),
+                    Ok(_) => this.toast("Paired transfer.", false, cx),
+                    Err(e) => this.toast(&format!("Could not pair: {e}"), true, cx),
                 }
-                this.changed(Domains::TRANSFERS_TX, window, cx);
+                cx.emit(PageEvent::Changed(Domains::TRANSFERS_TX));
+                cx.notify();
             });
         })
         .detach();
@@ -91,12 +148,13 @@ impl Shell {
                 resolve_transfer_review(c, transaction_id, None)
             })
             .await;
-            let _ = this.update_in(cx, |this, window, cx| {
+            let _ = this.update_in(cx, |this, _window, cx| {
                 match result {
-                    Ok(_) => this.notify_ok("Marked as not a transfer.", cx),
-                    Err(e) => this.notify_err(format!("Could not update: {e}"), cx),
+                    Ok(_) => this.toast("Marked as not a transfer.", false, cx),
+                    Err(e) => this.toast(&format!("Could not update: {e}"), true, cx),
                 }
-                this.changed(Domains::TRANSFERS_TX, window, cx);
+                cx.emit(PageEvent::Changed(Domains::TRANSFERS_TX));
+                cx.notify();
             });
         })
         .detach();
@@ -104,14 +162,9 @@ impl Shell {
 
     /// 3.89: show or hide one review's candidate rows — the group
     /// header's chevron calls this through the [`DataList`] toggle.
-    pub(super) fn toggle_review(
-        &mut self,
-        transaction_id: i64,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if !self.transfers.collapsed.remove(&transaction_id) {
-            self.transfers.collapsed.insert(transaction_id);
+    fn toggle_review(&mut self, transaction_id: i64, _window: &mut Window, cx: &mut Context<Self>) {
+        if !self.collapsed.remove(&transaction_id) {
+            self.collapsed.insert(transaction_id);
         }
         cx.notify();
     }
@@ -132,26 +185,46 @@ impl Shell {
         // 3.64: detached — see `pair_transfer`.
         cx.spawn_in(window, async move |this, cx| {
             let result = on_db(&db, move |c| unpair_transaction(c, transaction_id)).await;
-            let _ = this.update_in(cx, |this, window, cx| {
+            let _ = this.update_in(cx, |this, _window, cx| {
                 match result {
-                    Ok(_) => this.notify_ok("Unpaired transaction.", cx),
-                    Err(e) => this.notify_err(format!("Could not unpair: {e}"), cx),
+                    Ok(_) => this.toast("Unpaired transaction.", false, cx),
+                    Err(e) => this.toast(&format!("Could not unpair: {e}"), true, cx),
                 }
-                this.changed(Domains::TRANSFERS_TX, window, cx);
+                cx.emit(PageEvent::Changed(Domains::TRANSFERS_TX));
+                cx.notify();
             });
         })
         .detach();
     }
 
+    /// Feedback goes to the shell's toast stack (3.79: a page never owns
+    /// window chrome).
+    fn toast(&mut self, message: &str, error: bool, cx: &mut Context<Self>) {
+        cx.emit(PageEvent::Toast {
+            message: message.to_string(),
+            error,
+        });
+    }
+}
+
+impl Render for TransfersPage {
     /// The Transfers page (4.2), on the shared design system (3.89): one
     /// panel holding one [`DataList`] — a collapsible group header per
     /// open review (description, candidate count, amount, and a *Not a
     /// transfer* action) over the review's candidate rows, each with a
     /// hover-revealed *Pair* button. No banner, no sheet (ui-conventions,
     /// *Pages*, D8); the sidebar pill carries the count.
-    pub(super) fn render_transfers(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // 3.79: focusing the root when the page is shown waits for the end
+        // of the frame so its element exists first (the Rules page's search
+        // focus does the same, `rules_focus_pending`).
+        if self.focus_pending {
+            self.focus_pending = false;
+            let focus = self.focus.clone();
+            window.defer(cx, move |window, cx| window.focus(&focus, cx));
+        }
         let muted = cx.theme().muted_foreground;
-        let reviews = self.transfers.transfer_reviews.clone();
+        let reviews = self.transfer_reviews.clone();
         let body: AnyElement = if reviews.is_empty() {
             panel(cx, false)
                 .child(
@@ -172,7 +245,7 @@ impl Shell {
             let mut items: Vec<DataItem> = Vec::new();
             for r in &reviews {
                 let txn = r.transaction_id;
-                let collapsed = self.transfers.collapsed.contains(&txn);
+                let collapsed = self.collapsed.contains(&txn);
                 items.push(DataItem::Group {
                     id: txn,
                     collapsed,
@@ -233,7 +306,7 @@ impl Shell {
                         }
                     }
                 })
-                .scroll(self.transfers.scroll.clone())
+                .scroll(self.scroll.clone())
                 .heading_selectors("transfers")
                 .selector("transfers:list")
                 .toggle(|this, id, window, cx| this.toggle_review(id, window, cx))
@@ -271,7 +344,17 @@ impl Shell {
                 });
             panel(cx, false).child(list).into_any_element()
         };
+        // 3.79: the page's own key context, so Escape is *this* page's
+        // Cancel (`ui::init` binds it per context); the root takes focus
+        // when the page is shown.
         v_flex()
+            .track_focus(&self.focus)
+            .key_context("Transfers")
+            .on_action(cx.listener(|_, _: &Cancel, _, cx| {
+                // Nothing armed and no transient UI on this page (3.79);
+                // the binding exists so the page owns Escape.
+                cx.propagate();
+            }))
             .flex_1()
             .min_h_0()
             .gap_3()
@@ -280,7 +363,7 @@ impl Shell {
                 "Transfers",
                 format!(
                     "{} to review",
-                    flow::count(self.transfers.transfer_reviews.len() as i64)
+                    flow::count(self.transfer_reviews.len() as i64)
                 ),
                 Vec::new(),
             ))

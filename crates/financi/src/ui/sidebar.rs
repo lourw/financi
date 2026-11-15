@@ -130,9 +130,12 @@ impl Shell {
         // 3.28: the rules live on their own page now, after Categories.
         let rules_nav = self.nav_item("Rules", IconName::Wrench, Page::Rules, cx);
         // Transfers pill: the number of open reviews (4.2), hidden at 0.
+        // 3.79: the count comes from the `Catalog` snapshot, not the page
+        // entity — a hidden page defers applying, the pill never may.
+        let review_count = self.catalog.read(cx).snap.reviews.len();
         let transfers = self.nav_item("Transfers", IconName::ArrowLeftRight, Page::Transfers, cx);
-        let transfers = if !self.transfers.transfer_reviews.is_empty() {
-            let count = self.transfers.transfer_reviews.len() as i64;
+        let transfers = if review_count > 0 {
+            let count = review_count as i64;
             transfers.suffix(move |_, _| {
                 div()
                     .flex()

@@ -6,7 +6,7 @@ Do these in the order listed (`docs/tasks.md` → *Picking the next task*). Each
 
 Steps 1–15 of `docs/tasks/gpui.md` → *GPUI best practices*, task by task.
 
-- [ ] **3.79 Transfers and Imports become their own views.** (Architecture,
+- [x] **3.79 Transfers and Imports become their own views.** (Architecture,
   user decision 2026-11-11.) The first page extractions, chosen because
   they're the smallest; they set the pattern the others copy.
   - `TransfersPage` and `ImportsPage` entities in their modules, owning

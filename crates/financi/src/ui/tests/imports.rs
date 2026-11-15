@@ -38,7 +38,7 @@ fn drop_create_account_inline_and_import(cx: &mut TestAppContext) {
     click_import(cx, handle, &shell);
 
     wait_until(cx, "import finished and table refreshed", |cx| {
-        shell.read(cx).imports.import.is_none() && shell.read(cx).dashboard.row_count == 11
+        shell.read(cx).imports.read(cx).import.is_none() && shell.read(cx).dashboard.row_count == 11
     });
     cx.update(|cx| {
         let s = shell.read(cx);
@@ -86,7 +86,7 @@ fn an_import_commit_still_reloads_every_page(cx: &mut TestAppContext) {
     cx.update(|cx| shell.read(cx).db.query_log().clear());
     click_import(cx, handle, &shell);
     wait_until(cx, "import finished and table refreshed", |cx| {
-        shell.read(cx).imports.import.is_none() && shell.read(cx).dashboard.row_count == 11
+        shell.read(cx).imports.read(cx).import.is_none() && shell.read(cx).dashboard.row_count == 11
     });
     let names = cx.update(|cx| shell.read(cx).db.query_log().names());
     for expected in [
@@ -152,7 +152,7 @@ fn the_preview_tags_the_institution(cx: &mut TestAppContext) {
         shell.update(cx, |s, cx| s.open_file(path, window, cx));
     });
     wait_until(cx, "the panel opens", |cx| {
-        shell.read(cx).imports.import.is_some()
+        shell.read(cx).imports.read(cx).import.is_some()
     });
     draw_frame(cx, handle);
     assert!(
@@ -283,14 +283,20 @@ fn overlap_with_another_account_blocks_until_overridden(cx: &mut TestAppContext)
     });
     click_import(cx, handle, &shell); // disabled: does nothing
     wait_idle(cx, &shell);
-    cx.update(|cx| assert!(shell.read(cx).imports.import.is_some(), "still open"));
+    cx.update(|cx| {
+        assert!(
+            shell.read(cx).imports.read(cx).import.is_some(),
+            "still open"
+        )
+    });
 
     with_window(cx, handle, |_, cx| {
         panel(&shell, cx).update(cx, |p, _| p.override_overlap = true); // the checkbox's handler
     });
     click_import(cx, handle, &shell);
     wait_until(cx, "Gold import with override", |cx| {
-        shell.read(cx).imports.import.is_none() && shell.read(cx).dashboard.row_count == 67 + 100
+        shell.read(cx).imports.read(cx).import.is_none()
+            && shell.read(cx).dashboard.row_count == 67 + 100
     });
 }
 
@@ -344,7 +350,10 @@ fn a_committing_import_disables_cancel_and_ignores_new_files(cx: &mut TestAppCon
         shell.update(cx, |s, cx| s.open_file(path, window, cx));
     });
     cx.update(|cx| {
-        assert!(shell.read(cx).imports.import.is_some(), "the panel stays");
+        assert!(
+            shell.read(cx).imports.read(cx).import.is_some(),
+            "the panel stays"
+        );
         assert_eq!(
             panel(&shell, cx).entity_id(),
             first_panel,
@@ -369,7 +378,7 @@ fn a_committing_import_disables_cancel_and_ignores_new_files(cx: &mut TestAppCon
     // The commit lands on its own: panel gone, toast of the first file
     // only, and the second file was never imported.
     wait_until(cx, "commit finished", |cx| {
-        shell.read(cx).imports.import.is_none()
+        shell.read(cx).imports.read(cx).import.is_none()
     });
     cx.update(|cx| {
         let (msg, is_error) = last_toast(&shell, cx).expect("import toast");
@@ -435,7 +444,7 @@ fn a_load_landing_mid_commit_never_replaces_the_committing_panel(cx: &mut TestAp
     // Without the guard the hop replaces the tuple here, the commit's
     // result lands on the dropped entity, and this never resolves.
     wait_until(cx, "commit finished", |cx| {
-        shell.read(cx).imports.import.is_none()
+        shell.read(cx).imports.read(cx).import.is_none()
     });
     cx.update(|cx| {
         let (msg, is_error) = last_toast(&shell, cx).expect("import toast");
@@ -488,7 +497,7 @@ fn opening_ten_files_leaves_one_import_subscription(cx: &mut TestAppContext) {
     );
     cx.update(|cx| {
         assert!(
-            shell.read(cx).imports.import.is_some(),
+            shell.read(cx).imports.read(cx).import.is_some(),
             "the tenth panel is the open one"
         );
     });
@@ -529,7 +538,7 @@ fn a_replaced_import_panel_stops_reaching_the_shell(cx: &mut TestAppContext) {
     cx.run_until_parked();
     cx.update(|cx| {
         assert!(
-            shell.read(cx).imports.import.is_some(),
+            shell.read(cx).imports.read(cx).import.is_some(),
             "an event from the replaced panel must not close the open one"
         );
         assert_eq!(
@@ -556,7 +565,7 @@ fn opening_two_files_quickly_previews_only_the_second(cx: &mut TestAppContext) {
     // nothing read or parsed on the UI thread.
     cx.update(|cx| {
         assert!(
-            shell.read(cx).imports.import.is_none(),
+            shell.read(cx).imports.read(cx).import.is_none(),
             "the panel arrives when the background load returns"
         );
     });
@@ -646,7 +655,7 @@ fn near_match_is_offered_and_a_confirmed_same_charge_replaces(cx: &mut TestAppCo
     wait_until(cx, "base plan", |cx| plan_ready(&shell, cx));
     click_import(cx, handle, &shell);
     wait_until(cx, "base import", |cx| {
-        shell.read(cx).imports.import.is_none() && shell.read(cx).dashboard.row_count == 1
+        shell.read(cx).imports.read(cx).import.is_none() && shell.read(cx).dashboard.row_count == 1
     });
 
     open_path_and_choose(cx, handle, &shell, &tip, "American Express · Cobalt");
@@ -673,7 +682,7 @@ fn near_match_is_offered_and_a_confirmed_same_charge_replaces(cx: &mut TestAppCo
     });
     click_import(cx, handle, &shell);
     wait_until(cx, "replacement import", |cx| {
-        shell.read(cx).imports.import.is_none()
+        shell.read(cx).imports.read(cx).import.is_none()
     });
     cx.update(|cx| {
         let s = shell.read(cx);
@@ -712,23 +721,28 @@ fn undo_needs_a_second_click_and_removes_the_latest_import(cx: &mut TestAppConte
     wait_until(cx, "import", |cx| shell.read(cx).dashboard.row_count == 67);
 
     wait_until(cx, "import history", |cx| {
-        shell.read(cx).imports.import_history.len() == 1
+        shell.read(cx).imports.read(cx).import_history.len() == 1
     });
 
     with_window(cx, handle, |window, cx| {
-        let id = shell.read(cx).imports.import_history[0].id;
-        shell.update(cx, |s, cx| s.undo_import(id, window, cx));
+        let id = shell.read(cx).imports.read(cx).import_history[0].id;
+        shell.update(cx, |s, cx| {
+            s.imports.update(cx, |p, cx| p.undo_import(id, window, cx))
+        });
         assert_eq!(
-            shell.read(cx).imports.confirm_undo_import,
+            shell.read(cx).imports.read(cx).confirm_undo_import,
             Some(id),
             "first click only asks to confirm"
         );
         assert_eq!(shell.read(cx).dashboard.row_count, 67);
-        shell.update(cx, |s, cx| s.undo_import(id, window, cx));
+        shell.update(cx, |s, cx| {
+            s.imports.update(cx, |p, cx| p.undo_import(id, window, cx))
+        });
     });
 
     wait_until(cx, "undo", |cx| {
-        shell.read(cx).dashboard.row_count == 0 && shell.read(cx).imports.import_history.is_empty()
+        shell.read(cx).dashboard.row_count == 0
+            && shell.read(cx).imports.read(cx).import_history.is_empty()
     });
     cx.update(|cx| {
         assert_eq!(
@@ -747,7 +761,7 @@ fn undo_needs_a_second_click_and_removes_the_latest_import(cx: &mut TestAppConte
 /// and the newest one — the only row with the in-row Undo button — stands
 /// out (3.32). The rows differ only in name and time; `imports.id` ascends,
 /// and the history lists `id DESC`.
-fn seed_three_imports(conn: &financi_db::rusqlite::Connection) {
+pub(super) fn seed_three_imports(conn: &financi_db::rusqlite::Connection) {
     let acct = create_account(conn, "simplii", "Simplii Chequing", AccountKind::Chequing).unwrap();
     for n in 0..3 {
         conn.execute(
@@ -838,10 +852,10 @@ fn history_table_columns_fit_every_page_width() {
 #[gpui::test]
 fn the_imports_history_table_fits_the_available_width(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, seed_long_history);
-    wait_until(cx, "import history", |cx| {
-        shell.read(cx).imports.import_history.len() == 1
-    });
     cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Imports, cx)));
+    wait_until(cx, "import history", |cx| {
+        shell.read(cx).imports.read(cx).import_history.len() == 1
+    });
 
     let resize = |cx: &mut TestAppContext, w: f32, h: f32| {
         with_window(cx, handle, |window, cx| {
@@ -852,7 +866,7 @@ fn the_imports_history_table_fits_the_available_width(cx: &mut TestAppContext) {
         draw_frame(cx, handle);
     };
     let widths = |cx: &App| -> Vec<f32> {
-        let table = shell.read(cx).imports.history_table.read(cx);
+        let table = shell.read(cx).imports.read(cx).history_table.read(cx);
         (0..6)
             .map(|i| table.col_width(i).unwrap().as_f32())
             .collect()
@@ -970,10 +984,10 @@ fn assert_button_paints_icon(
 #[gpui::test]
 fn the_in_row_undo_button_stays_inside_its_row(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, seed_three_imports);
-    wait_until(cx, "import history", |cx| {
-        shell.read(cx).imports.import_history.len() == 3
-    });
     cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Imports, cx)));
+    wait_until(cx, "import history", |cx| {
+        shell.read(cx).imports.read(cx).import_history.len() == 3
+    });
     cx.run_until_parked();
     let mut window = VisualTestContext::from_window(handle, cx);
     draw_frame(cx, handle);
@@ -1029,6 +1043,7 @@ fn the_in_row_undo_button_stays_inside_its_row(cx: &mut TestAppContext) {
         shell
             .read(cx)
             .imports
+            .read(cx)
             .history_table
             .read(cx)
             .col_width(5)
@@ -1059,13 +1074,16 @@ fn the_in_row_undo_button_stays_inside_its_row(cx: &mut TestAppContext) {
     // Arm the confirmation (first click): the button grows its prompt —
     // still with clearance, the row no taller than its neighbours, and the
     // armed label fitting the Undo column.
-    let newest = cx.update(|cx| shell.read(cx).imports.import_history[0].id);
+    let newest = cx.update(|cx| shell.read(cx).imports.read(cx).import_history[0].id);
     with_window(cx, handle, |window, cx| {
-        shell.update(cx, |s, cx| s.undo_import(newest, window, cx));
+        shell.update(cx, |s, cx| {
+            s.imports
+                .update(cx, |p, cx| p.undo_import(newest, window, cx))
+        });
     });
     cx.update(|cx| {
         assert_eq!(
-            shell.read(cx).imports.confirm_undo_import,
+            shell.read(cx).imports.read(cx).confirm_undo_import,
             Some(newest),
             "the first click only arms the confirmation"
         );
@@ -1103,10 +1121,10 @@ fn the_in_row_undo_button_stays_inside_its_row(cx: &mut TestAppContext) {
 #[gpui::test]
 fn the_in_row_undo_button_shows_the_undo_label(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, seed_three_imports);
-    wait_until(cx, "import history", |cx| {
-        shell.read(cx).imports.import_history.len() == 3
-    });
     cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Imports, cx)));
+    wait_until(cx, "import history", |cx| {
+        shell.read(cx).imports.read(cx).import_history.len() == 3
+    });
     cx.run_until_parked();
     let mut window = VisualTestContext::from_window(handle, cx);
     draw_frame(cx, handle);
@@ -1132,6 +1150,7 @@ fn the_in_row_undo_button_shows_the_undo_label(cx: &mut TestAppContext) {
         shell
             .read(cx)
             .imports
+            .read(cx)
             .history_table
             .read(cx)
             .col_width(5)
@@ -1152,10 +1171,10 @@ fn the_in_row_undo_button_shows_the_undo_label(cx: &mut TestAppContext) {
 #[gpui::test]
 fn the_imports_header_buttons_show_icons_without_ellipses(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, seed_three_imports);
-    wait_until(cx, "import history", |cx| {
-        shell.read(cx).imports.import_history.len() == 3
-    });
     cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Imports, cx)));
+    wait_until(cx, "import history", |cx| {
+        shell.read(cx).imports.read(cx).import_history.len() == 3
+    });
     cx.run_until_parked();
     let mut window = VisualTestContext::from_window(handle, cx);
     draw_frame(cx, handle);
@@ -1338,7 +1357,7 @@ fn cmd_o_opens_the_file_picker_and_the_preview(cx: &mut TestAppContext) {
     let file = demo("simplii-chequing.csv");
     cx.simulate_path_prompt_response(move |_| Some(vec![file]));
     wait_until(cx, "preview open on the Imports page", |cx| {
-        shell.read(cx).imports.import.is_some() && shell.read(cx).page == Page::Imports
+        shell.read(cx).imports.read(cx).import.is_some() && shell.read(cx).page == Page::Imports
     });
 }
 
@@ -1372,14 +1391,14 @@ fn cmd_o_fires_once_and_drives_the_active_shell(cx: &mut TestAppContext) {
     );
 
     wait_until(cx, "the active shell shows the preview", |cx| {
-        shell_b.read(cx).imports.import.is_some()
+        shell_b.read(cx).imports.read(cx).import.is_some()
     });
     // The inactive shell never acted: once B's work has settled, it has
     // no panel of its own.
     wait_idle(cx, &shell_a);
     cx.update(|cx| {
         assert!(
-            shell_a.read(cx).imports.import.is_none(),
+            shell_a.read(cx).imports.read(cx).import.is_none(),
             "the inactive shell did not act on ⌘O"
         );
     });
@@ -1419,9 +1438,10 @@ fn the_undo_action_arms_then_undoes_the_newest_import(cx: &mut TestAppContext) {
     wait_until(cx, "plan", |cx| plan_ready(&shell, cx));
     click_import(cx, handle, &shell);
     wait_until(cx, "import history", |cx| {
-        shell.read(cx).imports.import_history.len() == 1 && shell.read(cx).dashboard.row_count == 67
+        shell.read(cx).imports.read(cx).import_history.len() == 1
+            && shell.read(cx).dashboard.row_count == 67
     });
-    let id = cx.update(|cx| shell.read(cx).imports.import_history[0].id);
+    let id = cx.update(|cx| shell.read(cx).imports.read(cx).import_history[0].id);
 
     with_window(cx, handle, |window, cx| {
         window.dispatch_action(Box::new(UndoLastImport), cx)
@@ -1429,7 +1449,7 @@ fn the_undo_action_arms_then_undoes_the_newest_import(cx: &mut TestAppContext) {
     cx.run_until_parked();
     cx.update(|cx| {
         assert_eq!(
-            shell.read(cx).imports.confirm_undo_import,
+            shell.read(cx).imports.read(cx).confirm_undo_import,
             Some(id),
             "first activation only asks to confirm"
         );
@@ -1438,7 +1458,8 @@ fn the_undo_action_arms_then_undoes_the_newest_import(cx: &mut TestAppContext) {
         window.dispatch_action(Box::new(UndoLastImport), cx)
     });
     wait_until(cx, "undo", |cx| {
-        shell.read(cx).dashboard.row_count == 0 && shell.read(cx).imports.import_history.is_empty()
+        shell.read(cx).dashboard.row_count == 0
+            && shell.read(cx).imports.read(cx).import_history.is_empty()
     });
 }
 
@@ -1452,7 +1473,7 @@ fn the_undo_action_is_a_no_op_without_history(cx: &mut TestAppContext) {
     });
     wait_idle(cx, &shell);
     cx.update(|cx| {
-        assert_eq!(shell.read(cx).imports.confirm_undo_import, None);
+        assert_eq!(shell.read(cx).imports.read(cx).confirm_undo_import, None);
         assert!(toasts(&shell, cx).is_empty());
     });
 }
@@ -1490,7 +1511,7 @@ fn export_to(
     let dest = dest.to_path_buf();
     cx.simulate_new_path_selection(move |_| Some(dest));
     wait_until(cx, "exported toast", |cx| {
-        !shell.read(cx).exporting
+        !shell.read(cx).imports.read(cx).exporting
             && last_toast(shell, cx) == Some((format!("Exported to {label}"), false))
     });
 }
@@ -1545,7 +1566,7 @@ fn export_writes_the_chosen_zip_and_toasts(cx: &mut TestAppContext) {
     let dest = zip.clone();
     cx.simulate_new_path_selection(move |_| Some(dest));
     wait_until(cx, "exported toast", |cx| {
-        !shell.read(cx).exporting
+        !shell.read(cx).imports.read(cx).exporting
             && last_toast(&shell, cx) == Some(("Exported to snapshot.zip".into(), false))
     });
     let written = zip.metadata().expect("the zip was written");
@@ -1571,7 +1592,7 @@ fn export_cancel_writes_nothing_and_says_nothing(cx: &mut TestAppContext) {
     cx.run_until_parked();
     wait_idle(cx, &shell);
     cx.update(|cx| {
-        assert!(!shell.read(cx).exporting, "not stuck busy");
+        assert!(!shell.read(cx).imports.read(cx).exporting, "not stuck busy");
         assert!(
             toasts(&shell, cx).is_empty(),
             "a cancelled Export is silent"
@@ -1598,7 +1619,7 @@ fn cmd_e_opens_the_export_save_dialog(cx: &mut TestAppContext) {
     assert!(cx.did_prompt_for_new_path(), "⌘E opened the save dialog");
     cx.simulate_new_path_selection(|_| None);
     cx.run_until_parked();
-    cx.update(|cx| assert!(!shell.read(cx).exporting));
+    cx.update(|cx| assert!(!shell.read(cx).imports.read(cx).exporting));
 }
 
 /// Restore… replaces the whole database: the rows come back to the
@@ -1624,7 +1645,12 @@ fn restore_replaces_the_data_and_resets_transient_state(cx: &mut TestAppContext)
     });
     cx.run_until_parked();
     assert!(
-        cx.update(|cx| shell.read(cx).imports.confirm_undo_import.is_some()),
+        cx.update(|cx| shell
+            .read(cx)
+            .imports
+            .read(cx)
+            .confirm_undo_import
+            .is_some()),
         "the Undo is armed before the restore"
     );
 
@@ -1635,10 +1661,15 @@ fn restore_replaces_the_data_and_resets_transient_state(cx: &mut TestAppContext)
     wait_idle(cx, &shell);
     cx.update(|cx| {
         assert!(
-            shell.read(cx).imports.confirm_undo_import.is_none(),
+            shell
+                .read(cx)
+                .imports
+                .read(cx)
+                .confirm_undo_import
+                .is_none(),
             "the armed Undo did not survive the restore"
         );
-        assert!(!shell.read(cx).restoring, "not stuck busy");
+        assert!(!shell.read(cx).imports.read(cx).restoring, "not stuck busy");
         assert_eq!(
             last_toast(&shell, cx),
             Some(("Restored from snapshot.zip".into(), false))
@@ -1664,7 +1695,7 @@ fn restore_of_a_file_that_is_not_an_export_stays_until_closed(cx: &mut TestAppCo
     wait_idle(cx, &shell);
     cx.update(|cx| {
         assert_eq!(shell.read(cx).dashboard.row_count, 67, "data untouched");
-        assert!(!shell.read(cx).restoring, "not stuck busy");
+        assert!(!shell.read(cx).imports.read(cx).restoring, "not stuck busy");
     });
     // Errors stay until closed: ten seconds of ticker and it is up.
     tick_toasts(cx, 100);
@@ -1708,7 +1739,9 @@ fn the_empty_state_offers_restore_from_export(cx: &mut TestAppContext) {
         // The seed has an account and an import but no transactions, so
         // the dashboard may still be the empty state — what must have
         // changed is everything the restore brought back.
-        assert_eq!(shell.read(cx).imports.import_history.len(), 1);
+        // The Imports page was never shown (3.79): read the Catalog
+        // snapshot the restore refreshed, not the hidden page's mirror.
+        assert_eq!(shell.read(cx).catalog.read(cx).snap.imports.len(), 1);
         assert!(
             last_toast(&shell, cx)
                 .is_some_and(|(msg, err)| !err && msg.starts_with("Restored from"))
@@ -1794,7 +1827,7 @@ fn export_and_restore_refuse_each_other_while_one_runs(cx: &mut TestAppContext) 
     // Cancel the restore; Export answers now.
     cx.simulate_path_prompt_response(|_| None);
     cx.run_until_parked();
-    cx.update(|cx| assert!(!shell.read(cx).restoring));
+    cx.update(|cx| assert!(!shell.read(cx).imports.read(cx).restoring));
     with_window(cx, handle, |window, cx| {
         window.dispatch_action(Box::new(ExportData), cx)
     });
@@ -1803,7 +1836,7 @@ fn export_and_restore_refuse_each_other_while_one_runs(cx: &mut TestAppContext) 
     cx.simulate_new_path_selection(|_| None);
     cx.run_until_parked();
     cx.update(|cx| {
-        assert!(!shell.read(cx).exporting);
+        assert!(!shell.read(cx).imports.read(cx).exporting);
         assert!(
             toasts(&shell, cx).is_empty(),
             "cancelled dialogs say nothing"
@@ -1825,7 +1858,7 @@ fn unrecognized_file_shows_an_error_and_no_panel(cx: &mut TestAppContext) {
     wait_idle(cx, &shell);
     cx.update(|cx| {
         let s = shell.read(cx);
-        assert!(s.imports.import.is_none());
+        assert!(s.imports.read(cx).import.is_none());
         let (msg, is_error) = last_toast(&shell, cx).expect("error toast");
         assert!(is_error && msg.contains("not a recognized export"), "{msg}");
     });
@@ -1861,7 +1894,7 @@ fn oversize_file_is_rejected_without_a_panel(cx: &mut TestAppContext) {
             "same message as the in-memory guard: {msg}"
         );
         assert!(
-            shell.read(cx).imports.import.is_none(),
+            shell.read(cx).imports.read(cx).import.is_none(),
             "a huge drop never opens a panel"
         );
         assert_eq!(shell.read(cx).page, Page::Dashboard, "the page stays put");
@@ -2004,6 +2037,7 @@ fn import_end_to_end_shows_expected_values_on_every_page(cx: &mut TestAppContext
         let s = shell.read(cx);
         let history: Vec<(&str, &str, i64)> = s
             .imports
+            .read(cx)
             .import_history
             .iter()
             .map(|e| (e.file_name.as_str(), e.account.as_str(), e.rows_added))
@@ -2017,19 +2051,19 @@ fn import_end_to_end_shows_expected_values_on_every_page(cx: &mut TestAppContext
             "newest import first"
         );
         assert_eq!(
-            s.imports.import_history[0].first_date.as_deref(),
+            s.imports.read(cx).import_history[0].first_date.as_deref(),
             Some("2026-09-01")
         );
         assert_eq!(
-            s.imports.import_history[0].last_date.as_deref(),
+            s.imports.read(cx).import_history[0].last_date.as_deref(),
             Some("2026-11-01")
         );
         assert_eq!(
-            s.imports.import_history[1].first_date.as_deref(),
+            s.imports.read(cx).import_history[1].first_date.as_deref(),
             Some("2026-09-01")
         );
         assert_eq!(
-            s.imports.import_history[1].last_date.as_deref(),
+            s.imports.read(cx).import_history[1].last_date.as_deref(),
             Some("2026-11-06")
         );
     });
@@ -2077,7 +2111,10 @@ fn restore_in_flight_refuses_an_import(cx: &mut TestAppContext) {
     cx.simulate_path_prompt_response(move |_| Some(vec![zip]));
     cx.run_until_parked();
     cx.update(|cx| {
-        assert!(shell.read(cx).restoring, "the restore is in flight");
+        assert!(
+            shell.read(cx).imports.read(cx).restoring,
+            "the restore is in flight"
+        );
         let p = panel(&shell, cx);
         assert!(
             !p.read(cx).can_import(),
@@ -2102,18 +2139,18 @@ fn restore_in_flight_refuses_an_import(cx: &mut TestAppContext) {
     // Release the writer: the restore lands and the import never happened.
     drop(block);
     wait_until(cx, "the restored rows land", |cx| {
-        !shell.read(cx).restoring
+        !shell.read(cx).imports.read(cx).restoring
             && shell.read(cx).dashboard.row_count == 67
             && shell.read(cx).accounts.len() == 1
     });
     wait_idle(cx, &shell);
     cx.update(|cx| {
         assert!(
-            shell.read(cx).imports.import.is_none(),
+            shell.read(cx).imports.read(cx).import.is_none(),
             "the restore reset closed the panel"
         );
         assert_eq!(
-            shell.read(cx).imports.import_history.len(),
+            shell.read(cx).imports.read(cx).import_history.len(),
             1,
             "only the snapshot's import is in the history"
         );
@@ -2159,7 +2196,12 @@ fn restore_in_flight_refuses_a_queue_apply(cx: &mut TestAppContext) {
     assert!(cx.did_prompt_for_paths(), "Restore opened the file dialog");
     cx.simulate_path_prompt_response(move |_| Some(vec![zip]));
     cx.run_until_parked();
-    cx.update(|cx| assert!(shell.read(cx).restoring, "the restore is in flight"));
+    cx.update(|cx| {
+        assert!(
+            shell.read(cx).imports.read(cx).restoring,
+            "the restore is in flight"
+        )
+    });
 
     // The very call the row's Apply button makes, picker and all —
     // refused mid-restore.
@@ -2181,7 +2223,7 @@ fn restore_in_flight_refuses_a_queue_apply(cx: &mut TestAppContext) {
 
     drop(block);
     wait_until(cx, "the restored rows land", |cx| {
-        !shell.read(cx).restoring && shell.read(cx).dashboard.row_count == 67
+        !shell.read(cx).imports.read(cx).restoring && shell.read(cx).dashboard.row_count == 67
     });
     wait_idle(cx, &shell);
     cx.update(|cx| {
@@ -2223,7 +2265,10 @@ fn a_cancelled_export_dialog_leaves_import_working(cx: &mut TestAppContext) {
         "Export opened the save dialog"
     );
     cx.update(|cx| {
-        assert!(shell.read(cx).exporting, "the dialog is in flight");
+        assert!(
+            shell.read(cx).imports.read(cx).exporting,
+            "the dialog is in flight"
+        );
         let p = panel(&shell, cx);
         assert!(!p.read(cx).can_import(), "Import waits for the dialog");
     });
@@ -2245,7 +2290,7 @@ fn a_cancelled_export_dialog_leaves_import_working(cx: &mut TestAppContext) {
     cx.simulate_new_path_selection(|_| None);
     cx.run_until_parked();
     cx.update(|cx| {
-        assert!(!shell.read(cx).exporting, "not stuck busy");
+        assert!(!shell.read(cx).imports.read(cx).exporting, "not stuck busy");
         let p = panel(&shell, cx);
         assert!(p.read(cx).can_import(), "Import is live after the cancel");
     });
