@@ -1411,6 +1411,13 @@ the UI; tests cover 2.1–2.9.
   - No behaviour change otherwise; existing tests pass (selectors may
     move to the page).
 
+- [x] **3.81 The Categories page becomes its own view.** (Architecture.)
+  Same pattern as 3.79, for `CategoriesPage`, before 3.48. Owns the
+  selection, the new-category form, rename, the rule list's editor and
+  armed deletes; `DEPENDS = Categories | Rules | Transactions`. The rule
+  rows it shares with the Rules page come from one row renderer used by
+  both. `Cancel` closes the innermost open editor or form, then disarms.
+
 - [x] **3.87 Rule use stats.** (Split out of 3.58, 2026-11-11.) Backend
   only (`financi-db/src/rules.rs`); runs in a free slot before 3.58.
   Replace `rule_use_counts` with `rule_use_stats(conn) ->
