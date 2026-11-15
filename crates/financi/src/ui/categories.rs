@@ -1236,10 +1236,11 @@ impl Render for CategoriesPage {
         // Rules of the selected category (3.23): the list shows only these
         // (`visible_rules`). The list is virtualized like the tree (3.12);
         // rows are fixed height (24 px), except the one row 3.24's editor
-        // swapped in for, which reserves 68 px (labelled fields) — 92 px
-        // while a validation error is open under it, one ellipsized line
-        // (`rule_editor_row`). 3.80: the rule editor state lives on the
-        // Rules page entity, read once per frame.
+        // swapped in for, which reserves `RULE_EDITOR_H`
+        // (`RULE_EDITOR_ERROR_H` while a validation error is open under
+        // it, one ellipsized line — the two-line 3.48 `rule_editor_row`).
+        // 3.80: the rule editor state lives on the Rules page entity, read
+        // once per frame.
         let rp = self.rules_page.read(cx);
         let editing = rp.editing_rule;
         let rule_error = rp.rule_error.clone();
@@ -1260,7 +1261,16 @@ impl Render for CategoriesPage {
                 .iter()
                 .map(|r| {
                     if Some(r.id) == editing {
-                        size(px(0.), if edit_error { px(108.) } else { px(80.) })
+                        // 3.48: the editor's reserved height is shared
+                        // with the Rules page (see `RULE_EDITOR_H`).
+                        size(
+                            px(0.),
+                            if edit_error {
+                                px(RULE_EDITOR_ERROR_H)
+                            } else {
+                                px(RULE_EDITOR_H)
+                            },
+                        )
                     } else {
                         size(px(0.), px(24.))
                     }

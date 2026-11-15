@@ -614,6 +614,127 @@ fn the_editor_error_stays_inside_its_row(cx: &mut TestAppContext) {
     );
 }
 
+/// 3.48: the editor is 3.89's `InlineForm` — a bordered two-line form
+/// opened in place of the row, whose Pattern input gets the editor's full
+/// width (the user report: the one-row editor shrank it past editing).
+/// At the minimum window the input is at least 90 % of the detail panel's
+/// inner width, the controls line shares one centre (the switch beside
+/// Save and Cancel — pinned by the Categories alignment test), and the
+/// row below the editor starts under it: the reserved `RULE_EDITOR_H`
+/// keeps the virtual list from painting the next row over the form.
+/// Both add-rule rows measure ≥ 240 px wide for their Pattern input at
+/// 1200 × 720 after 3.53 removed pickers, so they stay on one line (the
+/// two-line shape is only for the editor).
+#[gpui::test]
+fn the_rule_editor_gives_the_pattern_room(cx: &mut TestAppContext) {
+    let (handle, shell, rule, _first, second) = open_rule_fixture(cx);
+    resize_and_draw(cx, handle, 1200., 720.);
+    // 3.48: the add-rule rows stay on one line — after 3.53 their
+    // Pattern input is wide enough to edit there (spec threshold 240 px).
+    let cat_add = bounds(cx, handle, "cat:pattern-input:add");
+    assert!(
+        f32::from(cat_add.size.width) >= 240.,
+        "the Categories add-rule row's Pattern input is {} px wide, keeping one line",
+        cat_add.size.width
+    );
+    // A second rule below the one being edited: its row is what an
+    // under-reserved editor would overlap.
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.rules_page.update(cx, |p, cx| {
+                p.rule_pattern
+                    .update(cx, |i, cx| i.set_value("TOAST".to_string(), window, cx))
+            });
+            let ix = s
+                .child_choices
+                .iter()
+                .position(|(id, _)| *id == second)
+                .unwrap();
+            s.rules_page.update(cx, |p, cx| {
+                p.rule_target.update(cx, |sel, cx| {
+                    sel.set_selected_index(
+                        Some(gpui_kit::component::IndexPath::new(ix)),
+                        window,
+                        cx,
+                    );
+                })
+            });
+            s.rules_page.update(cx, |p, cx| p.add_rule(window, cx));
+        });
+    });
+    wait_until(cx, "the second rule", |cx| shell.read(cx).rules.len() == 2);
+    let toast = cx.update(|cx| {
+        shell
+            .read(cx)
+            .rules
+            .iter()
+            .find(|r| r.pattern == "TOAST")
+            .unwrap()
+            .id
+    });
+
+    resize_and_draw(cx, handle, 1200., 720.);
+    start_rule_edit(cx, handle, &shell, rule);
+    // The steady editor: preview count in, error none — the tallest the
+    // no-error form grows.
+    wait_until(cx, "the editor preview", |cx| {
+        shell
+            .read(cx)
+            .rules_page
+            .read(cx)
+            .rule_match_count
+            .is_some()
+    });
+    draw_frame(cx, handle);
+
+    let detail = bounds(cx, handle, "cat:detail-panel");
+    // The panel's inner width: `p_4` padding and the 1 px border off the
+    // painted bounds.
+    let inner = f32::from(detail.size.width) - 32. - 2.;
+    let input = bounds(cx, handle, "rules:edit-pattern-input");
+    assert!(
+        f32::from(input.size.width) >= inner * 0.9,
+        "the pattern input is {} px wide, at least 90 % of the detail \
+         panel's inner {inner} px",
+        input.size.width
+    );
+
+    // 3.48: focus lands in the pattern input, caret at the end of the
+    // rule's pattern, so the user can edit straight away.
+    let (focused, caret) = with_window(cx, handle, |window, cx| {
+        let p = shell.read(cx).rules_page.read(cx);
+        let state = p.rule_edit_pattern.read(cx);
+        (state.focus_handle(cx).is_focused(window), state.cursor())
+    });
+    assert!(focused, "Edit focuses the pattern input");
+    assert_eq!(caret, "COFFEE".len(), "the caret sits at the end");
+
+    // The editor's whole form ends above the next rule row's top.
+    let form = bounds(cx, handle, "rules:edit-form");
+    let next = bounds(cx, handle, format!("cat:rule-row:{toast}"));
+    assert!(
+        form.bottom() <= next.top(),
+        "the editor (bottom {:?}) must not overlap the next rule row (top {:?})",
+        form.bottom(),
+        next.top(),
+    );
+
+    // The Rules page's add-rule row keeps one line too (same threshold).
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Rules, cx)));
+    cx.update(|cx| {
+        shell.update(cx, |s, cx| {
+            s.rules_page.update(cx, |p, _cx| p.new_rule_open = true)
+        });
+    });
+    draw_frame(cx, handle);
+    let rules_add = bounds(cx, handle, "rules:pattern-input:add");
+    assert!(
+        f32::from(rules_add.size.width) >= 240.,
+        "the Rules page add-rule row's Pattern input is {} px wide, keeping one line",
+        rules_add.size.width
+    );
+}
+
 /// 3.24 review: while a row's editor is open the live count belongs to the
 /// editor — the add-rule row must not show the editor's count (the same
 /// filter `rule_error` has).
@@ -711,6 +832,39 @@ fn cancel_and_escape_leave_the_rule_unchanged(cx: &mut TestAppContext) {
     cx.update(|cx| {
         let s = shell.read(cx);
         assert_eq!(s.rules[0].pattern, "COFFEE", "Escape saved nothing");
+    });
+}
+
+/// 3.48: Enter in the editor's Pattern input saves. Since 3.48 Edit
+/// focuses that input, so the keystroke needs no click first — the user
+/// opens Edit, retypes, and presses Enter.
+#[gpui::test]
+fn enter_saves_the_rule_edit(cx: &mut TestAppContext) {
+    let (handle, shell, rule, _first, _second) = open_rule_fixture(cx);
+    start_rule_edit(cx, handle, &shell, rule);
+    draw_frame(cx, handle);
+    let focused = with_window(cx, handle, |window, cx| {
+        shell
+            .read(cx)
+            .rules_page
+            .read(cx)
+            .rule_edit_pattern
+            .read(cx)
+            .focus_handle(cx)
+            .is_focused(window)
+    });
+    assert!(focused, "Edit focused the pattern input (3.48)");
+    set_edit_pattern(cx, handle, &shell, "BREW");
+    cx.simulate_keystrokes(handle, "enter");
+    wait_until(cx, "Enter saved the edit", |cx| {
+        shell
+            .read(cx)
+            .rules
+            .iter()
+            .any(|r| r.id == rule && r.pattern == "BREW")
+    });
+    wait_until(cx, "the editor closed", |cx| {
+        shell.read(cx).rules_page.read(cx).editing_rule.is_none()
     });
 }
 

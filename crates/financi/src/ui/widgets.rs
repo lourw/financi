@@ -753,8 +753,8 @@ pub(super) fn filter_row() -> Div {
 
 /// An inline add/edit form (ui-conventions *Forms*): a bordered row of
 /// controls with the standard padding, so a form reads as one unit
-/// without a modal. (Built ahead of the pages that move onto it.)
-#[allow(dead_code)]
+/// without a modal. (3.48: the rule editor is the first page-side user;
+/// the other forms move onto it in 3.91.)
 pub(super) fn inline_form(cx: &App) -> Div {
     let (border, radius) = {
         let theme = cx.theme();
