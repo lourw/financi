@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=financi
+Exec=financi
+Icon=financi
+StartupWMClass=financi
+Categories=Office;Finance;

@@ -32,9 +32,10 @@ helpers); they cost context and don't apply.
 ## Commands
 
 Toolchain is pinned in `mise.toml` (`mise install`; tasks: `mise run
-build|test|lint|fmt|run`). Run `git config core.hooksPath .githooks` once
-per clone so commits on `main` get their semver tag. Whenever `main` is
-pushed, push its tags too: `git push --follow-tags`.
+build|test|lint|fmt|run|icons|install-desktop|bundle`). Run `git config
+core.hooksPath .githooks` once per clone so commits on `main` get their
+semver tag. Whenever `main` is pushed, push its tags too: `git push
+--follow-tags`.
 
 ```sh
 cargo build --workspace
@@ -42,6 +43,9 @@ cargo test --workspace --features financi-db/dev-seed      # all tests
 cargo clippy --workspace --all-targets --features financi-db/dev-seed
 cargo fmt --all
 cargo run -p financi                                          # the app
+mise run icons          # re-render assets/icon/png from the SVG (rsvg-convert)
+mise run install-desktop  # Linux: install the .desktop file + hicolor icons
+mise run bundle         # macOS: build target/release/financi.app with the .icns
 ```
 
 Dev switches (debug builds only):

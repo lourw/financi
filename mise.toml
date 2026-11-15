@@ -19,3 +19,15 @@ run = "cargo fmt --all"
 
 [tasks.run]
 run = "cargo run -p financi"
+
+# Re-render assets/icon/png from assets/icon/financi.svg (needs rsvg-convert).
+[tasks.icons]
+run = "scripts/icons.sh"
+
+# Linux: install the desktop entry + hicolor icons for the window/taskbar.
+[tasks.install-desktop]
+run = "scripts/install-desktop.sh"
+
+# macOS: build target/release/financi.app with the .icns (macOS only).
+[tasks.bundle]
+run = "scripts/bundle-macos.sh"

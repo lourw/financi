@@ -10,6 +10,7 @@
 mod flow;
 mod ui;
 mod version;
+mod window_icon;
 
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -83,6 +84,10 @@ fn open_main_window(path: PathBuf, db: DbWorker, cx: &mut App) {
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::centered(size(px(1280.), px(800.)), cx)),
         window_min_size: Some(size(px(1200.), px(720.))),
+        // 3.63: the app icon (X11 taskbar) and app id (Wayland matches it
+        // to the installed desktop entry; see `mise run install-desktop`).
+        icon: Some(window_icon::window_icon()),
+        app_id: Some(window_icon::APP_ID.to_string()),
         ..Default::default()
     };
     gpui_kit::open_window(options, cx, |window, cx| {
@@ -136,6 +141,9 @@ fn main() {
         gpui_kit::init(cx);
         // Global wiring once per app (3.76) — before the first window.
         ui::init(cx);
+        // 3.63: `cargo run` on macOS has no bundle to carry an icon, so
+        // set the Dock tile here; a no-op on other platforms.
+        window_icon::set_dock_icon();
         open_main_window(path, db, cx);
     });
 }

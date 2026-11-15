@@ -591,7 +591,7 @@ Start these only after both queues are done (`docs/tasks.md` → *Picking the ne
 
 ## Lane C — small tasks (after both queues)
 
-- [ ] **3.63 An app icon.** The window and Dock / taskbar show the
+- [x] **3.63 An app icon.** The window and Dock / taskbar show the
   default icon (user request, 2026-11-11). The source artwork is
   committed: `assets/icon/financi.svg` (1024 × 1024, macOS icon grid: a
   dark rounded square with three rising bars, the tallest green). Don't
