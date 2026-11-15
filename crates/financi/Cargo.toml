@@ -18,6 +18,17 @@ chrono.workspace = true
 directories.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
+# 3.63: decode the embedded app-icon PNG for `WindowOptions::icon`. Same
+# version GPUI already pulls in; png-only to keep the tree small.
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# 3.63: set the Dock icon at startup under `cargo run`
+# (`window_icon::set_dock_icon`). Versions match what gpui-pre-macos
+# already resolves in Cargo.lock.
+objc2 = "0.6"
+objc2-app-kit = "0.3"
+objc2-foundation = "0.3"
 
 [dev-dependencies]
 # gpui-kit's own test-support trips a Cargo weak-dependency lockfile bug
