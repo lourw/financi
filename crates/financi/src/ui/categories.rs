@@ -1422,24 +1422,22 @@ impl Render for CategoriesPage {
                     .child(div().w_full().border_t_1().border_color(border))
                     // Organize (3.16's labelled groups): a category gains
                     // a subcategory; a subcategory moves under another.
+                    // 3.50: no heading and no field labels — the button
+                    // names the row; the controls stay accessible-named.
                     .child(
                         v_flex()
                             .gap_1()
-                            .child(region_title("Organize"))
                             .when(!is_child, |section| {
                                 section.child(
                                     h_flex()
                                         .gap_2()
-                                        .items_end()
+                                        .items_center()
                                         .child(
-                                            v_flex()
-                                                .gap_1()
-                                                .child(field_label(muted, "New subcategory name"))
-                                                .child(
-                                                    div()
-                                                        .w(px(220.))
-                                                        .child(Input::new(&self.new_child_name)),
-                                                ),
+                                            div()
+                                                .w(px(220.))
+                                                .child(Input::new(&self.new_child_name).aria_label(
+                                                    "New subcategory name",
+                                                )),
                                         )
                                         .child(
                                             Button::new("add-child")
@@ -1457,21 +1455,17 @@ impl Render for CategoriesPage {
                                 section.child(
                                     h_flex()
                                         .gap_2()
-                                        .items_end()
+                                        .items_center()
                                         .child(
-                                            v_flex()
-                                                .gap_1()
-                                                .child(field_label(muted, "Move to category"))
+                                            div()
+                                                .w(px(200.))
+                                                .debug_selector(move || {
+                                                    format!("label:{MOVE_TO_CATEGORY_PH}")
+                                                })
                                                 .child(
-                                                    div()
-                                                        .w(px(200.))
-                                                        .debug_selector(move || {
-                                                            format!("label:{MOVE_TO_CATEGORY_PH}")
-                                                        })
-                                                        .child(
-                                                            Select::new(&self.move_target)
-                                                                .placeholder(MOVE_TO_CATEGORY_PH),
-                                                        ),
+                                                    Select::new(&self.move_target)
+                                                        .placeholder(MOVE_TO_CATEGORY_PH)
+                                                        .accessibility_label("Move to category"),
                                                 ),
                                         )
                                         .child(

@@ -537,7 +537,10 @@ fn switching_to_categories_after_load_shows_rows(cx: &mut TestAppContext) {
 
 /// 3.16: the Categories page labels every control — the tree heading, the
 /// new-parent fields, the detail pickers (parent and child variants) and
-/// the add-rule row.
+/// the add-rule row. 3.50: the detail pane dropped the Organize heading
+/// and its two field labels — they are asserted *absent* below; the
+/// controls they used to caption carry their accessibility names in code
+/// (`aria_label`/`accessibility_label`), which the bounds dump can't see.
 #[gpui::test]
 fn the_categories_page_labels_its_controls(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, |_| {});
@@ -582,8 +585,6 @@ fn the_categories_page_labels_its_controls(cx: &mut TestAppContext) {
         "label:Category tree",
         "label:New category name",
         "label:Kind",
-        "label:Organize",
-        "label:New subcategory name",
         "label:Rules",
         "label:Delete",
         "label:Move its transactions to",
@@ -595,15 +596,29 @@ fn the_categories_page_labels_its_controls(cx: &mut TestAppContext) {
             "the Categories page paints the visible label {sel:?}"
         );
     }
-    // A selected child adds the move-to-category picker's label.
+    // 3.50: the detail pane's captions are gone — the Organize heading
+    // and both field labels. `debug_bounds` matches exactly, so the
+    // placeholder selectors (`label:Move to category…`) don't shadow them.
+    for sel in [
+        "label:Organize",
+        "label:New subcategory name",
+        "label:Move to category",
+    ] {
+        assert!(
+            window.debug_bounds(sel).is_none(),
+            "the Categories page no longer paints the caption {sel:?}"
+        );
+    }
+    // A selected child adds the move-to-category picker, named by its
+    // placeholder (3.50: the field label above it is gone).
     with_window(cx, handle, |window, cx| {
         shell.update(cx, |s, cx| s.select_category(child_id, window, cx));
     });
     cx.run_until_parked();
     draw_frame(cx, handle);
     assert!(
-        window.debug_bounds("label:Move to category").is_some(),
-        "the child detail paints the move picker's label"
+        window.debug_bounds("label:Move to category…").is_some(),
+        "the child detail paints the move picker's placeholder"
     );
     // 3.53: under a subcategory the add-rule row drops its picker — the
     // selection itself names where the rule goes.
@@ -726,7 +741,6 @@ fn the_categories_page_never_says_parent_or_child(cx: &mut TestAppContext) {
         "label:New category name",
         "label:Kind",
         "label:Add category",
-        "label:New subcategory name",
         "label:Add subcategory",
         "label:Move its transactions to…",
     ] {
@@ -760,10 +774,8 @@ fn the_categories_page_never_says_parent_or_child(cx: &mut TestAppContext) {
     });
     cx.run_until_parked();
     draw_frame(cx, handle);
-    assert!(
-        window.debug_bounds("label:Move to category").is_some(),
-        "the Categories page paints the move picker's label"
-    );
+    // 3.50: the move picker has no field label any more; its placeholder
+    // is the visible name, in the new words.
     assert!(
         window.debug_bounds("label:Move to category…").is_some(),
         "the move picker paints its placeholder in the new words"

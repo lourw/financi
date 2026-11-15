@@ -271,7 +271,7 @@ Start these only after both queues are done (`docs/tasks.md` → *Picking the ne
 
     Update the *Rules* row of `ui-conventions.md`.
 
-- [ ] **3.50 No Organize heading or repeated labels.** In the category
+- [x] **3.50 No Organize heading or repeated labels.** In the category
   detail panel, the **Organize** section title and the "Move to
   category" field label just repeat what the picker's placeholder
   ("Move to category…") already says (user request, 2026-11-11). The
