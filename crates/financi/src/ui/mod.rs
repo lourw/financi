@@ -90,7 +90,7 @@ use crate::flow::{self, LoadedFile, PlanSummary};
 // 3.78: the shared data model. The page modules reach `Domains` through
 // the `use super::*` they all carry.
 use catalog::{
-    Catalog, DataChanged, Domain, Domains, S_ACCOUNTS, S_CATEGORIES, S_QUEUE, S_RULES, S_SIDEBAR,
+    Catalog, DataChanged, Domain, Domains, S_ACCOUNTS, S_CATEGORIES, S_RULES, S_SIDEBAR,
 };
 
 type Names = Vec<SharedString>;
@@ -175,6 +175,7 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("escape", Cancel, Some("Transfers")),
         KeyBinding::new("escape", Cancel, Some("Imports")),
         KeyBinding::new("escape", Cancel, Some("Rules")),
+        KeyBinding::new("escape", Cancel, Some("Queue")),
     ]);
     // ⌘ shortcuts for the file actions (3.7); `cmd` is ⌘ on macOS and
     // Super on Linux. The same actions reach the user through the
@@ -393,7 +394,9 @@ pub struct Shell {
     // them with `set_visible` and hears from them through `PageEvent`.
     // 3.80: the Rules page joins them.
     dashboard: DashboardState,
-    queue: QueueState,
+    /// 3.83: the To-categorize page is its own view, rendered like the
+    /// other extracted pages.
+    queue_view: Entity<QueuePage>,
     /// 3.81: the Categories page is its own view, rendered like the other
     /// extracted pages.
     categories_view: Entity<CategoriesPage>,
@@ -418,7 +421,8 @@ impl Render for Shell {
 
         let page_area: AnyElement = match self.page {
             Page::Dashboard => self.render_dashboard(cx),
-            Page::ToCategorize => self.render_queue(cx),
+            // 3.83: the To-categorize page renders itself.
+            Page::ToCategorize => self.queue_view.clone().into_any_element(),
             Page::Categories => self.categories_view.clone().into_any_element(),
             // 3.80: the Rules page renders itself.
             Page::Rules => self.rules_page.clone().into_any_element(),
@@ -497,7 +501,6 @@ impl Shell {
         });
         // Each page's state is built by its own constructor (3.74).
         let dashboard = DashboardState::new(window, cx);
-        let queue = QueueState::new(window, cx);
         let categories_page = CategoriesState::new(window, cx);
         // 3.78: one shared data model, fed by the same worker.
         let catalog = cx.new(|_| Catalog::new(db.clone()));
@@ -523,6 +526,10 @@ impl Shell {
         // page applies before `sync_category_choices` refills its pickers.
         let rules_page =
             cx.new(|cx| RulesPage::new(db.clone(), writes_blocked.clone(), &catalog, window, cx));
+        // 3.83: the To-categorize page entity, built after `catalog` like
+        // the others so its watcher subscribes before the shell's below.
+        let queue_view =
+            cx.new(|cx| QueuePage::new(db.clone(), writes_blocked.clone(), &catalog, cx));
         // 3.81: the Categories page is an entity too. It renders the shared
         // rule rows from the Rules page's entity and keeps a weak handle
         // back to the shell for the scaffold it shares (see
@@ -557,6 +564,9 @@ impl Shell {
         let rules_events = cx.subscribe_in(&rules_page, window, |this, _, ev, window, cx| {
             this.on_page_event(ev, window, cx);
         });
+        let queue_events = cx.subscribe_in(&queue_view, window, |this, _, ev, window, cx| {
+            this.on_page_event(ev, window, cx);
+        });
         // 3.80: the Categories page paints the shared rule rows from the
         // Rules page's state, so a page notify repaints the shell.
         let rules_paint = cx.observe(&rules_page, |_, _, cx| cx.notify());
@@ -586,7 +596,7 @@ impl Shell {
             refresh_applied: 0,
             dash_gen: 0,
             dashboard,
-            queue,
+            queue_view,
             categories_view: categories,
             categories_page,
             rules_page,
@@ -599,6 +609,7 @@ impl Shell {
                 imports_events,
                 rules_events,
                 rules_paint,
+                queue_events,
             ],
         };
         // 3.78: the one mapping. Every reload the catalog finishes lands
@@ -829,16 +840,11 @@ impl Shell {
             // *Show rule* menu and the counts read.
             self.rules = self.catalog.read(cx).snap.rules.clone();
         }
-        if sections & S_QUEUE != 0 {
-            let queue = self.catalog.read(cx).snap.queue.clone();
-            self.apply_queue(queue);
-        }
         if sections & (S_CATEGORIES | S_RULES) != 0 {
             self.sync_category_choices(event.generation, window, cx);
         }
-        if sections & S_QUEUE != 0 {
-            self.sync_queue(window, cx);
-        }
+        // 3.83: the To-categorize page is an entity and applies its own
+        // section of the snapshot (see `ui/page.rs`).
         if sections & S_SIDEBAR != 0 {
             let (total, uncategorized) = {
                 let cat = self.catalog.read(cx);
@@ -885,6 +891,10 @@ impl Shell {
             p.close_transient(cx);
             p.set_visible(page == Page::Categories, cx);
         });
+        // 3.83: the To-categorize page follows the switch too; it has no
+        // hide-time transients beyond what `set_visible` already does.
+        self.queue_view
+            .update(cx, |p, cx| p.set_visible(page == Page::ToCategorize, cx));
         cx.notify();
     }
 
@@ -921,10 +931,10 @@ impl Shell {
         self.dashboard.filter.summary_month = None;
         self.dashboard.filter.chart_parent = None;
         self.dashboard.rule_offer = None;
-        self.queue.pickers.clear();
-        self.queue.picker_subs.clear();
-        self.queue.picker_items = None;
-        self.queue.error = None;
+        // 3.83: the To-categorize page clears its own share — pickers,
+        // their subscriptions and the error banner.
+        self.queue_view
+            .update(cx, |p, cx| p.reset_after_restore(cx));
         // 3.81: the Categories page clears its own share; the rule-list
         // scaffold keeps the selection copy the Rules page reads.
         self.categories_page.selected_category = None;

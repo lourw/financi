@@ -596,12 +596,16 @@ fn find_child(shell: &Entity<Shell>, cx: &App, name: &str) -> Option<i64> {
         .find_map(|p| p.children.iter().find(|c| c.name == name).map(|c| c.id))
 }
 
-/// The busiest queue group as `(merchant, count)`.
+/// The busiest queue group as `(merchant, count)`. 3.83: read off the
+/// `Catalog` snapshot — the To-categorize page is an entity that defers
+/// applying while hidden, but the snapshot is always current.
 fn top_group(shell: &Entity<Shell>, cx: &App) -> (String, i64) {
     shell
         .read(cx)
+        .catalog
+        .read(cx)
+        .snap
         .queue
-        .groups
         .first()
         .map(|g| (g.merchant.clone(), g.count))
         .expect("queue has a group")
@@ -987,7 +991,9 @@ fn import_and_top_merchant(
     click_import(cx, handle, shell);
     wait_until(cx, "import", |cx| shell.read(cx).dashboard.row_count == 67);
     wait_until(cx, "queue populated", |cx| {
-        !shell.read(cx).queue.groups.is_empty()
+        // 3.83: the queue page defers applying while hidden; the snapshot
+        // is what's always current.
+        !shell.read(cx).catalog.read(cx).snap.queue.is_empty()
     });
     cx.update(|cx| {
         let (m, _) = top_group(shell, cx);

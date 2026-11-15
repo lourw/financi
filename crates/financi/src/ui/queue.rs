@@ -1,6 +1,7 @@
-//! The To categorize page (3.62).
+//! The To categorize page (3.62, page entity in 3.83).
 
 use super::*;
+use crate::ui::page::{Cancel, PageEntity, PageEvent, watch_catalog};
 use crate::ui::widgets::*;
 
 /// The To-categorize columns (3.22): heading row and row bodies share these
@@ -12,96 +13,180 @@ const QUEUE_TOTAL_W: f32 = 110.;
 const QUEUE_DATES_W: f32 = 190.;
 const QUEUE_PICKER_W: f32 = 220.;
 
-/// This page's state (3.74): the pending list grouped by merchant, the
-/// per-visible-row category pickers and the error banner.
-pub(super) struct QueueState {
+/// 3.83: how far outside the rendered range a picker survives a prune — a
+/// screenful (24 rows at 40 px), so scrolling back by less than a page
+/// never drops a row's picker or its pick.
+const QUEUE_PICKER_MARGIN: usize = 24;
+
+/// The To-categorize page (3.83): the pending list grouped by merchant,
+/// the per-visible-row category pickers and the error banner. The list is
+/// a mirror of the `Catalog` snapshot; `apply` refreshes it and retires
+/// pickers whose merchant left the queue.
+pub(super) struct QueuePage {
+    db: DbWorker,
+    /// The shared data model (3.78); `apply` reads the queue and the
+    /// category tree off its snapshot, never a query of its own.
+    catalog: Entity<Catalog>,
+    /// 5.3 review fix: shared with the shell — while an export or restore
+    /// is in flight every write here is refused (the group's row ids may
+    /// name different rows after it).
+    writes_blocked: Rc<Cell<bool>>,
+    pub(super) focus: FocusHandle,
+    visible: bool,
+    dirty: bool,
+    focus_pending: bool,
+    /// The `Catalog` subscription (3.83); lives as long as the page.
+    _catalog: Subscription,
+    // -- Page state (3.74).
     /// The queue: uncategorized transactions grouped by merchant, newest
     /// first (as [`uncategorized_by_merchant`] returns them).
     pub(super) groups: Vec<UncategorizedGroup>,
-    /// 3.19: pickers exist only for rows `render_queue` has built, so this
-    /// map stays the size of the visible slice, not the queue.
+    /// 3.19: pickers exist only for rows `render` has built, and 3.83
+    /// prunes the ones that drift outside the rendered range, so this map
+    /// stays the size of the visible slice, not the queue.
     pub(super) pickers: HashMap<String, Entity<SelectState<Names>>>,
-    /// The category list the pickers above currently hold; `sync_queue`
-    /// re-sets items only when it changes, not on every refresh.
+    /// The category list the pickers above currently hold; `apply` re-sets
+    /// items only when it changes, not on every refresh.
     pub(super) picker_items: Option<Names>,
     /// 3.34: one per live picker — a `Confirm` re-renders the rows so the
     /// row's Categorize button flips from disabled to enabled the frame a
-    /// category is picked. Retired with its picker in `sync_queue`.
+    /// category is picked. Retired with its picker in `apply` and in
+    /// [`Self::prune_pickers`].
     pub(super) picker_subs: HashMap<String, Subscription>,
+    /// 3.83: `apply` has no window, and `SelectState::set_items` needs one,
+    /// so a category-list change is flagged here and the pickers catch up
+    /// at the top of `render`.
+    pickers_need_items: bool,
     /// The banner text above the list.
     pub(super) error: Option<String>,
     /// 3.21: the virtualized list's scroll handle, alive as long as the
-    /// `Shell` (see the note on `tree_scroll` in 3.21).
+    /// page (see the note on `tree_scroll` in 3.21).
     pub(super) scroll: VirtualListScrollHandle,
+    /// 3.21: the range of rows the queue built last frame, for the
+    /// long-queue tests (the prune reads the list's own range argument).
+    #[cfg(test)]
+    pub(super) range: std::cell::Cell<(usize, usize)>,
     /// 3.19: how many queue rows the virtualized list built for the last
     /// layout pass — the visible slice, not the whole queue. Observability
     /// for the long-queue tests (like `tree_rows_built`).
     #[cfg(test)]
     pub(super) rows_built: std::cell::Cell<usize>,
-    /// 3.21: the range of rows the queue built last frame.
-    #[cfg(test)]
-    pub(super) range: std::cell::Cell<(usize, usize)>,
+    /// "Parent › Child" labels of the child categories, in picker order —
+    /// what the pickers offer and what a row's Categorize resolves its
+    /// pick against.
+    pub(super) child_choices: Vec<(i64, String)>,
 }
 
-impl QueueState {
-    pub(super) fn new(_window: &mut Window, _cx: &mut Context<Shell>) -> Self {
-        Self {
-            groups: Vec::new(),
-            pickers: HashMap::new(),
-            picker_items: None,
-            picker_subs: HashMap::new(),
-            error: None,
-            scroll: VirtualListScrollHandle::new(),
-            #[cfg(test)]
-            rows_built: std::cell::Cell::new(0),
-            #[cfg(test)]
-            range: std::cell::Cell::new((0, 0)),
-        }
+impl EventEmitter<PageEvent> for QueuePage {}
+
+impl PageEntity for QueuePage {
+    /// The list renders the uncategorized transactions and the category
+    /// labels; the writes here (a new rule plus its re-run) move both.
+    const DEPENDS: Domains = Domains::CATEGORIES_RULES_TX;
+
+    fn visible(&self) -> bool {
+        self.visible
     }
-}
 
-impl Shell {
-    /// Apply this page's part of a refresh result (3.74).
-    pub(super) fn apply_queue(&mut self, groups: Vec<UncategorizedGroup>) {
-        self.queue.groups = groups;
+    fn dirty(&self) -> bool {
+        self.dirty
     }
-}
 
-impl Shell {
-    /// 3.19: pickers are built lazily by `render_queue` for the rows it
-    /// shows, never up front per group. This retires pickers whose group
-    /// left the queue and re-sets the items on the survivors only when the
-    /// category list changed, so a refresh doesn't touch every picker.
-    pub(super) fn sync_queue(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let current: HashSet<&str> = self
-            .queue
-            .groups
+    fn set_dirty(&mut self, dirty: bool) {
+        self.dirty = dirty;
+    }
+
+    fn set_shown(&mut self, visible: bool) {
+        self.visible = visible;
+    }
+
+    fn set_focus_pending(&mut self, pending: bool) {
+        self.focus_pending = pending;
+    }
+
+    fn apply(&mut self, cx: &mut Context<Self>) {
+        let (groups, tree) = {
+            let cat = self.catalog.read(cx);
+            (cat.snap.queue.clone(), cat.snap.tree.clone())
+        };
+        self.groups = groups;
+        self.child_choices = tree
             .iter()
-            .map(|g| g.merchant.as_str())
+            .flat_map(|p| {
+                p.children
+                    .iter()
+                    .map(move |c| (c.id, format!("{} › {}", p.name, c.name)))
+            })
             .collect();
-        self.queue
-            .pickers
+        // 3.19: a refresh that dropped a group drops its picker; 3.34: the
+        // Categorize-mirror subscription retires with it.
+        let current: HashSet<&str> = self.groups.iter().map(|g| g.merchant.as_str()).collect();
+        self.pickers
             .retain(|merchant, _| current.contains(merchant.as_str()));
-        // 3.34: a picker's Categorize-mirror subscription retires with it.
-        self.queue
-            .picker_subs
+        self.picker_subs
             .retain(|merchant, _| current.contains(merchant.as_str()));
+        // 3.19: re-set the survivors' items only when the category list
+        // changed, not on every refresh — and 3.83: `set_items` needs a
+        // window, so flag it and let `render` push the new items.
         let names: Names = self
             .child_choices
             .iter()
             .map(|(_, n)| SharedString::from(n.clone()))
             .collect();
-        if self.queue.picker_items.as_ref() != Some(&names) {
-            self.queue.picker_items = Some(names.clone());
-            for picker in self.queue.pickers.values() {
-                let items = names.clone();
-                picker.update(cx, |s, cx| s.set_items(items, window, cx));
-            }
+        if self.picker_items.as_ref() != Some(&names) {
+            self.picker_items = Some(names);
+            self.pickers_need_items = true;
+        }
+    }
+}
+
+impl QueuePage {
+    pub(super) fn new(
+        db: DbWorker,
+        writes_blocked: Rc<Cell<bool>>,
+        catalog: &Entity<Catalog>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let _catalog = watch_catalog(catalog, cx);
+        Self {
+            db,
+            catalog: catalog.clone(),
+            writes_blocked,
+            focus: cx.focus_handle(),
+            // `Shell::new` marks the initial page visible right after
+            // construction; every page starts hidden.
+            visible: false,
+            dirty: true,
+            focus_pending: false,
+            _catalog,
+            groups: Vec::new(),
+            pickers: HashMap::new(),
+            picker_items: None,
+            picker_subs: HashMap::new(),
+            pickers_need_items: false,
+            error: None,
+            scroll: VirtualListScrollHandle::new(),
+            #[cfg(test)]
+            range: std::cell::Cell::new((0, 0)),
+            #[cfg(test)]
+            rows_built: std::cell::Cell::new(0),
+            child_choices: Vec::new(),
         }
     }
 
+    /// 5.3: a restore replaced the database — every picker selection names
+    /// a row or category that may not exist in the new file.
+    pub(super) fn reset_after_restore(&mut self, cx: &mut Context<Self>) {
+        self.pickers.clear();
+        self.picker_subs.clear();
+        self.picker_items = None;
+        self.pickers_need_items = false;
+        self.error = None;
+        cx.notify();
+    }
+
     /// 3.19: the picker for one queue row, built on first use. Only visible
-    /// rows render, so the shell holds a picker for what's on screen — a
+    /// rows render, so the page holds a picker for what's on screen — a
     /// new one gets the current category list.
     pub(super) fn queue_picker(
         &mut self,
@@ -109,10 +194,10 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Entity<SelectState<Names>> {
-        if let Some(picker) = self.queue.pickers.get(merchant) {
+        if let Some(picker) = self.pickers.get(merchant) {
             return picker.clone();
         }
-        let items: Names = self.queue.picker_items.clone().unwrap_or_else(|| {
+        let items: Names = self.picker_items.clone().unwrap_or_else(|| {
             self.child_choices
                 .iter()
                 .map(|(_, n)| SharedString::from(n.clone()))
@@ -127,11 +212,31 @@ impl Shell {
                 cx.notify();
             }
         });
-        self.queue
-            .pickers
-            .insert(merchant.to_string(), picker.clone());
-        self.queue.picker_subs.insert(merchant.to_string(), sub);
+        self.pickers.insert(merchant.to_string(), picker.clone());
+        self.picker_subs.insert(merchant.to_string(), sub);
         picker
+    }
+
+    /// 3.83: pickers are built with their rows, so they must also go when
+    /// their rows stop being built: keep the pickers whose merchant sits in
+    /// `[start - margin, end + margin]` of the range the list just drew,
+    /// plus any picker holding an active selection — a pick made further up
+    /// the list is a pending action, and the user may be mid-interaction
+    /// with it. A pruned picker rebuilds lazily from the current category
+    /// list the next time its row renders.
+    fn prune_pickers(&mut self, start: usize, end: usize, cx: &App) {
+        let lo = start.saturating_sub(QUEUE_PICKER_MARGIN);
+        let hi = (end + QUEUE_PICKER_MARGIN).min(self.groups.len());
+        let keep: HashSet<&str> = self.groups[lo..hi]
+            .iter()
+            .map(|g| g.merchant.as_str())
+            .collect();
+        self.pickers.retain(|merchant, picker| {
+            keep.contains(merchant.as_str()) || picker.read(cx).selected_value().is_some()
+        });
+        // 3.34: the Categorize-mirror subscriptions retire with pickers.
+        self.picker_subs
+            .retain(|merchant, _| self.pickers.contains_key(merchant.as_str()));
     }
 
     /// Categorize a whole merchant group: creates the substring rule and
@@ -147,11 +252,11 @@ impl Shell {
         if self.writes_blocked.get() {
             return;
         }
-        let Some(picker) = self.queue.pickers.get(&merchant).cloned() else {
+        let Some(picker) = self.pickers.get(&merchant).cloned() else {
             return;
         };
         let Some(ix) = picker.read(cx).selected_index(cx) else {
-            self.queue.error = Some("Choose a category for this merchant first.".into());
+            self.error = Some("Choose a category for this merchant first.".into());
             cx.notify();
             return;
         };
@@ -167,24 +272,48 @@ impl Shell {
                 categorize_group(c, &merchant_for_db, category_id)
             })
             .await;
-            let _ = this.update_in(cx, |this, window, cx| {
+            let _ = this.update_in(cx, |this, _window, cx| {
                 match result {
                     Ok(_rule_id) => {
-                        this.notify_ok(format!("Categorized {merchant}"), cx);
-                        this.queue.error = None;
+                        cx.emit(PageEvent::Toast {
+                            message: format!("Categorized {merchant}"),
+                            error: false,
+                        });
+                        this.error = None;
                     }
-                    Err(e) => this.queue.error = Some(e),
+                    Err(e) => this.error = Some(e),
                 }
-                this.changed(Domains::RULES_TX, window, cx);
+                cx.emit(PageEvent::Changed(Domains::RULES_TX));
             });
         })
         .detach();
         cx.notify();
     }
+}
 
-    // -- row context menu (2.9) ---------------------------------------------
-
-    pub(super) fn render_queue(&mut self, cx: &mut Context<Self>) -> AnyElement {
+impl Render for QueuePage {
+    /// The To-categorize page (3.16, 3.19, 3.22, 3.34): header summary, one
+    /// bordered panel holding the heading row and the virtualized list of
+    /// merchant groups, each row with its category picker and Categorize
+    /// button.
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // 3.83: focusing the root when the page is shown waits for the end
+        // of the frame so its element exists first (as the other pages).
+        if self.focus_pending {
+            self.focus_pending = false;
+            let focus = self.focus.clone();
+            window.defer(cx, move |window, cx| window.focus(&focus, cx));
+        }
+        // 3.83: a category-list change from `apply` lands here, where the
+        // window exists for `set_items`.
+        if self.pickers_need_items {
+            self.pickers_need_items = false;
+            if let Some(items) = self.picker_items.clone() {
+                for picker in self.pickers.values() {
+                    picker.update(cx, |s, cx| s.set_items(items.clone(), window, cx));
+                }
+            }
+        }
         let (muted, danger, border, list_hover, radius) = {
             let theme = cx.theme();
             (
@@ -200,8 +329,8 @@ impl Shell {
         // debug selector records the exact text so a test can pin it.
         let summary = format!(
             "{} transactions · {} merchants",
-            flow::count(self.queue.groups.iter().map(|g| g.count).sum()),
-            flow::count(self.queue.groups.len() as i64)
+            flow::count(self.groups.iter().map(|g| g.count).sum()),
+            flow::count(self.groups.len() as i64)
         );
         // 3.34: one bordered panel (D7: bordered, never filled) fills the
         // rest of the page and holds the list; the empty state is centered
@@ -214,7 +343,7 @@ impl Shell {
             .border_color(border)
             .overflow_hidden()
             .debug_selector(|| "queue:panel".to_string());
-        let body: AnyElement = if self.queue.groups.is_empty() {
+        let body: AnyElement = if self.groups.is_empty() {
             panel
                 .child(
                     div()
@@ -279,7 +408,7 @@ impl Shell {
             // `queue_picker` creates a picker only with its row. 3.34: rows
             // stay 40 px, now `px_3` with a bottom divider (none after the
             // last row) and `list_hover` on hover.
-            let sizes = Rc::new(vec![size(px(0.), px(40.)); self.queue.groups.len()]);
+            let sizes = Rc::new(vec![size(px(0.), px(40.)); self.groups.len()]);
             panel
                 .child(
                     v_virtual_list(
@@ -290,8 +419,8 @@ impl Shell {
                             #[cfg(test)]
                             let range_bounds = (range.start, range.end);
                             let start = range.start;
-                            let groups = this.queue.groups[range].to_vec();
-                            let last = this.queue.groups.len().saturating_sub(1);
+                            let groups = this.groups[range.clone()].to_vec();
+                            let last = this.groups.len().saturating_sub(1);
                             let mut rows = Vec::with_capacity(groups.len());
                             for (i, g) in groups.into_iter().enumerate() {
                                 let merchant = g.merchant.clone();
@@ -494,15 +623,18 @@ impl Shell {
                                         ),
                                 );
                             }
+                            // 3.83: rows that stopped being built retire
+                            // their pickers, so the map tracks the window.
+                            this.prune_pickers(range.start, range.end, cx);
                             #[cfg(test)]
-                            this.queue.rows_built.set(rows.len());
+                            this.rows_built.set(rows.len());
                             #[cfg(test)]
-                            this.queue.range.set(range_bounds);
+                            this.range.set(range_bounds);
                             rows
                         },
                     )
-                    // 3.21: Shell-owned handle (see the tree).
-                    .track_scroll(&self.queue.scroll)
+                    // 3.21: page-owned handle (see the tree).
+                    .track_scroll(&self.scroll)
                     .flex_1()
                     .min_h_0(),
                 )
@@ -512,6 +644,21 @@ impl Shell {
             .flex_1()
             .min_h_0()
             .gap_3()
+            // 3.83: the page's own key context, so Escape is *this* page's
+            // Cancel (`ui::init` binds it per context); the root takes
+            // focus when the page is shown.
+            .track_focus(&self.focus)
+            .key_context("Queue")
+            .on_action(cx.listener(|this, _: &Cancel, _, cx| {
+                // Escape unwinds one level per press (3.80,
+                // *Interaction*): the error banner first; with nothing
+                // left it propagates to the window-level bindings.
+                if this.error.take().is_some() {
+                    cx.notify();
+                    return;
+                }
+                cx.propagate();
+            }))
             .child(
                 h_flex()
                     .gap_2()
@@ -533,12 +680,16 @@ impl Shell {
                             .child(summary),
                     ),
             )
-            .children(
-                self.queue
-                    .error
-                    .clone()
-                    .map(|e| div().text_sm().text_color(danger).child(e)),
-            )
+            .children(self.error.clone().map(|e| {
+                div()
+                    .text_sm()
+                    .text_color(danger)
+                    .debug_selector({
+                        let e = e.clone();
+                        move || format!("queue:error:{e}")
+                    })
+                    .child(e)
+            }))
             .child(body)
             .into_any_element()
     }

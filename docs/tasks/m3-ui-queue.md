@@ -14,7 +14,7 @@ Steps 1–15 of `docs/tasks/gpui.md` → *GPUI best practices*, task by task.
   global `ClearCategorySelection` escape binding, which today also runs
   on other pages and clears hidden dashboard filters.
 
-- [ ] **3.83 To categorize becomes its own view.** (Architecture.) Same
+- [x] **3.83 To categorize becomes its own view.** (Architecture.) Same
   pattern as 3.79, for `QueuePage`. Owns the queue and its lazily built
   pickers; `DEPENDS = Transactions | Categories | Rules`. Prune pickers
   for merchants outside the last rendered range plus a margin (today
