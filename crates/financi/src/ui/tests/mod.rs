@@ -876,9 +876,11 @@ fn page_switches_paint_only_the_current_page(cx: &mut TestAppContext) {
 }
 
 /// 3.11: `go_page` closes the transient UI it owns — the two-click
-/// confirmations, the rule offer and the inline rename editor.
+/// confirmations, the rule offer and the inline rename editor. 3.51: the
+/// detail panel's inline form joins that list.
 #[gpui::test]
 fn go_page_closes_transient_ui(cx: &mut TestAppContext) {
+    use crate::ui::categories::DetailForm;
     let (_handle, shell) = open_shell(cx, |conn| {
         create_account(conn, "amex", "Cobalt", AccountKind::CreditCard).unwrap();
     });
@@ -892,6 +894,7 @@ fn go_page_closes_transient_ui(cx: &mut TestAppContext) {
             s.categories_view.update(cx, |p, _| {
                 p.renaming = true;
                 p.confirm_delete_category = Some(1);
+                p.detail_form = Some(DetailForm::Move);
             });
             s.go_page(Page::Categories, cx);
         });
@@ -905,6 +908,10 @@ fn go_page_closes_transient_ui(cx: &mut TestAppContext) {
         assert!(
             s.categories_view.read(cx).confirm_delete_category.is_none(),
             "delete confirmation cleared"
+        );
+        assert!(
+            s.categories_view.read(cx).detail_form.is_none(),
+            "the open detail form is closed"
         );
     });
 }

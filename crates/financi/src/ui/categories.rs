@@ -22,6 +22,10 @@
 use super::*;
 use crate::ui::page::{Cancel, PageEntity, PageEvent, watch_catalog};
 use crate::ui::widgets::*;
+// 3.51: `Button::selected` — the open form's title-row button reads as
+// selected. `ui/mod.rs` re-exports the other component traits; this one
+// is imported here (the module-level import list belongs to the shell).
+use gpui_kit::base::Selectable as _;
 
 /// 3.53: one subcategory entry of the Categories page's parent-scoped
 /// add-rule picker. Plain text as shown, plus debug selectors on the open
@@ -476,6 +480,16 @@ impl Shell {
         });
     }
 }
+/// Which of the detail panel's inline forms (3.51) is open, one at a
+/// time. Opening one closes another; Cancel, Escape, a successful action,
+/// a new selection or leaving the page closes the open one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum DetailForm {
+    AddSubcategory,
+    Move,
+    Delete,
+}
+
 /// The Categories page (3.74 state, 3.81 entity): the category tree, the
 /// detail pane for the selected category (rename, subcategory, move,
 /// delete), and the category's rule list — the rule rows themselves are
@@ -526,6 +540,9 @@ pub(super) struct CategoriesPage {
     pub(super) move_target: Entity<SelectState<Names>>,
     pub(super) delete_target: Entity<SelectState<Names>>,
     pub(super) confirm_delete_category: Option<i64>,
+    /// 3.51: the detail panel's open inline form, one at a time; the
+    /// title-row button of the open form shows it as selected.
+    pub(super) detail_form: Option<DetailForm>,
     pub(super) cat_error: Option<String>,
     /// 3.21: one scroll handle per virtualized list, alive as long as the
     /// page (see the task's note on why per-render handles snap back).
@@ -631,6 +648,7 @@ impl CategoriesPage {
             move_target,
             delete_target,
             confirm_delete_category: None,
+            detail_form: None,
             cat_error: None,
             tree_scroll: VirtualListScrollHandle::new(),
             rule_scroll: VirtualListScrollHandle::new(),
@@ -713,6 +731,8 @@ impl CategoriesPage {
         self.selected_category = Some(id);
         self.renaming = false;
         self.confirm_delete_category = None;
+        // 3.51: an inline form belongs to the category it was opened on.
+        self.detail_form = None;
         self.cat_error = None;
         // 3.23: the rule list now shows only this category's rules, so its
         // content is replaced with the selection and the scroll offset
@@ -763,6 +783,7 @@ impl CategoriesPage {
         self.renaming = false;
         self.new_category_open = false;
         self.confirm_delete_category = None;
+        self.detail_form = None;
         cx.notify();
     }
 
@@ -774,6 +795,7 @@ impl CategoriesPage {
         self.renaming = false;
         self.new_category_open = false;
         self.confirm_delete_category = None;
+        self.detail_form = None;
         self.cat_error = None;
         cx.notify();
     }
@@ -860,6 +882,10 @@ impl CategoriesPage {
         let submitted = name.clone();
         // 3.64: the selection this add may claim (see `add_parent`).
         let prior_selection = self.selected_category;
+        // 3.51: submitted from the Add subcategory form? Then a success
+        // keeps the form open and focused, parent still selected, so
+        // several subcategories can be added in a row (2026-11-15).
+        let from_form = self.detail_form == Some(DetailForm::AddSubcategory);
         // 3.64: detached — see `add_parent`.
         cx.spawn_in(window, async move |this, cx| {
             let result = on_db(&db, move |c| create_child(c, parent_id, &name)).await;
@@ -872,9 +898,21 @@ impl CategoriesPage {
                             this.new_child_name
                                 .update(cx, |i, cx| i.set_value("", window, cx));
                         }
-                        // 3.64: nor steal a newer selection, nor leave an
-                        // open rename session on it (see `add_parent`).
-                        if unchanged && this.selected_category == prior_selection {
+                        if from_form {
+                            // 3.51: the form keeps the selection it was
+                            // opened on; a newer selection is not stolen
+                            // back and the closed form is not reopened.
+                            if unchanged && this.selected_category == prior_selection {
+                                this.detail_form = Some(DetailForm::AddSubcategory);
+                                // Focus stays in the cleared input, once
+                                // the frame has rebuilt it (the 3.48 rule
+                                // editor's pattern).
+                                let handle = this.new_child_name.focus_handle(cx);
+                                window.defer(cx, move |window, cx| window.focus(&handle, cx));
+                            }
+                        } else if unchanged && this.selected_category == prior_selection {
+                            // 3.64: nor steal a newer selection, nor leave an
+                            // open rename session on it (see `add_parent`).
                             this.select_category(id, window, cx);
                         }
                     }
@@ -895,6 +933,9 @@ impl CategoriesPage {
         };
         let name = node.name.clone();
         self.renaming = true;
+        // 3.51: the rename editor replaces the title row, so whatever
+        // inline form was open closes with it.
+        self.detail_form = None;
         self.rename_input
             .update(cx, |i, cx| i.set_value(name, window, cx));
         cx.notify();
@@ -961,12 +1002,20 @@ impl CategoriesPage {
             return;
         };
         let db = self.db.clone();
+        // 3.51: a successful move closes the Move form it was submitted
+        // from (a successful action closes its form).
+        let from_form = self.detail_form == Some(DetailForm::Move);
         // 3.64: detached — see `add_parent`.
         cx.spawn_in(window, async move |this, cx| {
             let result = on_db(&db, move |c| move_child(c, child_id, new_parent_id)).await;
             let _ = this.update_in(cx, |this, _window, cx| {
                 match result {
-                    Ok(()) => this.cat_error = None,
+                    Ok(()) => {
+                        if from_form && this.detail_form == Some(DetailForm::Move) {
+                            this.detail_form = None;
+                        }
+                        this.cat_error = None;
+                    }
                     Err(e) => this.cat_error = Some(e),
                 }
                 cx.emit(PageEvent::Changed(Domains::CATEGORIES_RULES_TX));
@@ -1010,6 +1059,8 @@ impl CategoriesPage {
             return;
         };
         self.confirm_delete_category = None;
+        // 3.51: the second click ran the delete, so its form goes too.
+        self.detail_form = None;
         let db = self.db.clone();
         // 3.64: detached — see `add_parent`.
         cx.spawn_in(window, async move |this, cx| {
@@ -1347,11 +1398,16 @@ impl Render for CategoriesPage {
                     )
                 };
                 let renaming = self.renaming;
+                // 3.51: the Delete form's button reads plain "Delete"
+                // until the two-click question arms it (no "…" — the
+                // form itself is the confirmation step).
                 let confirm_label = if self.confirm_delete_category == Some(node.id) {
                     "Click again to delete"
                 } else {
-                    "Delete…"
+                    "Delete"
                 };
+                // The reassign list, cloned for the Delete form's listener.
+                let choices = child_choices.clone();
                 v_flex()
                     .flex_1()
                     .min_w_0()
@@ -1407,95 +1463,207 @@ impl Render for CategoriesPage {
                                     flow::count(count)
                                 ),
                             ))
+                            // 3.51: Organize and Delete hide behind these
+                            // title-row buttons — small, icon + label, no
+                            // "…"; the open form's button reads selected.
+                            // Rename keeps its place at the right end.
                             .child(
-                                Button::new("rename-category")
-                                    .label("Rename…")
-                                    .disabled(is_system)
+                                h_flex()
+                                    .gap_2()
+                                    .items_center()
                                     .ml_auto()
                                     .flex_shrink_0()
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.start_rename(window, cx)
-                                    })),
+                                    .when(!is_child, |group| {
+                                        group.child(
+                                            Button::new("title-add-sub")
+                                                .small()
+                                                .icon(IconName::FolderPlus)
+                                                .label(ADD_SUBCATEGORY)
+                                                .debug_selector(|| "cat:title-add-sub".into())
+                                                .selected(
+                                                    self.detail_form
+                                                        == Some(DetailForm::AddSubcategory),
+                                                )
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.detail_form =
+                                                        Some(DetailForm::AddSubcategory);
+                                                    cx.notify();
+                                                })),
+                                        )
+                                    })
+                                    .when(is_child, |group| {
+                                        group.child(
+                                            Button::new("title-move")
+                                                .small()
+                                                .icon(IconName::FolderInput)
+                                                .label("Move")
+                                                .disabled(is_system)
+                                                .debug_selector(|| "cat:title-move".into())
+                                                .selected(self.detail_form == Some(DetailForm::Move))
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.detail_form = Some(DetailForm::Move);
+                                                    cx.notify();
+                                                })),
+                                        )
+                                    })
+                                    .when(!is_system, |group| {
+                                        group.child(
+                                            Button::new("title-delete")
+                                                .small()
+                                                .icon(IconName::Trash)
+                                                .label("Delete")
+                                                .debug_selector(|| "cat:title-delete".into())
+                                                .selected(
+                                                    self.detail_form == Some(DetailForm::Delete)
+                                                )
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.detail_form = Some(DetailForm::Delete);
+                                                    cx.notify();
+                                                })),
+                                        )
+                                    })
+                                    .child(
+                                        Button::new("rename-category")
+                                            .label("Rename…")
+                                            .disabled(is_system)
+                                            .flex_shrink_0()
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.start_rename(window, cx)
+                                            })),
+                                    ),
                             )
                             .into_any_element()
                     })
                     .child(div().w_full().border_t_1().border_color(border))
-                    // Organize (3.16's labelled groups): a category gains
-                    // a subcategory; a subcategory moves under another.
-                    .child(
-                        v_flex()
-                            .gap_1()
-                            .child(region_title("Organize"))
-                            .when(!is_child, |section| {
-                                section.child(
-                                    h_flex()
-                                        .gap_2()
-                                        .items_end()
+                    // 3.51: Organize and Delete no longer sit open in the
+                    // panel — their forms open right under the title row,
+                    // one at a time (`detail_form`), opened by the buttons
+                    // above. No section titles and no field labels: each
+                    // control is named by its own label or placeholder,
+                    // and Cancel closes. A successful Add subcategory
+                    // keeps the form open and focused (see `add_child`);
+                    // a successful Move or Delete closes it.
+                    .when_some(self.detail_form, |detail, form| match form {
+                        DetailForm::AddSubcategory => detail.child(
+                            inline_form(cx)
+                                .debug_selector(|| "cat:form-add-sub".into())
+                                .child(
+                                    div().w(px(220.)).child(
+                                        Input::new(&self.new_child_name)
+                                            .aria_label("New subcategory name"),
+                                    ),
+                                )
+                                .child(
+                                    Button::new("form-add-sub-cancel")
+                                        .label("Cancel")
+                                        .debug_selector(|| "cat:form-add-sub-cancel".into())
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.detail_form = None;
+                                            cx.notify();
+                                        })),
+                                )
+                                .child(
+                                    Button::new("add-child")
+                                        .label(ADD_SUBCATEGORY)
+                                        .primary()
+                                        .debug_selector(move || {
+                                            format!("label:{ADD_SUBCATEGORY}")
+                                        })
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.add_child(window, cx)
+                                        })),
+                                ),
+                        ),
+                        DetailForm::Move => detail.child(
+                            inline_form(cx)
+                                .debug_selector(|| "cat:form-move".into())
+                                .child(
+                                    div()
+                                        .w(px(200.))
+                                        .debug_selector(move || {
+                                            format!("label:{MOVE_TO_CATEGORY_PH}")
+                                        })
                                         .child(
-                                            v_flex()
-                                                .gap_1()
-                                                .child(field_label(muted, "New subcategory name"))
-                                                .child(
-                                                    div()
-                                                        .w(px(220.))
-                                                        .child(Input::new(&self.new_child_name)),
-                                                ),
-                                        )
-                                        .child(
-                                            Button::new("add-child")
-                                                .label(ADD_SUBCATEGORY)
-                                                .debug_selector(move || {
-                                                    format!("label:{ADD_SUBCATEGORY}")
-                                                })
-                                                .on_click(cx.listener(|this, _, window, cx| {
-                                                    this.add_child(window, cx)
-                                                })),
+                                            Select::new(&self.move_target)
+                                                .placeholder(MOVE_TO_CATEGORY_PH)
+                                                .accessibility_label("Move to category"),
                                         ),
                                 )
-                            })
-                            .when(is_child, |section| {
-                                section.child(
-                                    h_flex()
-                                        .gap_2()
-                                        .items_end()
+                                .child(
+                                    Button::new("form-move-cancel")
+                                        .label("Cancel")
+                                        .debug_selector(|| "cat:form-move-cancel".into())
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.detail_form = None;
+                                            cx.notify();
+                                        })),
+                                )
+                                .child(
+                                    Button::new("move-child")
+                                        .label("Move")
+                                        .primary()
+                                        .disabled(is_system)
+                                        .debug_selector(|| "cat:form-move-go".into())
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.move_child_to_selected_parent(window, cx)
+                                        })),
+                                ),
+                        ),
+                        DetailForm::Delete => detail.child(
+                            inline_form(cx)
+                                .debug_selector(|| "cat:form-delete".into())
+                                .child(
+                                    div()
+                                        .w(px(260.))
+                                        .debug_selector(move || {
+                                            format!("label:{MOVE_TXNS_TO_PH}")
+                                        })
                                         .child(
-                                            v_flex()
-                                                .gap_1()
-                                                .child(field_label(muted, "Move to category"))
-                                                .child(
-                                                    div()
-                                                        .w(px(200.))
-                                                        .debug_selector(move || {
-                                                            format!("label:{MOVE_TO_CATEGORY_PH}")
-                                                        })
-                                                        .child(
-                                                            Select::new(&self.move_target)
-                                                                .placeholder(MOVE_TO_CATEGORY_PH),
-                                                        ),
-                                                ),
-                                        )
-                                        .child(
-                                            Button::new("move-child")
-                                                .label("Move")
-                                                .disabled(is_system)
-                                                .on_click(cx.listener(|this, _, window, cx| {
-                                                    this.move_child_to_selected_parent(window, cx)
-                                                })),
+                                            Select::new(&self.delete_target)
+                                                .placeholder(MOVE_TXNS_TO_PH)
+                                                .accessibility_label("Move its transactions to"),
                                         ),
                                 )
-                            }),
-                    )
+                                .child(
+                                    Button::new("form-delete-cancel")
+                                        .label("Cancel")
+                                        .debug_selector(|| "cat:form-delete-cancel".into())
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            // Closing the form closes the
+                                            // two-click question with it.
+                                            this.detail_form = None;
+                                            this.confirm_delete_category = None;
+                                            cx.notify();
+                                        })),
+                                )
+                                .child({
+                                    // 3.51: the armed second click is the
+                                    // destructive one — `danger`.
+                                    let armed =
+                                        self.confirm_delete_category == Some(node.id);
+                                    let b = Button::new("delete-category")
+                                        .label(confirm_label)
+                                        .debug_selector(|| "cat:form-delete-go".into());
+                                    let b = if armed { b.danger() } else { b };
+                                    b.on_click(cx.listener(move |this, _, window, cx| {
+                                        this.arm_delete_category(&choices, window, cx)
+                                    }))
+                                })
+                        ),
+                    })
                     // Rules for this category (3.23): the list below holds
                     // only these. 3.53: the add-rule row carries no
                     // category picker when the selection names the target
                     // (a subcategory); a parent picks among its own
-                    // children instead.
-                    .child(div().w_full().border_t_1().border_color(border))
+                    // children instead. 3.51: with Organize and Delete
+                    // gone, Rules starts right under the title divider
+                    // and takes the panel's remaining height.
                     .child(
                         v_flex()
                             .flex_1()
                             .min_h_0()
                             .gap_2()
+                            .debug_selector(|| "cat:rules-section".into())
                             .child(region_title("Rules"))
                             // 3.53: a parent with no subcategories can have
                             // no rule at all (rules target a child), so the
@@ -1730,47 +1898,6 @@ impl Render for CategoriesPage {
                                 )
                             }),
                     )
-                    // Delete (3.16's labelled group): the transactions move
-                    // first; system categories can't be deleted, so their
-                    // detail has no Delete section at all.
-                    .when(!is_system, |detail| {
-                        let choices = child_choices.clone();
-                        detail
-                            .child(div().w_full().border_t_1().border_color(border))
-                            .child(
-                                v_flex().gap_1().child(region_title("Delete")).child(
-                                    h_flex()
-                                        .gap_2()
-                                        .items_end()
-                                        .child(
-                                            v_flex()
-                                                .gap_1()
-                                                .child(field_label(
-                                                    muted,
-                                                    "Move its transactions to",
-                                                ))
-                                                .child(
-                                                    div()
-                                                        .w(px(260.))
-                                                        .debug_selector(move || {
-                                                            format!("label:{MOVE_TXNS_TO_PH}")
-                                                        })
-                                                        .child(
-                                                            Select::new(&self.delete_target)
-                                                                .placeholder(MOVE_TXNS_TO_PH),
-                                                        ),
-                                                ),
-                                        )
-                                        .child(
-                                            Button::new("delete-category")
-                                                .label(confirm_label)
-                                                .on_click(cx.listener(move |this, _, window, cx| {
-                                                    this.arm_delete_category(&choices, window, cx)
-                                                })),
-                                        ),
-                                ),
-                            )
-                    })
                     .into_any_element()
             }
         };
@@ -1795,17 +1922,24 @@ impl Render for CategoriesPage {
             .on_action(cx.listener(|this, _: &Cancel, _, cx| {
                 // Escape closes the innermost open editor or form (3.81,
                 // *Interaction*): the rule editor first (it sits inside
-                // the list), then the rename editor, then the
-                // new-category form, then the armed category delete, then
-                // an armed rule delete on a row; with nothing open Escape
-                // means nothing here and propagates (the dashboard's
-                // context-less binding stays behind it).
+                // the list), then the rename editor, then the detail
+                // panel's inline form (3.51 — a two-click delete question
+                // disarms with the form), then the new-category form,
+                // then the armed category delete, then an armed rule
+                // delete on a row; with nothing open Escape means nothing
+                // here and propagates (the dashboard's context-less
+                // binding stays behind it).
                 if this.rules_page.read(cx).editing_rule.is_some() {
                     this.rules_page.update(cx, |p, cx| p.cancel_edit_rule(cx));
                     return;
                 }
                 if this.renaming {
                     this.renaming = false;
+                    cx.notify();
+                    return;
+                }
+                if this.detail_form.take().is_some() {
+                    this.confirm_delete_category = None;
                     cx.notify();
                     return;
                 }

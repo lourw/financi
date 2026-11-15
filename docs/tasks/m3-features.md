@@ -271,7 +271,7 @@ Start these only after both queues are done (`docs/tasks.md` → *Picking the ne
 
     Update the *Rules* row of `ui-conventions.md`.
 
-- [ ] **3.50 No Organize heading or repeated labels.** In the category
+- [x] **3.50 No Organize heading or repeated labels.** In the category
   detail panel, the **Organize** section title and the "Move to
   category" field label just repeat what the picker's placeholder
   ("Move to category…") already says (user request, 2026-11-11). The
@@ -294,7 +294,7 @@ Start these only after both queues are done (`docs/tasks.md` → *Picking the ne
     of `ui-conventions.md` (drop **Organize** from the section list) and
     note the exception in the *Forms* labels rule.
 
-- [ ] **3.51 Organize and Delete hidden until asked for.** The category
+- [x] **3.51 Organize and Delete hidden until asked for.** The category
   detail panel spends vertical space on two sections that are rarely
   used, **Organize** (add a subcategory / move a subcategory) and
   **Delete** (move its transactions, then delete), so the rules list gets
