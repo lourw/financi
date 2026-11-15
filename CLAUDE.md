@@ -84,8 +84,8 @@ financi-parsers --test real_samples -- --ignored --nocapture`
   git worktree remove --force "$V"
   ```
 
-- **Keep files small.** Split a file once it's past ~800 lines or too big
-  to work on without reading most of it, and keep tests in their own module
+- **Keep files small.** Split a file when working on it costs too much
+  context (rough signal: ~2,000 lines), and keep tests in their own module
   file instead of a large inline `mod tests`. How and when:
   `AGENTS.md` → *File size*.
 - Migrations: `0001_init.sql` is frozen. Add new numbered files.

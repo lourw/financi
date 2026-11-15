@@ -107,10 +107,11 @@ Don't force-push. Remove the worktree only after the push succeeds.
 ### File size
 
 A file you can't hold in your head costs context on every task that
-touches it. Treat **~800 lines (~10k tokens)** as the point to consider a
-split, and split any file that has grown past that when you'd otherwise
-need to read most of it or edit regions far apart. Also split a file that
-mixes unrelated concerns, even if it's shorter.
+touches it. There's no fixed line limit; the test is context cost. Split
+when a task makes you read most of a file, or edit regions far apart, and
+that eats a real share of your budget. As a rough signal, a file around
+**2,000 lines (~25k tokens, about a fifth of the 130k budget)** is worth a
+look. Also split a file that mixes unrelated concerns, whatever its size.
 
 - **Tests go in their own module.** Don't grow a large inline
   `#[cfg(test)] mod tests { … }` block. Move it to a sibling file:
