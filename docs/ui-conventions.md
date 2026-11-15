@@ -338,9 +338,10 @@ default pick; the trigger fits the longest name up to 200 px, ellipsizing
 with a hover tooltip, and the open menu grows to 320 px so names are
 never cut off; a parent without subcategories shows a muted "Add a
 subcategory first" in place of the row. Edit swaps a row for a two-line
-editor (Pattern labelled at full width, then the switch and Cancel /
-Save; 3.48), one at a time; the editor has no category picker — Save
-keeps the rule's category, and a muted "To move rules to another
+`InlineForm` (Pattern labelled at full width over the input, then a
+label-less controls line: the regex switch at the left, Save and Cancel
+right-aligned; 3.48), one at a time; the editor has no category picker —
+Save keeps the rule's category, and a muted "To move rules to another
 category, use the Rules page." sits under a non-empty rule list. Delete
 is a two-click confirm. Selecting a category or leaving the page closes
 the editor and disarms. Planned: a Uses column (3.49), a focused rule's

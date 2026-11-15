@@ -1633,7 +1633,9 @@ fn the_subcategory_menu_shows_a_forty_character_name(cx: &mut TestAppContext) {
 /// editor — the regex switch sits on the controls' centre line: the
 /// switch itself (its shrink-wrap probe, not the 32 px slot around it)
 /// centres within 1 px of the Pattern input, the primary button and the
-/// slot.
+/// slot. 3.48: the editor's controls moved to their own label-less line
+/// (no slot, no input beside them), so there the switch centres on Save
+/// and Cancel instead.
 #[gpui::test]
 fn the_regex_switch_lines_up_with_the_rule_fields(cx: &mut TestAppContext) {
     let (handle, shell, rule, _long, _short) = open_long_name_rule_fixture(cx);
@@ -1676,17 +1678,21 @@ fn the_regex_switch_lines_up_with_the_rule_fields(cx: &mut TestAppContext) {
         "cat:add-rule-btn:add",
     );
 
-    // The rule editor row.
+    // The rule editor row (3.48): the switch, Save and Cancel share the
+    // controls line, so they share its centre — within 1 px of each other.
     start_rule_edit(cx, handle, &shell, rule);
     draw_frame(cx, handle);
-    aligned(
-        &mut window,
-        "rule editor",
-        "rules:switch:edit",
-        "rules:regex-slot:edit",
-        "rules:edit-pattern-input",
-        "rules:edit-save-btn",
-    );
+    let sw = centre(&mut window, "rules:switch:edit", "rule editor");
+    for (what, sel) in [
+        ("Save", "rules:edit-save-btn"),
+        ("Cancel", "rules:edit-cancel-btn"),
+    ] {
+        let c = centre(&mut window, sel, "rule editor");
+        assert!(
+            (c - sw).abs() <= 1.,
+            "in the rule editor {what} centres at y {c}, the regex switch at {sw}",
+        );
+    }
 
     // The Rules page's add-rule row.
     cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Rules, cx)));

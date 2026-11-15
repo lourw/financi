@@ -271,7 +271,7 @@ Start these only after both queues are done (`docs/tasks.md` → *Picking the ne
 
     Update the *Rules* row of `ui-conventions.md`.
 
-- [ ] **3.48 The rule editor gives the pattern room.** Clicking Edit on
+- [x] **3.48 The rule editor gives the pattern room.** Clicking Edit on
   a rule swaps the row for an editor whose Pattern input shrinks so far
   that the pattern can't really be edited (user report, 2026-11-11).
   Cause: `rule_editor_row` is one `h_flex` with Pattern `flex_1` +
