@@ -1996,17 +1996,18 @@ fn import_end_to_end_shows_expected_values_on_every_page(cx: &mut TestAppContext
     cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::ToCategorize, cx)));
     cx.update(|cx| {
         let s = shell.read(cx);
-        assert!(!s.queue.groups.is_empty(), "the queue has groups");
+        let q = s.queue_view.read(cx);
+        assert!(!q.groups.is_empty(), "the queue has groups");
         assert!(
-            s.queue.groups.windows(2).all(|w| w[0].count >= w[1].count),
+            q.groups.windows(2).all(|w| w[0].count >= w[1].count),
             "sorted by count descending"
         );
-        let rows: i64 = s.queue.groups.iter().map(|g| g.count).sum();
+        let rows: i64 = q.groups.iter().map(|g| g.count).sum();
         assert_eq!(
             rows, s.uncategorized_visible,
             "the queue covers every uncategorized row"
         );
-        let cents: i64 = s.queue.groups.iter().map(|g| g.total_cents).sum();
+        let cents: i64 = q.groups.iter().map(|g| g.total_cents).sum();
         assert_eq!(cents, -spend_total, "queue amounts match the dashboard");
     });
 
@@ -2180,7 +2181,9 @@ fn restore_in_flight_refuses_a_queue_apply(cx: &mut TestAppContext) {
     add_parent(cx, handle, &shell, "Shopping");
     add_child(cx, handle, &shell, "Online");
     wait_until(cx, "queue populated", |cx| {
-        !shell.read(cx).queue.groups.is_empty()
+        // 3.83: the queue page defers applying while hidden; the snapshot
+        // is what's always current.
+        !shell.read(cx).catalog.read(cx).snap.queue.is_empty()
     });
     let (merchant, before) = cx.update(|cx| top_group(&shell, cx));
     let child = cx.update(|cx| find_child(&shell, cx, "Online").unwrap());
@@ -2204,12 +2207,19 @@ fn restore_in_flight_refuses_a_queue_apply(cx: &mut TestAppContext) {
     });
 
     // The very call the row's Apply button makes, picker and all —
-    // refused mid-restore.
+    // refused mid-restore. 3.83: the page applies its snapshot on show
+    // (no DB round-trip, so the blocked worker doesn't matter), which is
+    // what gives the picker its choices.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::ToCategorize, cx)));
     let refused = merchant.clone();
     with_window(cx, handle, |window, cx| {
         shell.update(cx, |s, cx| {
-            let picker = s.queue_picker(&refused, window, cx);
+            let picker = s
+                .queue_view
+                .update(cx, |p, cx| p.queue_picker(&refused, window, cx));
             let ix = s
+                .queue_view
+                .read(cx)
                 .child_choices
                 .iter()
                 .position(|(id, _)| *id == child)
@@ -2217,7 +2227,9 @@ fn restore_in_flight_refuses_a_queue_apply(cx: &mut TestAppContext) {
             picker.update(cx, |sel, cx| {
                 sel.set_selected_index(Some(gpui_kit::component::IndexPath::new(ix)), window, cx);
             });
-            s.categorize_merchant(refused.clone(), window, cx);
+            s.queue_view.update(cx, |p, cx| {
+                p.categorize_merchant(refused.clone(), window, cx)
+            });
         });
     });
 
