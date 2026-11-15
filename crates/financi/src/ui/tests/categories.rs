@@ -541,6 +541,9 @@ fn switching_to_categories_after_load_shows_rows(cx: &mut TestAppContext) {
 /// and its two field labels — they are asserted *absent* below; the
 /// controls they used to caption carry their accessibility names in code
 /// (`aria_label`/`accessibility_label`), which the bounds dump can't see.
+/// 3.51: the pickers and buttons live in the inline forms behind the
+/// title-row buttons — opened, switched and cancelled here, and asserted
+/// absent while no form is open.
 #[gpui::test]
 fn the_categories_page_labels_its_controls(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, |_| {});
@@ -586,13 +589,11 @@ fn the_categories_page_labels_its_controls(cx: &mut TestAppContext) {
         "label:New category name",
         "label:Kind",
         "label:Rules",
-        "label:Delete",
-        "label:Move its transactions to",
         "label:Pattern",
         "label:Subcategory",
     ] {
         assert!(
-            window.debug_bounds(sel).is_some(),
+            paints(cx, handle, sel),
             "the Categories page paints the visible label {sel:?}"
         );
     }
@@ -605,29 +606,97 @@ fn the_categories_page_labels_its_controls(cx: &mut TestAppContext) {
         "label:Move to category",
     ] {
         assert!(
-            window.debug_bounds(sel).is_none(),
+            !paints(cx, handle, sel),
             "the Categories page no longer paints the caption {sel:?}"
         );
     }
-    // A selected child adds the move-to-category picker, named by its
-    // placeholder (3.50: the field label above it is gone).
+    // 3.51: with no form open none of the form controls paint — the
+    // Organize and Delete sections are gone, their controls appear only
+    // inside the form their title-row button opened.
+    for sel in [
+        "label:Add subcategory",
+        "label:Move its transactions to…",
+        "cat:form-add-sub",
+        "cat:form-move",
+        "cat:form-delete",
+    ] {
+        assert!(
+            !paints(cx, handle, sel),
+            "no detail form is open, so {sel:?} does not paint"
+        );
+    }
+    // The title row offers the actions: a parent gets Add subcategory
+    // and Delete; Move belongs to a subcategory, not to it.
+    assert!(
+        paints(cx, handle, "cat:title-add-sub") && paints(cx, handle, "cat:title-delete"),
+        "the parent's title row paints its action buttons"
+    );
+    assert!(
+        !paints(cx, handle, "cat:title-move"),
+        "a parent has no Move button"
+    );
+    // Each button opens its form; opening another closes the previous one.
+    click(cx, handle, "cat:title-add-sub");
+    draw_frame(cx, handle);
+    assert!(
+        paints(cx, handle, "cat:form-add-sub") && paints(cx, handle, "label:Add subcategory"),
+        "Add subcategory opens its form, whose button names itself"
+    );
+    assert!(
+        !paints(cx, handle, "cat:form-delete")
+            && !paints(cx, handle, "label:Move its transactions to…"),
+        "the Delete form stays closed while another is open"
+    );
+    click(cx, handle, "cat:title-delete");
+    draw_frame(cx, handle);
+    assert!(
+        paints(cx, handle, "cat:form-delete")
+            && paints(cx, handle, "label:Move its transactions to…"),
+        "Delete opens its form with the reassign picker"
+    );
+    assert!(
+        !paints(cx, handle, "cat:form-add-sub") && !paints(cx, handle, "label:Add subcategory"),
+        "opening Delete closed the Add subcategory form"
+    );
+    // Cancel closes the form.
+    click(cx, handle, "cat:form-delete-cancel");
+    draw_frame(cx, handle);
+    assert!(
+        !paints(cx, handle, "cat:form-delete"),
+        "Cancel closes the Delete form"
+    );
+    // A selected child swaps the buttons: Move in, Add subcategory out,
+    // and its form carries the move picker (3.50: named by its
+    // placeholder, no field label).
     with_window(cx, handle, |window, cx| {
         shell.update(cx, |s, cx| s.select_category(child_id, window, cx));
     });
     cx.run_until_parked();
     draw_frame(cx, handle);
     assert!(
-        window.debug_bounds("label:Move to category…").is_some(),
-        "the child detail paints the move picker's placeholder"
+        paints(cx, handle, "cat:title-move") && !paints(cx, handle, "cat:title-add-sub"),
+        "a subcategory gets the Move button and no Add subcategory one"
+    );
+    click(cx, handle, "cat:title-move");
+    draw_frame(cx, handle);
+    assert!(
+        paints(cx, handle, "cat:form-move") && paints(cx, handle, "label:Move to category…"),
+        "Move opens its form with the picker's placeholder"
+    );
+    click(cx, handle, "cat:form-move-cancel");
+    draw_frame(cx, handle);
+    assert!(
+        !paints(cx, handle, "cat:form-move"),
+        "Cancel closes the Move form"
     );
     // 3.53: under a subcategory the add-rule row drops its picker — the
     // selection itself names where the rule goes.
     assert!(
-        window.debug_bounds("label:Pattern").is_some(),
+        paints(cx, handle, "label:Pattern"),
         "the add-rule row keeps its pattern label under a subcategory"
     );
     assert!(
-        window.debug_bounds("label:Subcategory").is_none(),
+        !paints(cx, handle, "label:Subcategory"),
         "and no subcategory picker"
     );
 }
@@ -741,14 +810,45 @@ fn the_categories_page_never_says_parent_or_child(cx: &mut TestAppContext) {
         "label:New category name",
         "label:Kind",
         "label:Add category",
-        "label:Add subcategory",
-        "label:Move its transactions to…",
     ] {
         assert!(
             window.debug_bounds(sel).is_some(),
             "the Categories page paints {sel:?}"
         );
     }
+    // 3.51: the subcategory and delete controls hide behind the
+    // title-row forms; with none open their labels are absent, and
+    // opening each form shows them in the new words.
+    for sel in ["label:Add subcategory", "label:Move its transactions to…"] {
+        assert!(
+            window.debug_bounds(sel).is_none(),
+            "no form is open, so the Categories page does not paint {sel:?}"
+        );
+    }
+    for (button, painted_sel) in [
+        ("cat:title-add-sub", "label:Add subcategory"),
+        ("cat:title-delete", "label:Move its transactions to…"),
+    ] {
+        click(cx, handle, button);
+        draw_frame(cx, handle);
+        assert!(
+            paints(cx, handle, painted_sel),
+            "the form opened by {button} paints {painted_sel:?}"
+        );
+        for sel in [
+            "label:New parent name",
+            "label:New child name",
+            "label:Add parent",
+            "label:Add child",
+        ] {
+            assert!(
+                !paints(cx, handle, sel),
+                "the form opened by {button} never paints {sel:?}"
+            );
+        }
+    }
+    click(cx, handle, "cat:form-delete-cancel");
+    draw_frame(cx, handle);
     let count_sel = format!("label:{n_cats} categories · {n_subs} subcategories");
     assert!(
         paints(cx, handle, count_sel.clone()),
@@ -775,7 +875,10 @@ fn the_categories_page_never_says_parent_or_child(cx: &mut TestAppContext) {
     cx.run_until_parked();
     draw_frame(cx, handle);
     // 3.50: the move picker has no field label any more; its placeholder
-    // is the visible name, in the new words.
+    // is the visible name, in the new words. 3.51: it paints with the
+    // Move form its title-row button opened.
+    click(cx, handle, "cat:title-move");
+    draw_frame(cx, handle);
     assert!(
         window.debug_bounds("label:Move to category…").is_some(),
         "the move picker paints its placeholder in the new words"
@@ -926,6 +1029,400 @@ fn the_categories_page_never_says_parent_or_child(cx: &mut TestAppContext) {
         );
     });
     draw_frame(cx, handle);
+}
+
+/// 3.51: the inline forms live under the button that opened them, not
+/// under the selection: selecting another category closes the open form.
+#[gpui::test]
+fn selecting_another_category_closes_an_open_detail_form(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |conn| {
+        let food =
+            financi_db::categories::create_parent(conn, "Food", CategoryKind::Expense).unwrap();
+        financi_db::categories::create_child(conn, food, "Restaurants").unwrap();
+        financi_db::categories::create_parent(conn, "Home", CategoryKind::Expense).unwrap();
+    });
+    wait_until(cx, "the tree loads", |cx| {
+        shell.read(cx).categories.len() == 3
+    });
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Categories, cx)));
+    select_parent(cx, handle, &shell, "Food");
+    click(cx, handle, "cat:title-add-sub");
+    draw_frame(cx, handle);
+    assert!(paints(cx, handle, "cat:form-add-sub"), "the form is open");
+    select_parent(cx, handle, &shell, "Home");
+    draw_frame(cx, handle);
+    assert!(
+        !paints(cx, handle, "cat:form-add-sub"),
+        "selecting another category closes the open form"
+    );
+    // Escape closes it too (3.81's one-layer-per-press chain grew the
+    // detail form after the rename editor).
+    select_parent(cx, handle, &shell, "Food");
+    click(cx, handle, "cat:title-add-sub");
+    draw_frame(cx, handle);
+    let root = cx.update(|cx| shell.read(cx).categories_view.read(cx).focus.clone());
+    with_window(cx, handle, |window, cx| window.focus(&root, cx));
+    cx.simulate_keystrokes(handle, "escape");
+    cx.run_until_parked();
+    draw_frame(cx, handle);
+    assert!(
+        !paints(cx, handle, "cat:form-add-sub"),
+        "Escape closes the open detail form"
+    );
+}
+
+/// 3.51: the Add subcategory form keeps its promise (2026-11-15): a
+/// successful add clears the field, keeps the form open and focused on
+/// the parent it was opened for, so several subcategories go in a row —
+/// and the selection never jumps to the new row.
+#[gpui::test]
+fn the_add_subcategory_form_stays_open_after_a_successful_add(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |_| {});
+    wait_idle(cx, &shell);
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Categories, cx)));
+    add_parent(cx, handle, &shell, "Food");
+    let food = cx.update(|cx| {
+        shell
+            .read(cx)
+            .categories
+            .iter()
+            .find(|p| p.name == "Food")
+            .unwrap()
+            .id
+    });
+    select_parent(cx, handle, &shell, "Food");
+    click(cx, handle, "cat:title-add-sub");
+    draw_frame(cx, handle);
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.categories_view
+                .read(cx)
+                .new_child_name
+                .clone()
+                .update(cx, |i, cx| i.set_value("Groceries", window, cx));
+        });
+    });
+    click(cx, handle, "label:Add subcategory");
+    wait_until(cx, "the first subcategory lands", |cx| {
+        find_child(&shell, cx, "Groceries").is_some()
+    });
+    draw_frame(cx, handle);
+    assert!(
+        paints(cx, handle, "cat:form-add-sub"),
+        "a successful add keeps the form open"
+    );
+    cx.update(|cx| {
+        let s = shell.read(cx);
+        let page = s.categories_view.read(cx);
+        assert_eq!(
+            page.selected_category,
+            Some(food),
+            "the parent stays selected"
+        );
+        assert!(
+            page.new_child_name.read(cx).value().is_empty(),
+            "the field clears for the next name"
+        );
+    });
+    // A second name goes straight in — no reopen, and no leftover text
+    // glued in front of it (which is why the field must have cleared).
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.categories_view
+                .read(cx)
+                .new_child_name
+                .clone()
+                .update(cx, |i, cx| i.set_value("Meals", window, cx));
+        });
+    });
+    click(cx, handle, "label:Add subcategory");
+    wait_until(cx, "the second subcategory lands", |cx| {
+        find_child(&shell, cx, "Meals").is_some()
+    });
+    cx.update(|cx| {
+        let s = shell.read(cx);
+        let food = s.categories.iter().find(|p| p.name == "Food").unwrap();
+        let names: Vec<&str> = food.children.iter().map(|c| c.name.as_str()).collect();
+        assert!(
+            names.contains(&"Groceries") && names.contains(&"Meals"),
+            "both subcategories landed, none joined: {names:?}"
+        );
+        assert!(
+            !names.iter().any(|n| n.contains("GroceriesMeals")),
+            "the cleared field never concatenates"
+        );
+    });
+}
+
+/// 3.51: Move and Delete still do their work through the forms — and a
+/// successful one closes its form. The Delete form carries the two-click
+/// question; Cancel closes the form and the question together.
+#[gpui::test]
+fn the_move_and_delete_forms_run_their_actions_and_close(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |conn| {
+        let food =
+            financi_db::categories::create_parent(conn, "Food", CategoryKind::Expense).unwrap();
+        financi_db::categories::create_child(conn, food, "Restaurants").unwrap();
+        financi_db::categories::create_child(conn, food, "Keep").unwrap();
+        financi_db::categories::create_parent(conn, "Home", CategoryKind::Expense).unwrap();
+        financi_db::categories::create_parent(conn, "Work", CategoryKind::Expense).unwrap();
+    });
+    wait_until(cx, "the tree loads", |cx| {
+        shell.read(cx).categories.len() == 4
+    });
+    let keep = cx.update(|cx| find_child(&shell, cx, "Keep").unwrap());
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Categories, cx)));
+
+    // -- Move: pick the new parent in the form, Move, done.
+    let restaurants = cx.update(|cx| find_child(&shell, cx, "Restaurants").unwrap());
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| s.select_category(restaurants, window, cx));
+    });
+    cx.run_until_parked();
+    click(cx, handle, "cat:title-move");
+    draw_frame(cx, handle);
+    let home_ix = cx.update(|cx| {
+        let s = shell.read(cx);
+        let food = s.categories.iter().find(|p| p.name == "Food").unwrap().id;
+        s.categories
+            .iter()
+            .filter(|p| p.kind == CategoryKind::Expense && p.id != food)
+            .position(|p| p.name == "Home")
+            .unwrap()
+    });
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.categories_view.update(cx, |p, cx| {
+                p.move_target.update(cx, |sel, cx| {
+                    sel.set_selected_index(
+                        Some(gpui_kit::component::IndexPath::new(home_ix)),
+                        window,
+                        cx,
+                    );
+                })
+            });
+        });
+    });
+    click(cx, handle, "cat:form-move-go");
+    wait_until(cx, "Restaurants moves under Home", |cx| {
+        shell
+            .read(cx)
+            .categories
+            .iter()
+            .any(|p| p.name == "Home" && p.children.iter().any(|c| c.name == "Restaurants"))
+    });
+    cx.update(|cx| {
+        assert!(
+            shell
+                .read(cx)
+                .categories_view
+                .read(cx)
+                .detail_form
+                .is_none(),
+            "a successful move closes the Move form"
+        );
+    });
+
+    // -- Delete (a childless, empty category): the first click arms,
+    // Cancel closes form and question together; then the real two-click
+    // delete reassigns and closes the form too.
+    select_parent(cx, handle, &shell, "Work");
+    let work = cx.update(|cx| {
+        shell
+            .read(cx)
+            .categories
+            .iter()
+            .find(|p| p.name == "Work")
+            .unwrap()
+            .id
+    });
+    click(cx, handle, "cat:title-delete");
+    draw_frame(cx, handle);
+    click(cx, handle, "cat:form-delete-go");
+    cx.update(|cx| {
+        assert_eq!(
+            shell
+                .read(cx)
+                .categories_view
+                .read(cx)
+                .confirm_delete_category,
+            Some(work),
+            "the first click asks instead of deleting"
+        );
+    });
+    click(cx, handle, "cat:form-delete-cancel");
+    draw_frame(cx, handle);
+    cx.update(|cx| {
+        let page = shell.read(cx).categories_view.read(cx);
+        assert!(page.detail_form.is_none(), "Cancel closes the form");
+        assert!(
+            page.confirm_delete_category.is_none(),
+            "Cancel disarms the two-click question with it"
+        );
+    });
+    // Reopen, choose where the transactions go, and delete for real.
+    click(cx, handle, "cat:title-delete");
+    let keep_ix = cx.update(|cx| s_ix(&shell, cx, keep));
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.categories_view.update(cx, |p, cx| {
+                p.delete_target.update(cx, |sel, cx| {
+                    sel.set_selected_index(
+                        Some(gpui_kit::component::IndexPath::new(keep_ix)),
+                        window,
+                        cx,
+                    );
+                })
+            });
+        });
+    });
+    click(cx, handle, "cat:form-delete-go"); // arm
+    click(cx, handle, "cat:form-delete-go"); // run
+    wait_until(cx, "Work is deleted", |cx| {
+        shell.read(cx).categories.iter().all(|p| p.name != "Work")
+    });
+    cx.update(|cx| {
+        assert!(
+            shell
+                .read(cx)
+                .categories_view
+                .read(cx)
+                .detail_form
+                .is_none(),
+            "a successful delete closes the Delete form"
+        );
+    });
+}
+
+/// 3.51: system categories can't be deleted, so their title row has no
+/// Delete button at all (and no Rename either, as before).
+#[gpui::test]
+fn a_system_category_offers_no_delete_button(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |_| {});
+    wait_idle(cx, &shell);
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Categories, cx)));
+    let transfers = cx.update(|cx| {
+        shell
+            .read(cx)
+            .categories
+            .iter()
+            .find(|p| p.is_system)
+            .unwrap_or_else(|| panic!("the seed has the system Transfers tree"))
+            .id
+    });
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| s.select_category(transfers, window, cx));
+    });
+    cx.run_until_parked();
+    draw_frame(cx, handle);
+    assert!(
+        paints(cx, handle, "cat:detail-title"),
+        "the system category's detail paints"
+    );
+    assert!(
+        !paints(cx, handle, "cat:title-delete"),
+        "a system category has no Delete button"
+    );
+}
+
+/// 3.51: with Organize and Delete gone, the Rules section starts right
+/// under the title divider and takes the panel's remaining height; an
+/// open form pushes it down and shortens it.
+#[gpui::test]
+fn the_rules_section_holds_the_detail_panels_remaining_height(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |conn| {
+        let food =
+            financi_db::categories::create_parent(conn, "Food", CategoryKind::Expense).unwrap();
+        financi_db::categories::create_child(conn, food, "Restaurants").unwrap();
+    });
+    wait_until(cx, "the tree loads", |cx| {
+        shell.read(cx).categories.len() == 2
+    });
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Categories, cx)));
+    select_parent(cx, handle, &shell, "Food");
+    draw_frame(cx, handle);
+    let panel = bounds(cx, handle, "cat:detail-panel");
+    let title = bounds(cx, handle, "cat:detail-title");
+    let rules = bounds(cx, handle, "cat:rules-section");
+    // Title, its divider, then Rules: no section stands between them.
+    let gap = rules.origin.y - (title.origin.y + title.size.height);
+    assert!(
+        gap < px(40.),
+        "Rules starts right under the title divider: gap {gap:?}"
+    );
+    // Rules owns the rest of the panel (border 1 px + `p_4`).
+    let bottom = panel.origin.y + panel.size.height - px(17.);
+    assert!(
+        (rules.origin.y + rules.size.height - bottom).abs() < px(1.),
+        "Rules reaches the panel's content edge: {:?}",
+        rules.origin.y + rules.size.height
+    );
+    // Opening a form inserts it between: Rules moves down and shrinks.
+    click(cx, handle, "cat:title-add-sub");
+    let rules_open = bounds(cx, handle, "cat:rules-section");
+    assert!(
+        rules_open.origin.y > rules.origin.y + px(30.),
+        "the open form sits between the title divider and Rules"
+    );
+    assert!(
+        rules_open.size.height < rules.size.height,
+        "the rule list gives the form its height"
+    );
+}
+
+/// 3.51: the title row must fit the 1200 × 720 window with a 60-character
+/// name — the name truncates first, the buttons stay painted and inside
+/// the panel.
+#[gpui::test]
+fn the_detail_title_row_fits_a_sixty_character_name(cx: &mut TestAppContext) {
+    let long = "c".repeat(60);
+    let (handle, shell) = open_shell(cx, |conn| {
+        let parent =
+            financi_db::categories::create_parent(conn, &long, CategoryKind::Expense).unwrap();
+        financi_db::categories::create_child(conn, parent, "A child").unwrap();
+    });
+    wait_until(cx, "the tree loads", |cx| {
+        shell.read(cx).categories.len() == 2
+    });
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Categories, cx)));
+    select_parent(cx, handle, &shell, &long);
+    with_window(cx, handle, |window, cx| {
+        window.resize(size(px(1200.), px(720.)));
+        window.bounds_changed(cx);
+    });
+    cx.run_until_parked();
+    draw_frame(cx, handle);
+    let panel = bounds(cx, handle, "cat:detail-panel");
+    let right = panel.origin.x + panel.size.width;
+    for sel in ["cat:title-add-sub", "cat:title-delete"] {
+        let b = bounds(cx, handle, sel);
+        assert!(
+            b.origin.x + b.size.width <= right + px(1.),
+            "{sel} stays inside the panel: ends at {:?}, panel {right:?}",
+            b.origin.x + b.size.width,
+        );
+    }
+    // The name ellipsizes rather than pushing the buttons out.
+    let title = bounds(cx, handle, "cat:detail-title");
+    assert!(
+        title.size.width <= panel.size.width,
+        "the 60-character title truncates inside the panel: title {:?}, panel {:?}",
+        title.size.width,
+        panel.size.width,
+    );
+    // And the Move form's row fits for a subcategory too.
+    let child = cx.update(|cx| find_child(&shell, cx, "A child").unwrap());
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| s.select_category(child, window, cx));
+    });
+    cx.run_until_parked();
+    click(cx, handle, "cat:title-move");
+    let form = bounds(cx, handle, "cat:form-move");
+    assert!(
+        form.origin.x + form.size.width <= right + px(1.),
+        "the Move form fits the panel: ends at {:?}",
+        form.origin.x + form.size.width,
+    );
 }
 
 /// Two parents, each with one subcategory whose rules target that
