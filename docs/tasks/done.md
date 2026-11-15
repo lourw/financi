@@ -1697,3 +1697,19 @@ the UI; tests cover 2.1–2.9.
 - `escape → Cancel` in the `Queue` context: clears the banner, then
   `cx.propagate()` so the Root `ClearCategorySelection` still fires.
   Render body unchanged apart from `track_focus` + `key_context`.
+
+### 3.63 — App icon ✅
+- PNGs for 16–1024 rendered by `scripts/icons.sh` (`mise run icons`) and
+  committed; `WindowOptions.icon` (256 px, `include_bytes!` + `image`) and
+  `app_id` (`"financi"`) set on the main window; `packaging/linux/
+  financi.desktop` plus `mise run install-desktop`. macOS: `mise run
+  bundle` (`scripts/bundle-macos.sh`, `.icns` via `iconutil`) and a
+  cfg-gated `set_dock_icon()` through objc2-app-kit, type-checked
+  out-of-tree for x86_64-apple-darwin but not run (Linux machine).
+- Session-type note: this machine had no graphical session
+  (`XDG_SESSION_TYPE=tty`), so the by-hand taskbar check is still owed by
+  the user after `mise run install-desktop`.
+- Follow-up for the M5 packaging task: `scripts/bundle-macos.sh` line 18 —
+  add `|| true` to the `git describe` substitution so the Cargo.toml
+  version fallback is reachable when git is missing.
+- Not done on purpose: the startup-error window doesn't set the icon.

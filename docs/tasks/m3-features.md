@@ -591,45 +591,6 @@ Start these only after both queues are done (`docs/tasks.md` → *Picking the ne
 
 ## Lane C — small tasks (after both queues)
 
-- [x] **3.63 An app icon.** The window and Dock / taskbar show the
-  default icon (user request, 2026-11-11). The source artwork is
-  committed: `assets/icon/financi.svg` (1024 × 1024, macOS icon grid: a
-  dark rounded square with three rising bars, the tallest green). Don't
-  redesign it; ask the user if it needs changes.
-  - **Rendered PNGs, committed:** `assets/icon/png/financi-<n>.png` for n
-    = 16, 32, 64, 128, 256, 512, 1024, made by `scripts/icons.sh` with
-    `rsvg-convert` (installed here) and exposed as `mise run icons`. The
-    build reads the PNGs, so it needs no SVG renderer.
-  - **Linux, X11:** set `WindowOptions.icon` (`gpui-pre`
-    `platform.rs`, X11 only) from the 256 px PNG, embedded with
-    `include_bytes!` and decoded with the `image` crate. `image` 0.25 is
-    already in `Cargo.lock` through GPUI; add it as a direct dependency at
-    that version with `default-features = false, features = ["png"]`.
-  - **Linux, Wayland:** compositors ignore per-window icons and match the
-    window's `app_id` to a desktop entry. Set `WindowOptions.app_id =
-    Some(APP_ID)` (`const APP_ID: &str = "financi"`) and add
-    `packaging/linux/financi.desktop` (`Name=financi`, `Exec=financi`,
-    `Icon=financi`, `StartupWMClass=financi`, `Categories=Office;Finance;`).
-    `mise run install-desktop` copies it to `~/.local/share/applications/`
-    and the PNGs to `~/.local/share/icons/hicolor/<n>x<n>/apps/financi.png`.
-  - **macOS:** the Dock icon comes from the app bundle. Add `mise run
-    bundle` (`scripts/bundle-macos.sh`): build release, make
-    `target/release/financi.app` with an `Info.plist`
-    (`CFBundleIconFile`, `CFBundleIdentifier` `dev.financi.app`,
-    `CFBundleShortVersionString` from the 3.39 version) and an `.icns`
-    made with `iconutil` from an `.iconset` of the PNGs. For `cargo run`,
-    also set the Dock icon at startup with
-    `NSApplication::setApplicationIconImage` through `objc2-app-kit`
-    (0.3.2 is already in `Cargo.lock`; add it as a macOS-only dependency
-    at that version). If either dependency can't be added at the locked
-    version, stop and ask.
-  - Tests: the embedded PNG decodes to 256 × 256 RGBA; the desktop file's
-    `Icon` and `StartupWMClass` equal `APP_ID`; `scripts/icons.sh` is
-    idempotent (re-running changes no committed PNG). Check by hand on
-    this Linux machine that the taskbar shows the icon after `mise run
-    install-desktop`, and say which session type (X11 / Wayland) you
-    checked. Add the new `mise` tasks to `CLAUDE.md` → *Commands*.
-
 - [ ] **3.59 Searchable category pickers.** From `plan.md` → *Make
   category dropdowns usable with thousands of categories* (never made a
   task; user confirmed 2026-11-11). A flat scrolling list doesn't work at
