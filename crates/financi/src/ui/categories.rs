@@ -506,7 +506,9 @@ pub(super) struct CategoriesPage {
     /// 3.81 transitional: the rule rows, the add-rule row and the shared
     /// palette live in `Shell` until 3.80 moves the rule list here.
     shell: WeakEntity<Shell>,
-    focus: FocusHandle,
+    // `pub(super)` like the other extracted pages: the Escape tests focus
+    // the page root the way `go_page` does (see `ui/tests/categories.rs`).
+    pub(super) focus: FocusHandle,
     visible: bool,
     dirty: bool,
     focus_pending: bool,

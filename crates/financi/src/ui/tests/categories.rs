@@ -1,6 +1,9 @@
 //! Tests for `ui/categories.rs` (3.62 split from `ui_tests.rs`).
 
 use super::*;
+
+use super::dashboard::{click_chart_legend, seed_chart_rows, top_category_id};
+
 #[gpui::test]
 fn creates_parent_and_child(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, |_| {});
@@ -1239,6 +1242,127 @@ fn the_new_category_button_opens_and_closes_the_form(cx: &mut TestAppContext) {
         window.debug_bounds("cat:new-form").is_none(),
         "leaving the page closes the form"
     );
+}
+
+/// 3.81: Escape on the Categories page is the page's own `Cancel`, and it
+/// closes one layer per press, innermost first: the rename editor, then
+/// the new-category form, then an armed category delete. With nothing
+/// open the handler propagates, and the context-less
+/// `ClearCategorySelection` binding (3.5) clears the dashboard drill —
+/// while a layer is open the consumed keystroke must not reach it.
+#[gpui::test]
+fn escape_on_the_categories_page_closes_one_layer_per_press(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_chart_rows);
+    wait_until(cx, "chart rows load", |cx| {
+        shell.read(cx).dashboard.row_count == 4
+    });
+    // Drill the dashboard chart first: the drill lives on the shell and
+    // survives the page switch, so it waits here for the last Escape.
+    let food = cx.update(|cx| top_category_id(&shell, cx, "Food"));
+    click_chart_legend(cx, handle, &shell, Some(food));
+    wait_until(cx, "drilled into Food", |cx| {
+        shell.read(cx).dashboard.filter.chart_parent == Some(food)
+    });
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Categories, cx)));
+    wait_idle(cx, &shell);
+    select_parent(cx, handle, &shell, "Food");
+    // Open the new-category form through the header button, as a user
+    // does, and the rename editor the way the tests here do it (the
+    // page's own flag; the Rename… button has no selector).
+    click(cx, handle, format!("label:{NEW_CATEGORY}"));
+    with_window(cx, handle, |_window, cx| {
+        shell.update(cx, |s, cx| {
+            s.categories_view.update(cx, |p, _| p.renaming = true)
+        });
+    });
+    let mut window = VisualTestContext::from_window(handle, cx);
+    draw_frame(cx, handle);
+    assert!(
+        window.debug_bounds("cat:new-form").is_some(),
+        "the form is open"
+    );
+    assert!(
+        window.debug_bounds("cat:detail-title").is_none(),
+        "the rename editor replaces the detail title while open"
+    );
+
+    // Actions dispatch along the focus path, so focus the page root —
+    // what showing the page does for a user (see the 3.79 Imports test).
+    let root = cx.update(|cx| shell.read(cx).categories_view.read(cx).focus.clone());
+    with_window(cx, handle, |window, cx| window.focus(&root, cx));
+
+    // 1. The rename editor is innermost: the first Escape closes it and
+    // the consumed keystroke reaches neither the form nor the drill.
+    cx.simulate_keystrokes(handle, "escape");
+    cx.run_until_parked();
+    cx.update(|cx| {
+        let s = shell.read(cx);
+        assert!(
+            !s.categories_view.read(cx).renaming,
+            "Escape closed the rename editor"
+        );
+        assert_eq!(
+            s.dashboard.filter.chart_parent,
+            Some(food),
+            "the consumed Escape did not clear the drill"
+        );
+    });
+    draw_frame(cx, handle);
+    assert!(
+        window.debug_bounds("cat:detail-title").is_some(),
+        "the detail title paints again once the editor closes"
+    );
+    assert!(
+        window.debug_bounds("cat:new-form").is_some(),
+        "the form is still open after the first Escape"
+    );
+
+    // 2. The second Escape closes the new-category form.
+    cx.simulate_keystrokes(handle, "escape");
+    cx.run_until_parked();
+    draw_frame(cx, handle);
+    assert!(
+        window.debug_bounds("cat:new-form").is_none(),
+        "Escape closed the form"
+    );
+
+    // 3. Arm the category delete (the first click only asks), and the
+    // third Escape disarms it.
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| s.arm_delete_category(window, cx))
+    });
+    cx.update(|cx| {
+        assert_eq!(
+            shell
+                .read(cx)
+                .categories_view
+                .read(cx)
+                .confirm_delete_category,
+            Some(food),
+            "first click arms"
+        );
+    });
+    cx.simulate_keystrokes(handle, "escape");
+    cx.run_until_parked();
+    cx.update(|cx| {
+        assert_eq!(
+            shell
+                .read(cx)
+                .categories_view
+                .read(cx)
+                .confirm_delete_category,
+            None,
+            "Escape disarms the category delete"
+        );
+    });
+
+    // 4. With nothing open the handler propagates and the context-less
+    // binding clears the drill — Escape still means *clear* here.
+    cx.simulate_keystrokes(handle, "escape");
+    wait_until(cx, "drill and legend selection cleared", |cx| {
+        shell.read(cx).dashboard.filter.chart_parent.is_none()
+            && shell.read(cx).dashboard.filter.legend_selection.is_none()
+    });
 }
 
 /// 3.23: at the 1200 × 720 minimum window both panels, the new-category
