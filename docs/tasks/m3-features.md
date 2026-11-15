@@ -271,37 +271,6 @@ Start these only after both queues are done (`docs/tasks.md` → *Picking the ne
 
     Update the *Rules* row of `ui-conventions.md`.
 
-- [x] **3.48 The rule editor gives the pattern room.** Clicking Edit on
-  a rule swaps the row for an editor whose Pattern input shrinks so far
-  that the pattern can't really be edited (user report, 2026-11-11).
-  Cause: `rule_editor_row` is one `h_flex` with Pattern `flex_1` +
-  `min_w_0` and, after it, the regex switch, a 160 px Category picker,
-  Save and Cancel. In the detail panel (page minus the 210 px sidebar
-  and the 300 px tree panel) the fixed controls take ~400 px of ~600, and
-  3.53 removes the editor's picker, which frees most of that. The user also
-  saw the editor's regex switch sit off the row's line (3.42's cause).
-  - **Review update (2026-11-11):** Build the editor with 3.89's `InlineForm`. After 3.53 removed the picker, check whether the add row still needs two lines; if not, leave it on one.
-  - **Two lines:** line 1 is the "Pattern" label over the input at the
-    editor's **full width**. Line 2 is one `h_flex().items_center()` of
-    32 px controls, with no label line: the regex switch, then `ml_auto`
-    Save and Cancel (no Category picker, 3.53). Line 2 has no labels,
-    so the switch lines up without 3.42's slot (3.42 still applies to
-    the add-rule row). The preview count and error line stay under both
-    lines.
-  - Bump the editor's entry in `rule_sizes` (today 80 / 108 px) to the
-    new height (~two control lines + label + preview, ~120 / ~148 px with
-    an error) so the virtual list doesn't overlap the next row.
-  - Enter saves, Escape cancels, focus lands in the pattern input with
-    the caret at the end (check it does today; if not, add it).
-  - The add-rule row: if its Pattern input is < 240 px wide at
-    1200 × 720 after 3.53, give it the same two-line shape; otherwise
-    leave it on one line.
-  - Tests: at 1200 × 720 the editor's pattern input is at least 90 % of
-    the detail panel's inner width; the switch, Save and Cancel
-    share a vertical centre within 1 px; the row below the editor doesn't
-    overlap it (bounds); Save/Cancel/Enter/Escape tests from 3.24 pass.
-    Update the *Categories* row of `ui-conventions.md`.
-
 - [ ] **3.50 No Organize heading or repeated labels.** In the category
   detail panel, the **Organize** section title and the "Move to
   category" field label just repeat what the picker's placeholder

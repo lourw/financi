@@ -1713,3 +1713,17 @@ the UI; tests cover 2.1–2.9.
   add `|| true` to the `git describe` substitution so the Cargo.toml
   version fallback is reachable when git is missing.
 - Not done on purpose: the startup-error window doesn't set the icon.
+
+### 3.48 — Rule editor gives the pattern room ✅
+- `rule_editor_row` is 3.89's `inline_form` now: "Pattern" label over a
+  full-width input, then a label-less control line (regex switch left,
+  `ml_auto` Save/Cancel); preview and error render under both. Shared
+  `RULE_EDITOR_H` / `RULE_EDITOR_ERROR_H` (measured 148/176 px) feed the
+  row reservations on both the Rules page and the categories detail
+  panel, so the virtual lists can't overlap the editor.
+- Focus lands in the pattern input with the caret at the end (deferred,
+  like the other pages); Enter saves, Escape cancels. Add-rule rows
+  measure ≥ 240 px at 1200 × 720, so they stay on one line.
+- Follow-up nit for the next task in `ui/rules.rs`: `start_edit_rule`'s
+  doc comment still describes the pre-3.48 single-line shape with a
+  Category picker.
