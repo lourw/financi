@@ -1658,3 +1658,27 @@ the UI; tests cover 2.1–2.9.
     and its Restore twin). UI tests for both flows
     (stub the dialogs), and update the *Imports* row of
     `ui-conventions.md`.
+
+### 3.80 — RulesPage entity ✅
+- `RulesPage` implements `PageEntity` (`ui/rules_page.rs`): `FilterState`
+  and the `TxQueryState` cache moved in, same generation-guarded pattern
+  as 3.79's `CategoriesPage`; `AppState.filter` stays the source of
+  truth, the page listens for `RuleFilter`/`Navigate(Rules)` and reloads.
+- The page now owns the rule editor and the delete-confirmation state
+  (`editing`, `pending`, `armed`), the quick-add-to-rule flow, and the
+  keyboard rule rows (`new_rule`, `confirm_editor`, `cancel_edit`,
+  `arm_delete`, `disarm_delete`, `delete_now`, `edit_selected`); the
+  handlers live on `RulesPage` and dispatch via `ToggleRuleEditor` /
+  `RuleEditorKey` from `ui/mod.rs`. `ui/rules_page.rs` renders through
+  the shared row/editor builders, reading the entity.
+- `CategoriesPage` holds an `Entity<RulesPage>` and drives it for the
+  embedded list: open/close the editor, feed the quick-add draft,
+  evaluate the rows' `RuleEditorKey` first when one is open, and Cancel
+  chains through it. `RuleContext` moved to `rules_page.rs` (the
+  categories overlay selector still uses it).
+- Keymap: global Escape → `ClearCategorySelection` is now scoped to
+  `Some("Root")` so page-level Cancel bindings win (context-less
+  bindings resolve at the deepest context and used to outrank them);
+  pages' Cancel chains end with `cx.propagate()` so Root still gets its
+  turn for the category overlay. 3.82 replaces the Root binding with
+  DashboardPage's own Cancel.
