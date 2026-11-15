@@ -80,9 +80,6 @@ worktree from the current `main`.
 - **Housekeeping (AGENTS.md → *File size*), run when a slot is free and
   nothing in flight touches the file** (pure moves, own `refactor:` commit,
   no behaviour change, no other change):
-  - **H1** split `ui/tests/dashboard.rs` (~4.0k lines) into
-    `ui/tests/dashboard/` sub-files by feature (chart, drill_down,
-    filters, search, …) with shared helpers in the parent module.
   - **H2** split `ui/tests/imports.rs` (~2.4k lines) the same way.
 3. **Last in M3: 3.26** (scrollbars, in `docs/tasks/m3-features.md`), once
    the lanes are empty.

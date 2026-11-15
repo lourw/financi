@@ -1682,3 +1682,18 @@ the UI; tests cover 2.1–2.9.
   pages' Cancel chains end with `cx.propagate()` so Root still gets its
   turn for the category overlay. 3.82 replaces the Root binding with
   DashboardPage's own Cancel.
+
+### 3.83 — To categorize (QueuePage) view ✅
+- `QueuePage` implements `PageEntity` (`ui/queue.rs`) with
+  `DEPENDS = Transactions | Categories | Rules`; `watch_catalog` first
+  in `new`, entity built on `AppState` before the shell's own catalog
+  watcher so pages apply before `sync_category_choices`.
+- The page owns the queue list, the lazily built merchant pickers, and
+  the error banner; pickers are pruned to the rendered window ±24 rows
+  (one screenful) plus any picker with a pending selection, subs retire
+  in lockstep, and a scrolled-back picker rebuilds its category choices
+  lazily. Writes go out through `PageEvent::Toast` +
+  `PageEvent::Changed(RULES_TX)`; no `Shell` handle.
+- `escape → Cancel` in the `Queue` context: clears the banner, then
+  `cx.propagate()` so the Root `ClearCategorySelection` still fires.
+  Render body unchanged apart from `track_focus` + `key_context`.
