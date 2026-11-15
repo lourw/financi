@@ -1,6 +1,16 @@
-//! The Rules page (3.62).
+//! The Rules page (3.62), a page entity since 3.80.
+//!
+//! The page owns its search, filters, collapse and sort state, the checked
+//! rows, and the add-rule row with its in-place editor (3.24, 3.28). The
+//! editor is shared with the Categories page — 3.53 kept one editor, not
+//! two — so `rule_row` and `rule_editor_row` are free functions here that
+//! render from this entity's state, and `Shell` keeps thin wrapper methods
+//! for the Categories rule list. While the Rules page is hidden the
+//! Categories page still paints that state, so `Shell` observes this
+//! entity: a page notify repaints both.
 
 use super::*;
+use crate::ui::page::{Cancel, PageEntity, PageEvent, watch_catalog};
 use crate::ui::widgets::*;
 
 /// 3.28: the Rules page's header action; it opens the add-rule row in
@@ -56,10 +66,29 @@ pub(super) enum PendingRuleAction {
     Delete(i64),
 }
 
-/// This page's state (3.74): the Rules page's search, filters, selection
-/// and list state. The add-rule row and its in-place editor stay on
-/// `Shell` (shared with the Categories page until 3.78).
-pub(super) struct RulesPageState {
+/// The Rules page (3.74 state, 3.80 entity): the search, filters, checked
+/// rows and list state, plus the add-rule row and its in-place editor —
+/// the same editor the Categories page renders (see the module docs). The
+/// rule list and Uses counts are mirrors of the `Catalog` snapshot;
+/// `apply` refreshes them and prunes the page's per-rule state to the
+/// rules that still exist.
+pub(super) struct RulesPage {
+    db: DbWorker,
+    /// The shared data model (3.78); `apply` reads the rule list, the Uses
+    /// counts and the category tree off its snapshot, never a query of
+    /// its own.
+    catalog: Entity<Catalog>,
+    /// 5.3 review fix: shared with the shell — while an export or restore
+    /// is in flight every write here is refused (the row ids may name
+    /// different rules after it).
+    writes_blocked: Rc<Cell<bool>>,
+    focus: FocusHandle,
+    visible: bool,
+    dirty: bool,
+    focus_pending: bool,
+    /// The `Catalog` subscription (3.80); lives as long as the page.
+    _catalog: Subscription,
+    // -- Page state (3.74).
     /// 3.28: the Rules page search box; live filter over the list (pattern
     /// and target category name, case-insensitive), focused when the page
     /// opens (D5). In "Test a description" mode it takes the description.
@@ -85,14 +114,8 @@ pub(super) struct RulesPageState {
     pub(super) move_rules_target: Entity<SelectState<Names>>,
     /// 3.28: the Move bar's error line (a move the DB refused).
     pub(super) rules_move_error: Option<SharedString>,
-    /// 3.28: how many unlocked rows each rule's match decides (the Uses
-    /// column); rules deciding nothing are absent.
-    pub(super) rule_uses: HashMap<i64, usize>,
     /// 3.28: whether the add-rule row is open on the Rules page.
     pub(super) new_rule_open: bool,
-    /// 3.28: set when the Rules page opens; focuses the search box on the
-    /// next render (D5).
-    pub(super) rules_focus_pending: std::cell::Cell<bool>,
     /// 3.29: the rule the dashboard's *Show rule* item just landed on; its
     /// row carries the `list_active` background until the user searches or
     /// leaves the page (transient, like the page's other one-shot state).
@@ -105,28 +128,165 @@ pub(super) struct RulesPageState {
     pub(super) rules_page_rows_built: std::cell::Cell<usize>,
     #[cfg(test)]
     pub(super) rules_page_range: std::cell::Cell<(usize, usize)>,
+    // -- `Catalog` snapshot mirrors (3.80).
+    /// The shared rule list; the Categories page's list is a view over
+    /// the same rows (`Shell` mirrors it too for its other pages).
+    pub(super) rules: Vec<Rule>,
+    /// 3.28: how many unlocked rows each rule's match decides (the Uses
+    /// column); rules deciding nothing are absent.
+    pub(super) rule_uses: HashMap<i64, usize>,
+    /// "Parent › Child" labels of the child categories, the target the
+    /// rows and group headers show and what the pickers offer.
+    pub(super) child_choices: Vec<(i64, String)>,
+    // -- The add-rule row and its in-place editor (3.24, 3.28): rendered
+    // by both the Categories page and the Rules page.
+    pub(super) rule_pattern: Entity<InputState>,
+    pub(super) rule_regex: bool,
+    pub(super) rule_target: Entity<SelectState<Names>>,
+    /// The add row's and the editor's shared "matches N transactions"
+    /// preview (the editor owns it while open; see
+    /// [`RulesPage::preview_rule_match`]).
+    pub(super) rule_match_count: Option<i64>,
+    rule_task: Option<Task<()>>,
+    pub(super) rule_error: Option<String>,
+    /// 3.24: the rule whose row currently shows the in-place editor. One at
+    /// a time; `select_category` and `go_page` close it. `start_edit_rule`
+    /// loads the rule into the editor's own controls, so the editor is the
+    /// add-rule row's shape with the row swapped out.
+    pub(super) editing_rule: Option<i64>,
+    /// 3.24: the rule whose Delete… button is armed ("Click again to
+    /// delete"). Armed per row; `select_category` and `go_page` disarm it
+    /// with the page's other transient confirmations.
+    pub(super) armed_delete_rule: Option<i64>,
+    /// 3.40: which rule button is waiting on the DB (see
+    /// [`PendingRuleAction`]); rendered loading + disabled while set.
+    pub(super) pending_rule_action: Option<PendingRuleAction>,
+    /// 3.24: the editor's own controls, separate entities from the add-rule
+    /// row's so the two never share an `InputState` on screen at once.
+    /// While the editor is open the shared `rule_match_count`
+    /// preview belongs to it (the add-rule row hides it, like `rule_error`)
+    /// and excludes that rule (2.5 re-run semantics); every close path
+    /// clears it, and [`RulesPage::apply`] closes the editor when its rule
+    /// is gone.
+    pub(super) rule_edit_pattern: Entity<InputState>,
+    pub(super) rule_edit_regex: bool,
     /// The pickers and inputs above subscribe here.
     _subs: Vec<Subscription>,
 }
 
-impl RulesPageState {
-    pub(super) fn new(window: &mut Window, cx: &mut Context<Shell>) -> Self {
+impl EventEmitter<PageEvent> for RulesPage {}
+
+impl PageEntity for RulesPage {
+    /// The list renders the rules and the category labels; a category
+    /// rename moves a group header, and the writes that touch either
+    /// re-run the rules, so the transactions too.
+    const DEPENDS: Domains = Domains::CATEGORIES_RULES_TX;
+
+    fn visible(&self) -> bool {
+        self.visible
+    }
+
+    fn dirty(&self) -> bool {
+        self.dirty
+    }
+
+    fn set_dirty(&mut self, dirty: bool) {
+        self.dirty = dirty;
+    }
+
+    fn set_shown(&mut self, visible: bool) {
+        self.visible = visible;
+    }
+
+    fn set_focus_pending(&mut self, pending: bool) {
+        self.focus_pending = pending;
+    }
+
+    fn apply(&mut self, cx: &mut Context<Self>) {
+        let (rules, uses, tree) = {
+            let cat = self.catalog.read(cx);
+            (
+                cat.snap.rules.clone(),
+                cat.snap.uses.clone(),
+                cat.snap.tree.clone(),
+            )
+        };
+        self.rules = rules;
+        self.rule_uses = uses;
+        self.child_choices = tree
+            .iter()
+            .flat_map(|p| {
+                p.children
+                    .iter()
+                    .map(move |c| (c.id, format!("{} › {}", p.name, c.name)))
+            })
+            .collect();
+        // 3.28: a refresh that dropped a rule drops its checkbox with it;
+        // a deleted category drops its collapsed-group marker.
+        self.selected_rules
+            .retain(|id| self.rules.iter().any(|r| r.id == *id));
+        self.collapsed_rule_groups.retain(|id| {
+            tree.iter()
+                .any(|p| p.id == *id || p.children.iter().any(|c| c.id == *id))
+        });
+        // 3.24: a refresh that dropped the rule (its category was deleted,
+        // say) drops the editor open on it and its armed delete with it,
+        // like the `rule_offer` check in `refresh`.
+        if let Some(id) = self.editing_rule
+            && !self.rules.iter().any(|r| r.id == id)
+        {
+            self.close_rule_editor();
+        }
+        if let Some(id) = self.armed_delete_rule
+            && !self.rules.iter().any(|r| r.id == id)
+        {
+            self.armed_delete_rule = None;
+        }
+    }
+
+    fn set_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
+        self.set_shown(visible);
+        if visible {
+            self.apply_if_dirty(cx);
+            self.set_focus_pending(true);
+        } else {
+            self.set_dirty(true);
+            // 3.11: no transient UI travels across a page switch — the
+            // Rules-only state (the add row, the ticked rows, the move
+            // error and the *Show rule* highlight) clears on leaving; the
+            // shared editor and armed delete close in `go_page`, which
+            // runs on every switch.
+            self.new_rule_open = false;
+            self.selected_rules.clear();
+            self.rules_move_error = None;
+            self.rules_reveal = None;
+        }
+    }
+}
+
+impl RulesPage {
+    pub(super) fn new(
+        db: DbWorker,
+        writes_blocked: Rc<Cell<bool>>,
+        catalog: &Entity<Catalog>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         // 3.28: the Rules page search box filters the list on every
         // keystroke, and in "Test a description" mode it is the description
         // the rules are tried against (D5). Typing replaces the list, so the
         // scroll offset goes back to the top.
         let rules_search =
             cx.new(|cx| InputState::new(window, cx).placeholder("Search pattern or category…"));
-        let rules_search_sub =
-            cx.subscribe(&rules_search, |this: &mut Shell, _, ev: &InputEvent, cx| {
-                if matches!(ev, InputEvent::Change) {
-                    this.rules_page.rules_scroll.set_offset(Point::default());
-                    // 3.29: the reveal highlight is one-shot; anything typed
-                    // after it is the user's own search.
-                    this.rules_page.rules_reveal = None;
-                    cx.notify();
-                }
-            });
+        let rules_search_sub = cx.subscribe(&rules_search, |this, _, ev: &InputEvent, cx| {
+            if matches!(ev, InputEvent::Change) {
+                this.rules_scroll.set_offset(Point::default());
+                // 3.29: the reveal highlight is one-shot; anything typed
+                // after it is the user's own search.
+                this.rules_reveal = None;
+                cx.notify();
+            }
+        });
         // 3.28: the Type and Move pickers. The Type picker filters the list
         // (nothing selected reads as All types); the Move picker holds the
         // child categories, refreshed by `sync_category_choices`.
@@ -141,67 +301,34 @@ impl RulesPageState {
         let rules_type_sub = cx.subscribe_in(
             &rules_type_select,
             window,
-            |this: &mut Shell, _select, ev: &SelectEvent<Names>, _window, cx| {
+            |this, _select, ev: &SelectEvent<Names>, _window, cx| {
                 if matches!(ev, SelectEvent::Confirm(_)) {
-                    this.rules_page.rules_scroll.set_offset(Point::default());
+                    this.rules_scroll.set_offset(Point::default());
                     cx.notify();
                 }
             },
         );
         let move_rules_target = cx.new(|cx| SelectState::new(Names::new(), None, window, cx));
-        Self {
-            rules_search,
-            rules_test_mode: false,
-            rules_type_select,
-            rules_unused_only: false,
-            collapsed_rule_groups: HashSet::default(),
-            rules_sort_by_uses: false,
-            selected_rules: HashSet::default(),
-            move_rules_target,
-            rules_move_error: None,
-            rule_uses: HashMap::default(),
-            new_rule_open: false,
-            rules_focus_pending: std::cell::Cell::new(false),
-            rules_reveal: None,
-            rules_scroll: VirtualListScrollHandle::new(),
-            #[cfg(test)]
-            rules_page_rows_built: std::cell::Cell::new(0),
-            #[cfg(test)]
-            rules_page_range: std::cell::Cell::new((0, 0)),
-            _subs: vec![rules_search_sub, rules_type_sub],
-        }
-    }
-}
-
-impl Shell {
-    /// Apply this page's part of a refresh result (3.74): the shared rule
-    /// list renders from `Shell`'s list (3.78 moves it here).
-    pub(super) fn apply_rules(&mut self, rules: Vec<Rule>, uses: HashMap<i64, usize>) {
-        self.rules = rules;
-        self.rules_page.rule_uses = uses;
-    }
-
-    /// The shared add-rule row's and the in-place editor's subscriptions
-    /// (3.24): every pattern keystroke re-runs the "matches N transactions"
-    /// preview, and Enter in the editor saves. Built by `Shell::new`.
-    pub(super) fn subscribe_rule_row(
-        &self,
-        window: &mut Window,
-        cx: &mut Context<Shell>,
-    ) -> Vec<Subscription> {
+        // The add-rule row and its editor (3.24, 3.28): rendered by both
+        // the Categories page and the Rules page.
+        let rule_pattern = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("Text or regex a description must contain")
+        });
+        let rule_edit_pattern = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("Text or regex a description must contain")
+        });
         // The live "matches N transactions" preview runs on every pattern
         // keystroke (ui-conventions, Categories page).
-        let preview_sub = cx.subscribe(&self.rule_pattern, |this, _, ev: &InputEvent, cx| {
+        let preview_sub = cx.subscribe(&rule_pattern, |this, _, ev: &InputEvent, cx| {
             // 3.24: while a rule editor is open, the preview belongs to it.
             if matches!(ev, InputEvent::Change) && this.editing_rule.is_none() {
                 this.preview_rule_match(cx);
             }
         });
         // 3.24: the rule editor's Pattern input drives the same preview and
-        // saves on Enter (Escape cancels through the window-level binding
-        // handled in `clear_category_selection`).
+        // saves on Enter (Escape cancels through the page's `Cancel`).
         let rule_edit_sub = cx.subscribe_in(
-            &self.rule_edit_pattern,
+            &rule_edit_pattern,
             window,
             |this, _, ev: &InputEvent, window, cx| match ev {
                 InputEvent::Change if this.editing_rule.is_some() => this.preview_rule_match(cx),
@@ -211,11 +338,54 @@ impl Shell {
                 _ => {}
             },
         );
-        vec![preview_sub, rule_edit_sub]
+        let _catalog = watch_catalog(catalog, cx);
+        Self {
+            db,
+            catalog: catalog.clone(),
+            writes_blocked,
+            focus: cx.focus_handle(),
+            // `Shell::new` marks the initial page visible right after
+            // construction; every page starts hidden.
+            visible: false,
+            dirty: true,
+            focus_pending: false,
+            _catalog,
+            rules_search,
+            rules_test_mode: false,
+            rules_type_select,
+            rules_unused_only: false,
+            collapsed_rule_groups: HashSet::default(),
+            rules_sort_by_uses: false,
+            selected_rules: HashSet::default(),
+            move_rules_target,
+            rules_move_error: None,
+            new_rule_open: false,
+            rules_reveal: None,
+            rules_scroll: VirtualListScrollHandle::new(),
+            #[cfg(test)]
+            rules_page_rows_built: std::cell::Cell::new(0),
+            #[cfg(test)]
+            rules_page_range: std::cell::Cell::new((0, 0)),
+            rules: Vec::new(),
+            rule_uses: HashMap::default(),
+            child_choices: Vec::new(),
+            rule_pattern,
+            rule_regex: false,
+            rule_target: cx.new(|cx| SelectState::new(Names::new(), None, window, cx)),
+            rule_match_count: None,
+            rule_task: None,
+            rule_error: None,
+            editing_rule: None,
+            armed_delete_rule: None,
+            pending_rule_action: None,
+            rule_edit_pattern,
+            rule_edit_regex: false,
+            _subs: vec![rules_search_sub, rules_type_sub, preview_sub, rule_edit_sub],
+        }
     }
 }
 
-impl Shell {
+impl RulesPage {
     /// Count rows the current pattern would categorize, live as the user
     /// types (ui-conventions, Categories page).
     pub(super) fn preview_rule_match(&mut self, cx: &mut Context<Self>) {
@@ -259,6 +429,15 @@ impl Shell {
         self.pending_rule_action == Some(action)
     }
 
+    /// Feedback goes to the shell's toast stack (3.79: a page never owns
+    /// window chrome).
+    fn toast(&mut self, message: &str, error: bool, cx: &mut Context<Self>) {
+        cx.emit(PageEvent::Toast {
+            message: message.to_string(),
+            error,
+        });
+    }
+
     /// 3.64: show a rule write's failure where it can be read. `rule_error`
     /// is the one line under the add row *and* under the open editor, so it
     /// belongs to whichever of the two is showing: with an editor open the
@@ -267,7 +446,7 @@ impl Shell {
     fn report_rule_error(&mut self, error: String, cx: &mut Context<Self>) {
         match self.editing_rule {
             None => self.rule_error = Some(error),
-            Some(_) => self.notify_err(error, cx),
+            Some(_) => self.toast(&error, true, cx),
         }
     }
 
@@ -279,34 +458,6 @@ impl Shell {
         };
         let Some((category_id, _)) = self.child_choices.get(ix.row).cloned() else {
             return;
-        };
-        self.commit_new_rule(category_id, window, cx);
-    }
-
-    /// 3.53: Add rule on the Categories page. A selected subcategory is
-    /// the target — nothing to pick. A parent needs the row's picker:
-    /// rules must target a child (`ensure_assignable`), so no pick is an
-    /// error. No selection (nothing selected) can't render the row at all.
-    pub(super) fn add_rule_to_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let category_id = match self.selected_node() {
-            Some((_, None)) => {
-                let Some(ix) = self
-                    .categories_page
-                    .cat_rule_target
-                    .read(cx)
-                    .selected_index(cx)
-                else {
-                    self.rule_error = Some("Choose the subcategory the rule assigns.".into());
-                    cx.notify();
-                    return;
-                };
-                let Some(cid) = self.categories_page.cat_rule_child_ids.get(ix.row).copied() else {
-                    return;
-                };
-                cid
-            }
-            Some((node, Some(_))) => node.id,
-            None => return,
         };
         self.commit_new_rule(category_id, window, cx);
     }
@@ -367,7 +518,8 @@ impl Shell {
                     Err(e) if own => this.report_rule_error(e, cx),
                     Err(_) => {}
                 }
-                this.changed(Domains::RULES_TX, window, cx);
+                cx.emit(PageEvent::Changed(Domains::RULES_TX));
+                cx.notify();
             });
         })
         .detach();
@@ -459,7 +611,7 @@ impl Shell {
                 update_rule(c, id, &pattern, is_regex, category_id)
             })
             .await;
-            let _ = this.update_in(cx, |this, window, cx| {
+            let _ = this.update_in(cx, |this, _window, cx| {
                 if this.pending_rule_action == Some(PendingRuleAction::Save(id)) {
                     this.pending_rule_action = None;
                 }
@@ -478,7 +630,8 @@ impl Shell {
                         }
                     }
                 }
-                this.changed(Domains::RULES_TX, window, cx);
+                cx.emit(PageEvent::Changed(Domains::RULES_TX));
+                cx.notify();
             });
         })
         .detach();
@@ -503,7 +656,7 @@ impl Shell {
             // 3.64: detached — see `commit_new_rule`.
             cx.spawn_in(window, async move |this, cx| {
                 let result = on_db(&db, move |c| delete_rule(c, id)).await;
-                let _ = this.update_in(cx, |this, window, cx| {
+                let _ = this.update_in(cx, |this, _window, cx| {
                     if this.pending_rule_action == Some(PendingRuleAction::Delete(id)) {
                         this.pending_rule_action = None;
                     }
@@ -521,7 +674,8 @@ impl Shell {
                         // `report_rule_error` toasts it while one is open.
                         Err(e) => this.report_rule_error(e, cx),
                     }
-                    this.changed(Domains::RULES_TX, window, cx);
+                    cx.emit(PageEvent::Changed(Domains::RULES_TX));
+                    cx.notify();
                 });
             })
             .detach();
@@ -530,225 +684,235 @@ impl Shell {
         }
         cx.notify();
     }
+}
 
-    // -- To categorize queue ------------------------------------------------
-
-    /// One row of the selected category's rule list (3.12: built lazily
-    /// by the virtualized rule list, fixed height to match its
-    /// `item_sizes`). 3.24: every row carries Edit and Delete… at its right
-    /// end — small ghost buttons, visible on every row, built only for the
-    /// rows the list renders. 3.23: the columns line up with the list's
-    /// headings (`RULE_TYPE_W`/`RULE_CATEGORY_W`); the pattern column is
-    /// the flex one and truncates with a tooltip, like the queue's
-    /// merchant column.
-    pub(super) fn rule_row(&self, rule: &Rule, muted: Hsla, cx: &mut Context<Self>) -> AnyElement {
-        let target = self
-            .child_choices
-            .iter()
-            .find(|(id, _)| *id == rule.category_id)
-            .map(|(_, n)| n.clone())
-            .unwrap_or_else(|| format!("#{}", rule.category_id));
-        let id = rule.id;
-        let armed = self.armed_delete_rule == Some(id);
-        h_flex()
-            .h_6()
-            .w_full()
-            .gap_2()
-            .items_center()
-            .debug_selector(move || format!("cat:rule-row:{id}"))
-            .child(
-                div()
-                    .id(SharedString::from(format!("rule-pattern-{id}")))
-                    .flex_1()
-                    .min_w_0()
-                    .overflow_hidden()
-                    .text_ellipsis()
-                    .debug_selector(move || format!("cat:rule-pattern-col:{id}"))
-                    .tooltip({
-                        let full = rule.pattern.clone();
-                        move |window, cx| {
-                            let tip = full.clone();
-                            Tooltip::element(move |_, _| {
-                                div()
-                                    .debug_selector({
-                                        let p = tip.clone();
-                                        move || format!("cat:rule-pattern-tooltip:{p}")
-                                    })
-                                    .child(tip.clone())
-                            })
-                            .build(window, cx)
-                        }
-                    })
-                    .child(rule.pattern.clone()),
-            )
-            .child(
-                div()
-                    .w(px(RULE_TYPE_W))
-                    .flex_shrink_0()
-                    .text_xs()
-                    .text_color(muted)
-                    .debug_selector(move || format!("cat:rule-type-col:{id}"))
-                    .child(if rule.is_regex { "regex" } else { "substring" }),
-            )
-            .child(
-                div()
-                    .w(px(RULE_CATEGORY_W))
-                    .flex_shrink_0()
-                    .min_w_0()
-                    .overflow_hidden()
-                    .text_ellipsis()
-                    .text_color(muted)
-                    .debug_selector(move || format!("cat:rule-category-col:{id}"))
-                    .child(target),
-            )
-            .child(
-                Button::new(SharedString::from(format!("rule-edit-{id}")))
-                    .label("Edit")
-                    .ghost()
-                    .text_xs()
-                    .flex_shrink_0()
-                    .on_click(
-                        cx.listener(move |this, _, window, cx| {
-                            this.start_edit_rule(id, window, cx)
-                        }),
-                    ),
-            )
-            .child(
-                Button::new(SharedString::from(format!("rule-delete-{id}")))
-                    .label(if armed {
-                        "Click again to delete"
-                    } else {
-                        "Delete…"
-                    })
-                    .ghost()
-                    .text_xs()
-                    .flex_shrink_0()
-                    // 3.40: loading + disabled while the delete runs.
-                    .loading(self.rule_action_pending(PendingRuleAction::Delete(id)))
-                    .disabled(self.rule_action_pending(PendingRuleAction::Delete(id)))
-                    .on_click(
-                        cx.listener(move |this, _, window, cx| {
-                            this.arm_delete_rule(id, window, cx)
-                        }),
-                    ),
-            )
-            .into_any_element()
-    }
-
-    /// 3.24: the in-place editor that replaces one rule's row — the
-    /// add-rule row's shape (labelled Pattern input, regex switch, labelled
-    /// Category picker, primary Save, Cancel) pre-filled from the rule,
-    /// with the same live "matches N transactions" count. A validation
-    /// error shows in `danger` under the editor and keeps it open — clamped
-    /// to one ellipsized line, because the virtual list doesn't clip per
-    /// item and a taller row would paint over the rows below. 3.23: inside
-    /// the detail panel the row is too narrow for the count beside the
-    /// fields, so it moves under them (like the add-rule row's) and the
-    /// row reserves 80 px in `rule_sizes` instead of 24, 108 px while an
-    /// error is open (measured: 75.5 px with the count, 102.5 with one
-    /// error line).
-    pub(super) fn rule_editor_row(
-        &self,
-        rule: &Rule,
-        muted: Hsla,
-        danger: Hsla,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let preview = match self.rule_match_count {
-            Some(n) => div()
-                .text_sm()
+/// One row of a category's rule list (3.12: built lazily by the
+/// virtualized rule list, fixed height to match its `item_sizes`). 3.24:
+/// every row carries Edit and Delete… at its right end — small ghost
+/// buttons, visible on every row, built only for the rows the list
+/// renders. 3.23: the columns line up with the list's headings
+/// (`RULE_TYPE_W`/`RULE_CATEGORY_W`); the pattern column is the flex one
+/// and truncates with a tooltip, like the queue's merchant column.
+///
+/// 3.80: a free function over the page entity — the Categories page paints
+/// these rows from the Rules page's state (the module docs). The handlers
+/// update the entity directly, so they work from either page.
+fn rule_row(rule: &Rule, muted: Hsla, page: &RulesPage, entity: &Entity<RulesPage>) -> AnyElement {
+    let target = page
+        .child_choices
+        .iter()
+        .find(|(id, _)| *id == rule.category_id)
+        .map(|(_, n)| n.clone())
+        .unwrap_or_else(|| format!("#{}", rule.category_id));
+    let id = rule.id;
+    let armed = page.armed_delete_rule == Some(id);
+    let delete_pending = page.rule_action_pending(PendingRuleAction::Delete(id));
+    let edit_entity = entity.clone();
+    let delete_entity = entity.clone();
+    h_flex()
+        .h_6()
+        .w_full()
+        .gap_2()
+        .items_center()
+        .debug_selector(move || format!("cat:rule-row:{id}"))
+        .child(
+            div()
+                .id(SharedString::from(format!("rule-pattern-{id}")))
+                .flex_1()
+                .min_w_0()
+                .overflow_hidden()
+                .text_ellipsis()
+                .debug_selector(move || format!("cat:rule-pattern-col:{id}"))
+                .tooltip({
+                    let full = rule.pattern.clone();
+                    move |window, cx| {
+                        let tip = full.clone();
+                        Tooltip::element(move |_, _| {
+                            div()
+                                .debug_selector({
+                                    let p = tip.clone();
+                                    move || format!("cat:rule-pattern-tooltip:{p}")
+                                })
+                                .child(tip.clone())
+                        })
+                        .build(window, cx)
+                    }
+                })
+                .child(rule.pattern.clone()),
+        )
+        .child(
+            div()
+                .w(px(RULE_TYPE_W))
+                .flex_shrink_0()
+                .text_xs()
                 .text_color(muted)
-                .debug_selector(|| "rules:edit-preview".into())
-                .child(format!("matches {} transactions", flow::count(n)))
-                .into_any_element(),
-            None => div().into_any_element(),
-        };
-        v_flex()
-            .gap_1()
-            .child(
-                h_flex()
-                    .gap_2()
-                    .items_end()
-                    .child(
-                        // 3.23: the pattern field is the flex column, so
-                        // the editor fits the detail panel's width; the
-                        // other controls keep their size.
-                        v_flex()
-                            .flex_1()
-                            .min_w_0()
-                            .gap_1()
-                            .child(field_label(muted, "Pattern"))
-                            .child(
-                                div()
-                                    .w_full()
-                                    .debug_selector(|| "rules:edit-pattern-input".into())
-                                    .child(Input::new(&self.rule_edit_pattern)),
-                            ),
-                    )
-                    .child(
-                        // 3.42: the unlabelled switch sits in a control-height
-                        // slot so its centre matches the input, picker and
-                        // buttons.
-                        control_slot(
-                            "rules:regex-slot:edit".into(),
-                            "rules:switch:edit".into(),
-                            Switch::new(SharedString::from(format!("rule-edit-regex-{}", rule.id)))
-                                .label("regex")
-                                .checked(self.rule_edit_regex)
-                                .on_click(cx.listener(move |this, checked: &bool, _, cx| {
-                                    this.rule_edit_regex = *checked;
-                                    this.preview_rule_match(cx);
-                                    cx.notify();
-                                })),
-                        ),
-                    )
-                    // 3.53: no Category picker — the editor changes
-                    // pattern and kind only, and the rule keeps its
-                    // category (moving is the Rules page Move bar's job).
-                    .child(
-                        Button::new(SharedString::from(format!("rule-edit-save-{}", rule.id)))
-                            .label("Save")
-                            .primary()
-                            .flex_shrink_0()
-                            // 3.42: the alignment test measures its centre.
-                            .debug_selector(|| "rules:edit-save-btn".into())
-                            // 3.40: loading + disabled while the save runs.
-                            .loading(self.rule_action_pending(PendingRuleAction::Save(rule.id)))
-                            .disabled(self.rule_action_pending(PendingRuleAction::Save(rule.id)))
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.save_rule_edit(window, cx)),
-                            ),
-                    )
-                    .child(
-                        Button::new(SharedString::from(format!("rule-edit-cancel-{}", rule.id)))
-                            .label("Cancel")
-                            .ghost()
-                            .flex_shrink_0()
-                            .on_click(cx.listener(|this, _, _, cx| this.cancel_edit_rule(cx))),
-                    ),
-            )
-            // 3.23: the count sits under the fields (as in the add-rule
-            // row): the detail panel is too narrow to keep it inline.
-            .child(preview)
-            .children(
-                self.rule_error
-                    .clone()
-                    // One line, ellipsized (newlines flattened): the slot
-                    // reserves room for exactly one error line, and the
-                    // regex crate's messages are multi-line.
-                    .map(|e| e.replace('\n', " "))
-                    .map(|e| {
-                        div()
-                            .text_sm()
-                            .text_color(danger)
-                            .text_ellipsis()
-                            .debug_selector(|| "rules:edit-error".into())
-                            .child(e)
-                    }),
-            )
-            .into_any_element()
-    }
+                .debug_selector(move || format!("cat:rule-type-col:{id}"))
+                .child(if rule.is_regex { "regex" } else { "substring" }),
+        )
+        .child(
+            div()
+                .w(px(RULE_CATEGORY_W))
+                .flex_shrink_0()
+                .min_w_0()
+                .overflow_hidden()
+                .text_ellipsis()
+                .text_color(muted)
+                .debug_selector(move || format!("cat:rule-category-col:{id}"))
+                .child(target),
+        )
+        .child(
+            Button::new(SharedString::from(format!("rule-edit-{id}")))
+                .label("Edit")
+                .ghost()
+                .text_xs()
+                .flex_shrink_0()
+                .on_click(move |_, window, cx| {
+                    edit_entity.update(cx, |page, cx| page.start_edit_rule(id, window, cx));
+                }),
+        )
+        .child(
+            Button::new(SharedString::from(format!("rule-delete-{id}")))
+                .label(if armed {
+                    "Click again to delete"
+                } else {
+                    "Delete…"
+                })
+                .ghost()
+                .text_xs()
+                .flex_shrink_0()
+                // 3.40: loading + disabled while the delete runs.
+                .loading(delete_pending)
+                .disabled(delete_pending)
+                .on_click(move |_, window, cx| {
+                    delete_entity.update(cx, |page, cx| page.arm_delete_rule(id, window, cx));
+                }),
+        )
+        .into_any_element()
+}
 
+/// 3.24: the in-place editor that replaces one rule's row — the add-rule
+/// row's shape (labelled Pattern input, regex switch, labelled Category
+/// picker, primary Save, Cancel) pre-filled from the rule, with the same
+/// live "matches N transactions" count. A validation error shows in
+/// `danger` under the editor and keeps it open — clamped to one ellipsized
+/// line, because the virtual list doesn't clip per item and a taller row
+/// would paint over the rows below. 3.23: inside the detail panel the row
+/// is too narrow for the count beside the fields, so it moves under them
+/// (like the add-rule row's) and the row reserves 80 px in `rule_sizes`
+/// instead of 24, 108 px while an error is open (measured: 75.5 px with
+/// the count, 102.5 with one error line).
+///
+/// 3.80: a free function over the page entity, like [`rule_row`].
+fn rule_editor_row(
+    rule: &Rule,
+    muted: Hsla,
+    danger: Hsla,
+    page: &RulesPage,
+    entity: &Entity<RulesPage>,
+) -> AnyElement {
+    let preview = match page.rule_match_count {
+        Some(n) => div()
+            .text_sm()
+            .text_color(muted)
+            .debug_selector(|| "rules:edit-preview".into())
+            .child(format!("matches {} transactions", flow::count(n)))
+            .into_any_element(),
+        None => div().into_any_element(),
+    };
+    let switch_entity = entity.clone();
+    let save_entity = entity.clone();
+    let cancel_entity = entity.clone();
+    v_flex()
+        .gap_1()
+        .child(
+            h_flex()
+                .gap_2()
+                .items_end()
+                .child(
+                    // 3.23: the pattern field is the flex column, so
+                    // the editor fits the detail panel's width; the
+                    // other controls keep their size.
+                    v_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .gap_1()
+                        .child(field_label(muted, "Pattern"))
+                        .child(
+                            div()
+                                .w_full()
+                                .debug_selector(|| "rules:edit-pattern-input".into())
+                                .child(Input::new(&page.rule_edit_pattern)),
+                        ),
+                )
+                .child(
+                    // 3.42: the unlabelled switch sits in a control-height
+                    // slot so its centre matches the input, picker and
+                    // buttons.
+                    control_slot(
+                        "rules:regex-slot:edit".into(),
+                        "rules:switch:edit".into(),
+                        Switch::new(SharedString::from(format!("rule-edit-regex-{}", rule.id)))
+                            .label("regex")
+                            .checked(page.rule_edit_regex)
+                            .on_click(move |checked: &bool, _, cx| {
+                                switch_entity.update(cx, |page, cx| {
+                                    page.rule_edit_regex = *checked;
+                                    page.preview_rule_match(cx);
+                                    cx.notify();
+                                });
+                            }),
+                    ),
+                )
+                // 3.53: no Category picker — the editor changes
+                // pattern and kind only, and the rule keeps its
+                // category (moving is the Rules page Move bar's job).
+                .child(
+                    Button::new(SharedString::from(format!("rule-edit-save-{}", rule.id)))
+                        .label("Save")
+                        .primary()
+                        .flex_shrink_0()
+                        // 3.42: the alignment test measures its centre.
+                        .debug_selector(|| "rules:edit-save-btn".into())
+                        // 3.40: loading + disabled while the save runs.
+                        .loading(page.rule_action_pending(PendingRuleAction::Save(rule.id)))
+                        .disabled(page.rule_action_pending(PendingRuleAction::Save(rule.id)))
+                        .on_click(move |_, window, cx| {
+                            save_entity.update(cx, |page, cx| page.save_rule_edit(window, cx));
+                        }),
+                )
+                .child(
+                    Button::new(SharedString::from(format!("rule-edit-cancel-{}", rule.id)))
+                        .label("Cancel")
+                        .ghost()
+                        .flex_shrink_0()
+                        .on_click(move |_, _, cx| {
+                            cancel_entity.update(cx, |page, cx| page.cancel_edit_rule(cx));
+                        }),
+                ),
+        )
+        // 3.23: the count sits under the fields (as in the add-rule
+        // row): the detail panel is too narrow to keep it inline.
+        .child(preview)
+        .children(
+            page.rule_error
+                .clone()
+                // One line, ellipsized (newlines flattened): the slot
+                // reserves room for exactly one error line, and the
+                // regex crate's messages are multi-line.
+                .map(|e| e.replace('\n', " "))
+                .map(|e| {
+                    div()
+                        .text_sm()
+                        .text_color(danger)
+                        .text_ellipsis()
+                        .debug_selector(|| "rules:edit-error".into())
+                        .child(e)
+                }),
+        )
+        .into_any_element()
+}
+
+impl RulesPage {
     // -- Rules page (3.28) ----------------------------------------------------
 
     /// "Parent › Child" label of the rule's target category, shared by the
@@ -770,7 +934,6 @@ impl Shell {
     /// first, lowest id), so the winner is the first row.
     fn rules_page_items(&self, cx: &App) -> Vec<RulesItem> {
         let query = self
-            .rules_page
             .rules_search
             .read(cx)
             .value()
@@ -780,13 +943,12 @@ impl Shell {
         // Type picker: row 1 keeps substrings, row 2 regexes, nothing
         // selected or row 0 shows all.
         let type_ix = self
-            .rules_page
             .rules_type_select
             .read(cx)
             .selected_index(cx)
             .map(|ix| ix.row)
             .unwrap_or(0);
-        let test = self.rules_page.rules_test_mode;
+        let test = self.rules_test_mode;
         let mut filtered: Vec<&Rule> = self
             .rules
             .iter()
@@ -796,8 +958,7 @@ impl Shell {
                 _ => true,
             })
             .filter(|r| {
-                !self.rules_page.rules_unused_only
-                    || self.rules_page.rule_uses.get(&r.id).copied().unwrap_or(0) == 0
+                !self.rules_unused_only || self.rule_uses.get(&r.id).copied().unwrap_or(0) == 0
             })
             .filter(|r| {
                 if test {
@@ -837,11 +998,11 @@ impl Shell {
             }
         }
         groups.sort_by(|a, b| a.0.cmp(&b.0));
-        let by_uses = self.rules_page.rules_sort_by_uses;
+        let by_uses = self.rules_sort_by_uses;
         let mut items = Vec::with_capacity(filtered.len() + groups.len());
         for (label, cid, mut rules) in groups {
             let count = rules.len();
-            let collapsed = self.rules_page.collapsed_rule_groups.contains(&cid);
+            let collapsed = self.collapsed_rule_groups.contains(&cid);
             items.push(RulesItem::Group {
                 id: cid,
                 label,
@@ -853,8 +1014,8 @@ impl Shell {
             }
             rules.sort_by(|a, b| {
                 if by_uses {
-                    let ua = self.rules_page.rule_uses.get(&a.id).copied().unwrap_or(0);
-                    let ub = self.rules_page.rule_uses.get(&b.id).copied().unwrap_or(0);
+                    let ua = self.rule_uses.get(&a.id).copied().unwrap_or(0);
+                    let ub = self.rule_uses.get(&b.id).copied().unwrap_or(0);
                     ub.cmp(&ua).then_with(|| a.pattern.cmp(&b.pattern))
                 } else {
                     a.pattern.cmp(&b.pattern)
@@ -866,19 +1027,19 @@ impl Shell {
     }
 
     fn toggle_rule_group(&mut self, id: i64, cx: &mut Context<Self>) {
-        if !self.rules_page.collapsed_rule_groups.remove(&id) {
-            self.rules_page.collapsed_rule_groups.insert(id);
+        if !self.collapsed_rule_groups.remove(&id) {
+            self.collapsed_rule_groups.insert(id);
         }
         cx.notify();
     }
 
     pub(super) fn set_rule_selected(&mut self, id: i64, on: bool, cx: &mut Context<Self>) {
         if on {
-            self.rules_page.selected_rules.insert(id);
+            self.selected_rules.insert(id);
         } else {
-            self.rules_page.selected_rules.remove(&id);
+            self.selected_rules.remove(&id);
         }
-        self.rules_page.rules_move_error = None;
+        self.rules_move_error = None;
         cx.notify();
     }
 
@@ -890,20 +1051,15 @@ impl Shell {
         if self.writes_blocked.get() {
             return;
         }
-        let Some(ix) = self
-            .rules_page
-            .move_rules_target
-            .read(cx)
-            .selected_index(cx)
-        else {
-            self.rules_page.rules_move_error = Some("Choose the category to move to.".into());
+        let Some(ix) = self.move_rules_target.read(cx).selected_index(cx) else {
+            self.rules_move_error = Some("Choose the category to move to.".into());
             cx.notify();
             return;
         };
         let Some((category_id, _)) = self.child_choices.get(ix.row).cloned() else {
             return;
         };
-        let mut ids: Vec<i64> = self.rules_page.selected_rules.iter().copied().collect();
+        let mut ids: Vec<i64> = self.selected_rules.iter().copied().collect();
         if ids.is_empty() {
             return;
         }
@@ -913,19 +1069,18 @@ impl Shell {
         // 3.64: detached — see `commit_new_rule`.
         cx.spawn_in(window, async move |this, cx| {
             let result = on_db(&db, move |c| move_rules(c, &ids, category_id)).await;
-            let _ = this.update_in(cx, |this, window, cx| {
+            let _ = this.update_in(cx, |this, _window, cx| {
                 match result {
                     Ok(()) => {
                         // Only the moved rules leave the selection: rules
                         // checked while this move ran keep their checkbox.
-                        this.rules_page
-                            .selected_rules
-                            .retain(|id| !moved.contains(id));
-                        this.rules_page.rules_move_error = None;
+                        this.selected_rules.retain(|id| !moved.contains(id));
+                        this.rules_move_error = None;
                     }
-                    Err(e) => this.rules_page.rules_move_error = Some(e.into()),
+                    Err(e) => this.rules_move_error = Some(e.into()),
                 }
-                this.changed(Domains::RULES_TX, window, cx);
+                cx.emit(PageEvent::Changed(Domains::RULES_TX));
+                cx.notify();
             });
         })
         .detach();
@@ -940,40 +1095,57 @@ impl Shell {
     /// pattern. The row is scrolled into view and carries the `list_active`
     /// background until the user searches or leaves the page.
     pub(super) fn show_rule(&mut self, rule_id: i64, window: &mut Window, cx: &mut Context<Self>) {
-        // Navigate first: `go_page` clears the page's transient state, and
-        // the reveal must survive that reset.
-        self.go_page(Page::Rules, cx);
+        // Reached from the dashboard menu, the page may not have been
+        // shown since the last change: apply first, so the mirrors name
+        // real rows.
+        self.apply_if_dirty(cx);
         let Some(rule) = self.rules.iter().find(|r| r.id == rule_id).cloned() else {
-            return; // a refresh dropped the rule between menu and click
+            // a refresh dropped the rule between menu and click
+            cx.emit(PageEvent::Go(crate::ui::Page::Rules));
+            return;
         };
-        self.rules_page.rules_test_mode = false;
-        self.rules_page.rules_unused_only = false;
-        self.rules_page
-            .collapsed_rule_groups
-            .remove(&rule.category_id);
-        self.rules_page.rules_type_select.update(cx, |s, cx| {
+        self.rules_test_mode = false;
+        self.rules_unused_only = false;
+        self.collapsed_rule_groups.remove(&rule.category_id);
+        self.rules_type_select.update(cx, |s, cx| {
             s.set_selected_index(Some(gpui_kit::component::IndexPath::new(0)), window, cx)
         });
         // `set_value` scrolls the list back to the top, so the reveal's
         // `scroll_to_item` must come after it. Any later keystroke fires
         // the search subscription, which drops the reveal.
         let pattern = rule.pattern.clone();
-        self.rules_page
-            .rules_search
+        self.rules_search
             .update(cx, |i, cx| i.set_value(pattern, window, cx));
         let items = self.rules_page_items(cx);
         if let Some(ix) = items
             .iter()
             .position(|it| matches!(it, RulesItem::Rule { id } if *id == rule_id))
         {
-            self.rules_page.rules_reveal = Some(rule_id);
-            self.rules_page
-                .rules_scroll
-                .scroll_to_item(ix, ScrollStrategy::Center);
+            self.rules_reveal = Some(rule_id);
+            self.rules_scroll.scroll_to_item(ix, ScrollStrategy::Center);
         }
-        cx.notify();
+        // Navigate last (3.80): the emit runs at the end of this update,
+        // so `go_page` and `set_visible(true)` — which keep the state set
+        // here — cannot clobber the search text or the scroll.
+        cx.emit(PageEvent::Go(crate::ui::Page::Rules));
     }
 
+    /// Drop the page's transient state after a restore replaced the whole
+    /// database behind the UI (5.3): the ids here would name rows the new
+    /// file may not have, or ids reused for other rules.
+    pub(super) fn reset_after_restore(&mut self, cx: &mut Context<Self>) {
+        self.close_rule_editor();
+        self.armed_delete_rule = None;
+        self.new_rule_open = false;
+        self.selected_rules.clear();
+        self.collapsed_rule_groups.clear();
+        self.rules_move_error = None;
+        self.rules_reveal = None;
+        cx.notify();
+    }
+}
+
+impl RulesPage {
     /// The Rules page group header row: "Food › Coffee · 4 rules", clicking
     /// it collapses or expands the group's rows (D5).
     fn rules_group_header(
@@ -1024,7 +1196,7 @@ impl Shell {
     ) -> AnyElement {
         let id = rule.id;
         let armed = self.armed_delete_rule == Some(id);
-        let uses = self.rules_page.rule_uses.get(&id).copied().unwrap_or(0);
+        let uses = self.rule_uses.get(&id).copied().unwrap_or(0);
         let reveal_bg = revealed.then(|| cx.theme().list_active);
         h_flex()
             .h_6()
@@ -1042,7 +1214,7 @@ impl Shell {
             .child(
                 div().w(px(RULE_SEL_W)).flex_shrink_0().child(
                     checkbox(SharedString::from(format!("rule-sel-{id}")))
-                        .checked(self.rules_page.selected_rules.contains(&id))
+                        .checked(self.selected_rules.contains(&id))
                         .on_click(cx.listener(move |this, on: &bool, _, cx| {
                             this.set_rule_selected(id, *on, cx);
                         })),
@@ -1136,29 +1308,36 @@ impl Shell {
             )
             .into_any_element()
     }
+}
 
+impl Render for RulesPage {
     /// The Rules page (3.28, D5): header with the rule count and New rule…,
     /// the add-rule row under it, the filter row (Search, Test a
     /// description, Type, Unused), the Move bar over the list while rows
     /// are checked, and the virtualized list of group headers and rule
     /// rows.
-    pub(super) fn render_rules(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // 3.28: opening the Rules page focuses its search box (D5). The
+        // focus waits for the end of the frame so the input's element
+        // exists first (3.80: raised by `set_visible`, like the other
+        // pages' root focus).
+        if self.focus_pending {
+            self.focus_pending = false;
+            let handle = self.rules_search.focus_handle(cx);
+            window.defer(cx, move |window, cx| {
+                window.focus(&handle, cx);
+            });
+        }
         let (muted, danger) = {
             let theme = cx.theme();
             (theme.muted_foreground, theme.danger)
         };
         let count_text = format!("{} rules", self.rules.len());
         let count_sel = count_text.clone();
-        let query = self
-            .rules_page
-            .rules_search
-            .read(cx)
-            .value()
-            .trim()
-            .to_string();
+        let query = self.rules_search.read(cx).value().trim().to_string();
         // The "wins" marker follows [`winning_rule`] exactly, so the page
         // marks the rule the categoriser would actually apply (D5).
-        let winner = if self.rules_page.rules_test_mode && !query.is_empty() {
+        let winner = if self.rules_test_mode && !query.is_empty() {
             winning_rule(&self.rules, &query)
         } else {
             None
@@ -1207,9 +1386,9 @@ impl Shell {
                         RulesItem::Rule { id } => {
                             this.rules.iter().find(|r| r.id == *id).map(|r| {
                                 if this.editing_rule == Some(*id) {
-                                    this.rule_editor_row(r, muted, danger, cx)
+                                    rule_editor_row(r, muted, danger, this, &cx.entity())
                                 } else {
-                                    let revealed = this.rules_page.rules_reveal == Some(*id);
+                                    let revealed = this.rules_reveal == Some(*id);
                                     this.rules_page_row(r, winner == Some(*id), revealed, muted, cx)
                                 }
                             })
@@ -1217,16 +1396,14 @@ impl Shell {
                     })
                     .collect();
                 #[cfg(test)]
-                this.rules_page.rules_page_rows_built.set(rows.len());
+                this.rules_page_rows_built.set(rows.len());
                 #[cfg(test)]
-                this.rules_page
-                    .rules_page_range
-                    .set((range.start, range.end));
+                this.rules_page_range.set((range.start, range.end));
                 rows
             },
         )
-        // 3.21: Shell-owned handle (see the tree).
-        .track_scroll(&self.rules_page.rules_scroll)
+        // 3.21: page-owned handle (see the tree).
+        .track_scroll(&self.rules_scroll)
         .gap_1()
         .flex_1()
         .min_h_0();
@@ -1247,6 +1424,31 @@ impl Shell {
             .flex_1()
             .min_h_0()
             .gap_3()
+            // 3.80: the page's own key context, so Escape is *this* page's
+            // Cancel (`ui::init` binds it per context); the root takes
+            // focus when the page is shown.
+            .track_focus(&self.focus)
+            .key_context("Rules")
+            .on_action(cx.listener(|this, _: &Cancel, _, cx| {
+                // Escape unwinds one level per press (3.80,
+                // *Interaction*): the open editor first, then the armed
+                // delete, then the ticked rows; with nothing left it
+                // propagates to the window-level bindings.
+                if this.close_rule_editor() {
+                    cx.notify();
+                    return;
+                }
+                if this.armed_delete_rule.take().is_some() {
+                    cx.notify();
+                    return;
+                }
+                if !this.selected_rules.is_empty() {
+                    this.selected_rules.clear();
+                    cx.notify();
+                    return;
+                }
+                cx.propagate();
+            }))
             // Page header: title, count, New rule… (opens the add row in
             // place, like the Categories header's New category…).
             .child(
@@ -1277,14 +1479,14 @@ impl Shell {
                                 // Only one rule editor is open at a time:
                                 // opening the add row closes any row editor.
                                 this.close_rule_editor();
-                                this.rules_page.new_rule_open = !this.rules_page.new_rule_open;
+                                this.new_rule_open = !this.new_rule_open;
                                 cx.notify();
                             })),
                     ),
             )
             // Add-rule row (3.28): the same row the Categories page has,
             // hidden until the header button opens it.
-            .when(self.rules_page.new_rule_open, |page| {
+            .when(self.new_rule_open, |page| {
                 page.child(
                     v_flex()
                         .gap_1()
@@ -1369,15 +1571,15 @@ impl Shell {
                             .flex_1()
                             .min_w_0()
                             .debug_selector(|| "rules:search".into())
-                            .child(Input::new(&self.rules_page.rules_search)),
+                            .child(Input::new(&self.rules_search)),
                     )
                     .child(
                         Switch::new("rules-test-mode")
                             .label("Test a description")
-                            .checked(self.rules_page.rules_test_mode)
+                            .checked(self.rules_test_mode)
                             .on_click(cx.listener(|this, on: &bool, _, cx| {
-                                this.rules_page.rules_test_mode = *on;
-                                this.rules_page.rules_scroll.set_offset(Point::default());
+                                this.rules_test_mode = *on;
+                                this.rules_scroll.set_offset(Point::default());
                                 cx.notify();
                             })),
                     )
@@ -1386,25 +1588,22 @@ impl Shell {
                             .w(px(140.))
                             .flex_shrink_0()
                             .debug_selector(|| "rules:type-select".into())
-                            .child(
-                                Select::new(&self.rules_page.rules_type_select)
-                                    .placeholder("All types"),
-                            ),
+                            .child(Select::new(&self.rules_type_select).placeholder("All types")),
                     )
                     .child(
                         checkbox("rules-unused-only")
                             .label("Unused")
-                            .checked(self.rules_page.rules_unused_only)
+                            .checked(self.rules_unused_only)
                             .on_click(cx.listener(|this, on: &bool, _, cx| {
-                                this.rules_page.rules_unused_only = *on;
-                                this.rules_page.rules_scroll.set_offset(Point::default());
+                                this.rules_unused_only = *on;
+                                this.rules_scroll.set_offset(Point::default());
                                 cx.notify();
                             })),
                     ),
             )
             // Move bar (D5): only while rows are checked.
-            .when(!self.rules_page.selected_rules.is_empty(), |page| {
-                let n = self.rules_page.selected_rules.len();
+            .when(!self.selected_rules.is_empty(), |page| {
+                let n = self.selected_rules.len();
                 page.child(
                     v_flex()
                         .gap_1()
@@ -1422,7 +1621,7 @@ impl Shell {
                                 .child(
                                     v_flex().gap_1().child(field_label(muted, "Move to")).child(
                                         div().w(px(240.)).child(
-                                            Select::new(&self.rules_page.move_rules_target)
+                                            Select::new(&self.move_rules_target)
                                                 .placeholder(MOVE_RULES_TO_PH),
                                         ),
                                     ),
@@ -1437,7 +1636,7 @@ impl Shell {
                                         })),
                                 ),
                         )
-                        .children(self.rules_page.rules_move_error.clone().map(|e| {
+                        .children(self.rules_move_error.clone().map(|e| {
                             div()
                                 .text_sm()
                                 .text_color(danger)
@@ -1446,66 +1645,63 @@ impl Shell {
                         })),
                 )
             })
-            .when(
-                !self.rules_page.rules_test_mode && !items.is_empty(),
-                |page| {
-                    page.child(
-                        h_flex()
-                            .gap_2()
-                            .items_end()
-                            .debug_selector(|| "rules:heading-row".into())
-                            .child(div().w(px(RULE_SEL_W)).flex_shrink_0())
-                            .child(
-                                div().flex_1().min_w_0().child(
-                                    Button::new("rules-sort-pattern")
-                                        .label(if self.rules_page.rules_sort_by_uses {
-                                            "Pattern"
-                                        } else {
-                                            "Pattern ↓"
-                                        })
-                                        .ghost()
-                                        .text_xs()
-                                        .debug_selector(|| "rules:sort-pattern".into())
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.rules_page.rules_sort_by_uses = false;
-                                            cx.notify();
-                                        })),
-                                ),
-                            )
-                            .child(
-                                div().w(px(RULE_TYPE_W)).flex_shrink_0().child(
-                                    field_label(muted, "Type")
-                                        .debug_selector(|| "rules:heading-type".into()),
-                                ),
-                            )
-                            .child(
-                                div().w(px(RULE_USES_W)).flex_shrink_0().child(
-                                    Button::new("rules-sort-uses")
-                                        .label(if self.rules_page.rules_sort_by_uses {
-                                            "Uses ↓"
-                                        } else {
-                                            "Uses"
-                                        })
-                                        .ghost()
-                                        .text_xs()
-                                        .debug_selector(|| "rules:sort-uses".into())
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.rules_page.rules_sort_by_uses = true;
-                                            cx.notify();
-                                        })),
-                                ),
-                            )
-                            .child(div().flex_shrink_0().child(field_label(muted, "Actions"))),
-                    )
-                },
-            )
+            .when(!self.rules_test_mode && !items.is_empty(), |page| {
+                page.child(
+                    h_flex()
+                        .gap_2()
+                        .items_end()
+                        .debug_selector(|| "rules:heading-row".into())
+                        .child(div().w(px(RULE_SEL_W)).flex_shrink_0())
+                        .child(
+                            div().flex_1().min_w_0().child(
+                                Button::new("rules-sort-pattern")
+                                    .label(if self.rules_sort_by_uses {
+                                        "Pattern"
+                                    } else {
+                                        "Pattern ↓"
+                                    })
+                                    .ghost()
+                                    .text_xs()
+                                    .debug_selector(|| "rules:sort-pattern".into())
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.rules_sort_by_uses = false;
+                                        cx.notify();
+                                    })),
+                            ),
+                        )
+                        .child(
+                            div().w(px(RULE_TYPE_W)).flex_shrink_0().child(
+                                field_label(muted, "Type")
+                                    .debug_selector(|| "rules:heading-type".into()),
+                            ),
+                        )
+                        .child(
+                            div().w(px(RULE_USES_W)).flex_shrink_0().child(
+                                Button::new("rules-sort-uses")
+                                    .label(if self.rules_sort_by_uses {
+                                        "Uses ↓"
+                                    } else {
+                                        "Uses"
+                                    })
+                                    .ghost()
+                                    .text_xs()
+                                    .debug_selector(|| "rules:sort-uses".into())
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.rules_sort_by_uses = true;
+                                        cx.notify();
+                                    })),
+                            ),
+                        )
+                        .child(div().flex_shrink_0().child(field_label(muted, "Actions"))),
+                )
+            })
             .when(items.is_empty(), |page| {
                 page.child(
                     div()
                         .text_sm()
                         .text_color(muted)
                         .debug_selector(|| "rules:empty".into())
-                        .child(if self.rules_page.rules_test_mode {
+                        .child(if self.rules_test_mode {
                             "No rules match this description"
                         } else {
                             "No rules match"
@@ -1514,5 +1710,66 @@ impl Shell {
             })
             .child(list)
             .into_any_element()
+    }
+}
+
+impl Shell {
+    /// 3.80: thin wrappers over the free row builders — the Categories
+    /// page paints the shared rule rows from the Rules page's state (the
+    /// `rules` module docs). Signatures unchanged.
+    pub(super) fn rule_row(&self, rule: &Rule, muted: Hsla, cx: &mut Context<Self>) -> AnyElement {
+        let entity = &self.rules_page;
+        rule_row(rule, muted, entity.read(cx), entity)
+    }
+
+    pub(super) fn rule_editor_row(
+        &self,
+        rule: &Rule,
+        muted: Hsla,
+        danger: Hsla,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let entity = &self.rules_page;
+        rule_editor_row(rule, muted, danger, entity.read(cx), entity)
+    }
+
+    /// 3.53: Add rule on the Categories page. A selected subcategory is
+    /// the target — nothing to pick. A parent needs the row's picker:
+    /// rules must target a child (`ensure_assignable`), so no pick is an
+    /// error. No selection (nothing selected) can't render the row at all.
+    pub(super) fn add_rule_to_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let category_id = match self.selected_node() {
+            Some((_, None)) => {
+                let Some(ix) = self
+                    .categories_page
+                    .cat_rule_target
+                    .read(cx)
+                    .selected_index(cx)
+                else {
+                    self.rules_page.update(cx, |p, cx| {
+                        p.rule_error = Some("Choose the subcategory the rule assigns.".into());
+                        cx.notify();
+                    });
+                    return;
+                };
+                let Some(cid) = self.categories_page.cat_rule_child_ids.get(ix.row).copied() else {
+                    return;
+                };
+                cid
+            }
+            Some((node, Some(_))) => node.id,
+            None => return,
+        };
+        self.rules_page.update(cx, |p, cx| {
+            p.commit_new_rule(category_id, window, cx);
+        });
+    }
+
+    /// 3.80: the dashboard's Show rule forwards to the page, which folds
+    /// in any refresh it missed, sets the filters and reveal, and only
+    /// then asks the shell to switch (`RulesPage::show_rule`).
+    pub(super) fn show_rule(&mut self, rule_id: i64, window: &mut Window, cx: &mut Context<Self>) {
+        self.rules_page
+            .update(cx, |p, cx| p.show_rule(rule_id, window, cx));
     }
 }

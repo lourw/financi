@@ -331,36 +331,22 @@ impl Shell {
             .iter()
             .map(|(_, n)| SharedString::from(n.clone()))
             .collect();
-        self.rule_target
-            .update(cx, |s, cx| s.set_items(names.clone(), window, cx));
         self.categories_page
             .delete_target
             .update(cx, |s, cx| s.set_items(names.clone(), window, cx));
-        // 3.28: the Move bar's picker offers the same child categories.
-        self.rules_page
-            .move_rules_target
-            .update(cx, |s, cx| s.set_items(names, window, cx));
-        // 3.28: a refresh that dropped a rule drops its checkbox with it;
-        // a deleted category drops its collapsed-group marker.
-        self.rules_page
-            .selected_rules
-            .retain(|id| self.rules.iter().any(|r| r.id == *id));
-        self.rules_page
-            .collapsed_rule_groups
-            .retain(|id| known(*id));
-        // 3.24: a refresh that dropped the rule (its category was deleted,
-        // say) drops the editor open on it and its armed delete with it,
-        // like the `rule_offer` check in `refresh`.
-        if let Some(id) = self.editing_rule
-            && !self.rules.iter().any(|r| r.id == id)
-        {
-            self.close_rule_editor();
-        }
-        if let Some(id) = self.armed_delete_rule
-            && !self.rules.iter().any(|r| r.id == id)
-        {
-            self.armed_delete_rule = None;
-        }
+        // 3.80: the Rules page owns its pickers, its checked rows and its
+        // editor; fold in any refresh it missed first, then refill the two
+        // pickers with the new child list. Pruning stale checks, collapsed
+        // groups and a vanished editor lives in its `apply` (the old prune
+        // block here). `known` is no longer needed.
+        let _ = known;
+        self.rules_page.update(cx, |p, cx| {
+            p.apply_if_dirty(cx);
+            p.rule_target
+                .update(cx, |s, cx| s.set_items(names.clone(), window, cx));
+            p.move_rules_target
+                .update(cx, |s, cx| s.set_items(names, window, cx));
+        });
         // 3.53: the Categories add-rule picker follows the selection and
         // the (possibly renamed) child list; the pick survives while its
         // id is one of the parent's children.
@@ -474,9 +460,11 @@ impl Shell {
         // 3.24: selecting another category closes the rule editor (with its
         // preview count) and disarms any armed rule delete — the same
         // "transient UI belongs to what it was opened on" rule as the page
-        // switch.
-        self.close_rule_editor();
-        self.armed_delete_rule = None;
+        // switch. 3.80: the editor state lives on the Rules page.
+        self.rules_page.update(cx, |p, _| {
+            p.close_rule_editor();
+            p.armed_delete_rule = None;
+        });
         // 3.23: the rule list now shows only this category's rules, so its
         // content is replaced with the selection and the scroll offset
         // resets (the reset point 3.21 documented).
@@ -972,8 +960,10 @@ impl Shell {
         // swapped in for, which reserves 68 px (labelled fields) — 92 px
         // while a validation error is open under it, one ellipsized line
         // (`rule_editor_row`).
-        let editing = self.editing_rule;
-        let edit_error = self.rule_error.is_some();
+        // 3.80: the rule editor state lives on the Rules page.
+        let rp = self.rules_page.read(cx);
+        let editing = rp.editing_rule;
+        let edit_error = rp.rule_error.is_some();
         let visible = Rc::new(self.visible_rules());
         let rule_sizes = Rc::new(
             visible
@@ -989,8 +979,10 @@ impl Shell {
         );
 
         let preview = match self
+            .rules_page
+            .read(cx)
             .rule_match_count
-            .filter(|_| self.editing_rule.is_none())
+            .filter(|_| rp.editing_rule.is_none())
         {
             Some(n) => div()
                 .text_sm()
@@ -1242,7 +1234,7 @@ impl Shell {
                                                     .child(
                                                         div().w_full().debug_selector(|| {
                                                             "cat:pattern-input:add".into()
-                                                        }).child(Input::new(&self.rule_pattern)),
+                                                        }).child(Input::new(&rp.rule_pattern)),
                                                     ),
                                             )
                                             .child(
@@ -1252,14 +1244,20 @@ impl Shell {
                                                     "cat:switch:add".into(),
                                                     Switch::new("rule-regex")
                                                         .label("regex")
-                                                        .checked(self.rule_regex)
-                                                        .on_click(cx.listener(
-                                                            |this, checked: &bool, _, cx| {
-                                                                this.rule_regex = *checked;
-                                                                this.preview_rule_match(cx);
-                                                                cx.notify();
-                                                            },
-                                                        )),
+                                                        .checked(rp.rule_regex)
+                                                        // 3.80: the add row's controls live on
+                                                        // the Rules page; the handler updates
+                                                        // the entity directly.
+                                                        .on_click({
+                                                            let page = self.rules_page.clone();
+                                                            move |checked: &bool, _, cx| {
+                                                                page.update(cx, |p, cx| {
+                                                                    p.rule_regex = *checked;
+                                                                    p.preview_rule_match(cx);
+                                                                    cx.notify();
+                                                                });
+                                                            }
+                                                        }),
                                                 ),
                                             )
                                             // 3.53: a parent selection adds
@@ -1279,12 +1277,12 @@ impl Shell {
                                                     })
                                                     // 3.40: loading + disabled while the add runs.
                                                     .loading(
-                                                        self.rule_action_pending(
+                                                        rp.rule_action_pending(
                                                             PendingRuleAction::Add,
                                                         ),
                                                     )
                                                     .disabled(
-                                                        self.rule_action_pending(
+                                                        rp.rule_action_pending(
                                                             PendingRuleAction::Add,
                                                         ),
                                                     )
@@ -1296,11 +1294,11 @@ impl Shell {
                                     .child(preview)
                             })
                             .children(
-                                self.rule_error
+                                rp.rule_error
                                     .clone()
                                     // 3.24: while a row's editor is open it
                                     // shows the error under itself.
-                                    .filter(|_| self.editing_rule.is_none())
+                                    .filter(|_| rp.editing_rule.is_none())
                                     .map(|e| div().text_sm().text_color(danger).child(e)),
                             )
                             .when(visible.is_empty(), |section| {
@@ -1385,7 +1383,7 @@ impl Shell {
                                                 .skip(range.start)
                                                 .take(range.len())
                                                 .map(|r| {
-                                                    if this.editing_rule == Some(r.id) {
+                                                    if this.rules_page.read(cx).editing_rule == Some(r.id) {
                                                         this.rule_editor_row(r, muted, danger, cx)
                                                     } else {
                                                         this.rule_row(r, muted, cx)

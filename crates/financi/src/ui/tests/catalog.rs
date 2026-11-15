@@ -21,8 +21,10 @@ fn a_rule_edit_reloads_only_the_sections_it_touches(cx: &mut TestAppContext) {
     start_rule_edit(cx, handle, &shell, rule);
     with_window(cx, handle, |window, cx| {
         shell.update(cx, |s, cx| {
-            s.rule_edit_pattern.update(cx, |i, cx| {
-                i.set_value("COFFEE EDITED", window, cx);
+            s.rules_page.update(cx, |p, cx| {
+                p.rule_edit_pattern.update(cx, |i, cx| {
+                    i.set_value("COFFEE EDITED", window, cx);
+                })
             });
         });
     });
@@ -30,7 +32,10 @@ fn a_rule_edit_reloads_only_the_sections_it_touches(cx: &mut TestAppContext) {
     // only what the save itself reloads.
     shell.update(cx, |s, _| s.db.query_log().clear());
     with_window(cx, handle, |window, cx| {
-        shell.update(cx, |s, cx| s.save_rule_edit(window, cx));
+        shell.update(cx, |s, cx| {
+            s.rules_page
+                .update(cx, |p, cx| p.save_rule_edit(window, cx))
+        });
     });
     wait_idle(cx, &shell);
     let names = cx.update(|cx| logged(cx, &shell));

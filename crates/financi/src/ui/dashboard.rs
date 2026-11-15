@@ -1268,8 +1268,10 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.editing_rule.is_some() {
-            self.cancel_edit_rule(cx);
+        // 3.80: the editor lives on the Rules page.
+        let editing = self.rules_page.read(cx).editing_rule.is_some();
+        if editing {
+            self.rules_page.update(cx, |p, cx| p.cancel_edit_rule(cx));
             return;
         }
         if self.dashboard.filter.chart_parent.is_none()

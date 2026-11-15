@@ -6,7 +6,7 @@ Do these in the order listed (`docs/tasks.md` → *Picking the next task*). Each
 
 Steps 1–15 of `docs/tasks/gpui.md` → *GPUI best practices*, task by task.
 
-- [ ] **3.80 The Rules page becomes its own view.** (Architecture.) Same
+- [x] **3.80 The Rules page becomes its own view.** (Architecture.) Same
   pattern as 3.79, for `RulesPage`, before 3.58 restyles it.
   - Owns search, filters, collapse, sort, checked rows, the editor and
     pending actions; `DEPENDS = Rules | Categories | Transactions`.

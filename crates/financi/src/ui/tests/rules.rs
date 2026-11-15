@@ -25,18 +25,26 @@ fn creating_a_rule_categorizes_matching_rows(cx: &mut TestAppContext) {
 
     with_window(cx, handle, |window, cx| {
         shell.update(cx, |s, cx| {
-            s.rule_pattern.update(cx, |i, cx| {
-                i.set_value(merchant.clone(), window, cx);
+            s.rules_page.update(cx, |p, cx| {
+                p.rule_pattern.update(cx, |i, cx| {
+                    i.set_value(merchant.clone(), window, cx);
+                })
             });
             let ix = s
                 .child_choices
                 .iter()
                 .position(|(id, _)| *id == child)
                 .unwrap();
-            s.rule_target.update(cx, |sel, cx| {
-                sel.set_selected_index(Some(gpui_kit::component::IndexPath::new(ix)), window, cx);
+            s.rules_page.update(cx, |p, cx| {
+                p.rule_target.update(cx, |sel, cx| {
+                    sel.set_selected_index(
+                        Some(gpui_kit::component::IndexPath::new(ix)),
+                        window,
+                        cx,
+                    );
+                })
             });
-            s.add_rule(window, cx);
+            s.rules_page.update(cx, |p, cx| p.add_rule(window, cx));
         });
     });
     wait_until(cx, "rule added", |cx| !shell.read(cx).rules.is_empty());
@@ -56,9 +64,11 @@ fn set_edit_pattern(
     let value = value.to_string();
     with_window(cx, handle, |window, cx| {
         shell.update(cx, |s, cx| {
-            s.rule_edit_pattern
-                .update(cx, |i, cx| i.set_value(value, window, cx));
-            s.preview_rule_match(cx);
+            s.rules_page.update(cx, |p, cx| {
+                p.rule_edit_pattern
+                    .update(cx, |i, cx| i.set_value(value, window, cx))
+            });
+            s.rules_page.update(cx, |p, cx| p.preview_rule_match(cx));
         });
     });
 }
@@ -66,7 +76,10 @@ fn set_edit_pattern(
 /// Press the editor's Save — the same `save_rule_edit` the button calls.
 fn save_rule_edit(cx: &mut TestAppContext, handle: AnyWindowHandle, shell: &Entity<Shell>) {
     with_window(cx, handle, |window, cx| {
-        shell.update(cx, |s, cx| s.save_rule_edit(window, cx));
+        shell.update(cx, |s, cx| {
+            s.rules_page
+                .update(cx, |p, cx| p.save_rule_edit(window, cx))
+        });
     });
 }
 
@@ -81,9 +94,24 @@ fn the_rule_editor_is_prefilled_from_the_rule(cx: &mut TestAppContext) {
     draw_frame(cx, handle);
     cx.update(|cx| {
         let s = shell.read(cx);
-        assert_eq!(s.editing_rule, Some(rule), "the editor is open on the rule");
-        assert_eq!(s.rule_edit_pattern.read(cx).value().to_string(), "COFFEE");
-        assert!(!s.rule_edit_regex, "substring kind pre-filled");
+        assert_eq!(
+            s.rules_page.read(cx).editing_rule,
+            Some(rule),
+            "the editor is open on the rule"
+        );
+        assert_eq!(
+            s.rules_page
+                .read(cx)
+                .rule_edit_pattern
+                .read(cx)
+                .value()
+                .to_string(),
+            "COFFEE"
+        );
+        assert!(
+            !s.rules_page.read(cx).rule_edit_regex,
+            "substring kind pre-filled"
+        );
     });
     // 3.53: the editor draws its own controls and nothing that picks a
     // category — saving keeps the rule's category (pinned by the next
@@ -95,7 +123,12 @@ fn the_rule_editor_is_prefilled_from_the_rule(cx: &mut TestAppContext) {
         "the editor paints its pattern field and Save"
     );
     wait_until(cx, "live match count for the edit", |cx| {
-        shell.read(cx).rule_match_count.is_some()
+        shell
+            .read(cx)
+            .rules_page
+            .read(cx)
+            .rule_match_count
+            .is_some()
     });
 }
 
@@ -118,7 +151,7 @@ fn editing_a_rules_pattern_recategorizes_unlocked_rows(cx: &mut TestAppContext) 
     });
     cx.update(|cx| {
         let s = shell.read(cx);
-        assert_eq!(s.editing_rule, None, "the editor closed on save");
+        assert_eq!(s.rules_page.read(cx).editing_rule, None, "the editor closed on save");
         assert_eq!(
             s.cat_counts.get(&first).copied().unwrap_or(0),
             1,
@@ -173,7 +206,8 @@ fn a_rule_save_and_a_row_hide_never_cancel_each_other(cx: &mut TestAppContext) {
     // One frame, two actions: Save the edited rule, Hide the locked row.
     with_window(cx, handle, |window, cx| {
         shell.update(cx, |s, cx| {
-            s.save_rule_edit(window, cx);
+            s.rules_page
+                .update(cx, |p, cx| p.save_rule_edit(window, cx));
             s.set_row_hidden(locked, true, window, cx);
         });
     });
@@ -182,17 +216,21 @@ fn a_rule_save_and_a_row_hide_never_cancel_each_other(cx: &mut TestAppContext) {
     cx.update(|cx| {
         let s = shell.read(cx);
         assert_eq!(
-            s.pending_rule_action,
+            s.rules_page.read(cx).pending_rule_action,
             Some(PendingRuleAction::Save(rule)),
             "the save is in flight"
         );
-        assert_eq!(s.editing_rule, Some(rule), "the editor waits for its save");
+        assert_eq!(
+            s.rules_page.read(cx).editing_rule,
+            Some(rule),
+            "the editor waits for its save"
+        );
     });
 
     wait_until(cx, "the save and the hide both landed", |cx| {
         let s = shell.read(cx);
-        s.pending_rule_action.is_none()
-            && s.editing_rule.is_none()
+        s.rules_page.read(cx).pending_rule_action.is_none()
+            && s.rules_page.read(cx).editing_rule.is_none()
             && s.rules
                 .iter()
                 .any(|r| r.id == rule && r.pattern == "SHOP B")
@@ -200,7 +238,10 @@ fn a_rule_save_and_a_row_hide_never_cancel_each_other(cx: &mut TestAppContext) {
     });
     cx.update(|cx| {
         let s = shell.read(cx);
-        assert!(s.rule_error.is_none(), "the save succeeded");
+        assert!(
+            s.rules_page.read(cx).rule_error.is_none(),
+            "the save succeeded"
+        );
         assert_eq!(
             s.uncategorized_visible, 1,
             "the row the new pattern dropped is back in Uncategorized — the save's recategorize ran"
@@ -232,33 +273,45 @@ fn a_late_add_failure_never_paints_under_another_rules_editor(cx: &mut TestAppCo
     // before the write has run, so the add is late by definition.
     with_window(cx, handle, |window, cx| {
         shell.update(cx, |s, cx| {
-            s.rule_pattern.update(cx, |i, cx| {
-                i.set_value("(", window, cx);
+            s.rules_page.update(cx, |p, cx| {
+                p.rule_pattern.update(cx, |i, cx| {
+                    i.set_value("(", window, cx);
+                })
             });
-            s.rule_regex = true;
+            s.rules_page.update(cx, |p, _cx| p.rule_regex = true);
             s.add_rule_to_selected(window, cx);
-            s.start_edit_rule(rule, window, cx);
+            s.rules_page
+                .update(cx, |p, cx| p.start_edit_rule(rule, window, cx));
         });
     });
     cx.update(|cx| {
         assert_eq!(
-            shell.read(cx).pending_rule_action,
+            shell.read(cx).rules_page.read(cx).pending_rule_action,
             Some(PendingRuleAction::Add),
             "the add is in flight"
         );
     });
     wait_until(cx, "the failed add lands", |cx| {
-        shell.read(cx).pending_rule_action.is_none()
+        shell
+            .read(cx)
+            .rules_page
+            .read(cx)
+            .pending_rule_action
+            .is_none()
     });
     wait_idle(cx, &shell);
     cx.update(|cx| {
         let s = shell.read(cx);
         assert!(
-            s.rule_error.is_none(),
+            s.rules_page.read(cx).rule_error.is_none(),
             "the add's failure never paints under the other rule's editor: {:?}",
-            s.rule_error
+            s.rules_page.read(cx).rule_error
         );
-        assert_eq!(s.editing_rule, Some(rule), "the editor is left alone");
+        assert_eq!(
+            s.rules_page.read(cx).editing_rule,
+            Some(rule),
+            "the editor is left alone"
+        );
         let (msg, is_error) = last_toast(&shell, cx).expect("the failure is reported");
         assert!(is_error, "the add failed: {msg}");
         assert!(
@@ -277,27 +330,33 @@ fn a_late_add_failure_never_paints_under_another_rules_editor(cx: &mut TestAppCo
     // still shows under it (and no second toast appears).
     with_window(cx, handle, |window, cx| {
         shell.update(cx, |s, cx| {
-            s.rule_edit_regex = true;
-            s.rule_edit_pattern.update(cx, |i, cx| {
-                i.set_value("[", window, cx);
+            s.rules_page.update(cx, |p, _cx| p.rule_edit_regex = true);
+            s.rules_page.update(cx, |p, cx| {
+                p.rule_edit_pattern.update(cx, |i, cx| {
+                    i.set_value("[", window, cx);
+                })
             });
-            s.save_rule_edit(window, cx);
+            s.rules_page
+                .update(cx, |p, cx| p.save_rule_edit(window, cx));
         });
     });
     wait_until(cx, "the editor's own save fails", |cx| {
         let s = shell.read(cx);
-        s.pending_rule_action.is_none() && s.rule_error.is_some()
+        s.rules_page.read(cx).pending_rule_action.is_none()
+            && s.rules_page.read(cx).rule_error.is_some()
     });
     wait_idle(cx, &shell);
     draw_frame(cx, handle);
     cx.update(|cx| {
         let s = shell.read(cx);
         assert!(
-            s.rule_error
+            s.rules_page
+                .read(cx)
+                .rule_error
                 .as_deref()
                 .is_some_and(|e| e.contains("invalid regex")),
             "the editor reports its own failure: {:?}",
-            s.rule_error
+            s.rules_page.read(cx).rule_error
         );
         assert_eq!(
             toasts(&shell, cx).len(),
@@ -353,15 +412,21 @@ fn an_invalid_regex_shows_the_error_and_saves_nothing(cx: &mut TestAppContext) {
     start_rule_edit(cx, handle, &shell, rule);
     set_edit_pattern(cx, handle, &shell, "[");
     cx.update(|cx| {
-        shell.update(cx, |s, _cx| s.rule_edit_regex = true);
+        shell.update(cx, |s, cx| {
+            s.rules_page.update(cx, |p, _cx| p.rule_edit_regex = true)
+        });
     });
     save_rule_edit(cx, handle, &shell);
     wait_until(cx, "the editor error", |cx| {
-        shell.read(cx).rule_error.is_some()
+        shell.read(cx).rules_page.read(cx).rule_error.is_some()
     });
     cx.update(|cx| {
         let s = shell.read(cx);
-        assert_eq!(s.editing_rule, Some(rule), "the editor stays open");
+        assert_eq!(
+            s.rules_page.read(cx).editing_rule,
+            Some(rule),
+            "the editor stays open"
+        );
         assert_eq!(s.rules[0].pattern, "COFFEE", "the rule kept its pattern");
         assert!(!s.rules[0].is_regex, "and its kind");
         assert_eq!(
@@ -385,16 +450,22 @@ fn saving_a_rule_shows_loading_until_the_task_ends(cx: &mut TestAppContext) {
     // `wait_until`), so pending is observed while the save is in flight.
     with_window(cx, handle, |window, cx| {
         shell.update(cx, |s, cx| {
-            s.save_rule_edit(window, cx);
+            s.rules_page
+                .update(cx, |p, cx| p.save_rule_edit(window, cx));
             assert_eq!(
-                s.pending_rule_action,
+                s.rules_page.read(cx).pending_rule_action,
                 Some(PendingRuleAction::Save(rule)),
                 "Save shows loading, disabled, while the save runs"
             );
         });
     });
     wait_until(cx, "the save task to finish", |cx| {
-        shell.read(cx).pending_rule_action.is_none()
+        shell
+            .read(cx)
+            .rules_page
+            .read(cx)
+            .pending_rule_action
+            .is_none()
     });
     wait_until(cx, "the refreshed rule list", |cx| {
         shell
@@ -405,9 +476,17 @@ fn saving_a_rule_shows_loading_until_the_task_ends(cx: &mut TestAppContext) {
     });
     cx.update(|cx| {
         let s = shell.read(cx);
-        assert_eq!(s.pending_rule_action, None, "loading cleared");
-        assert_eq!(s.editing_rule, None, "the editor closed after the task");
-        assert_eq!(s.rule_error, None, "the save succeeded");
+        assert_eq!(
+            s.rules_page.read(cx).pending_rule_action,
+            None,
+            "loading cleared"
+        );
+        assert_eq!(
+            s.rules_page.read(cx).editing_rule,
+            None,
+            "the editor closed after the task"
+        );
+        assert_eq!(s.rules_page.read(cx).rule_error, None, "the save succeeded");
     });
 }
 
@@ -420,24 +499,41 @@ fn a_refused_rule_save_clears_the_loading_state(cx: &mut TestAppContext) {
     start_rule_edit(cx, handle, &shell, rule);
     set_edit_pattern(cx, handle, &shell, "[");
     cx.update(|cx| {
-        shell.update(cx, |s, _cx| s.rule_edit_regex = true);
+        shell.update(cx, |s, cx| {
+            s.rules_page.update(cx, |p, _cx| p.rule_edit_regex = true)
+        });
     });
     with_window(cx, handle, |window, cx| {
         shell.update(cx, |s, cx| {
-            s.save_rule_edit(window, cx);
-            assert_eq!(s.pending_rule_action, Some(PendingRuleAction::Save(rule)));
+            s.rules_page
+                .update(cx, |p, cx| p.save_rule_edit(window, cx));
+            assert_eq!(
+                s.rules_page.read(cx).pending_rule_action,
+                Some(PendingRuleAction::Save(rule))
+            );
         });
     });
     wait_until(cx, "the editor error", |cx| {
-        shell.read(cx).pending_rule_action.is_none() && shell.read(cx).rule_error.is_some()
+        shell
+            .read(cx)
+            .rules_page
+            .read(cx)
+            .pending_rule_action
+            .is_none()
+            && shell.read(cx).rules_page.read(cx).rule_error.is_some()
     });
     cx.update(|cx| {
         let s = shell.read(cx);
         assert_eq!(
-            s.pending_rule_action, None,
+            s.rules_page.read(cx).pending_rule_action,
+            None,
             "loading cleared on the error path too"
         );
-        assert_eq!(s.editing_rule, Some(rule), "the editor stays open");
+        assert_eq!(
+            s.rules_page.read(cx).editing_rule,
+            Some(rule),
+            "the editor stays open"
+        );
     });
 }
 
@@ -452,17 +548,25 @@ fn the_editor_error_stays_inside_its_row(cx: &mut TestAppContext) {
     // overflowing error would overlap.
     with_window(cx, handle, |window, cx| {
         shell.update(cx, |s, cx| {
-            s.rule_pattern
-                .update(cx, |i, cx| i.set_value("TOAST".to_string(), window, cx));
+            s.rules_page.update(cx, |p, cx| {
+                p.rule_pattern
+                    .update(cx, |i, cx| i.set_value("TOAST".to_string(), window, cx))
+            });
             let ix = s
                 .child_choices
                 .iter()
                 .position(|(id, _)| *id == second)
                 .unwrap();
-            s.rule_target.update(cx, |sel, cx| {
-                sel.set_selected_index(Some(gpui_kit::component::IndexPath::new(ix)), window, cx);
+            s.rules_page.update(cx, |p, cx| {
+                p.rule_target.update(cx, |sel, cx| {
+                    sel.set_selected_index(
+                        Some(gpui_kit::component::IndexPath::new(ix)),
+                        window,
+                        cx,
+                    );
+                })
             });
-            s.add_rule(window, cx);
+            s.rules_page.update(cx, |p, cx| p.add_rule(window, cx));
         });
     });
     wait_until(cx, "the second rule", |cx| shell.read(cx).rules.len() == 2);
@@ -481,11 +585,13 @@ fn the_editor_error_stays_inside_its_row(cx: &mut TestAppContext) {
     start_rule_edit(cx, handle, &shell, rule);
     set_edit_pattern(cx, handle, &shell, "[");
     cx.update(|cx| {
-        shell.update(cx, |s, _cx| s.rule_edit_regex = true);
+        shell.update(cx, |s, cx| {
+            s.rules_page.update(cx, |p, _cx| p.rule_edit_regex = true)
+        });
     });
     save_rule_edit(cx, handle, &shell);
     wait_until(cx, "the editor error", |cx| {
-        shell.read(cx).rule_error.is_some()
+        shell.read(cx).rules_page.read(cx).rule_error.is_some()
     });
     let mut window = VisualTestContext::from_window(handle, cx);
     draw_frame(cx, handle);
@@ -516,7 +622,12 @@ fn the_add_rule_preview_stays_hidden_while_editing(cx: &mut TestAppContext) {
     let (handle, shell, rule, _first, _second) = open_rule_fixture(cx);
     start_rule_edit(cx, handle, &shell, rule);
     wait_until(cx, "the editor preview", |cx| {
-        shell.read(cx).rule_match_count.is_some()
+        shell
+            .read(cx)
+            .rules_page
+            .read(cx)
+            .rule_match_count
+            .is_some()
     });
     let mut window = VisualTestContext::from_window(handle, cx);
     draw_frame(cx, handle);
@@ -532,14 +643,21 @@ fn the_add_rule_preview_stays_hidden_while_editing(cx: &mut TestAppContext) {
     // row's own pattern, the row shows its own count.
     with_window(cx, handle, |window, cx| {
         shell.update(cx, |s, cx| {
-            s.cancel_edit_rule(cx);
-            s.rule_pattern
-                .update(cx, |i, cx| i.set_value("COFFEE".to_string(), window, cx));
-            s.preview_rule_match(cx);
+            s.rules_page.update(cx, |p, cx| p.cancel_edit_rule(cx));
+            s.rules_page.update(cx, |p, cx| {
+                p.rule_pattern
+                    .update(cx, |i, cx| i.set_value("COFFEE".to_string(), window, cx))
+            });
+            s.rules_page.update(cx, |p, cx| p.preview_rule_match(cx));
         });
     });
     wait_until(cx, "the add-rule preview", |cx| {
-        shell.read(cx).rule_match_count.is_some()
+        shell
+            .read(cx)
+            .rules_page
+            .read(cx)
+            .rule_match_count
+            .is_some()
     });
     draw_frame(cx, handle);
     assert!(
@@ -559,13 +677,17 @@ fn cancel_and_escape_leave_the_rule_unchanged(cx: &mut TestAppContext) {
     set_edit_pattern(cx, handle, &shell, "ZZZ");
     with_window(cx, handle, |window, cx| {
         shell.update(cx, |s, cx| {
-            s.cancel_edit_rule(cx);
+            s.rules_page.update(cx, |p, cx| p.cancel_edit_rule(cx));
             let _ = window;
         });
     });
     cx.update(|cx| {
         let s = shell.read(cx);
-        assert_eq!(s.editing_rule, None, "Cancel closed the editor");
+        assert_eq!(
+            s.rules_page.read(cx).editing_rule,
+            None,
+            "Cancel closed the editor"
+        );
         assert_eq!(s.rules[0].pattern, "COFFEE", "Cancel saved nothing");
     });
 
@@ -573,12 +695,18 @@ fn cancel_and_escape_leave_the_rule_unchanged(cx: &mut TestAppContext) {
     start_rule_edit(cx, handle, &shell, rule);
     set_edit_pattern(cx, handle, &shell, "ZZZ");
     with_window(cx, handle, |window, cx| {
-        let input = shell.read(cx).rule_edit_pattern.read(cx).focus_handle(cx);
+        let input = shell
+            .read(cx)
+            .rules_page
+            .read(cx)
+            .rule_edit_pattern
+            .read(cx)
+            .focus_handle(cx);
         window.focus(&input, cx);
     });
     cx.simulate_keystrokes(handle, "escape");
     wait_until(cx, "Escape closed the editor", |cx| {
-        shell.read(cx).editing_rule.is_none()
+        shell.read(cx).rules_page.read(cx).editing_rule.is_none()
     });
     cx.update(|cx| {
         let s = shell.read(cx);
@@ -594,7 +722,12 @@ fn selecting_another_category_cancels_the_rule_editor(cx: &mut TestAppContext) {
     let (handle, shell, rule, first, _second) = open_rule_fixture(cx);
     start_rule_edit(cx, handle, &shell, rule);
     wait_until(cx, "the editor preview", |cx| {
-        shell.read(cx).rule_match_count.is_some()
+        shell
+            .read(cx)
+            .rules_page
+            .read(cx)
+            .rule_match_count
+            .is_some()
     });
     with_window(cx, handle, |window, cx| {
         shell.update(cx, |s, cx| s.select_category(first, window, cx));
@@ -603,11 +736,12 @@ fn selecting_another_category_cancels_the_rule_editor(cx: &mut TestAppContext) {
         let s = shell.read(cx);
         assert_eq!(s.categories_page.selected_category, Some(first));
         assert_eq!(
-            s.editing_rule, None,
+            s.rules_page.read(cx).editing_rule,
+            None,
             "selecting a category cancels the edit"
         );
         assert!(
-            s.rule_match_count.is_none(),
+            s.rules_page.read(cx).rule_match_count.is_none(),
             "closing the editor clears the shared preview count"
         );
         assert_eq!(s.rules[0].pattern, "COFFEE");
@@ -623,9 +757,12 @@ fn delete_rule_needs_two_clicks_and_uncategorizes_its_rows(cx: &mut TestAppConte
 
     // First click: arms, nothing is deleted.
     with_window(cx, handle, |window, cx| {
-        shell.update(cx, |s, cx| s.arm_delete_rule(rule, window, cx));
+        shell.update(cx, |s, cx| {
+            s.rules_page
+                .update(cx, |p, cx| p.arm_delete_rule(rule, window, cx))
+        });
         assert_eq!(
-            shell.read(cx).armed_delete_rule,
+            shell.read(cx).rules_page.read(cx).armed_delete_rule,
             Some(rule),
             "the first click arms the row"
         );
@@ -634,12 +771,19 @@ fn delete_rule_needs_two_clicks_and_uncategorizes_its_rows(cx: &mut TestAppConte
 
     // Second click: deletes.
     with_window(cx, handle, |window, cx| {
-        shell.update(cx, |s, cx| s.arm_delete_rule(rule, window, cx));
+        shell.update(cx, |s, cx| {
+            s.rules_page
+                .update(cx, |p, cx| p.arm_delete_rule(rule, window, cx))
+        });
     });
     wait_until(cx, "the rule deleted", |cx| shell.read(cx).rules.is_empty());
     cx.update(|cx| {
         let s = shell.read(cx);
-        assert_eq!(s.armed_delete_rule, None, "the armed state reset");
+        assert_eq!(
+            s.rules_page.read(cx).armed_delete_rule,
+            None,
+            "the armed state reset"
+        );
         assert_eq!(
             s.cat_counts.get(&first).copied().unwrap_or(0),
             0,
@@ -661,11 +805,17 @@ fn delete_rule_needs_two_clicks_and_uncategorizes_its_rows(cx: &mut TestAppConte
 fn the_armed_rule_delete_is_transient(cx: &mut TestAppContext) {
     let (handle, shell, rule, first, _second) = open_rule_fixture(cx);
     with_window(cx, handle, |window, cx| {
-        shell.update(cx, |s, cx| s.arm_delete_rule(rule, window, cx));
-        assert_eq!(shell.read(cx).armed_delete_rule, Some(rule));
+        shell.update(cx, |s, cx| {
+            s.rules_page
+                .update(cx, |p, cx| p.arm_delete_rule(rule, window, cx))
+        });
+        assert_eq!(
+            shell.read(cx).rules_page.read(cx).armed_delete_rule,
+            Some(rule)
+        );
         shell.update(cx, |s, cx| s.select_category(first, window, cx));
         assert_eq!(
-            shell.read(cx).armed_delete_rule,
+            shell.read(cx).rules_page.read(cx).armed_delete_rule,
             None,
             "selecting a category disarms the delete"
         );
@@ -675,20 +825,36 @@ fn the_armed_rule_delete_is_transient(cx: &mut TestAppContext) {
     // in one go.
     start_rule_edit(cx, handle, &shell, rule);
     wait_until(cx, "the editor preview", |cx| {
-        shell.read(cx).rule_match_count.is_some()
+        shell
+            .read(cx)
+            .rules_page
+            .read(cx)
+            .rule_match_count
+            .is_some()
     });
     with_window(cx, handle, |window, cx| {
-        shell.update(cx, |s, cx| s.arm_delete_rule(rule, window, cx));
+        shell.update(cx, |s, cx| {
+            s.rules_page
+                .update(cx, |p, cx| p.arm_delete_rule(rule, window, cx))
+        });
     });
     cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
     cx.update(|cx| {
         let s = shell.read(cx);
-        assert_eq!(s.editing_rule, None, "the page switch closed the editor");
+        assert_eq!(
+            s.rules_page.read(cx).editing_rule,
+            None,
+            "the page switch closed the editor"
+        );
         assert!(
-            s.rule_match_count.is_none(),
+            s.rules_page.read(cx).rule_match_count.is_none(),
             "and cleared the shared preview count"
         );
-        assert_eq!(s.armed_delete_rule, None, "and disarmed the delete");
+        assert_eq!(
+            s.rules_page.read(cx).armed_delete_rule,
+            None,
+            "and disarmed the delete"
+        );
     });
 }
 
@@ -721,7 +887,7 @@ fn rule_row_actions_are_built_only_for_visible_rows(cx: &mut TestAppContext) {
     draw_frame(cx, handle);
     cx.update(|cx| {
         let s = shell.read(cx);
-        assert_eq!(s.editing_rule, Some(first_rule));
+        assert_eq!(s.rules_page.read(cx).editing_rule, Some(first_rule));
         assert!(
             s.categories_page.rule_rows_built.get() < 100,
             "still a window of rows with the editor open: {}",
@@ -802,8 +968,8 @@ fn open_rules_page(
     wait_until(cx, "rules page fixture loaded", |cx| {
         let s = shell.read(cx);
         s.rules.len() == 4
-            && s.rules_page.rule_uses.get(&rules[0]) == Some(&2)
-            && s.rules_page.rule_uses.get(&rules[1]) == Some(&1)
+            && s.rules_page.read(cx).rule_uses.get(&rules[0]) == Some(&2)
+            && s.rules_page.read(cx).rule_uses.get(&rules[1]) == Some(&1)
             && s.cat_counts.get(&coffee) == Some(&3)
             && s.cat_counts.get(&games) == Some(&1)
     });
@@ -823,9 +989,10 @@ fn set_rules_search(
     let value = value.to_string();
     with_window(cx, handle, |window, cx| {
         shell.update(cx, |s, cx| {
-            s.rules_page
-                .rules_search
-                .update(cx, |i, cx| i.set_value(value, window, cx));
+            s.rules_page.update(cx, |p, cx| {
+                p.rules_search
+                    .update(cx, |i, cx| i.set_value(value, window, cx))
+            });
         });
     });
     cx.run_until_parked();
@@ -938,7 +1105,7 @@ fn rules_page_test_mode_marks_the_winner_first(cx: &mut TestAppContext) {
     let (handle, shell, _coffee, _snacks, _games, rules) = open_rules_page(cx);
     with_window(cx, handle, |_, cx| {
         shell.update(cx, |s, cx| {
-            s.rules_page.rules_test_mode = true;
+            s.rules_page.update(cx, |p, _cx| p.rules_test_mode = true);
             cx.notify();
         });
     });
@@ -970,7 +1137,7 @@ fn rules_page_test_mode_marks_the_winner_first(cx: &mut TestAppContext) {
     set_rules_search(cx, handle, &shell, "");
     with_window(cx, handle, |_, cx| {
         shell.update(cx, |s, cx| {
-            s.rules_page.rules_test_mode = false;
+            s.rules_page.update(cx, |p, _cx| p.rules_test_mode = false);
             cx.notify();
         });
     });
@@ -986,7 +1153,7 @@ fn rules_page_unused_shows_only_zero_use_rules(cx: &mut TestAppContext) {
     let (handle, shell, _coffee, _snacks, _games, rules) = open_rules_page(cx);
     with_window(cx, handle, |_, cx| {
         shell.update(cx, |s, cx| {
-            s.rules_page.rules_unused_only = true;
+            s.rules_page.update(cx, |p, _cx| p.rules_unused_only = true);
             cx.notify();
         });
     });
@@ -1013,12 +1180,14 @@ fn rules_page_type_picker_filters_by_kind(cx: &mut TestAppContext) {
     let pick = |cx: &mut TestAppContext, row: Option<usize>| {
         with_window(cx, handle, |window, cx| {
             shell.update(cx, |s, cx| {
-                s.rules_page.rules_type_select.update(cx, |sel, cx| {
-                    sel.set_selected_index(
-                        row.map(gpui_kit::component::IndexPath::new),
-                        window,
-                        cx,
-                    );
+                s.rules_page.update(cx, |p, cx| {
+                    p.rules_type_select.update(cx, |sel, cx| {
+                        sel.set_selected_index(
+                            row.map(gpui_kit::component::IndexPath::new),
+                            window,
+                            cx,
+                        );
+                    });
                 });
             });
         });
@@ -1093,8 +1262,10 @@ fn rules_page_move_recategorizes_rows_and_clears_selection(cx: &mut TestAppConte
     let (r1, r2) = (rules[0], rules[1]);
     with_window(cx, handle, |_, cx| {
         shell.update(cx, |s, cx| {
-            s.set_rule_selected(r1, true, cx);
-            s.set_rule_selected(r2, true, cx);
+            s.rules_page
+                .update(cx, |p, cx| p.set_rule_selected(r1, true, cx));
+            s.rules_page
+                .update(cx, |p, cx| p.set_rule_selected(r2, true, cx));
         });
     });
     draw_frame(cx, handle);
@@ -1114,10 +1285,17 @@ fn rules_page_move_recategorizes_rows_and_clears_selection(cx: &mut TestAppConte
     });
     with_window(cx, handle, |window, cx| {
         shell.update(cx, |s, cx| {
-            s.rules_page.move_rules_target.update(cx, |sel, cx| {
-                sel.set_selected_index(Some(gpui_kit::component::IndexPath::new(ix)), window, cx);
+            s.rules_page.update(cx, |p, cx| {
+                p.move_rules_target.update(cx, |sel, cx| {
+                    sel.set_selected_index(
+                        Some(gpui_kit::component::IndexPath::new(ix)),
+                        window,
+                        cx,
+                    );
+                });
             });
-            s.move_selected_rules(window, cx);
+            s.rules_page
+                .update(cx, |p, cx| p.move_selected_rules(window, cx));
         });
     });
     wait_until(cx, "the move lands", |cx| {
@@ -1142,7 +1320,7 @@ fn rules_page_move_recategorizes_rows_and_clears_selection(cx: &mut TestAppConte
         assert_eq!(s.cat_counts.get(&snacks), Some(&3));
         assert_eq!(s.cat_counts.get(&games), Some(&1));
         assert!(
-            s.rules_page.selected_rules.is_empty(),
+            s.rules_page.read(cx).selected_rules.is_empty(),
             "the selection clears"
         );
     });
@@ -1163,7 +1341,9 @@ fn rules_page_builds_only_the_visible_rows(cx: &mut TestAppContext) {
     });
     cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Rules, cx)));
     draw_frame(cx, handle);
-    let built = shell.read_with(cx, |s, _| s.rules_page.rules_page_rows_built.get());
+    let built = shell.read_with(cx, |s, app| {
+        s.rules_page.read(app).rules_page_rows_built.get()
+    });
     assert!(
         built > 0 && built < 200,
         "the list built {built} of 2000 rules, only the visible slice"
@@ -1227,6 +1407,7 @@ fn rules_page_opens_with_the_search_focused(cx: &mut TestAppContext) {
         shell
             .read(cx)
             .rules_page
+            .read(cx)
             .rules_search
             .read(cx)
             .focus_handle(cx)
@@ -1242,6 +1423,7 @@ fn rules_page_opens_with_the_search_focused(cx: &mut TestAppContext) {
         shell
             .read(cx)
             .rules_page
+            .read(cx)
             .rules_search
             .read(cx)
             .focus_handle(cx)
@@ -1274,7 +1456,7 @@ fn show_rule_from_a_row_lands_on_the_deciding_rule(cx: &mut TestAppContext) {
     wait_until(cx, "the rules and dashboard rows loaded", |cx| {
         let s = shell.read(cx);
         s.rules.len() == 34
-            && s.rules_page.rule_uses.get(&r1) == Some(&2)
+            && s.rules_page.read(cx).rule_uses.get(&r1) == Some(&2)
             && s.cat_counts.get(&coffee) == Some(&3)
             && s.dashboard.table.read(cx).delegate().rows.len() == 5
     });
@@ -1324,6 +1506,7 @@ fn show_rule_from_a_row_lands_on_the_deciding_rule(cx: &mut TestAppContext) {
             shell
                 .read(cx)
                 .rules_page
+                .read(cx)
                 .rules_search
                 .read(cx)
                 .value()
@@ -1333,7 +1516,7 @@ fn show_rule_from_a_row_lands_on_the_deciding_rule(cx: &mut TestAppContext) {
         "the search box takes the rule's pattern, find-in-page style"
     );
     assert_eq!(
-        cx.update(|cx| shell.read(cx).rules_page.rules_reveal),
+        cx.update(|cx| shell.read(cx).rules_page.read(cx).rules_reveal),
         Some(r1)
     );
     assert!(
@@ -1360,7 +1543,10 @@ fn show_rule_from_a_row_lands_on_the_deciding_rule(cx: &mut TestAppContext) {
     cx.simulate_keystrokes(handle, "backspace");
     cx.run_until_parked();
     draw_frame(cx, handle);
-    assert_eq!(cx.update(|cx| shell.read(cx).rules_page.rules_reveal), None);
+    assert_eq!(
+        cx.update(|cx| shell.read(cx).rules_page.read(cx).rules_reveal),
+        None
+    );
     assert!(
         !paints(cx, handle, active.clone()),
         "the highlight did not survive the user's own edit"
@@ -1376,7 +1562,7 @@ fn show_rule_from_a_row_lands_on_the_deciding_rule(cx: &mut TestAppContext) {
     cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
     draw_frame(cx, handle);
     assert_eq!(
-        cx.update(|cx| shell.read(cx).rules_page.rules_reveal),
+        cx.update(|cx| shell.read(cx).rules_page.read(cx).rules_reveal),
         None,
         "the reveal belongs to the Rules page"
     );
