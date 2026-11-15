@@ -17,7 +17,7 @@ Steps 1–15 of `docs/tasks/gpui.md` → *GPUI best practices*, task by task.
     carrying the rule id.
   - `Cancel` closes the editor, disarms a delete, clears the checked rows.
 
-- [ ] **3.81 The Categories page becomes its own view.** (Architecture.)
+- [x] **3.81 The Categories page becomes its own view.** (Architecture.)
   Same pattern as 3.79, for `CategoriesPage`, before 3.48. Owns the
   selection, the new-category form, rename, the rule list's editor and
   armed deletes; `DEPENDS = Categories | Rules | Transactions`. The rule

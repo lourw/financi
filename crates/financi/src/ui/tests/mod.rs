@@ -552,8 +552,10 @@ fn click(cx: &mut TestAppContext, handle: AnyWindowHandle, sel: impl Into<String
 fn add_parent(cx: &mut TestAppContext, handle: AnyWindowHandle, shell: &Entity<Shell>, name: &str) {
     with_window(cx, handle, |window, cx| {
         shell.update(cx, |s, cx| {
-            s.categories_page.new_parent_name.update(cx, |i, cx| {
-                i.set_value(name, window, cx);
+            s.categories_view.update(cx, |p, cx| {
+                p.new_parent_name.update(cx, |i, cx| {
+                    i.set_value(name, window, cx);
+                });
             });
             s.add_parent(window, cx);
         });
@@ -568,8 +570,10 @@ fn add_parent(cx: &mut TestAppContext, handle: AnyWindowHandle, shell: &Entity<S
 fn add_child(cx: &mut TestAppContext, handle: AnyWindowHandle, shell: &Entity<Shell>, name: &str) {
     with_window(cx, handle, |window, cx| {
         shell.update(cx, |s, cx| {
-            s.categories_page.new_child_name.update(cx, |i, cx| {
-                i.set_value(name, window, cx);
+            s.categories_view.update(cx, |p, cx| {
+                p.new_child_name.update(cx, |i, cx| {
+                    i.set_value(name, window, cx);
+                });
             });
             s.add_child(window, cx);
         });
@@ -878,8 +882,10 @@ fn go_page_closes_transient_ui(cx: &mut TestAppContext) {
         shell.update(cx, |s, cx| {
             s.imports.update(cx, |p, _| p.confirm_undo_import = Some(1));
             s.dashboard.rule_offer = Some((1, 2));
-            s.categories_page.renaming = true;
-            s.categories_page.confirm_delete_category = Some(1);
+            s.categories_view.update(cx, |p, _| {
+                p.renaming = true;
+                p.confirm_delete_category = Some(1);
+            });
             s.go_page(Page::Categories, cx);
         });
         let s = shell.read(cx);
@@ -888,9 +894,9 @@ fn go_page_closes_transient_ui(cx: &mut TestAppContext) {
             "undo confirmation cleared"
         );
         assert!(s.dashboard.rule_offer.is_none(), "rule offer cleared");
-        assert!(!s.categories_page.renaming, "rename editor closed");
+        assert!(!s.categories_view.read(cx).renaming, "rename editor closed");
         assert!(
-            s.categories_page.confirm_delete_category.is_none(),
+            s.categories_view.read(cx).confirm_delete_category.is_none(),
             "delete confirmation cleared"
         );
     });

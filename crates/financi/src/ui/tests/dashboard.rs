@@ -2236,7 +2236,7 @@ fn every_transactions_table_column_sorts(cx: &mut TestAppContext) {
 /// Food (Groceries -1000, Restaurants -500), Transport (Bus -300) and one
 /// uncategorized -200, all inside the default date range: the parent chart
 /// rows are Food 1500, Transport 300, Uncategorized 200.
-fn seed_chart_rows(conn: &financi_db::rusqlite::Connection) {
+pub(super) fn seed_chart_rows(conn: &financi_db::rusqlite::Connection) {
     let acct = create_account(conn, "amex", "Cobalt", AccountKind::CreditCard).unwrap();
     conn.execute(
         "INSERT INTO imports (account_id, parser_id, file_name, imported_at, header_raw,
@@ -2280,7 +2280,7 @@ fn seed_chart_rows(conn: &financi_db::rusqlite::Connection) {
 }
 
 /// 3.75: click a legend row for real — the same `on_click` the user hits.
-fn click_chart_legend(
+pub(super) fn click_chart_legend(
     cx: &mut TestAppContext,
     handle: AnyWindowHandle,
     shell: &Entity<Shell>,
@@ -2310,7 +2310,7 @@ fn click_chart_legend(
     click(cx, handle, format!("chart:legend-row:{ix}{suffix}"));
 }
 
-fn top_category_id(shell: &Entity<Shell>, cx: &App, name: &str) -> i64 {
+pub(super) fn top_category_id(shell: &Entity<Shell>, cx: &App, name: &str) -> i64 {
     shell
         .read(cx)
         .dashboard

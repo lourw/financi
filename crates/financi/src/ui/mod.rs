@@ -155,11 +155,12 @@ pub fn init(cx: &mut App) {
     // Esc clears the dashboard's category selection (3.5); the root view
     // handles the action in `Render::render`.
     cx.bind_keys([KeyBinding::new("escape", ClearCategorySelection, None)]);
-    // 3.79: Escape is each extracted page's own `Cancel` on its key
+    // 3.79 / 3.81: Escape is each extracted page's own `Cancel` on its key
     // context (the page root handles it in its `Render::render`); the
     // context-less binding above still reaches the pages that have not
     // been extracted, and the page's root wins the bubble for its own.
     cx.bind_keys([
+        KeyBinding::new("escape", Cancel, Some("Categories")),
         KeyBinding::new("escape", Cancel, Some("Transfers")),
         KeyBinding::new("escape", Cancel, Some("Imports")),
     ]);
@@ -408,6 +409,12 @@ pub struct Shell {
     // them with `set_visible` and hears from them through `PageEvent`.
     dashboard: DashboardState,
     queue: QueueState,
+    /// 3.81: the Categories page is its own view, rendered like the other
+    /// extracted pages.
+    categories_view: Entity<CategoriesPage>,
+    /// The Categories state this page still shares with the rule list that
+    /// lives on the Rules page: the selected category, and the rule picker
+    /// this page drives. Task 3.80 moves the list; this scaffold goes then.
     categories_page: CategoriesState,
     rules_page: RulesPageState,
     transfers: Entity<TransfersPage>,
@@ -434,10 +441,10 @@ impl Render for Shell {
         let page_area: AnyElement = match self.page {
             Page::Dashboard => self.render_dashboard(cx),
             Page::ToCategorize => self.render_queue(cx),
-            Page::Categories => self.render_categories(cx),
             Page::Rules => self.render_rules(cx),
-            // 3.79: the extracted pages render themselves — the entity is
-            // the element.
+            // 3.79 / 3.81: the extracted pages render themselves — the
+            // entity is the element.
+            Page::Categories => self.categories_view.clone().into_any_element(),
             Page::Transfers => self.transfers.clone().into_any_element(),
             Page::Imports => self.imports.clone().into_any_element(),
         };
@@ -544,10 +551,30 @@ impl Shell {
                 cx,
             )
         });
+        // 3.81: the Categories page is an entity too. Until 3.80 moves the
+        // rule list, it renders that list with `Shell`'s row renderers, so
+        // it keeps a weak handle back (see `CategoriesPage`'s doc).
+        let shell_handle = cx.entity().downgrade();
+        let categories = cx.new(|cx| {
+            CategoriesPage::new(
+                db.clone(),
+                writes_blocked.clone(),
+                catalog.clone(),
+                shell_handle,
+                window,
+                cx,
+            )
+        });
+        // The test counters live on the scaffold both views read.
+        #[cfg(test)]
+        categories.update(cx, |page, _| page.share_counters(&categories_page));
         // 3.79: the one page → `Shell` listener: toasts, reloads, page
         // resets and navigation arrive as `PageEvent`s on the page's own
         // entity, never as a call into `Shell`.
         let transfers_events = cx.subscribe_in(&transfers, window, |this, _, ev, window, cx| {
+            this.on_page_event(ev, window, cx);
+        });
+        let categories_events = cx.subscribe_in(&categories, window, |this, _, ev, window, cx| {
             this.on_page_event(ev, window, cx);
         });
         let imports_events = cx.subscribe_in(&imports, window, |this, _, ev, window, cx| {
@@ -591,11 +618,17 @@ impl Shell {
             dash_gen: 0,
             dashboard,
             queue,
+            categories_view: categories,
             categories_page,
             rules_page,
             transfers,
             imports,
-            _subs: vec![bounds_sub, transfers_events, imports_events],
+            _subs: vec![
+                bounds_sub,
+                categories_events,
+                transfers_events,
+                imports_events,
+            ],
         };
         // The live "matches N transactions" preview runs on every pattern
         // keystroke (ui-conventions, Categories page).
@@ -861,9 +894,6 @@ impl Shell {
         // belong to the page they were opened on. 3.24: the rule editor and
         // the armed rule delete join that list.
         self.dashboard.rule_offer = None;
-        self.categories_page.renaming = false;
-        self.categories_page.new_category_open = false;
-        self.categories_page.confirm_delete_category = None;
         self.close_rule_editor();
         self.armed_delete_rule = None;
         // 3.28: the Rules page's add row, ticked rows and move error belong
@@ -875,16 +905,21 @@ impl Shell {
         self.rules_page.rules_move_error = None;
         self.rules_page.rules_reveal = None;
         self.rules_page.rules_focus_pending.set(page == Page::Rules);
-        // 3.79: the extracted pages follow the switch too — the one shown
-        // applies the snapshot if it drifted while hidden and takes focus,
-        // the hidden one marks itself dirty. The armed import Undo clears
-        // first (3.11) so the apply does not re-arm the history button.
+        // 3.79 / 3.81: the extracted pages follow the switch too — the one
+        // shown applies the snapshot if it drifted while hidden and takes
+        // focus, the hidden one marks itself dirty. The armed import Undo
+        // clears first (3.11) so the apply does not re-arm the history
+        // button.
         self.imports.update(cx, |p, cx| {
             p.confirm_undo_import = None;
             p.set_visible(page == Page::Imports, cx);
         });
         self.transfers
             .update(cx, |p, cx| p.set_visible(page == Page::Transfers, cx));
+        self.categories_view.update(cx, |p, cx| {
+            p.close_transient(cx);
+            p.set_visible(page == Page::Categories, cx);
+        });
         cx.notify();
     }
 
@@ -925,10 +960,11 @@ impl Shell {
         self.queue.picker_subs.clear();
         self.queue.picker_items = None;
         self.queue.error = None;
+        // 3.81: the Categories page clears its own share; the rule-list
+        // scaffold keeps the selection copy the Rules page reads.
         self.categories_page.selected_category = None;
-        self.categories_page.renaming = false;
-        self.categories_page.new_category_open = false;
-        self.categories_page.confirm_delete_category = None;
+        self.categories_view
+            .update(cx, |p, cx| p.reset_after_restore(cx));
         self.close_rule_editor();
         self.armed_delete_rule = None;
         self.rules_page.new_rule_open = false;
