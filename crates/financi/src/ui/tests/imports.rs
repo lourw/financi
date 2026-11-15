@@ -1,5 +1,6 @@
 //! Tests for `ui/imports.rs` (3.62 split from `ui_tests.rs`).
 
+use super::dashboard::dash;
 use super::*;
 use crate::ui::imports::ImportEvent;
 #[gpui::test]
@@ -37,8 +38,12 @@ fn drop_create_account_inline_and_import(cx: &mut TestAppContext) {
     });
     click_import(cx, handle, &shell);
 
+    // 3.82: the import switched to the Imports page; go back, where the
+    // hidden dashboard reloads.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
     wait_until(cx, "import finished and table refreshed", |cx| {
-        shell.read(cx).imports.read(cx).import.is_none() && shell.read(cx).dashboard.row_count == 11
+        shell.read(cx).imports.read(cx).import.is_none()
+            && dash(cx, &shell).read(cx).row_count == 11
     });
     cx.update(|cx| {
         let s = shell.read(cx);
@@ -85,9 +90,27 @@ fn an_import_commit_still_reloads_every_page(cx: &mut TestAppContext) {
     });
     cx.update(|cx| shell.read(cx).db.query_log().clear());
     click_import(cx, handle, &shell);
+    // 3.82: the import switched to the Imports page; go back, where the
+    // hidden dashboard reloads.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
     wait_until(cx, "import finished and table refreshed", |cx| {
-        shell.read(cx).imports.read(cx).import.is_none() && shell.read(cx).dashboard.row_count == 11
+        shell.read(cx).imports.read(cx).import.is_none()
+            && dash(cx, &shell).read(cx).row_count == 11
     });
+    // The dashboard job is the fastest of the reload and the row check
+    // above can pass before the commit's full reload is even dispatched
+    // (3.82: the dashboard reloads on its own visit). Wait for the last
+    // of the catalog queries, then for everything to settle, before
+    // reading the log.
+    wait_until(cx, "full reload dispatched", |cx| {
+        shell
+            .read(cx)
+            .db
+            .query_log()
+            .names()
+            .contains(&"list_imports".to_string())
+    });
+    wait_idle(cx, &shell);
     let names = cx.update(|cx| shell.read(cx).db.query_log().names());
     for expected in [
         "list_accounts",
@@ -107,6 +130,45 @@ fn an_import_commit_still_reloads_every_page(cx: &mut TestAppContext) {
             "an import must reload {expected}; ran {names:?}"
         );
     }
+}
+
+/// 3.82: the hidden dashboard picks up a commit made on the Imports page
+/// through the full reload's `DataChanged` alone — one visit shows the new
+/// totals, with no manual refresh and no second navigation round trip.
+#[gpui::test]
+fn a_committed_import_shows_on_the_dashboard_without_a_manual_refresh(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |_| {});
+    import_demo_file(
+        cx,
+        handle,
+        &shell,
+        "simplii-chequing.csv",
+        "No Fee Chequing",
+    );
+    wait_idle(cx, &shell);
+    // 3.82: the import left the shell on the Imports page; visit the
+    // dashboard once to see the first file's rows.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
+    wait_until(cx, "first import on the dashboard", |cx| {
+        dash(cx, &shell).read(cx).row_count == 11
+    });
+
+    // Second file, committed from the Imports page into a second account:
+    // the dashboard is hidden while it lands.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Imports, cx)));
+    import_demo_file(cx, handle, &shell, "amex-sep-oct.csv", "Cobalt");
+    cx.update(|cx| {
+        assert_eq!(shell.read(cx).page, Page::Imports, "still on Imports");
+    });
+
+    // The one visit shows both files: the hidden reload already ran.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
+    // 11 + 67, minus the card payment the second account finally matches:
+    // 77 rows with transfers hidden (the same arithmetic the Cobalt-only
+    // import test makes).
+    wait_until(cx, "both imports on the dashboard", |cx| {
+        dash(cx, &shell).read(cx).row_count == 77
+    });
 }
 
 #[gpui::test]
@@ -261,8 +323,11 @@ fn overlap_with_another_account_blocks_until_overridden(cx: &mut TestAppContext)
     click_import(cx, handle, &shell);
     // 68 imported rows minus the card payment: transfers are hidden by
     // default (task 3.3).
+    // 3.82: the import switched to the Imports page; go back, where the
+    // hidden dashboard reloads.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
     wait_until(cx, "Cobalt import", |cx| {
-        shell.read(cx).dashboard.row_count == 67
+        dash(cx, &shell).read(cx).row_count == 67
     });
 
     open_and_choose(
@@ -294,9 +359,12 @@ fn overlap_with_another_account_blocks_until_overridden(cx: &mut TestAppContext)
         panel(&shell, cx).update(cx, |p, _| p.override_overlap = true); // the checkbox's handler
     });
     click_import(cx, handle, &shell);
+    // 3.82: the import switched to the Imports page; go back, where the
+    // hidden dashboard reloads.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
     wait_until(cx, "Gold import with override", |cx| {
         shell.read(cx).imports.read(cx).import.is_none()
-            && shell.read(cx).dashboard.row_count == 67 + 100
+            && dash(cx, &shell).read(cx).row_count == 67 + 100
     });
 }
 
@@ -392,8 +460,11 @@ fn a_committing_import_disables_cancel_and_ignores_new_files(cx: &mut TestAppCon
             "the ignored file left no trace: {msg}"
         );
     });
+    // 3.82: the import switched to the Imports page; go back, where the
+    // hidden dashboard reloads.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
     wait_idle(cx, &shell);
-    assert_eq!(shell.update(cx, |s, _| s.dashboard.row_count), 67);
+    assert_eq!(dash(cx, &shell).read_with(cx, |d, _| d.row_count), 67);
 }
 
 /// 3.94 regression: the reverse order of the test above — a file is
@@ -458,8 +529,11 @@ fn a_load_landing_mid_commit_never_replaces_the_committing_panel(cx: &mut TestAp
             "the ignored file left no trace: {msg}"
         );
     });
+    // 3.82: the import switched to the Imports page; go back, where the
+    // hidden dashboard reloads.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
     wait_idle(cx, &shell);
-    assert_eq!(shell.update(cx, |s, _| s.dashboard.row_count), 67);
+    assert_eq!(dash(cx, &shell).read_with(cx, |d, _| d.row_count), 67);
 }
 
 /// 3.64: every opened panel subscribes the shell to it, and the
@@ -654,8 +728,11 @@ fn near_match_is_offered_and_a_confirmed_same_charge_replaces(cx: &mut TestAppCo
     open_path_and_choose(cx, handle, &shell, &base, "American Express · Cobalt");
     wait_until(cx, "base plan", |cx| plan_ready(&shell, cx));
     click_import(cx, handle, &shell);
+    // 3.82: the import switched to the Imports page; go back, where the
+    // hidden dashboard reloads.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
     wait_until(cx, "base import", |cx| {
-        shell.read(cx).imports.read(cx).import.is_none() && shell.read(cx).dashboard.row_count == 1
+        shell.read(cx).imports.read(cx).import.is_none() && dash(cx, &shell).read(cx).row_count == 1
     });
 
     open_path_and_choose(cx, handle, &shell, &tip, "American Express · Cobalt");
@@ -685,11 +762,8 @@ fn near_match_is_offered_and_a_confirmed_same_charge_replaces(cx: &mut TestAppCo
         shell.read(cx).imports.read(cx).import.is_none()
     });
     cx.update(|cx| {
-        let s = shell.read(cx);
-        assert_eq!(
-            s.dashboard.row_count, 1,
-            "the existing row was replaced, not added"
-        );
+        let d = dash(cx, &shell).read(cx);
+        assert_eq!(d.row_count, 1, "the existing row was replaced, not added");
         assert_eq!(
             last_toast(&shell, cx),
             Some((
@@ -718,11 +792,14 @@ fn undo_needs_a_second_click_and_removes_the_latest_import(cx: &mut TestAppConte
     );
     wait_until(cx, "plan", |cx| plan_ready(&shell, cx));
     click_import(cx, handle, &shell);
-    wait_until(cx, "import", |cx| shell.read(cx).dashboard.row_count == 67);
-
     wait_until(cx, "import history", |cx| {
         shell.read(cx).imports.read(cx).import_history.len() == 1
     });
+    // 3.82: the dashboard reloads when shown — a quick visit proves the
+    // import's rows landed — then back to Imports for the undo flow.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
+    wait_until(cx, "import", |cx| dash(cx, &shell).read(cx).row_count == 67);
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Imports, cx)));
 
     with_window(cx, handle, |window, cx| {
         let id = shell.read(cx).imports.read(cx).import_history[0].id;
@@ -734,15 +811,18 @@ fn undo_needs_a_second_click_and_removes_the_latest_import(cx: &mut TestAppConte
             Some(id),
             "first click only asks to confirm"
         );
-        assert_eq!(shell.read(cx).dashboard.row_count, 67);
+        assert_eq!(dash(cx, &shell).read_with(cx, |d, _| d.row_count), 67);
         shell.update(cx, |s, cx| {
             s.imports.update(cx, |p, cx| p.undo_import(id, window, cx))
         });
     });
 
     wait_until(cx, "undo", |cx| {
-        shell.read(cx).dashboard.row_count == 0
-            && shell.read(cx).imports.read(cx).import_history.is_empty()
+        shell.read(cx).imports.read(cx).import_history.is_empty()
+    });
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
+    wait_until(cx, "undo rows", |cx| {
+        dash(cx, &shell).read(cx).row_count == 0
     });
     cx.update(|cx| {
         assert_eq!(
@@ -1343,9 +1423,8 @@ fn cmd_o_opens_the_file_picker_and_the_preview(cx: &mut TestAppContext) {
     // Actions dispatch along the focus path, so focus the search input
     // first — like a user who clicked into the window.
     with_window(cx, handle, |window, cx| {
-        let input = shell
+        let input = dash(cx, &shell)
             .read(cx)
-            .dashboard
             .search_input
             .read(cx)
             .focus_handle(cx);
@@ -1439,8 +1518,12 @@ fn the_undo_action_arms_then_undoes_the_newest_import(cx: &mut TestAppContext) {
     click_import(cx, handle, &shell);
     wait_until(cx, "import history", |cx| {
         shell.read(cx).imports.read(cx).import_history.len() == 1
-            && shell.read(cx).dashboard.row_count == 67
     });
+    // 3.82: a quick dashboard visit proves its rows landed, then back to
+    // Imports for the undo flow.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
+    wait_until(cx, "import", |cx| dash(cx, &shell).read(cx).row_count == 67);
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Imports, cx)));
     let id = cx.update(|cx| shell.read(cx).imports.read(cx).import_history[0].id);
 
     with_window(cx, handle, |window, cx| {
@@ -1458,8 +1541,11 @@ fn the_undo_action_arms_then_undoes_the_newest_import(cx: &mut TestAppContext) {
         window.dispatch_action(Box::new(UndoLastImport), cx)
     });
     wait_until(cx, "undo", |cx| {
-        shell.read(cx).dashboard.row_count == 0
-            && shell.read(cx).imports.read(cx).import_history.is_empty()
+        shell.read(cx).imports.read(cx).import_history.is_empty()
+    });
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
+    wait_until(cx, "undo rows", |cx| {
+        dash(cx, &shell).read(cx).row_count == 0
     });
 }
 
@@ -1554,7 +1640,12 @@ fn export_writes_the_chosen_zip_and_toasts(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell_on_file(cx, |_| {});
     wait_idle(cx, &shell);
     import_demo_file(cx, handle, &shell, "amex-sep-oct.csv", "Amex");
-    wait_until(cx, "67 rows", |cx| shell.read(cx).dashboard.row_count == 67);
+    // 3.82: the import switched to the Imports page; go back, where the
+    // hidden dashboard reloads.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
+    wait_until(cx, "67 rows", |cx| {
+        dash(cx, &shell).read(cx).row_count == 67
+    });
     let zip = scratch_file("snapshot.zip");
 
     cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Imports, cx)));
@@ -1606,9 +1697,8 @@ fn cmd_e_opens_the_export_save_dialog(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, |_| {});
     wait_idle(cx, &shell);
     with_window(cx, handle, |window, cx| {
-        let input = shell
+        let input = dash(cx, &shell)
             .read(cx)
-            .dashboard
             .search_input
             .read(cx)
             .focus_handle(cx);
@@ -1630,13 +1720,21 @@ fn restore_replaces_the_data_and_resets_transient_state(cx: &mut TestAppContext)
     let (handle, shell) = open_shell_on_file(cx, |_| {});
     wait_idle(cx, &shell);
     import_demo_file(cx, handle, &shell, "amex-sep-oct.csv", "Amex");
-    wait_until(cx, "67 rows", |cx| shell.read(cx).dashboard.row_count == 67);
+    // 3.82: the import switched to the Imports page; go back, where the
+    // hidden dashboard reloads.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
+    wait_until(cx, "67 rows", |cx| {
+        dash(cx, &shell).read(cx).row_count == 67
+    });
     let zip = scratch_file("snapshot.zip");
     export_to(cx, handle, &shell, &zip);
 
     import_demo_file(cx, handle, &shell, "simplii-chequing.csv", "Simplii");
+    // 3.82: the import switched to the Imports page; go back, where the
+    // hidden dashboard reloads.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
     wait_until(cx, "the second import lands", |cx| {
-        shell.read(cx).dashboard.row_count > 67 && shell.read(cx).accounts.len() == 2
+        dash(cx, &shell).read(cx).row_count > 67 && shell.read(cx).accounts.len() == 2
     });
     // Arm the history Undo: a transient id naming a row of the *old*
     // database, which must not survive the restore.
@@ -1655,8 +1753,11 @@ fn restore_replaces_the_data_and_resets_transient_state(cx: &mut TestAppContext)
     );
 
     answer_restore(cx, handle, Some(zip.clone()));
+    // 3.82: the import switched to the Imports page; go back, where the
+    // hidden dashboard reloads.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
     wait_until(cx, "the restored rows land", |cx| {
-        shell.read(cx).dashboard.row_count == 67 && shell.read(cx).accounts.len() == 1
+        dash(cx, &shell).read(cx).row_count == 67 && shell.read(cx).accounts.len() == 1
     });
     wait_idle(cx, &shell);
     cx.update(|cx| {
@@ -1684,7 +1785,12 @@ fn restore_of_a_file_that_is_not_an_export_stays_until_closed(cx: &mut TestAppCo
     let (handle, shell) = open_shell_on_file(cx, |_| {});
     wait_idle(cx, &shell);
     import_demo_file(cx, handle, &shell, "amex-sep-oct.csv", "Amex");
-    wait_until(cx, "67 rows", |cx| shell.read(cx).dashboard.row_count == 67);
+    // 3.82: the import switched to the Imports page; go back, where the
+    // hidden dashboard reloads.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
+    wait_until(cx, "67 rows", |cx| {
+        dash(cx, &shell).read(cx).row_count == 67
+    });
     let not_zip = scratch_file("not-an-export.zip");
     std::fs::write(&not_zip, b"not a zip at all").unwrap();
 
@@ -1694,7 +1800,7 @@ fn restore_of_a_file_that_is_not_an_export_stays_until_closed(cx: &mut TestAppCo
     });
     wait_idle(cx, &shell);
     cx.update(|cx| {
-        assert_eq!(shell.read(cx).dashboard.row_count, 67, "data untouched");
+        assert_eq!(dash(cx, &shell).read(cx).row_count, 67, "data untouched");
         assert!(!shell.read(cx).imports.read(cx).restoring, "not stuck busy");
     });
     // Errors stay until closed: ten seconds of ticker and it is up.
@@ -1727,7 +1833,12 @@ fn the_empty_state_offers_restore_from_export(cx: &mut TestAppContext) {
     // … restored into an empty one from the dashboard's empty state.
     let (handle, shell) = open_shell_on_file(cx, |_| {});
     wait_idle(cx, &shell);
-    cx.update(|cx| assert_eq!(shell.read(cx).dashboard_body(), DashboardBody::NoData));
+    cx.update(|cx| {
+        assert_eq!(
+            dash(cx, &shell).read(cx).dashboard_body(),
+            DashboardBody::NoData
+        )
+    });
     click(cx, handle, "dashboard:restore-link");
     assert!(cx.did_prompt_for_paths(), "the link opened the file dialog");
     cx.simulate_path_prompt_response(move |_| Some(vec![zip]));
@@ -1756,14 +1867,22 @@ fn restore_supersedes_an_in_flight_dashboard_load(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell_on_file(cx, |_| {});
     wait_idle(cx, &shell);
     import_demo_file(cx, handle, &shell, "amex-sep-oct.csv", "Amex");
-    wait_until(cx, "67 rows", |cx| shell.read(cx).dashboard.row_count == 67);
+    // 3.82: the import switched to the Imports page; go back, where the
+    // hidden dashboard reloads.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
+    wait_until(cx, "67 rows", |cx| {
+        dash(cx, &shell).read(cx).row_count == 67
+    });
     let zip = scratch_file("snapshot.zip");
     export_to(cx, handle, &shell, &zip);
     import_demo_file(cx, handle, &shell, "simplii-chequing.csv", "Simplii");
+    // 3.82: the import switched to the Imports page; go back, where the
+    // hidden dashboard reloads.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
     wait_until(cx, "the second import lands", |cx| {
-        shell.read(cx).dashboard.row_count > 67
+        dash(cx, &shell).read(cx).row_count > 67
     });
-    let mid = cx.update(|cx| shell.read(cx).dashboard.row_count);
+    let mid = cx.update(|cx| dash(cx, &shell).read(cx).row_count);
 
     // Hold the worker, start a dashboard load, and restore while its
     // query waits in the queue behind the blocker.
@@ -1774,7 +1893,7 @@ fn restore_supersedes_an_in_flight_dashboard_load(cx: &mut TestAppContext) {
     cx.run_until_parked();
     let (started, applied) = cx.update(|cx| {
         let s = shell.read(cx);
-        (s.refresh_started, s.refresh_applied)
+        (s.refresh_started.get(), s.refresh_applied.get())
     });
     assert!(started > applied, "the dashboard load is in flight");
 
@@ -1790,16 +1909,21 @@ fn restore_supersedes_an_in_flight_dashboard_load(cx: &mut TestAppContext) {
     // database, the restore follows, and its refresh supersedes the
     // load's task — the load's result is dropped on the floor.
     drop(block);
+    // 3.82: the import switched to the Imports page; go back, where the
+    // hidden dashboard reloads.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
     wait_until(cx, "the restored rows land", |cx| {
-        shell.read(cx).dashboard.row_count == 67
+        dash(cx, &shell).read(cx).row_count == 67
     });
     wait_idle(cx, &shell);
     cx.update(|cx| {
         let s = shell.read(cx);
-        assert_eq!(s.dashboard.row_count, 67, "the restored data stands");
-        assert_ne!(s.dashboard.row_count, mid, "the late load never landed");
+        let d = dash(cx, &shell).read(cx);
+        assert_eq!(d.row_count, 67, "the restored data stands");
+        assert_ne!(d.row_count, mid, "the late load never landed");
         assert_eq!(
-            s.refresh_started, s.refresh_applied,
+            s.refresh_started.get(),
+            s.refresh_applied.get(),
             "the restore's own refresh was the last to apply"
         );
     });
@@ -1922,8 +2046,8 @@ fn import_end_to_end_shows_expected_values_on_every_page(cx: &mut TestAppContext
     // The fixtures carry fixed 2026 dates, so pin the range to All time:
     // the test must pass whenever it runs.
     with_window(cx, handle, |window, cx| {
-        shell.update(cx, |s, cx| {
-            s.change_date_preset(DatePreset::AllTime, window, cx)
+        dash(cx, &shell).update(cx, |d, cx| {
+            d.change_date_preset(DatePreset::AllTime, window, cx)
         });
     });
     // amex-sep-nov: 102 rows (100 unique + 2 genuine repeats), of which the
@@ -1932,8 +2056,8 @@ fn import_end_to_end_shows_expected_values_on_every_page(cx: &mut TestAppContext
     // PAY DEMO AMEX" debits pair with those payments (4.2) and are
     // categorized as Card Payment too.
     wait_until(cx, "all-time view over both imports", |cx| {
-        shell.read(cx).dashboard.summary.months == ["2026-09", "2026-10", "2026-11"]
-            && shell.read(cx).dashboard.row_count == 109
+        dash(cx, &shell).read(cx).summary.months == ["2026-09", "2026-10", "2026-11"]
+            && dash(cx, &shell).read(cx).row_count == 109
     });
 
     // Spend per month from expected.json with transfers excluded: the Amex
@@ -1962,9 +2086,9 @@ fn import_end_to_end_shows_expected_values_on_every_page(cx: &mut TestAppContext
     cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
     cx.update(|cx| {
         let s = shell.read(cx);
+        let d = dash(cx, &shell).read(cx);
         let row = |name: &str| {
-            s.dashboard
-                .summary
+            d.summary
                 .rows
                 .iter()
                 .find(|r| r.name == name)
@@ -1979,8 +2103,7 @@ fn import_end_to_end_shows_expected_values_on_every_page(cx: &mut TestAppContext
         assert_eq!(row("Uncategorized").total, spend_total);
         assert_eq!(row("Uncategorized").total, row("Spend").total);
         // Chart + legend (3.5): the single Uncategorized row.
-        let chart: Vec<(&str, i64)> = s
-            .dashboard
+        let chart: Vec<(&str, i64)> = d
             .chart_rows
             .iter()
             .map(|r| (r.name.as_str(), r.spend_cents))
@@ -2082,7 +2205,12 @@ fn restore_in_flight_refuses_an_import(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell_on_file(cx, |_| {});
     wait_idle(cx, &shell);
     import_demo_file(cx, handle, &shell, "amex-sep-oct.csv", "Amex");
-    wait_until(cx, "67 rows", |cx| shell.read(cx).dashboard.row_count == 67);
+    // 3.82: the import switched to the Imports page; go back, where the
+    // hidden dashboard reloads.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
+    wait_until(cx, "67 rows", |cx| {
+        dash(cx, &shell).read(cx).row_count == 67
+    });
     let zip = scratch_file("snapshot.zip");
     export_to(cx, handle, &shell, &zip);
 
@@ -2138,9 +2266,12 @@ fn restore_in_flight_refuses_an_import(cx: &mut TestAppContext) {
 
     // Release the writer: the restore lands and the import never happened.
     drop(block);
+    // 3.82: the import switched to the Imports page; go back, where the
+    // hidden dashboard reloads.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
     wait_until(cx, "the restored rows land", |cx| {
         !shell.read(cx).imports.read(cx).restoring
-            && shell.read(cx).dashboard.row_count == 67
+            && dash(cx, &shell).read(cx).row_count == 67
             && shell.read(cx).accounts.len() == 1
     });
     wait_idle(cx, &shell);
@@ -2176,7 +2307,12 @@ fn restore_in_flight_refuses_a_queue_apply(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell_on_file(cx, |_| {});
     wait_idle(cx, &shell);
     import_demo_file(cx, handle, &shell, "amex-sep-oct.csv", "Amex");
-    wait_until(cx, "67 rows", |cx| shell.read(cx).dashboard.row_count == 67);
+    // 3.82: the import switched to the Imports page; go back, where the
+    // hidden dashboard reloads.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
+    wait_until(cx, "67 rows", |cx| {
+        dash(cx, &shell).read(cx).row_count == 67
+    });
     add_parent(cx, handle, &shell, "Shopping");
     add_child(cx, handle, &shell, "Online");
     wait_until(cx, "queue populated", |cx| {
@@ -2222,8 +2358,11 @@ fn restore_in_flight_refuses_a_queue_apply(cx: &mut TestAppContext) {
     });
 
     drop(block);
+    // 3.82: the import switched to the Imports page; go back, where the
+    // hidden dashboard reloads.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
     wait_until(cx, "the restored rows land", |cx| {
-        !shell.read(cx).imports.read(cx).restoring && shell.read(cx).dashboard.row_count == 67
+        !shell.read(cx).imports.read(cx).restoring && dash(cx, &shell).read(cx).row_count == 67
     });
     wait_idle(cx, &shell);
     cx.update(|cx| {
@@ -2295,8 +2434,11 @@ fn a_cancelled_export_dialog_leaves_import_working(cx: &mut TestAppContext) {
         assert!(p.read(cx).can_import(), "Import is live after the cancel");
     });
     click_import(cx, handle, &shell);
+    // 3.82: the import switched to the Imports page; go back, where the
+    // hidden dashboard reloads.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
     wait_until(cx, "the import lands", |cx| {
-        shell.read(cx).dashboard.row_count == 67
+        dash(cx, &shell).read(cx).row_count == 67
     });
     wait_idle(cx, &shell);
 }
@@ -2312,7 +2454,12 @@ fn archive_results_landing_after_the_window_closes_are_dropped(cx: &mut TestAppC
     let (handle, shell) = open_shell_on_file(cx, |_| {});
     wait_idle(cx, &shell);
     import_demo_file(cx, handle, &shell, "amex-sep-oct.csv", "Amex");
-    wait_until(cx, "67 rows", |cx| shell.read(cx).dashboard.row_count == 67);
+    // 3.82: the import switched to the Imports page; go back, where the
+    // hidden dashboard reloads.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
+    wait_until(cx, "67 rows", |cx| {
+        dash(cx, &shell).read(cx).row_count == 67
+    });
     let snapshot = scratch_file("snapshot.zip");
     export_to(cx, handle, &shell, &snapshot);
     let db = shell.update(cx, |s, _| s.db.clone());
@@ -2330,8 +2477,11 @@ fn archive_results_landing_after_the_window_closes_are_dropped(cx: &mut TestAppC
     let snapshot_rows = raw_count(&db);
     assert_eq!(snapshot_rows, 68, "raw rows the snapshot carries");
     import_demo_file(cx, handle, &shell, "simplii-chequing.csv", "Simplii");
+    // 3.82: the import switched to the Imports page; go back, where the
+    // hidden dashboard reloads.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
     wait_until(cx, "the second import lands", |cx| {
-        shell.read(cx).dashboard.row_count > 67
+        dash(cx, &shell).read(cx).row_count > 67
     });
     assert!(raw_count(&db) > snapshot_rows, "the second import landed");
 
@@ -2359,8 +2509,11 @@ fn archive_results_landing_after_the_window_closes_are_dropped(cx: &mut TestAppC
     let (handle2, shell2) = open_shell_on_file(cx, |_| {});
     wait_idle(cx, &shell2);
     import_demo_file(cx, handle2, &shell2, "amex-sep-oct.csv", "Amex");
+    // 3.82: the import switched to the Imports page; go back, where the
+    // hidden dashboard reloads.
+    cx.update(|cx| shell2.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
     wait_until(cx, "67 rows again", |cx| {
-        shell2.read(cx).dashboard.row_count == 67
+        dash(cx, &shell2).read(cx).row_count == 67
     });
     let block2 = block_worker(cx, &shell2);
     with_window(cx, handle2, |window, cx| {

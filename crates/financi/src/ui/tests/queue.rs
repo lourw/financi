@@ -1,5 +1,6 @@
 //! Tests for `ui/queue.rs` (3.62 split from `ui_tests.rs`).
 
+use super::dashboard::dash;
 use super::*;
 #[gpui::test]
 fn categorizing_a_queue_group_locks_in_a_rule(cx: &mut TestAppContext) {
@@ -16,7 +17,10 @@ fn categorizing_a_queue_group_locks_in_a_rule(cx: &mut TestAppContext) {
     );
     wait_until(cx, "plan", |cx| plan_ready(&shell, cx));
     click_import(cx, handle, &shell);
-    wait_until(cx, "import", |cx| shell.read(cx).dashboard.row_count == 67);
+    // 3.82: the import switched to the Imports page; go back, where the
+    // hidden dashboard reloads.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
+    wait_until(cx, "import", |cx| dash(cx, &shell).read(cx).row_count == 67);
     add_parent(cx, handle, &shell, "Shopping");
     add_child(cx, handle, &shell, "Online");
     let child = cx.update(|cx| find_child(&shell, cx, "Online").unwrap());

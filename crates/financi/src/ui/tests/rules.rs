@@ -1,5 +1,6 @@
 //! Tests for `ui/rules.rs` (3.62 split from `ui_tests.rs`).
 
+use super::dashboard::dash;
 use super::*;
 #[gpui::test]
 fn creating_a_rule_categorizes_matching_rows(cx: &mut TestAppContext) {
@@ -16,7 +17,10 @@ fn creating_a_rule_categorizes_matching_rows(cx: &mut TestAppContext) {
     );
     wait_until(cx, "plan", |cx| plan_ready(&shell, cx));
     click_import(cx, handle, &shell);
-    wait_until(cx, "import", |cx| shell.read(cx).dashboard.row_count == 67);
+    // 3.82: the import switched to the Imports page; go back, where the
+    // hidden dashboard reloads.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
+    wait_until(cx, "import", |cx| dash(cx, &shell).read(cx).row_count == 67);
 
     add_parent(cx, handle, &shell, "Shopping");
     add_child(cx, handle, &shell, "Online");
@@ -201,15 +205,15 @@ fn a_rule_save_and_a_row_hide_never_cancel_each_other(cx: &mut TestAppContext) {
 
     start_rule_edit(cx, handle, &shell, rule);
     set_edit_pattern(cx, handle, &shell, "SHOP B");
-    let started = cx.update(|cx| shell.read(cx).refresh_started);
+    let started = cx.update(|cx| shell.read(cx).refresh_started.get());
 
     // One frame, two actions: Save the edited rule, Hide the locked row.
     with_window(cx, handle, |window, cx| {
         shell.update(cx, |s, cx| {
             s.rules_page
                 .update(cx, |p, cx| p.save_rule_edit(window, cx));
-            s.set_row_hidden(locked, true, window, cx);
         });
+        dash(cx, &shell).update(cx, |d, cx| d.set_row_hidden(locked, true, window, cx));
     });
     // Both are in flight — the Hide left the Save's badge alone (the badge
     // names rule actions only), and nothing has run yet.
@@ -247,9 +251,9 @@ fn a_rule_save_and_a_row_hide_never_cancel_each_other(cx: &mut TestAppContext) {
             "the row the new pattern dropped is back in Uncategorized — the save's recategorize ran"
         );
         assert!(
-            s.refresh_started >= started + 2,
+            s.refresh_started.get() >= started + 2,
             "each action refreshed: {started} → {}",
-            s.refresh_started
+            s.refresh_started.get()
         );
     });
 }
@@ -1540,7 +1544,14 @@ fn show_rule_from_a_row_lands_on_the_deciding_rule(cx: &mut TestAppContext) {
         s.rules.len() == 34
             && s.rules_page.read(cx).rule_uses.get(&r1) == Some(&2)
             && s.cat_counts.get(&coffee) == Some(&3)
-            && s.dashboard.table.read(cx).delegate().rows.len() == 5
+            && dash(cx, &shell)
+                .read(cx)
+                .table
+                .read(cx)
+                .delegate()
+                .rows
+                .len()
+                == 5
     });
 
     // The menu model on the dashboard row: r1 decided it, so *Show rule*
@@ -1568,7 +1579,7 @@ fn show_rule_from_a_row_lands_on_the_deciding_rule(cx: &mut TestAppContext) {
 
     // Clicking *Show rule* navigates, narrows, scrolls and highlights.
     with_window(cx, handle, |window, cx| {
-        shell.update(cx, |s, cx| s.show_rule(r1, window, cx));
+        dash(cx, &shell).update(cx, |d, cx| d.show_rule(r1, window, cx));
     });
     let active = format!("rules:row-{r1}:active");
     for _ in 0..8 {
@@ -1636,7 +1647,7 @@ fn show_rule_from_a_row_lands_on_the_deciding_rule(cx: &mut TestAppContext) {
 
     // Revealing again and then leaving the page drops it too.
     with_window(cx, handle, |window, cx| {
-        shell.update(cx, |s, cx| s.show_rule(r1, window, cx));
+        dash(cx, &shell).update(cx, |d, cx| d.show_rule(r1, window, cx));
     });
     cx.run_until_parked();
     draw_frame(cx, handle);

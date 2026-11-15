@@ -9,10 +9,10 @@ use super::*;
 fn chart_rows_carry_amounts_and_shares_for_the_tooltips(cx: &mut TestAppContext) {
     let (_handle, shell) = open_shell(cx, seed_chart_rows);
     wait_until(cx, "three chart rows", |cx| {
-        shell.read(cx).dashboard.chart_rows.len() == 3
+        dash(cx, &shell).read(cx).chart_rows.len() == 3
     });
     cx.update(|cx| {
-        let rows = &shell.read(cx).dashboard.chart_rows;
+        let rows = &dash(cx, &shell).read(cx).chart_rows;
         let names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
         assert_eq!(names, ["Food", "Transport", "Uncategorized"]);
         let cents: Vec<i64> = rows.iter().map(|r| r.spend_cents).collect();
@@ -32,12 +32,12 @@ fn chart_rows_carry_amounts_and_shares_for_the_tooltips(cx: &mut TestAppContext)
 fn chart_labels_adapt_to_the_window_size(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, seed_chart_rows);
     wait_until(cx, "three chart rows", |cx| {
-        shell.read(cx).dashboard.chart_rows.len() == 3
+        dash(cx, &shell).read(cx).chart_rows.len() == 3
     });
 
     // `open_shell` opens 1200 wide: with the legend beside it the plot is
     // narrow, so the labels are truncated to a small character budget.
-    let (small_chars, small_labels) = cx.update(|cx| shell.read(cx).chart_label_plan());
+    let (small_chars, small_labels) = cx.update(|cx| dash(cx, &shell).read(cx).chart_label_plan());
     assert_eq!(small_labels, 3);
     assert!(
         small_chars < CHART_LABEL_MAX_CHARS,
@@ -52,7 +52,7 @@ fn chart_labels_adapt_to_the_window_size(cx: &mut TestAppContext) {
     });
     cx.run_until_parked();
     assert_eq!(cx.update(|cx| shell.read(cx).window_width), 2000.);
-    let (big_chars, big_labels) = cx.update(|cx| shell.read(cx).chart_label_plan());
+    let (big_chars, big_labels) = cx.update(|cx| dash(cx, &shell).read(cx).chart_label_plan());
     assert_eq!(big_labels, 3, "a wide window labels every band");
     assert!(big_chars > small_chars, "{big_chars} vs {small_chars}");
 
@@ -75,11 +75,11 @@ fn chart_labels_adapt_to_the_window_size(cx: &mut TestAppContext) {
 fn the_chart_renders_long_names_and_many_categories(cx: &mut TestAppContext) {
     let (_handle, shell) = open_shell(cx, seed_chart_rows);
     wait_until(cx, "three chart rows", |cx| {
-        shell.read(cx).dashboard.chart_rows.len() == 3
+        dash(cx, &shell).read(cx).chart_rows.len() == 3
     });
     // 25 categories with long names — the worst case for the band axis.
-    shell.update(cx, |s, cx| {
-        s.dashboard.chart_rows = (0..25)
+    dash(cx, &shell).update(cx, |d, cx| {
+        d.chart_rows = (0..25)
             .map(|i| CategorySpend {
                 id: Some(i),
                 name: format!("Category number {i} with a very long descriptive name"),
@@ -92,7 +92,7 @@ fn the_chart_renders_long_names_and_many_categories(cx: &mut TestAppContext) {
     // The plan stays bounded, and the chart draws without panic at the
     // test window's width and at the minimum size. 25 bands across the
     // narrow plot must thin the labels out, not squeeze them flat.
-    let (chars, labels) = cx.update(|cx| shell.read(cx).chart_label_plan());
+    let (chars, labels) = cx.update(|cx| dash(cx, &shell).read(cx).chart_label_plan());
     assert!((1..25).contains(&labels), "{labels} labels for 25 bands");
     assert!((1..=CHART_LABEL_MAX_CHARS).contains(&chars));
     draw_frame(cx, _handle);
@@ -109,14 +109,13 @@ const _: () = assert!(LEGEND_W <= 140.);
 fn the_legend_is_just_a_key(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, seed_chart_rows);
     wait_until(cx, "three chart rows", |cx| {
-        shell.read(cx).dashboard.chart_rows.len() == 3
+        dash(cx, &shell).read(cx).chart_rows.len() == 3
     });
     resize_and_draw(cx, handle, 1200., 720.);
     let mut window = VisualTestContext::from_window(handle, cx);
     let rows: Vec<(String, i64, f64)> = cx.update(|cx| {
-        shell
+        dash(cx, &shell)
             .read(cx)
-            .dashboard
             .chart_rows
             .iter()
             .map(|r| (r.name.to_string(), r.spend_cents, r.share))
@@ -160,12 +159,12 @@ fn the_legend_is_just_a_key(cx: &mut TestAppContext) {
 fn hovering_a_legend_row_shows_amount_and_share(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, seed_chart_rows);
     wait_until(cx, "three chart rows", |cx| {
-        shell.read(cx).dashboard.chart_rows.len() == 3
+        dash(cx, &shell).read(cx).chart_rows.len() == 3
     });
     resize_and_draw(cx, handle, 1200., 720.);
     let mut window = VisualTestContext::from_window(handle, cx);
     let value = cx.update(|cx| {
-        let r = &shell.read(cx).dashboard.chart_rows[0];
+        let r = &dash(cx, &shell).read(cx).chart_rows[0];
         assert_eq!(r.name.as_str(), "Food");
         chart_tooltip_value(r.spend_cents, r.share, "")
     });
@@ -202,10 +201,10 @@ fn hovering_a_legend_row_shows_amount_and_share(cx: &mut TestAppContext) {
 fn fifteen_category_bars_keep_their_share_labels_clear(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, seed_chart_rows);
     wait_until(cx, "three chart rows", |cx| {
-        shell.read(cx).dashboard.chart_rows.len() == 3
+        dash(cx, &shell).read(cx).chart_rows.len() == 3
     });
-    shell.update(cx, |s, cx| {
-        s.dashboard.chart_rows = (0..15)
+    dash(cx, &shell).update(cx, |d, cx| {
+        d.chart_rows = (0..15)
             .map(|i| CategorySpend {
                 id: Some(i),
                 name: format!("Cat {i:02}"),
@@ -224,7 +223,7 @@ fn fifteen_category_bars_keep_their_share_labels_clear(cx: &mut TestAppContext) 
     let panel = window
         .debug_bounds("panel:chart")
         .expect("the chart panel paints");
-    let plan_w = cx.update(|cx| shell.read(cx).chart_plot_width());
+    let plan_w = cx.update(|cx| dash(cx, &shell).read(cx).chart_plot_width());
     assert!(
         (f32::from(plot.size.width) - plan_w).abs() <= 3.,
         "the plan measured the plot at {plan_w:.1}px, it painted {:?} \
@@ -255,7 +254,7 @@ fn fifteen_category_bars_keep_their_share_labels_clear(cx: &mut TestAppContext) 
     // thinned-out ones — drop the label call in `chart_bars` or misalign
     // it and this fails.
     let bars = cx.update(|cx| {
-        shell
+        dash(cx, &shell)
             .read(cx)
             .chart_bars(plan_w, &Default::default(), gpui::black())
     });

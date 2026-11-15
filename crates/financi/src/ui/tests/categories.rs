@@ -2,7 +2,7 @@
 
 use super::*;
 
-use super::dashboard::{click_chart_legend, seed_chart_rows, top_category_id};
+use super::dashboard::{click_chart_legend, dash, seed_chart_rows, top_category_id};
 
 #[gpui::test]
 fn creates_parent_and_child(cx: &mut TestAppContext) {
@@ -145,7 +145,10 @@ fn delete_category_reassigns_transactions_and_rules(cx: &mut TestAppContext) {
     );
     wait_until(cx, "plan", |cx| plan_ready(&shell, cx));
     click_import(cx, handle, &shell);
-    wait_until(cx, "import", |cx| shell.read(cx).dashboard.row_count == 67);
+    // 3.82: the import switched to the Imports page; go back, where the
+    // hidden dashboard reloads.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
+    wait_until(cx, "import", |cx| dash(cx, &shell).read(cx).row_count == 67);
     add_parent(cx, handle, &shell, "Shopping");
     add_child(cx, handle, &shell, "Online");
     add_parent(cx, handle, &shell, "Everything Else"); // second parent to reassign onto
@@ -1258,22 +1261,22 @@ fn the_new_category_button_opens_and_closes_the_form(cx: &mut TestAppContext) {
 
 /// 3.81: Escape on the Categories page is the page's own `Cancel`, and it
 /// closes one layer per press, innermost first: the rename editor, then
-/// the new-category form, then an armed category delete. With nothing
-/// open the handler propagates, and the context-less
-/// `ClearCategorySelection` binding (3.5) clears the dashboard drill —
-/// while a layer is open the consumed keystroke must not reach it.
+/// the new-category form, then an armed category delete. 3.82 moved the
+/// dashboard's Escape binding onto the Dashboard page itself, so with
+/// nothing open the keystroke no longer reaches the drill from here —
+/// while a layer is open the consumed keystroke must not reach it either.
 #[gpui::test]
 fn escape_on_the_categories_page_closes_one_layer_per_press(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, seed_chart_rows);
     wait_until(cx, "chart rows load", |cx| {
-        shell.read(cx).dashboard.row_count == 4
+        dash(cx, &shell).read(cx).row_count == 4
     });
     // Drill the dashboard chart first: the drill lives on the shell and
     // survives the page switch, so it waits here for the last Escape.
     let food = cx.update(|cx| top_category_id(&shell, cx, "Food"));
     click_chart_legend(cx, handle, &shell, Some(food));
     wait_until(cx, "drilled into Food", |cx| {
-        shell.read(cx).dashboard.filter.chart_parent == Some(food)
+        dash(cx, &shell).read(cx).filter.chart_parent == Some(food)
     });
     cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Categories, cx)));
     wait_idle(cx, &shell);
@@ -1314,7 +1317,7 @@ fn escape_on_the_categories_page_closes_one_layer_per_press(cx: &mut TestAppCont
             "Escape closed the rename editor"
         );
         assert_eq!(
-            s.dashboard.filter.chart_parent,
+            dash(cx, &shell).read(cx).filter.chart_parent,
             Some(food),
             "the consumed Escape did not clear the drill"
         );
@@ -1368,12 +1371,17 @@ fn escape_on_the_categories_page_closes_one_layer_per_press(cx: &mut TestAppCont
         );
     });
 
-    // 4. With nothing open the handler propagates and the context-less
-    // binding clears the drill — Escape still means *clear* here.
+    // 4. With nothing open the keystroke is no longer consumed here: 3.82
+    // moved the Escape binding onto the Dashboard page, so the drill waits
+    // for an Escape *there*. Visit the dashboard and press it once —
+    // Escape still means *clear* on the page that owns the drill.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
+    let dash_root = cx.update(|cx| dash(cx, &shell).read(cx).focus.clone());
+    with_window(cx, handle, |window, cx| window.focus(&dash_root, cx));
     cx.simulate_keystrokes(handle, "escape");
     wait_until(cx, "drill and legend selection cleared", |cx| {
-        shell.read(cx).dashboard.filter.chart_parent.is_none()
-            && shell.read(cx).dashboard.filter.legend_selection.is_none()
+        dash(cx, &shell).read(cx).filter.chart_parent.is_none()
+            && dash(cx, &shell).read(cx).filter.legend_selection.is_none()
     });
 }
 

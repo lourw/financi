@@ -160,7 +160,7 @@ fn bar_share_labels(rows: &mut [ChartRow], plot_width: f32) {
     }
 }
 
-impl Shell {
+impl DashboardPage {
     /// Click a legend row (3.5). A parent at the top level drills the chart
     /// and legend into its children and filters the table to that parent;
     /// a child filters the table to itself, and clicking the selected child
@@ -171,37 +171,35 @@ impl Shell {
     pub(super) fn click_legend_row(
         &mut self,
         id: Option<i64>,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.dashboard.filter.legend_selection = match id {
-            None => (self.dashboard.filter.legend_selection
-                != Some(LegendSelection::Uncategorized))
-            .then_some(LegendSelection::Uncategorized),
-            Some(id) if self.dashboard.filter.chart_parent.is_none() => {
-                self.dashboard.filter.chart_parent = Some(id);
+        self.filter.legend_selection = match id {
+            None => (self.filter.legend_selection != Some(LegendSelection::Uncategorized))
+                .then_some(LegendSelection::Uncategorized),
+            Some(id) if self.filter.chart_parent.is_none() => {
+                self.filter.chart_parent = Some(id);
                 Some(LegendSelection::Category(id))
             }
-            Some(id) => (self.dashboard.filter.legend_selection
-                != Some(LegendSelection::Category(id)))
-            .then_some(LegendSelection::Category(id)),
+            Some(id) => (self.filter.legend_selection != Some(LegendSelection::Category(id)))
+                .then_some(LegendSelection::Category(id)),
         };
         if matches!(
-            self.dashboard.filter.legend_selection,
+            self.filter.legend_selection,
             Some(LegendSelection::Category(_))
         ) {
-            self.dashboard.filter.uncategorized_only = false;
+            self.filter.uncategorized_only = false;
         }
         // The month only ever narrows a category selection (the cell
         // highlight and the chip read both from the pair), so clearing the
         // selection clears it too — Esc does the same for both.
-        if self.dashboard.filter.legend_selection.is_none() {
-            self.dashboard.filter.summary_month = None;
+        if self.filter.legend_selection.is_none() {
+            self.filter.summary_month = None;
         }
         // 3.65: the legend highlight paints with this click, not with the
         // answer (the rows and totals are the only part that waits).
         cx.notify();
-        self.changed(Domains::SETTINGS, window, cx);
+        self.reload(cx);
     }
     /// Click a monthly summary cell (3.6): narrow the table to that
     /// category and month; clicking the same cell again clears both, the
@@ -213,37 +211,37 @@ impl Shell {
         &mut self,
         id: Option<i64>,
         month: Option<String>,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let same_category = match id {
             None => matches!(
-                self.dashboard.filter.legend_selection,
+                self.filter.legend_selection,
                 Some(LegendSelection::Uncategorized)
             ),
             Some(id) => {
-                matches!(self.dashboard.filter.legend_selection, Some(LegendSelection::Category(c)) if c == id)
+                matches!(self.filter.legend_selection, Some(LegendSelection::Category(c)) if c == id)
             }
         };
-        if same_category && self.dashboard.filter.summary_month == month {
-            self.dashboard.filter.legend_selection = None;
-            self.dashboard.filter.summary_month = None;
+        if same_category && self.filter.summary_month == month {
+            self.filter.legend_selection = None;
+            self.filter.summary_month = None;
         } else {
-            self.dashboard.filter.legend_selection = Some(match id {
+            self.filter.legend_selection = Some(match id {
                 None => LegendSelection::Uncategorized,
                 Some(id) => LegendSelection::Category(id),
             });
-            self.dashboard.filter.summary_month = month;
+            self.filter.summary_month = month;
             if id.is_some() {
                 // A real category and the uncategorized checkbox can't
                 // both narrow the table (the legend's rule).
-                self.dashboard.filter.uncategorized_only = false;
+                self.filter.uncategorized_only = false;
             }
             self.sync_chart_to_selection();
         }
         // 3.65: the cell and legend highlights paint with this click.
         cx.notify();
-        self.changed(Domains::SETTINGS, window, cx);
+        self.reload(cx);
     }
     /// Move the chart so a selection made outside the legend (a summary
     /// cell) is visible in the legend rows: a parent shows at the top
@@ -251,16 +249,16 @@ impl Shell {
     /// refresh revalidation of `legend_selection` from dropping a
     /// summary-made selection.
     fn sync_chart_to_selection(&mut self) {
-        let Some(selection) = self.dashboard.filter.legend_selection else {
+        let Some(selection) = self.filter.legend_selection else {
             return;
         };
         match selection {
-            LegendSelection::Uncategorized => self.dashboard.filter.chart_parent = None,
+            LegendSelection::Uncategorized => self.filter.chart_parent = None,
             LegendSelection::Category(id) => {
                 if let Some(parent) = self.parent_of(id) {
-                    self.dashboard.filter.chart_parent = Some(parent);
-                } else if self.dashboard.filter.chart_parent != Some(id) {
-                    self.dashboard.filter.chart_parent = None;
+                    self.filter.chart_parent = Some(parent);
+                } else if self.filter.chart_parent != Some(id) {
+                    self.filter.chart_parent = None;
                 }
             }
         }
@@ -276,8 +274,8 @@ impl Shell {
     /// Click a summary parent's name or chevron: show or hide its child
     /// rows (3.6). Pure view state, so no re-query — just a repaint.
     pub(super) fn toggle_summary_parent(&mut self, id: i64) {
-        if !self.dashboard.expanded_parents.insert(id) {
-            self.dashboard.expanded_parents.remove(&id);
+        if !self.expanded_parents.insert(id) {
+            self.expanded_parents.remove(&id);
         }
     }
     /// The summary rows prepared for drawing: the grid's rows with their
@@ -285,9 +283,9 @@ impl Shell {
     /// month values followed by the `Total`. The query's last three rows
     /// are always `Income`, `Spend` and `Net`.
     pub(super) fn summary_rows(&self) -> Vec<SummaryRowView> {
-        let n = self.dashboard.summary.rows.len();
+        let n = self.summary.rows.len();
         let mut views = Vec::with_capacity(n);
-        for (ix, row) in self.dashboard.summary.rows.iter().enumerate() {
+        for (ix, row) in self.summary.rows.iter().enumerate() {
             let kind = if ix + 3 >= n {
                 match n - ix {
                     3 => SummaryRowKind::Income,
@@ -299,7 +297,7 @@ impl Shell {
                     None => SummaryRowKind::Uncategorized,
                     Some(id) => match self.parent_of(id) {
                         Some(parent) => {
-                            if !self.dashboard.expanded_parents.contains(&parent) {
+                            if !self.expanded_parents.contains(&parent) {
                                 continue;
                             }
                             SummaryRowKind::Child
@@ -309,7 +307,7 @@ impl Shell {
                                 .categories
                                 .iter()
                                 .any(|p| p.id == id && !p.children.is_empty()),
-                            expanded: self.dashboard.expanded_parents.contains(&id),
+                            expanded: self.expanded_parents.contains(&id),
                         },
                     },
                 }
@@ -330,33 +328,33 @@ impl Shell {
         views[..categories_end].sort_by_key(|v| v.kind == SummaryRowKind::Uncategorized);
         views
     }
-    /// The dashboard middle row (3.5): the `BarChart` of spend per category
-    /// beside a clickable legend, in the left half; the monthly summary
-    /// (3.6) takes the right half later. `BarChart` takes no clicks, so all
-    /// interactivity lives in the legend rows (ui-conventions, *Interaction*).
-    /// The palette color of every category (ui-conventions, *Category
-    /// colors*): position among the siblings sorted by category id, so a
-    /// category keeps its color when the date range reorders the rows;
-    /// children start at the front of the palette under their own parent.
-    /// Shared by the chart, its legend and the monthly summary swatches.
-    pub(super) fn category_colors(
-        &self,
-        theme: &gpui_kit::component::theme::Theme,
-    ) -> HashMap<i64, Hsla> {
-        let palette = category_palette(theme);
-        let mut colors = HashMap::new();
-        let mut parents: Vec<&CategoryNode> = self.categories.iter().collect();
-        parents.sort_by_key(|n| n.id);
-        for (ix, parent) in parents.iter().enumerate() {
-            colors.insert(parent.id, palette[ix % 12]);
-            let mut kids: Vec<&CategoryNode> = parent.children.iter().collect();
-            kids.sort_by_key(|n| n.id);
-            for (cix, kid) in kids.iter().enumerate() {
-                colors.insert(kid.id, palette[cix % 12]);
-            }
+}
+
+/// The 3.23 category palette: parents and children sorted by id, colors
+/// assigned in that order. The dashboard chart and the Categories tree
+/// show the same color for the same category (ui-conventions, *Category
+/// colors*); 3.82 made it a free function so both pages call it with
+/// their own tree mirror.
+pub(super) fn category_colors(
+    tree: &[CategoryNode],
+    theme: &gpui_kit::component::theme::Theme,
+) -> HashMap<i64, Hsla> {
+    let palette = category_palette(theme);
+    let mut colors = HashMap::new();
+    let mut parents: Vec<&CategoryNode> = tree.iter().collect();
+    parents.sort_by_key(|n| n.id);
+    for (ix, parent) in parents.iter().enumerate() {
+        colors.insert(parent.id, palette[ix % 12]);
+        let mut kids: Vec<&CategoryNode> = parent.children.iter().collect();
+        kids.sort_by_key(|n| n.id);
+        for (cix, kid) in kids.iter().enumerate() {
+            colors.insert(kid.id, palette[cix % 12]);
         }
-        colors
     }
+    colors
+}
+
+impl DashboardPage {
     /// The plot's width for the current window: the sidebar and page
     /// padding come off the window width, `CHART_PANEL_SHARE` of what
     /// remains is the chart panel, and inside the panel its padding, the
@@ -368,7 +366,7 @@ impl Shell {
     /// The chart's label plan (3.15) for the current window: how many
     /// characters a band label may use and how many labels are drawn.
     pub(super) fn chart_label_plan(&self) -> (usize, usize) {
-        band_label_budget(self.chart_plot_width(), self.dashboard.chart_rows.len())
+        band_label_budget(self.chart_plot_width(), self.chart_rows.len())
     }
     /// The chart's rows prepared for drawing (3.15, 3.31): band labels
     /// fitted to the current budget, each row's share over its bar
@@ -384,7 +382,6 @@ impl Shell {
         let (label_chars, _) = self.chart_label_plan();
         let shorts = short_chart_labels(
             &self
-                .dashboard
                 .chart_rows
                 .iter()
                 .map(|r| r.name.clone())
@@ -392,7 +389,6 @@ impl Shell {
             label_chars,
         );
         let mut rows: Vec<ChartRow> = self
-            .dashboard
             .chart_rows
             .iter()
             .zip(shorts)
@@ -413,6 +409,10 @@ impl Shell {
         bar_share_labels(&mut rows, plot_width);
         rows
     }
+    /// The dashboard middle row (3.5): the `BarChart` of spend per category
+    /// beside a clickable legend, in the left half; the monthly summary
+    /// (3.6) takes the right half later. `BarChart` takes no clicks, so all
+    /// interactivity lives in the legend rows (ui-conventions, *Interaction*).
     pub(super) fn chart_panel(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let (border, background, muted, list_active, radius, colors) = {
             let theme = cx.theme();
@@ -422,7 +422,7 @@ impl Shell {
                 theme.muted_foreground,
                 theme.list_active,
                 theme.radius,
-                self.category_colors(theme),
+                category_colors(&self.categories, theme),
             )
         };
         // Band label thinning for the axis (3.15); the rows themselves —
@@ -430,15 +430,14 @@ impl Shell {
         // preparation the tests exercise.
         let label_count = self.chart_label_plan().1;
         let rows = self.chart_bars(self.chart_plot_width(), &colors, muted);
-        let selection = self.dashboard.filter.legend_selection;
+        let selection = self.filter.legend_selection;
         // The `Uncategorized` row is active when the 3.4 checkbox drives the
         // same clause, so the legend never contradicts the toolbar.
         let uncategorized_active = matches!(selection, Some(LegendSelection::Uncategorized))
-            || self.dashboard.filter.uncategorized_only;
+            || self.filter.uncategorized_only;
         // The parent suffix of the tooltip text (" of Food" once drilled
         // in); empty at the top level.
         let parent_name = self
-            .dashboard
             .filter
             .chart_parent
             .and_then(|p| self.categories.iter().find(|n| n.id == p))
@@ -493,7 +492,7 @@ impl Shell {
             .min_h_0()
             .gap_1()
             .overflow_y_scroll()
-            .when(self.dashboard.filter.chart_parent.is_some(), |list| {
+            .when(self.filter.chart_parent.is_some(), |list| {
                 list.child(
                     div()
                         .id("legend-all")
@@ -628,7 +627,7 @@ impl Shell {
                 theme.danger,
                 theme.success,
                 theme.radius,
-                self.category_colors(theme),
+                category_colors(&self.categories, theme),
             )
         };
         // `month_grid` fills the range's months even when no transaction
@@ -660,9 +659,9 @@ impl Shell {
                 )
                 .into_any_element();
         }
-        let selection = self.dashboard.filter.legend_selection;
-        let selected_month = self.dashboard.filter.summary_month.clone();
-        let month_values = self.dashboard.summary.months.clone();
+        let selection = self.filter.legend_selection;
+        let selected_month = self.filter.summary_month.clone();
+        let month_values = self.summary.months.clone();
         let rows = self.summary_rows();
 
         // Pinned columns and scrolling months (3.30): the name column and
@@ -707,22 +706,20 @@ impl Shell {
             .px_1()
             .child(div().w(px(NAME_W)).flex_none())
             .child(
-                month_viewport(
-                    "summary:months-header".into(),
-                    &self.dashboard.summary_scroll,
-                )
-                .child(months_strip().children(
-                    month_values.iter().enumerate().map(|(col_ix, month)| {
-                        div()
-                            .w(px(MONTH_W))
-                            .flex_none()
-                            .debug_selector(move || format!("summary:month-label-{col_ix}"))
-                            .text_right()
-                            .text_sm()
-                            .text_color(muted)
-                            .child(flow::month_label(month))
-                    }),
-                )),
+                month_viewport("summary:months-header".into(), &self.summary_scroll).child(
+                    months_strip().children(month_values.iter().enumerate().map(
+                        |(col_ix, month)| {
+                            div()
+                                .w(px(MONTH_W))
+                                .flex_none()
+                                .debug_selector(move || format!("summary:month-label-{col_ix}"))
+                                .text_right()
+                                .text_sm()
+                                .text_color(muted)
+                                .child(flow::month_label(month))
+                        },
+                    )),
+                ),
             )
             .child(
                 div()
@@ -897,11 +894,8 @@ impl Shell {
                     .when(is_income, |r| r.border_t_1().border_color(border))
                     .child(name_cell)
                     .child(
-                        month_viewport(
-                            format!("summary:months-{ix}"),
-                            &self.dashboard.summary_scroll,
-                        )
-                        .child(months_strip().children(month_cells)),
+                        month_viewport(format!("summary:months-{ix}"), &self.summary_scroll)
+                            .child(months_strip().children(month_cells)),
                     )
                     .child(total_cell)
                     .into_any_element()
@@ -944,7 +938,7 @@ impl Shell {
                     .bottom(px(4.))
                     .h(px(12.))
                     .child(
-                        Scrollbar::horizontal(&self.dashboard.summary_scroll)
+                        Scrollbar::horizontal(&self.summary_scroll)
                             .mode(ScrollbarMode::Always)
                             .viewport_from_layout(),
                     ),
@@ -959,7 +953,7 @@ impl Shell {
     pub(super) fn dashboard_body(&self) -> DashboardBody {
         if self.total_visible == 0 {
             DashboardBody::NoData
-        } else if self.dashboard.row_count == 0 {
+        } else if self.row_count == 0 {
             DashboardBody::NoMatches
         } else {
             DashboardBody::Rows
@@ -969,9 +963,8 @@ impl Shell {
     /// the range with zero months, so an empty range is an all-zero grid
     /// rather than an empty `months` (task 3.10).
     pub(super) fn summary_has_data(&self) -> bool {
-        !self.dashboard.summary.months.is_empty()
+        !self.summary.months.is_empty()
             && self
-                .dashboard
                 .summary
                 .rows
                 .iter()

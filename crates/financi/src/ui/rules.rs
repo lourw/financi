@@ -1764,12 +1764,4 @@ impl Shell {
             p.commit_new_rule(category_id, window, cx);
         });
     }
-
-    /// 3.80: the dashboard's Show rule forwards to the page, which folds
-    /// in any refresh it missed, sets the filters and reveal, and only
-    /// then asks the shell to switch (`RulesPage::show_rule`).
-    pub(super) fn show_rule(&mut self, rule_id: i64, window: &mut Window, cx: &mut Context<Self>) {
-        self.rules_page
-            .update(cx, |p, cx| p.show_rule(rule_id, window, cx));
-    }
 }

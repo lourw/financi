@@ -83,12 +83,12 @@ fn seed_summary_rows_uncategorized_largest(conn: &financi_db::rusqlite::Connecti
 /// covers exactly the two seeded months.
 fn set_all_time(cx: &mut TestAppContext, handle: AnyWindowHandle, shell: &Entity<Shell>) {
     with_window(cx, handle, |window, cx| {
-        shell.update(cx, |s, cx| {
-            s.change_date_preset(DatePreset::AllTime, window, cx);
+        dash(cx, shell).update(cx, |d, cx| {
+            d.change_date_preset(DatePreset::AllTime, window, cx);
         });
     });
     wait_until(cx, "summary covers the two seeded months", |cx| {
-        shell.read(cx).dashboard.summary.months == ["2026-03", "2026-04"]
+        dash(cx, shell).read(cx).summary.months == ["2026-03", "2026-04"]
     });
 }
 
@@ -102,15 +102,15 @@ fn click_summary_cell(
     month: Option<&str>,
 ) {
     let found = cx.update(|cx| {
-        let s = shell.read(cx);
-        let ix = s.summary_rows().iter().position(|r| {
+        let d = dash(cx, shell).read(cx);
+        let ix = d.summary_rows().iter().position(|r| {
             r.id == id
                 && !matches!(
                     r.kind,
                     SummaryRowKind::Income | SummaryRowKind::Spend | SummaryRowKind::Net
                 )
         })?;
-        let months = &s.dashboard.summary.months;
+        let months = &d.summary.months;
         let col = match month {
             Some(m) => months.iter().position(|x| x == m)?,
             None => months.len(),
@@ -135,7 +135,7 @@ fn expand_summary_parent(
     parent: i64,
 ) {
     let ix = cx.update(|cx| {
-        shell
+        dash(cx, shell)
             .read(cx)
             .summary_rows()
             .iter()
@@ -147,7 +147,7 @@ fn expand_summary_parent(
     click(cx, handle, format!("summary:name-{ix}"));
     wait_until(cx, "parent expanded", |cx| {
         matches!(
-            shell
+            dash(cx, shell)
                 .read(cx)
                 .summary_rows()
                 .iter()
@@ -159,7 +159,7 @@ fn expand_summary_parent(
 }
 
 fn summary_row_names(shell: &Entity<Shell>, cx: &App) -> Vec<String> {
-    shell
+    dash(cx, shell)
         .read(cx)
         .summary_rows()
         .into_iter()
@@ -168,7 +168,7 @@ fn summary_row_names(shell: &Entity<Shell>, cx: &App) -> Vec<String> {
 }
 
 fn summary_parent_id(shell: &Entity<Shell>, cx: &App, name: &str) -> i64 {
-    shell
+    dash(cx, shell)
         .read(cx)
         .summary_rows()
         .into_iter()
@@ -183,10 +183,10 @@ fn summary_shows_months_total_and_the_three_total_rows(cx: &mut TestAppContext) 
     let (handle, shell) = open_shell(cx, seed_summary_rows);
     set_all_time(cx, handle, &shell);
     wait_until(cx, "table loaded", |cx| {
-        shell.read(cx).dashboard.row_count == 7
+        dash(cx, &shell).read(cx).row_count == 7
     });
     cx.update(|cx| {
-        let rows = shell.read(cx).summary_rows();
+        let rows = dash(cx, &shell).read(cx).summary_rows();
         let names: Vec<String> = rows.iter().map(|r| r.name.to_string()).collect();
         // Children are collapsed by default; the three total rows close
         // the grid.
@@ -226,13 +226,13 @@ fn clicking_a_summary_cell_filters_the_table_to_category_and_month(cx: &mut Test
     let (handle, shell) = open_shell(cx, seed_summary_rows);
     set_all_time(cx, handle, &shell);
     wait_until(cx, "table loaded", |cx| {
-        shell.read(cx).dashboard.row_count == 7
+        dash(cx, &shell).read(cx).row_count == 7
     });
     let food = cx.update(|cx| summary_parent_id(&shell, cx, "Food"));
 
     click_summary_cell(cx, handle, &shell, Some(food), Some("2026-03"));
     wait_until(cx, "only March's Food rows", |cx| {
-        shell.read(cx).dashboard.row_count == 2
+        dash(cx, &shell).read(cx).row_count == 2
     });
     cx.update(|cx| {
         let rows = table_rows(&shell, cx);
@@ -240,23 +240,23 @@ fn clicking_a_summary_cell_filters_the_table_to_category_and_month(cx: &mut Test
         descs.sort_unstable();
         assert_eq!(descs, ["CORNER CAFE MAR", "GROCER STORE MAR"]);
         assert_eq!(
-            shell.read(cx).dashboard.filter.summary_month.as_deref(),
+            dash(cx, &shell).read(cx).filter.summary_month.as_deref(),
             Some("2026-03")
         );
         assert_eq!(
-            shell.read(cx).dashboard.filter.legend_selection,
+            dash(cx, &shell).read(cx).filter.legend_selection,
             Some(LegendSelection::Category(food))
         );
         // The parent is visible at the top level, so the chart stays put.
-        assert!(shell.read(cx).dashboard.filter.chart_parent.is_none());
+        assert!(dash(cx, &shell).read(cx).filter.chart_parent.is_none());
     });
 
     // Clicking the same cell again clears both halves of the filter.
     click_summary_cell(cx, handle, &shell, Some(food), Some("2026-03"));
     wait_until(cx, "all rows back", |cx| {
-        shell.read(cx).dashboard.row_count == 7
-            && shell.read(cx).dashboard.filter.summary_month.is_none()
-            && shell.read(cx).dashboard.filter.legend_selection.is_none()
+        dash(cx, &shell).read(cx).row_count == 7
+            && dash(cx, &shell).read(cx).filter.summary_month.is_none()
+            && dash(cx, &shell).read(cx).filter.legend_selection.is_none()
     });
 }
 
@@ -265,7 +265,7 @@ fn clicking_a_child_summary_cell_drills_the_chart_to_its_parent(cx: &mut TestApp
     let (handle, shell) = open_shell(cx, seed_summary_rows);
     set_all_time(cx, handle, &shell);
     wait_until(cx, "table loaded", |cx| {
-        shell.read(cx).dashboard.row_count == 7
+        dash(cx, &shell).read(cx).row_count == 7
     });
     let groceries = cx.update(|cx| find_child(&shell, cx, "Groceries").unwrap());
     // Children only paint once the parent is expanded — click its cell,
@@ -275,21 +275,21 @@ fn clicking_a_child_summary_cell_drills_the_chart_to_its_parent(cx: &mut TestApp
 
     click_summary_cell(cx, handle, &shell, Some(groceries), Some("2026-04"));
     wait_until(cx, "only April's Groceries row", |cx| {
-        shell.read(cx).dashboard.row_count == 1
+        dash(cx, &shell).read(cx).row_count == 1
     });
     cx.update(|cx| {
         assert_eq!(table_rows(&shell, cx)[0].description, "GROCER STORE APR");
         assert_eq!(
-            shell.read(cx).dashboard.filter.legend_selection,
+            dash(cx, &shell).read(cx).filter.legend_selection,
             Some(LegendSelection::Category(groceries))
         );
         assert_eq!(
-            shell.read(cx).dashboard.filter.summary_month.as_deref(),
+            dash(cx, &shell).read(cx).filter.summary_month.as_deref(),
             Some("2026-04")
         );
         // The selection must be one of the legend's rows, so the chart
         // drills to the child's parent and stays there across refreshes.
-        assert_eq!(shell.read(cx).dashboard.filter.chart_parent, Some(food));
+        assert_eq!(dash(cx, &shell).read(cx).filter.chart_parent, Some(food));
     });
 }
 
@@ -299,9 +299,9 @@ fn expanding_a_summary_parent_shows_its_child_rows(cx: &mut TestAppContext) {
     set_all_time(cx, handle, &shell);
     let food = cx.update(|cx| summary_parent_id(&shell, cx, "Food"));
 
-    cx.update(|cx| shell.update(cx, |s, _| s.toggle_summary_parent(food)));
+    cx.update(|cx| dash(cx, &shell).update(cx, |d, _| d.toggle_summary_parent(food)));
     cx.update(|cx| {
-        let rows = shell.read(cx).summary_rows();
+        let rows = dash(cx, &shell).read(cx).summary_rows();
         let names: Vec<String> = rows.iter().map(|r| r.name.to_string()).collect();
         assert_eq!(
             names,
@@ -329,7 +329,7 @@ fn expanding_a_summary_parent_shows_its_child_rows(cx: &mut TestAppContext) {
     });
 
     // Collapse again: the children disappear.
-    cx.update(|cx| shell.update(cx, |s, _| s.toggle_summary_parent(food)));
+    cx.update(|cx| dash(cx, &shell).update(cx, |d, _| d.toggle_summary_parent(food)));
     cx.update(|cx| {
         assert_eq!(
             summary_row_names(&shell, cx),
@@ -354,7 +354,7 @@ fn clearing_the_legend_selection_clears_the_summary_month(cx: &mut TestAppContex
     let (handle, shell) = open_shell(cx, seed_summary_rows);
     set_all_time(cx, handle, &shell);
     wait_until(cx, "table loaded", |cx| {
-        shell.read(cx).dashboard.row_count == 7
+        dash(cx, &shell).read(cx).row_count == 7
     });
     let food = cx.update(|cx| summary_parent_id(&shell, cx, "Food"));
     let groceries = cx.update(|cx| find_child(&shell, cx, "Groceries").unwrap());
@@ -364,39 +364,39 @@ fn clearing_the_legend_selection_clears_the_summary_month(cx: &mut TestAppContex
     // Re-clicking the selected legend row: the pair clears together.
     click_summary_cell(cx, handle, &shell, Some(groceries), Some("2026-04"));
     wait_until(cx, "only April's Groceries row", |cx| {
-        shell.read(cx).dashboard.row_count == 1
+        dash(cx, &shell).read(cx).row_count == 1
     });
     click_chart_legend(cx, handle, &shell, Some(groceries));
     wait_until(cx, "the month goes with the selection", |cx| {
-        shell.read(cx).dashboard.row_count == 7
-            && shell.read(cx).dashboard.filter.legend_selection.is_none()
-            && shell.read(cx).dashboard.filter.summary_month.is_none()
+        dash(cx, &shell).read(cx).row_count == 7
+            && dash(cx, &shell).read(cx).filter.legend_selection.is_none()
+            && dash(cx, &shell).read(cx).filter.summary_month.is_none()
     });
 
     // Re-clicking the `Uncategorized` legend row: the same.
     click_summary_cell(cx, handle, &shell, None, Some("2026-03"));
     wait_until(cx, "only March's uncategorized row", |cx| {
-        shell.read(cx).dashboard.row_count == 1
+        dash(cx, &shell).read(cx).row_count == 1
     });
     click_chart_legend(cx, handle, &shell, None);
     wait_until(cx, "the month goes with the uncategorized row", |cx| {
-        shell.read(cx).dashboard.row_count == 7
-            && shell.read(cx).dashboard.filter.legend_selection.is_none()
-            && shell.read(cx).dashboard.filter.summary_month.is_none()
+        dash(cx, &shell).read(cx).row_count == 7
+            && dash(cx, &shell).read(cx).filter.legend_selection.is_none()
+            && dash(cx, &shell).read(cx).filter.summary_month.is_none()
     });
 
     // "← All categories".
     click_summary_cell(cx, handle, &shell, Some(food), Some("2026-03"));
     wait_until(cx, "only March's Food rows", |cx| {
-        shell.read(cx).dashboard.row_count == 2
+        dash(cx, &shell).read(cx).row_count == 2
     });
     with_window(cx, handle, |window, cx| {
-        shell.update(cx, |s, cx| s.show_all_categories(window, cx));
+        dash(cx, &shell).update(cx, |d, cx| d.show_all_categories(window, cx));
     });
     wait_until(cx, "the month goes with all-categories", |cx| {
-        shell.read(cx).dashboard.row_count == 7
-            && shell.read(cx).dashboard.filter.legend_selection.is_none()
-            && shell.read(cx).dashboard.filter.summary_month.is_none()
+        dash(cx, &shell).read(cx).row_count == 7
+            && dash(cx, &shell).read(cx).filter.legend_selection.is_none()
+            && dash(cx, &shell).read(cx).filter.summary_month.is_none()
     });
 
     // Turning on "Uncategorized only" over a category selection. Without
@@ -404,20 +404,20 @@ fn clearing_the_legend_selection_clears_the_summary_month(cx: &mut TestAppContex
     // uncategorized April rows instead of the one uncategorized row.
     click_summary_cell(cx, handle, &shell, Some(food), Some("2026-04"));
     wait_until(cx, "only April's Food row", |cx| {
-        shell.read(cx).dashboard.row_count == 1
+        dash(cx, &shell).read(cx).row_count == 1
     });
     set_uncategorized_only(cx, handle, &shell, true);
     wait_until(cx, "uncategorized rows without the month", |cx| {
-        shell.read(cx).dashboard.filter.legend_selection.is_none()
-            && shell.read(cx).dashboard.filter.summary_month.is_none()
-            && shell.read(cx).dashboard.filter.uncategorized_only
+        dash(cx, &shell).read(cx).filter.legend_selection.is_none()
+            && dash(cx, &shell).read(cx).filter.summary_month.is_none()
+            && dash(cx, &shell).read(cx).filter.uncategorized_only
             && table_rows(&shell, cx)
                 .iter()
                 .map(|r| r.description.as_str())
                 .eq(["Mystery Vendor"])
     });
     cx.update(|cx| {
-        assert_eq!(shell.read(cx).dashboard.row_count, 1);
+        assert_eq!(dash(cx, &shell).read(cx).row_count, 1);
     });
 }
 
@@ -429,13 +429,13 @@ fn uncategorized_is_the_last_summary_category_row_whatever_its_amount(cx: &mut T
     let (handle, shell) = open_shell(cx, seed_summary_rows_uncategorized_largest);
     set_all_time(cx, handle, &shell);
     wait_until(cx, "table loaded", |cx| {
-        shell.read(cx).dashboard.row_count == 8
+        dash(cx, &shell).read(cx).row_count == 8
     });
     cx.update(|cx| {
         // The query really does put the biggest row — Uncategorized —
         // first, so the ordering below comes from the view's sort.
-        assert_eq!(shell.read(cx).dashboard.summary.rows[0].id, None);
-        let rows = shell.read(cx).summary_rows();
+        assert_eq!(dash(cx, &shell).read(cx).summary.rows[0].id, None);
+        let rows = dash(cx, &shell).read(cx).summary_rows();
         let names: Vec<String> = rows.iter().map(|r| r.name.to_string()).collect();
         assert_eq!(
             names,

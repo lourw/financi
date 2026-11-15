@@ -8,16 +8,12 @@ fn shell_starts_on_the_default_last_three_months(cx: &mut TestAppContext) {
     // Before the restore lands `view_filter` is still the open default;
     // narrower bounds prove the saved setting (here: none) was applied.
     wait_until(cx, "default date range restored", |cx| {
-        shell.read(cx).dashboard.view_filter.from > ViewFilter::default().from
+        dash(cx, &shell).read(cx).view_filter.from > ViewFilter::default().from
     });
-    let (from, to) = preset_range(DatePreset::Last3Months, Shell::today());
+    let (from, to) = preset_range(DatePreset::Last3Months, DashboardPage::today());
     let state = cx.update(|cx| {
-        let s = shell.read(cx);
-        (
-            s.dashboard.filter.date_range,
-            s.dashboard.view_filter.from,
-            s.dashboard.view_filter.to,
-        )
+        let d = dash(cx, &shell).read(cx);
+        (d.filter.date_range, d.view_filter.from, d.view_filter.to)
     });
     assert_eq!(
         state,
@@ -31,23 +27,19 @@ fn shell_starts_on_the_default_last_three_months(cx: &mut TestAppContext) {
 fn choosing_a_preset_updates_the_filter_and_persists(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, |_| {});
     wait_until(cx, "date range restored", |cx| {
-        shell.read(cx).dashboard.view_filter.from > ViewFilter::default().from
+        dash(cx, &shell).read(cx).view_filter.from > ViewFilter::default().from
     });
 
     with_window(cx, handle, |window, cx| {
-        shell.update(cx, |s, cx| {
-            s.change_date_preset(DatePreset::LastMonth, window, cx)
+        dash(cx, &shell).update(cx, |d, cx| {
+            d.change_date_preset(DatePreset::LastMonth, window, cx)
         });
     });
 
-    let (from, to) = preset_range(DatePreset::LastMonth, Shell::today());
+    let (from, to) = preset_range(DatePreset::LastMonth, DashboardPage::today());
     let state = cx.update(|cx| {
-        let s = shell.read(cx);
-        (
-            s.dashboard.filter.date_range,
-            s.dashboard.view_filter.from,
-            s.dashboard.view_filter.to,
-        )
+        let d = dash(cx, &shell).read(cx);
+        (d.filter.date_range, d.view_filter.from, d.view_filter.to)
     });
     assert_eq!(state, (DateRange::Preset(DatePreset::LastMonth), from, to));
     // Let the persist task run until it awaits the worker, so its write
@@ -63,7 +55,7 @@ fn choosing_a_preset_updates_the_filter_and_persists(cx: &mut TestAppContext) {
 /// One spend and one income row in the current month and one pair three
 /// calendar months back (just outside "Last 3 months"), so the default
 /// preset and "All time" show different totals. Dates are derived from
-/// `Shell::today()`, so the test passes whenever it runs.
+/// `DashboardPage::today()`, so the test passes whenever it runs.
 fn seed_preset_totals_rows(conn: &financi_db::rusqlite::Connection) {
     let acct = create_account(conn, "amex", "Cobalt", AccountKind::CreditCard).unwrap();
     conn.execute(
@@ -83,7 +75,7 @@ fn seed_preset_totals_rows(conn: &financi_db::rusqlite::Connection) {
     // "Last 3 months" (which opens on the first of two months back) and
     // exactly three month columns away, so the All-time grid is four
     // months wide whatever day the test runs.
-    let today = Shell::today();
+    let today = DashboardPage::today();
     let old = today
         .with_day(1)
         .expect("first of the month")
@@ -124,23 +116,22 @@ fn dashboard_totals(
     shell: &Entity<Shell>,
     cx: &App,
 ) -> (Vec<String>, Vec<i64>, Vec<i64>, Vec<i64>, i64) {
-    let s = shell.read(cx);
+    let d = dash(cx, shell).read(cx);
     let cells = |name: &str| {
-        s.summary_rows()
+        d.summary_rows()
             .into_iter()
             .find(|r| r.name == name)
             .expect("a total row")
             .cells
     };
-    let food = s
-        .dashboard
+    let food = d
         .chart_rows
         .iter()
         .find(|r| r.name == "Food")
         .expect("Food legend row")
         .spend_cents;
     (
-        s.dashboard.summary.months.clone(),
+        d.summary.months.clone(),
         cells("Income"),
         cells("Spend"),
         cells("Net"),
@@ -151,7 +142,7 @@ fn dashboard_totals(
 #[gpui::test]
 fn changing_the_preset_updates_the_dashboard_totals(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, seed_preset_totals_rows);
-    let today = Shell::today();
+    let today = DashboardPage::today();
     let month_label = |n: u32| {
         today
             .checked_sub_months(chrono::Months::new(n))
@@ -167,7 +158,8 @@ fn changing_the_preset_updates_the_dashboard_totals(cx: &mut TestAppContext) {
     // Default "Last 3 months": only the current month's rows count; the
     // grid shows the three months of the range.
     wait_until(cx, "last-3-months totals", |cx| {
-        shell.read(cx).dashboard.row_count == 2 && shell.read(cx).dashboard.summary.months == last3
+        dash(cx, &shell).read(cx).row_count == 2
+            && dash(cx, &shell).read(cx).summary.months == last3
     });
     let totals = cx.update(|cx| dashboard_totals(&shell, cx));
     assert_eq!(
@@ -183,16 +175,16 @@ fn changing_the_preset_updates_the_dashboard_totals(cx: &mut TestAppContext) {
     );
 
     with_window(cx, handle, |window, cx| {
-        shell.update(cx, |s, cx| {
-            s.change_date_preset(DatePreset::AllTime, window, cx)
+        dash(cx, &shell).update(cx, |d, cx| {
+            d.change_date_preset(DatePreset::AllTime, window, cx)
         });
     });
 
     // "All time" pulls in the old pair: the grid clamps to the data span
     // and every number grows.
     wait_until(cx, "all-time totals", |cx| {
-        shell.read(cx).dashboard.row_count == 4
-            && shell.read(cx).dashboard.summary.months == all_months
+        dash(cx, &shell).read(cx).row_count == 4
+            && dash(cx, &shell).read(cx).summary.months == all_months
     });
     assert_eq!(
         cx.update(|cx| dashboard_totals(&shell, cx)),
@@ -215,11 +207,11 @@ fn a_saved_custom_range_is_restored_at_launch(cx: &mut TestAppContext) {
         settings::set(c, UI_DATE_RANGE, "custom:2026-03-01..2026-03-31").unwrap();
     });
     wait_until(cx, "custom range restored", |cx| {
-        shell.read(cx).dashboard.filter.date_range == DateRange::Custom { from, to }
+        dash(cx, &shell).read(cx).filter.date_range == DateRange::Custom { from, to }
     });
     let state = cx.update(|cx| {
-        let s = shell.read(cx);
-        (s.dashboard.view_filter.from, s.dashboard.view_filter.to)
+        let d = dash(cx, &shell).read(cx);
+        (d.view_filter.from, d.view_filter.to)
     });
     assert_eq!(state, (from, to));
 }
@@ -239,17 +231,18 @@ fn launch_runs_one_refresh_with_the_saved_date_range(cx: &mut TestAppContext) {
     // would show two, so a table with one row proves the very first query
     // used the saved setting — there is no second refresh fixing it up.
     wait_until(cx, "first data uses the saved range", |cx| {
-        shell.read(cx).dashboard.row_count == 1
+        dash(cx, &shell).read(cx).row_count == 1
     });
     // Read the count before anything else can queue a job (`db_setting`
     // and friends push their own).
     let (jobs, range, from, to) = cx.update(|cx| {
         let s = shell.read(cx);
+        let d = dash(cx, &shell).read(cx);
         (
             s.db.job_count(),
-            s.dashboard.filter.date_range,
-            s.dashboard.view_filter.from,
-            s.dashboard.view_filter.to,
+            d.filter.date_range,
+            d.view_filter.from,
+            d.view_filter.to,
         )
     });
     assert_eq!(jobs, 2, "one launch = the full reload + the dashboard load");
@@ -268,9 +261,9 @@ fn a_garbage_setting_falls_back_to_the_default(cx: &mut TestAppContext) {
         settings::set(c, UI_DATE_RANGE, "last13").unwrap();
     });
     wait_until(cx, "garbage replaced by default", |cx| {
-        shell.read(cx).dashboard.view_filter.from > ViewFilter::default().from
+        dash(cx, &shell).read(cx).view_filter.from > ViewFilter::default().from
     });
-    let range = cx.update(|cx| shell.read(cx).dashboard.filter.date_range);
+    let range = cx.update(|cx| dash(cx, &shell).read(cx).filter.date_range);
     assert_eq!(range, DateRange::Preset(DatePreset::Last3Months));
 }
 
@@ -278,21 +271,21 @@ fn a_garbage_setting_falls_back_to_the_default(cx: &mut TestAppContext) {
 fn picking_a_custom_range_persists_and_normalizes(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, |_| {});
     wait_until(cx, "date range restored", |cx| {
-        shell.read(cx).dashboard.view_filter.from > ViewFilter::default().from
+        dash(cx, &shell).read(cx).view_filter.from > ViewFilter::default().from
     });
 
     // Switch to "Custom…", then pick both dates with the pickers.
     with_window(cx, handle, |window, cx| {
-        shell.update(cx, |s, cx| {
-            s.change_date_preset(DatePreset::Custom, window, cx)
+        dash(cx, &shell).update(cx, |d, cx| {
+            d.change_date_preset(DatePreset::Custom, window, cx)
         });
     });
     let start = NaiveDate::from_ymd_opt(2026, 3, 1).unwrap();
     let end = NaiveDate::from_ymd_opt(2026, 3, 31).unwrap();
     with_window(cx, handle, |window, cx| {
-        shell.update(cx, |s, cx| {
-            s.date_picked(false, start, window, cx);
-            s.date_picked(true, end, window, cx);
+        dash(cx, &shell).update(cx, |d, cx| {
+            d.date_picked(false, start, window, cx);
+            d.date_picked(true, end, window, cx);
         });
     });
     // Let the persist task queue its write before reading (the worker is FIFO).
@@ -303,12 +296,8 @@ fn picking_a_custom_range_persists_and_normalizes(cx: &mut TestAppContext) {
         "the picker writes the custom range"
     );
     let state = cx.update(|cx| {
-        let s = shell.read(cx);
-        (
-            s.dashboard.filter.date_range,
-            s.dashboard.view_filter.from,
-            s.dashboard.view_filter.to,
-        )
+        let d = dash(cx, &shell).read(cx);
+        (d.filter.date_range, d.view_filter.from, d.view_filter.to)
     });
     assert_eq!(
         state,
@@ -326,7 +315,7 @@ fn picking_a_custom_range_persists_and_normalizes(cx: &mut TestAppContext) {
     // pickers show the corrected order rather than the reversed pick.
     let early = NaiveDate::from_ymd_opt(2026, 1, 15).unwrap();
     with_window(cx, handle, |window, cx| {
-        shell.update(cx, |s, cx| s.date_picked(true, early, window, cx));
+        dash(cx, &shell).update(cx, |d, cx| d.date_picked(true, early, window, cx));
     });
     cx.run_until_parked();
     assert_eq!(
@@ -335,12 +324,12 @@ fn picking_a_custom_range_persists_and_normalizes(cx: &mut TestAppContext) {
         "a reversed pick is stored swapped"
     );
     let shown = cx.update(|cx| {
-        let s = shell.read(cx);
+        let d = dash(cx, &shell).read(cx);
         (
-            s.dashboard.view_filter.from,
-            s.dashboard.view_filter.to,
-            s.dashboard.date_from_picker.read(cx).date(),
-            s.dashboard.date_to_picker.read(cx).date(),
+            d.view_filter.from,
+            d.view_filter.to,
+            d.date_from_picker.read(cx).date(),
+            d.date_to_picker.read(cx).date(),
         )
     });
     assert_eq!(
@@ -357,7 +346,7 @@ fn picking_a_custom_range_persists_and_normalizes(cx: &mut TestAppContext) {
     // Picking the start after the end normalizes the same way.
     let late = NaiveDate::from_ymd_opt(2026, 9, 1).unwrap();
     with_window(cx, handle, |window, cx| {
-        shell.update(cx, |s, cx| s.date_picked(false, late, window, cx));
+        dash(cx, &shell).update(cx, |d, cx| d.date_picked(false, late, window, cx));
     });
     cx.run_until_parked();
     assert_eq!(

@@ -1,5 +1,6 @@
 //! Tests for `ui/transfers.rs` (3.62 split from `ui_tests.rs`).
 
+use super::dashboard::dash;
 use super::*;
 /// A minimal import row. The parser id must be a real one: unpairing rewrites
 /// the account's master CSV, which resolves the parser of the account's
@@ -141,7 +142,7 @@ fn the_transfers_page_offers_every_candidate_for_a_tie_and_pairs_the_chosen_one(
             .is_empty()
     });
     with_window(cx, handle, |window, cx| {
-        shell.update(cx, |s, cx| s.set_include_transfers(true, window, cx));
+        dash(cx, &shell).update(cx, |d, cx| d.set_include_transfers(true, window, cx));
     });
     // Wait for the paired content, not just the count: the pre-pairing
     // table also holds three rows, so `len() == 3` alone can be satisfied
@@ -201,7 +202,7 @@ fn marking_a_review_not_a_transfer_clears_it_and_blocks_re_pairing(cx: &mut Test
             .is_empty()
     });
     with_window(cx, handle, |window, cx| {
-        shell.update(cx, |s, cx| s.set_include_transfers(true, window, cx));
+        dash(cx, &shell).update(cx, |d, cx| d.set_include_transfers(true, window, cx));
     });
     // These rows look the same with the toggle on or off, so no content
     // distinguishes the reload's rows from the ones already on screen —
@@ -234,7 +235,7 @@ fn unpairing_a_row_clears_both_sides_and_they_stay_apart(cx: &mut TestAppContext
 
     // The pair is linked (the table would hide it without the toggle).
     with_window(cx, handle, |window, cx| {
-        shell.update(cx, |s, cx| s.set_include_transfers(true, window, cx));
+        dash(cx, &shell).update(cx, |d, cx| d.set_include_transfers(true, window, cx));
     });
     wait_until(cx, "paired rows in the table", |cx| {
         let rows = table_rows(&shell, cx);
@@ -243,7 +244,7 @@ fn unpairing_a_row_clears_both_sides_and_they_stay_apart(cx: &mut TestAppContext
 
     // Unpair from one side: both partners are cleared…
     with_window(cx, handle, |window, cx| {
-        shell.update(cx, |s, cx| s.unpair_row(out, window, cx));
+        dash(cx, &shell).update(cx, |d, cx| d.unpair_row(out, window, cx));
     });
     wait_until(cx, "unpaired", |cx| {
         let rows = table_rows(&shell, cx);

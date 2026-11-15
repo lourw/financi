@@ -6,18 +6,18 @@ use super::*;
 fn uncategorized_only_toggle_filters_the_table(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, seed_table_filter_rows);
     wait_until(cx, "three rows", |cx| {
-        shell.read(cx).dashboard.row_count == 3
+        dash(cx, &shell).read(cx).row_count == 3
     });
-    cx.update(|cx| assert!(!shell.read(cx).dashboard.filter.uncategorized_only));
+    cx.update(|cx| assert!(!dash(cx, &shell).read(cx).filter.uncategorized_only));
 
     with_window(cx, handle, |window, cx| {
-        shell.update(cx, |s, cx| s.set_uncategorized_only(true, window, cx));
+        dash(cx, &shell).update(cx, |d, cx| d.set_uncategorized_only(true, window, cx));
     });
     wait_until(cx, "two uncategorized rows", |cx| {
-        shell.read(cx).dashboard.row_count == 2
+        dash(cx, &shell).read(cx).row_count == 2
     });
     cx.update(|cx| {
-        assert!(shell.read(cx).dashboard.filter.uncategorized_only);
+        assert!(dash(cx, &shell).read(cx).filter.uncategorized_only);
         assert!(
             table_rows(&shell, cx)
                 .iter()
@@ -27,10 +27,10 @@ fn uncategorized_only_toggle_filters_the_table(cx: &mut TestAppContext) {
     });
 
     with_window(cx, handle, |window, cx| {
-        shell.update(cx, |s, cx| s.set_uncategorized_only(false, window, cx));
+        dash(cx, &shell).update(cx, |d, cx| d.set_uncategorized_only(false, window, cx));
     });
     wait_until(cx, "three rows back", |cx| {
-        shell.read(cx).dashboard.row_count == 3
+        dash(cx, &shell).read(cx).row_count == 3
     });
 }
 
@@ -38,18 +38,18 @@ fn uncategorized_only_toggle_filters_the_table(cx: &mut TestAppContext) {
 fn show_hidden_toggle_reveals_hidden_rows(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, seed_table_filter_rows);
     wait_until(cx, "hidden row not shown by default", |cx| {
-        shell.read(cx).dashboard.row_count == 3
+        dash(cx, &shell).read(cx).row_count == 3
     });
     cx.update(|cx| {
-        assert!(!shell.read(cx).dashboard.filter.show_hidden);
+        assert!(!dash(cx, &shell).read(cx).filter.show_hidden);
         assert!(table_rows(&shell, cx).iter().all(|r| !r.hidden));
     });
 
     with_window(cx, handle, |window, cx| {
-        shell.update(cx, |s, cx| s.set_show_hidden(true, window, cx));
+        dash(cx, &shell).update(cx, |d, cx| d.set_show_hidden(true, window, cx));
     });
     wait_until(cx, "hidden row appears", |cx| {
-        shell.read(cx).dashboard.row_count == 4
+        dash(cx, &shell).read(cx).row_count == 4
     });
     cx.update(|cx| {
         let rows = table_rows(&shell, cx);
@@ -65,7 +65,7 @@ fn show_hidden_toggle_reveals_hidden_rows(cx: &mut TestAppContext) {
 fn sorting_the_amount_header_reorders_rows_without_a_reentrant_panic(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, seed_table_filter_rows);
     wait_until(cx, "three visible rows", |cx| {
-        shell.read(cx).dashboard.row_count == 3
+        dash(cx, &shell).read(cx).row_count == 3
     });
 
     let descriptions = |cx: &App| -> Vec<String> {
@@ -87,7 +87,7 @@ fn sorting_the_amount_header_reorders_rows_without_a_reentrant_panic(cx: &mut Te
     // (that double-lease is the crash). The click test-support gpui-kit ships
     // is disabled in this crate, so we enter the sort through the same
     // delegate call the header's `on_click` makes, under the table's lease.
-    let table = cx.update(|cx| shell.read(cx).dashboard.table.clone());
+    let table = cx.update(|cx| dash(cx, &shell).read(cx).table.clone());
     with_window(cx, handle, |window, cx| {
         table.update(cx, |t, cx| {
             t.delegate_mut()
@@ -99,7 +99,7 @@ fn sorting_the_amount_header_reorders_rows_without_a_reentrant_panic(cx: &mut Te
     // descending: +3000, -500, -1200.
     cx.update(|cx| {
         assert_eq!(
-            shell.read(cx).dashboard.filter.tx_sort,
+            dash(cx, &shell).read(cx).filter.tx_sort,
             TxSort {
                 column: TxSortColumn::Amount,
                 descending: true,
@@ -172,7 +172,7 @@ fn seed_sort_columns_rows(conn: &financi_db::rusqlite::Connection) {
 fn every_transactions_table_column_sorts(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, seed_sort_columns_rows);
     wait_until(cx, "three rows", |cx| {
-        shell.read(cx).dashboard.row_count == 3
+        dash(cx, &shell).read(cx).row_count == 3
     });
 
     let descriptions = |cx: &App| -> Vec<String> {
@@ -184,7 +184,7 @@ fn every_transactions_table_column_sorts(cx: &mut TestAppContext) {
     // Newest-first default (3.4): 11-03, 11-02, 11-01.
     assert_eq!(cx.read(descriptions), ["amazon", "Best Buy", "corner cafe"]);
 
-    let table = cx.update(|cx| shell.read(cx).dashboard.table.clone());
+    let table = cx.update(|cx| dash(cx, &shell).read(cx).table.clone());
     // Drive the header sort as the 3.4 test above does, passing the
     // `ColumnSort` the table's own icon cycle hands the delegate: the off
     // step cycles to Descending (the first click), then Ascending, back to
@@ -203,7 +203,7 @@ fn every_transactions_table_column_sorts(cx: &mut TestAppContext) {
         wait_until(cx, "rows re-sorted", |cx| descriptions(cx) == order);
         cx.update(|cx| {
             assert_eq!(
-                shell.read(cx).dashboard.filter.tx_sort,
+                dash(cx, &shell).read(cx).filter.tx_sort,
                 want,
                 "{:?}",
                 want.column

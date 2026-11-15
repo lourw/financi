@@ -31,7 +31,7 @@ fn seed_chart_rows_split(conn: &financi_db::rusqlite::Connection) {
 fn a_filter_change_drops_the_stale_legend_selection(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, seed_chart_rows_split);
     wait_until(cx, "four chart rows", |cx| {
-        shell.read(cx).dashboard.chart_rows.len() == 4
+        dash(cx, &shell).read(cx).chart_rows.len() == 4
     });
     let gifts = cx.update(|cx| top_category_id(&shell, cx, "Gifts"));
 
@@ -39,29 +39,28 @@ fn a_filter_change_drops_the_stale_legend_selection(cx: &mut TestAppContext) {
     // the selection (and the table filter) stay on Gifts.
     click_chart_legend(cx, handle, &shell, Some(gifts));
     wait_until(cx, "Gifts selected, table filtered", |cx| {
-        shell.read(cx).dashboard.filter.legend_selection == Some(LegendSelection::Category(gifts))
-            && shell.read(cx).dashboard.filter.chart_parent.is_none()
-            && shell.read(cx).dashboard.row_count == 1
+        dash(cx, &shell).read(cx).filter.legend_selection == Some(LegendSelection::Category(gifts))
+            && dash(cx, &shell).read(cx).filter.chart_parent.is_none()
+            && dash(cx, &shell).read(cx).row_count == 1
     });
 
     // "This month" drops the October Gifts spend: the stale selection must
     // go with it, and the table must widen back to the remaining rows.
     with_window(cx, handle, |window, cx| {
-        shell.update(cx, |s, cx| {
-            s.change_date_preset(DatePreset::ThisMonth, window, cx)
+        dash(cx, &shell).update(cx, |d, cx| {
+            d.change_date_preset(DatePreset::ThisMonth, window, cx)
         });
     });
     wait_until(cx, "selection and drill cleared, rows back", |cx| {
-        shell.read(cx).dashboard.filter.legend_selection.is_none()
-            && shell.read(cx).dashboard.filter.chart_parent.is_none()
+        dash(cx, &shell).read(cx).filter.legend_selection.is_none()
+            && dash(cx, &shell).read(cx).filter.chart_parent.is_none()
             // Four rows remain this month: two Food, one Transport, one
             // uncategorized (the October Gifts row is out of range).
-            && shell.read(cx).dashboard.row_count == 4
+            && dash(cx, &shell).read(cx).row_count == 4
     });
     cx.update(|cx| {
-        let names: Vec<&str> = shell
+        let names: Vec<&str> = dash(cx, &shell)
             .read(cx)
-            .dashboard
             .chart_rows
             .iter()
             .map(|r| r.name.as_str())
@@ -74,35 +73,35 @@ fn a_filter_change_drops_the_stale_legend_selection(cx: &mut TestAppContext) {
 fn the_uncategorized_toggle_and_a_category_selection_are_exclusive(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, seed_chart_rows);
     wait_until(cx, "table loaded", |cx| {
-        shell.read(cx).dashboard.row_count == 4
+        dash(cx, &shell).read(cx).row_count == 4
     });
     let food = cx.update(|cx| top_category_id(&shell, cx, "Food"));
 
     set_uncategorized_only(cx, handle, &shell, true);
     wait_until(cx, "only the uncategorized row", |cx| {
-        shell.read(cx).dashboard.row_count == 1
+        dash(cx, &shell).read(cx).row_count == 1
     });
 
     // A category legend row wins: the checkbox goes off, the table shows
     // the category again.
     click_chart_legend(cx, handle, &shell, Some(food));
     wait_until(cx, "Food filters the table", |cx| {
-        !shell.read(cx).dashboard.filter.uncategorized_only
-            && shell.read(cx).dashboard.filter.legend_selection
+        !dash(cx, &shell).read(cx).filter.uncategorized_only
+            && dash(cx, &shell).read(cx).filter.legend_selection
                 == Some(LegendSelection::Category(food))
-            && shell.read(cx).dashboard.row_count == 2
+            && dash(cx, &shell).read(cx).row_count == 2
     });
 
     // Toggling the checkbox back on clears the category selection (the
     // chart stays drilled) instead of stacking both clauses.
     set_uncategorized_only(cx, handle, &shell, true);
     wait_until(cx, "uncategorized only again", |cx| {
-        shell.read(cx).dashboard.filter.uncategorized_only
-            && shell.read(cx).dashboard.filter.legend_selection.is_none()
-            && shell.read(cx).dashboard.row_count == 1
+        dash(cx, &shell).read(cx).filter.uncategorized_only
+            && dash(cx, &shell).read(cx).filter.legend_selection.is_none()
+            && dash(cx, &shell).read(cx).row_count == 1
     });
     cx.update(|cx| {
-        assert_eq!(shell.read(cx).dashboard.filter.chart_parent, Some(food));
+        assert_eq!(dash(cx, &shell).read(cx).filter.chart_parent, Some(food));
         let rows = table_rows(&shell, cx);
         assert!(rows.iter().all(|r| r.category_id.is_none()));
     });

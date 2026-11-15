@@ -69,6 +69,7 @@ impl Domains {
     // with [`Domains::union`].
     pub(super) const IMPORTS: Self = Self(Domain::Imports.bit());
     pub(super) const TRANSFERS: Self = Self(Domain::Transfers.bit());
+    pub(super) const ACCOUNTS: Self = Self(Domain::Accounts.bit());
 
     pub(super) fn contains(self, domain: Domain) -> bool {
         self.0 & domain.bit() != 0

@@ -90,7 +90,7 @@ use crate::flow::{self, LoadedFile, PlanSummary};
 // 3.78: the shared data model. The page modules reach `Domains` through
 // the `use super::*` they all carry.
 use catalog::{
-    Catalog, DataChanged, Domain, Domains, S_ACCOUNTS, S_CATEGORIES, S_QUEUE, S_RULES, S_SIDEBAR,
+    Catalog, DataChanged, Domains, S_ACCOUNTS, S_CATEGORIES, S_QUEUE, S_RULES, S_SIDEBAR,
 };
 
 type Names = Vec<SharedString>;
@@ -152,26 +152,20 @@ pub fn init(cx: &mut App) {
     if cx.try_global::<UiInitialized>().is_some() {
         return;
     }
-    // Esc clears the dashboard's category selection (3.5); the root view
-    // handles the action in `Render::render`. Scoped to the kit root's
-    // `Root` context (3.80): gpui resolves a context-less binding at the
-    // deepest context, so an unscoped Escape would outrank the pages'
-    // `Cancel` bindings whenever focus sits inside one (a context-bound
-    // binding only wins at or above the depth it names) — and the pages
-    // focus their inputs. `Root` bottoms out every window's context
-    // stack, so this still reaches the pages that have no context of
-    // their own, and any page context (depth ≥ 2) wins over it.
-    cx.bind_keys([KeyBinding::new(
-        "escape",
-        ClearCategorySelection,
-        Some("Root"),
-    )]);
-    // 3.79: Escape is each extracted page's own `Cancel` on its key
-    // context (the page root handles it in its `Render::render`); the
-    // `Root`-scoped binding above still reaches the pages that have not
-    // been extracted, and each page's context outranks it for its own.
+    // Esc clears the dashboard's category selection (3.5), and 3.82 moved
+    // it onto the dashboard's own key context with the page: like the
+    // 3.79/3.81 pages below, Escape is `Cancel` on "Dashboard" and the
+    // page root handles it in its `Render::render`.
+    //
+    // `Root` bottoms out every window's context
+    // stack, so it used to reach the pages that have no context of
+    // their own, and any page context (depth ≥ 2) wins over it. With the
+    // dashboard extracted, no page relies on the Root binding any more,
+    // so there is none: Escape does nothing while focus sits on Shell
+    // (the page contexts cover their own), matching the 3.81 note below.
     cx.bind_keys([
         KeyBinding::new("escape", Cancel, Some("Categories")),
+        KeyBinding::new("escape", Cancel, Some("Dashboard")),
         KeyBinding::new("escape", Cancel, Some("Transfers")),
         KeyBinding::new("escape", Cancel, Some("Imports")),
         KeyBinding::new("escape", Cancel, Some("Rules")),
@@ -363,8 +357,10 @@ pub struct Shell {
     /// last reload whose result was applied — the shell is idle once the
     /// two agree (`wait_idle`). A reload replaced by a later one emits
     /// nothing, which is why the subscriber stamps the maximum rather
-    /// than counting events.
-    refresh_started: u64,
+    /// than counting events. 3.82: cells shared with the dashboard page,
+    /// which takes part in the same counting — and must bump them from
+    /// inside `apply`, where the shell is already being borrowed.
+    pub(super) refresh_started: Rc<Cell<u64>>,
     /// 3.78 review fix: the first dispatch generation whose result may
     /// drop the category selection. [`Shell::select_category`] sets it to
     /// the generation of the reload that follows the selection, so a
@@ -372,18 +368,17 @@ pub struct Shell {
     /// after it, the queues carrying no order between them — cannot clear
     /// it (or an add's claim of it) as "stale".
     category_selection_settled: u64,
-    refresh_applied: u64,
-    /// 3.56: the dispatch generation of the newest dashboard load. A
-    /// result whose dispatch is older than this was overtaken — the newer
-    /// load's result replaces it, so the stale one is dropped whole.
-    dash_gen: u64,
+    pub(super) refresh_applied: Rc<Cell<u64>>,
+    /// 3.65: true until the launch reload has run; the dashboard page has
+    /// its own copy for the settings read inside its load.
+    startup_settings: bool,
     /// 3.64: there is deliberately no shared task slot. A mutation whose
     /// result must always be applied runs detached (`cx.spawn_in(..).detach()`)
     /// so a later action can never cancel it mid-flight; its handler checks
     /// the state it touches is still current before applying. Only work that
     /// *should* be replaced when the user moves on keeps a slot — one per
-    /// purpose: `toast_task`, the settings writes in `dashboard`, and the
-    /// Rules page's live-preview task; the reload slots live in
+    /// purpose: `toast_task`, the settings writes on the dashboard page,
+    /// and the Rules page's live-preview task; the reload slots live in
     /// `Catalog`.
     // -- Page state (3.74): each page's fields live with its page module,
     // built by its own `new` and updated by its own `apply_*` in the
@@ -391,8 +386,8 @@ pub struct Shell {
     // entities of their own — they own their state, render themselves, and
     // refresh from the `Catalog` (see `ui/page.rs`); `Shell` navigates
     // them with `set_visible` and hears from them through `PageEvent`.
-    // 3.80: the Rules page joins them.
-    dashboard: DashboardState,
+    // 3.80: the Rules page joins them; 3.82 the Dashboard page.
+    dashboard: Entity<DashboardPage>,
     queue: QueueState,
     /// 3.81: the Categories page is its own view, rendered like the other
     /// extracted pages.
@@ -417,7 +412,7 @@ impl Render for Shell {
         // page itself defers the focus in its own `render` (3.80).
 
         let page_area: AnyElement = match self.page {
-            Page::Dashboard => self.render_dashboard(cx),
+            Page::Dashboard => self.dashboard.clone().into_any_element(),
             Page::ToCategorize => self.render_queue(cx),
             Page::Categories => self.categories_view.clone().into_any_element(),
             // 3.80: the Rules page renders itself.
@@ -447,13 +442,9 @@ impl Render for Shell {
             .relative()
             .bg(background)
             .text_color(foreground)
-            // Esc clears the dashboard category selection (3.5); the binding
-            // is registered in `ui::init`.
-            .on_action(
-                cx.listener(|this, action: &ClearCategorySelection, window, cx| {
-                    this.clear_category_selection(action, window, cx);
-                }),
-            )
+            // 3.82: Esc is the dashboard page's own `Cancel` on its "Dashboard"
+            // key context, handled in the page's `Render`; nothing is bound at
+            // the Shell level any more.
             .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
                 if let Some(path) = paths.paths().first() {
                     this.open_file(path.clone(), window, cx);
@@ -496,7 +487,6 @@ impl Shell {
             this.window_bounds_changed(window, cx);
         });
         // Each page's state is built by its own constructor (3.74).
-        let dashboard = DashboardState::new(window, cx);
         let queue = QueueState::new(window, cx);
         let categories_page = CategoriesState::new(window, cx);
         // 3.78: one shared data model, fed by the same worker.
@@ -523,6 +513,12 @@ impl Shell {
         // page applies before `sync_category_choices` refills its pickers.
         let rules_page =
             cx.new(|cx| RulesPage::new(db.clone(), writes_blocked.clone(), &catalog, window, cx));
+        // 3.82: the Dashboard page entity. The idle-marker cells are shared
+        // so the page's loads count toward `wait_idle`, and so the page can
+        // bump them from inside its own `apply` (the shell is borrowed
+        // there — see the cells' doc on `DashboardPage`).
+        let refresh_started = Rc::new(Cell::new(0));
+        let refresh_applied = Rc::new(Cell::new(0));
         // 3.81: the Categories page is an entity too. It renders the shared
         // rule rows from the Rules page's entity and keeps a weak handle
         // back to the shell for the scaffold it shares (see
@@ -534,7 +530,7 @@ impl Shell {
                 writes_blocked.clone(),
                 catalog.clone(),
                 rules_page.clone(),
-                shell_handle,
+                shell_handle.clone(),
                 window,
                 cx,
             )
@@ -542,10 +538,30 @@ impl Shell {
         // The test counters live on the scaffold both views read.
         #[cfg(test)]
         categories.update(cx, |page, _| page.share_counters(&categories_page));
+        // 3.82: the Dashboard page is an entity too. It owns its filters,
+        // pickers and table, reloads itself off the catalog, and keeps a
+        // weak handle back to the shell for the shared mirrors (see
+        // `DashboardPage`'s doc).
+        let dashboard = cx.new(|cx| {
+            DashboardPage::new(
+                db.clone(),
+                writes_blocked.clone(),
+                &catalog,
+                rules_page.clone(),
+                shell_handle.clone(),
+                refresh_started.clone(),
+                refresh_applied.clone(),
+                window,
+                cx,
+            )
+        });
         // 3.79: the one page → `Shell` listener: toasts, reloads, page
         // resets and navigation arrive as `PageEvent`s on the page's own
         // entity, never as a call into `Shell`.
         let transfers_events = cx.subscribe_in(&transfers, window, |this, _, ev, window, cx| {
+            this.on_page_event(ev, window, cx);
+        });
+        let dashboard_events = cx.subscribe_in(&dashboard, window, |this, _, ev, window, cx| {
             this.on_page_event(ev, window, cx);
         });
         let categories_events = cx.subscribe_in(&categories, window, |this, _, ev, window, cx| {
@@ -581,10 +597,10 @@ impl Shell {
             toast_clock: Instant::now(),
             toast_task: None,
             writes_blocked,
-            refresh_started: 0,
+            refresh_started: refresh_started.clone(),
             category_selection_settled: 0,
-            refresh_applied: 0,
-            dash_gen: 0,
+            refresh_applied: refresh_applied.clone(),
+            startup_settings: true,
             dashboard,
             queue,
             categories_view: categories,
@@ -595,6 +611,7 @@ impl Shell {
             _subs: vec![
                 bounds_sub,
                 categories_events,
+                dashboard_events,
                 transfers_events,
                 imports_events,
                 rules_events,
@@ -608,6 +625,14 @@ impl Shell {
                 this.data_changed(event, window, cx);
             }),
         );
+        // 3.82: the dashboard is the launch page — mark it shown so the
+        // `DataChanged` from the launch `refresh` below applies and loads
+        // it (the other extracted pages start hidden and load on their
+        // first visit), and queue its focus for the first frame.
+        shell.dashboard.update(cx, |page, _| {
+            page.set_shown(true);
+            page.set_focus_pending(true);
+        });
         // 3.65: exactly one refresh at launch. The saved date range and
         // transfers setting load inside its query (see `refresh`), so the
         // first data frame already uses them and nothing re-queries.
@@ -624,14 +649,12 @@ impl Shell {
         }
         self.window_width = width;
         let page_w = (width - SIDEBAR_W - 2. * PAGE_PAD).max(0.);
-        // 3.79: the Imports history table lives on its page entity now.
+        // 3.79: the Imports history table lives on its page entity now;
+        // 3.82 so does the dashboard table.
         self.imports
             .update(cx, |page, cx| page.widths_changed(page_w, cx));
-        let flex = tx_flex_widths(page_w);
-        self.dashboard.table.update(cx, |t, cx| {
-            t.delegate_mut().flex_widths = flex;
-            t.refresh(cx);
-        });
+        self.dashboard
+            .update(cx, |page, cx| page.widths_changed(width, cx));
         cx.notify();
     }
 
@@ -644,11 +667,10 @@ impl Shell {
     fn refresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // 3.65: the very first load also reads the saved settings in the
         // same round trip — the date range and the transfers checkbox.
-        // That read moved to the dashboard's load (3.56), whose queries
-        // run with the saved values applied; the landing puts them on the
-        // state and the filter controls, so launch is still one round
-        // trip whose first frame shows the saved range.
-        let startup = std::mem::take(&mut self.dashboard.startup_settings);
+        // That read lives in the dashboard page's own load (3.56), whose
+        // queries run with the saved values applied; 3.82 left the shell's
+        // copy of the flag for the master-CSV self-check below.
+        let startup = std::mem::take(&mut self.startup_settings);
         // 3.76: the master-CSV self-check rides this job when it is the
         // launch one, so startup stays a single worker job and the window
         // shows at once.
@@ -657,11 +679,10 @@ impl Shell {
         self.catalog.update(cx, |catalog, cx| {
             catalog.reload_full(Domains::ALL, generation, csv_root, window, cx);
         });
-        // 3.56: the dashboard's rows, chart and summary ride their own
-        // keyed job, started alongside; `None` makes it read the account
-        // list itself, so launch and the after-an-import reload resolve
-        // the checkboxes in the same round trip (3.17).
-        self.start_dashboard(None, startup, window, cx);
+        // 3.82: the dashboard is no longer started alongside — the launch
+        // `DataChanged` shows the page and its `apply` dispatches the load,
+        // in the same round trip: launch is still one refresh whose first
+        // frame shows the saved range.
     }
 
     /// 3.75: generation counter for `wait_idle` in the tests. Every reload
@@ -669,125 +690,23 @@ impl Shell {
     /// one that has landed into `refresh_applied`, and a reload replaced
     /// before it finishes never emits at all.
     fn next_generation(&mut self) -> u64 {
-        self.refresh_started += 1;
-        self.refresh_started
+        let g = self.refresh_started.get() + 1;
+        self.refresh_started.set(g);
+        g
     }
 
-    /// A write landed, or a dashboard control changed: report the
-    /// [`Domain`]s it changed (the table on [`Domain`]) and reload only
-    /// the sections they touch (3.78). This is the entry point the page
-    /// handlers call instead of the old whole-screen `refresh`; a page
-    /// switch never calls it, so switching pages issues no queries.
-    ///
-    /// 3.56: the dashboard is reloaded here too whenever a domain it
-    /// reads changes — its own keyed job takes its rows, chart and
-    /// summary, so a filter change never runs anyone else's queries and a
-    /// burst of changes leaves the newest one in charge.
+    /// A write landed: report the [`Domain`]s it changed (the table on
+    /// [`Domain`]) and reload only the sections they touch (3.78). This is
+    /// the entry point the scaffold's handlers call instead of the old
+    /// whole-screen `refresh`; a page switch never calls it, so switching
+    /// pages issues no queries. 3.82: the dashboard reload is no longer
+    /// started here — the page watches the catalog and reloads itself when
+    /// a domain it reads changes (its `DEPENDS`).
     fn changed(&mut self, domains: Domains, window: &mut Window, cx: &mut Context<Self>) {
         let generation = self.next_generation();
         self.catalog.update(cx, |catalog, cx| {
             catalog.changed(domains, generation, window, cx);
         });
-        if Self::dash_touched(domains) {
-            // The job resolves the checkboxes against the account list.
-            // A write that can have changed the list (a new account, an
-            // import) makes the job read it fresh; otherwise the mirror
-            // on screen is current and goes along for the ride.
-            let stale_accounts =
-                domains.contains(Domain::Accounts) || domains.contains(Domain::Imports);
-            let accounts = if stale_accounts {
-                None
-            } else {
-                Some(self.accounts.clone())
-            };
-            self.start_dashboard(accounts, false, window, cx);
-        }
-    }
-
-    /// Does a change to `domains` move the dashboard's rows, chart or
-    /// summary? The rows answer to almost everything; the transfer
-    /// reviews do not appear on the dashboard at all, so pairing never
-    /// re-runs its queries.
-    fn dash_touched(domains: Domains) -> bool {
-        domains.contains(Domain::Accounts)
-            || domains.contains(Domain::Categories)
-            || domains.contains(Domain::Rules)
-            || domains.contains(Domain::Transactions)
-            || domains.contains(Domain::Imports)
-            || domains.contains(Domain::Settings)
-    }
-
-    /// 3.56: start the dashboard's one load — filtered rows, chart and
-    /// summary in a single keyed job (3.77: a burst of filter changes
-    /// leaves at most one in flight plus the newest, and every replaced
-    /// job resolves `Superseded` without touching the screen). The filter
-    /// is snapshotted now, so the load runs with exactly what the
-    /// controls showed when it started.
-    ///
-    /// `accounts`: the shell's mirror with a filter-control change;
-    /// `None` reads the list in the job (launch, imports — 3.17).
-    /// `startup` reads the persisted settings in the same trip (3.65).
-    pub(super) fn start_dashboard(
-        &mut self,
-        accounts: Option<Vec<Account>>,
-        startup: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let generation = self.next_generation();
-        self.dash_gen = generation;
-        let filter = self.dashboard.filter.clone();
-        let db = self.db.clone();
-        let log = db.query_log();
-        // Detached (3.64): nothing may cancel the continuation between
-        // the query finishing and the result being guarded in.
-        cx.spawn_in(window, async move |this, cx| {
-            let result = db
-                .call_keyed("dashboard", move |c| {
-                    load_dashboard(c, &log, filter, accounts, startup)
-                })
-                .await;
-            let _ = this.update_in(cx, |this, window, cx| match result {
-                Ok(data) => this.finish_dashboard(generation, data, window, cx),
-                // A newer filter change took over while this ran; its
-                // result replaces this one's.
-                Err(DbError::Superseded) => {}
-                Err(e) => {
-                    this.notify_err(format!("Database error: {e}"), cx);
-                    this.refresh_applied = this.refresh_applied.max(generation);
-                }
-            });
-        })
-        .detach();
-    }
-
-    /// A dashboard load came back: apply it, unless a newer load was
-    /// dispatched while it ran — then this result is stale whole, rows
-    /// included, and the newer load's landing replaces it (3.56).
-    fn finish_dashboard(
-        &mut self,
-        generation: u64,
-        mut data: DashboardData,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if generation < self.dash_gen {
-            return;
-        }
-        // 3.65: the launch settings the job already queried with land on
-        // the state and the filter controls before the data of the same
-        // round trip is applied, so the first frame shows the saved range
-        // everywhere. The guard above is what "the user changed it since,
-        // and their change wins" means here: a newer dispatch replaced
-        // this load, and its result carries the newer controls.
-        if let Some((range, include_transfers)) = data.settings {
-            self.set_date_range(range, window, cx);
-            self.dashboard.filter.include_transfers = include_transfers;
-            data.view_filter.include_transfers = include_transfers;
-        }
-        self.apply_dashboard_rows(data, window, cx);
-        self.refresh_applied = self.refresh_applied.max(generation);
-        cx.notify();
     }
 
     /// The one mapping (3.78): a reload settled, so mirror the snapshot's
@@ -803,9 +722,9 @@ impl Shell {
         // the `apply_*` calls below need `cx` mutably.
         if sections & S_ACCOUNTS != 0 {
             self.accounts = self.catalog.read(cx).snap.accounts.clone();
-            // The account filter resolves against the accounts just
-            // loaded (task 3.17).
-            self.sync_account_filter();
+            // 3.82: the dashboard's account filter resolves against the
+            // accounts just loaded (task 3.17) — the page does that in its
+            // own `apply`, which runs off the same `DataChanged`.
         }
         // 3.56: the launch *settings* land with the dashboard's own load
         // (`finish_dashboard`); only the master-CSV self-check failure
@@ -850,7 +769,8 @@ impl Shell {
         // 3.75: the idle marker. Generations only move forward, and the
         // newest dispatch always emits, so the maximum is what `wait_idle`
         // waits for.
-        self.refresh_applied = self.refresh_applied.max(event.generation);
+        let applied = self.refresh_applied.get().max(event.generation);
+        self.refresh_applied.set(applied);
         cx.notify();
     }
 
@@ -859,8 +779,11 @@ impl Shell {
         // 3.11: no transient UI travels across a page switch — the two-click
         // confirmations, the rule offer and the inline rename editor all
         // belong to the page they were opened on. 3.24: the rule editor and
-        // the armed rule delete join that list.
-        self.dashboard.rule_offer = None;
+        // the armed rule delete join that list. 3.82: the dashboard keeps
+        // its own transients — its `set_visible` clears the rule offer on
+        // hide, like the other extracted pages.
+        self.dashboard
+            .update(cx, |p, cx| p.set_visible(page == Page::Dashboard, cx));
         // 3.80: the rule editor is shared with the Categories page (it may
         // be open while the Rules page is hidden), so every switch runs
         // through the page: close it, disarm deletes, then show or hide.
@@ -917,10 +840,10 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.dashboard.filter.legend_selection = None;
-        self.dashboard.filter.summary_month = None;
-        self.dashboard.filter.chart_parent = None;
-        self.dashboard.rule_offer = None;
+        // 3.82: the dashboard page clears its own share — legend, month
+        // and drill-down selections and the rule offer all name rows or
+        // categories the restored file may not have.
+        self.dashboard.update(cx, |p, cx| p.reset_after_restore(cx));
         self.queue.pickers.clear();
         self.queue.picker_subs.clear();
         self.queue.picker_items = None;

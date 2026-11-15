@@ -2,6 +2,7 @@
 //! thread, driven exactly as a user drives the app (3.62 split them by page;
 //! one `mod` per page module plus the shared helpers here).
 
+use self::dashboard::dash;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -175,7 +176,9 @@ fn wait_idle(cx: &mut TestAppContext, shell: &Entity<Shell>) {
         // no-op there).
         let _ = block_on(db.call_read(|_| ()));
         cx.run_until_parked();
-        let (started, applied) = shell.update(cx, |s, _| (s.refresh_started, s.refresh_applied));
+        let (started, applied) = shell.update(cx, |s, _| {
+            (s.refresh_started.get(), s.refresh_applied.get())
+        });
         if started == applied {
             return;
         }
@@ -884,19 +887,24 @@ fn go_page_closes_transient_ui(cx: &mut TestAppContext) {
     cx.update(|cx| {
         shell.update(cx, |s, cx| {
             s.imports.update(cx, |p, _| p.confirm_undo_import = Some(1));
-            s.dashboard.rule_offer = Some((1, 2));
             s.categories_view.update(cx, |p, _| {
                 p.renaming = true;
                 p.confirm_delete_category = Some(1);
             });
-            s.go_page(Page::Categories, cx);
         });
+        // 3.82: the rule offer lives on the Dashboard entity now, and only
+        // that entity may be borrowed at a time.
+        dash(cx, &shell).update(cx, |d, _| d.rule_offer = Some((1, 2)));
+        shell.update(cx, |s, cx| s.go_page(Page::Categories, cx));
         let s = shell.read(cx);
         assert!(
             s.imports.read(cx).confirm_undo_import.is_none(),
             "undo confirmation cleared"
         );
-        assert!(s.dashboard.rule_offer.is_none(), "rule offer cleared");
+        assert!(
+            dash(cx, &shell).read(cx).rule_offer.is_none(),
+            "rule offer cleared"
+        );
         assert!(!s.categories_view.read(cx).renaming, "rename editor closed");
         assert!(
             s.categories_view.read(cx).confirm_delete_category.is_none(),
@@ -921,9 +929,8 @@ fn seed_categories_fit(conn: &financi_db::rusqlite::Connection) -> (i64, i64) {
 
 /// The dashboard table's rows.
 fn table_rows(shell: &Entity<Shell>, cx: &App) -> Vec<TransactionRow> {
-    shell
+    dash(cx, shell)
         .read(cx)
-        .dashboard
         .table
         .read(cx)
         .delegate()
@@ -985,7 +992,10 @@ fn import_and_top_merchant(
     );
     wait_until(cx, "plan", |cx| plan_ready(shell, cx));
     click_import(cx, handle, shell);
-    wait_until(cx, "import", |cx| shell.read(cx).dashboard.row_count == 67);
+    // 3.82: the import switched to the Imports page; go back, where the
+    // hidden dashboard reloads.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
+    wait_until(cx, "import", |cx| dash(cx, shell).read(cx).row_count == 67);
     wait_until(cx, "queue populated", |cx| {
         !shell.read(cx).queue.groups.is_empty()
     });

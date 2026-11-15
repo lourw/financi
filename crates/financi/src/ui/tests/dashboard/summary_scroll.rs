@@ -94,12 +94,12 @@ fn set_all_time_covering(
     months: usize,
 ) {
     with_window(cx, handle, |window, cx| {
-        shell.update(cx, |s, cx| {
-            s.change_date_preset(DatePreset::AllTime, window, cx)
+        dash(cx, shell).update(cx, |d, cx| {
+            d.change_date_preset(DatePreset::AllTime, window, cx)
         });
     });
     wait_until(cx, "summary covers all the seeded months", |cx| {
-        shell.read(cx).dashboard.summary.months.len() == months
+        dash(cx, shell).read(cx).summary.months.len() == months
     });
 }
 
@@ -113,7 +113,7 @@ fn summary_months_scroll_under_pinned_name_and_total(cx: &mut TestAppContext) {
     resize_and_draw(cx, handle, 1200., 720.);
     set_all_time_covering(cx, handle, &shell, 24);
     wait_until(cx, "24 months in the grid", |cx| {
-        shell.read(cx).dashboard.summary.months.len() == 24
+        dash(cx, &shell).read(cx).summary.months.len() == 24
     });
     draw_frame(cx, handle);
 
@@ -158,7 +158,7 @@ fn summary_months_scroll_under_pinned_name_and_total(cx: &mut TestAppContext) {
     // A range change (the All-time switch above) lands on the most recent
     // month: the newest column is on screen beside `Total`, the oldest is
     // scrolled away to the left.
-    let off0 = cx.update(|cx| shell.read(cx).dashboard.summary_scroll.offset().x);
+    let off0 = cx.update(|cx| dash(cx, &shell).read(cx).summary_scroll.offset().x);
     assert!(off0 < px(0.), "the 24-month strip is scrolled sideways");
     let newest = bounds(cx, handle, "summary:cell:0:23");
     assert!(
@@ -179,7 +179,7 @@ fn summary_months_scroll_under_pinned_name_and_total(cx: &mut TestAppContext) {
     let before_total = bounds(cx, handle, "summary:cell:0:24").origin.x;
     wheel(cx, handle, viewport_centre(zone), 240., 0.);
     draw_frame(cx, handle);
-    let off1 = cx.update(|cx| shell.read(cx).dashboard.summary_scroll.offset().x);
+    let off1 = cx.update(|cx| dash(cx, &shell).read(cx).summary_scroll.offset().x);
     assert!(off1 > off0, "the strip scrolled back towards its left end");
     let moved = f32::from(off1 - off0);
     assert!(moved > 0.);
@@ -238,10 +238,10 @@ fn a_horizontal_swipe_does_not_jump_the_summary_rows_vertically(cx: &mut TestApp
     assert!(y_scrolled < y_top, "the body is scrolled down");
 
     // A horizontal swipe over the month zone moves the months…
-    let x0 = cx.update(|cx| shell.read(cx).dashboard.summary_scroll.offset().x);
+    let x0 = cx.update(|cx| dash(cx, &shell).read(cx).summary_scroll.offset().x);
     wheel(cx, handle, viewport_centre(zone), 200., 0.);
     draw_frame(cx, handle);
-    let x1 = cx.update(|cx| shell.read(cx).dashboard.summary_scroll.offset().x);
+    let x1 = cx.update(|cx| dash(cx, &shell).read(cx).summary_scroll.offset().x);
     assert_ne!(x1, x0, "the month strip scrolled sideways");
 
     // …and leaves the body exactly where it was.
@@ -259,20 +259,17 @@ fn changing_the_summary_range_lands_on_the_latest_month(cx: &mut TestAppContext)
     let (handle, shell) = open_shell(cx, |conn| seed_summary_months(conn, 24));
     resize_and_draw(cx, handle, 1200., 720.);
     with_window(cx, handle, |window, cx| {
-        shell.update(cx, |s, cx| {
-            s.change_date_preset(DatePreset::Last12Months, window, cx)
-        })
+        dash(cx, &shell).update(cx, |d, cx| {
+            d.change_date_preset(DatePreset::Last12Months, window, cx)
+        });
     });
     wait_until(cx, "12 months in the grid", |cx| {
-        shell.read(cx).dashboard.summary.months.len() == 12
+        dash(cx, &shell).read(cx).summary.months.len() == 12
     });
     draw_frame(cx, handle);
     let (offset, max) = cx.update(|cx| {
-        let s = shell.read(cx);
-        (
-            s.dashboard.summary_scroll.offset().x,
-            s.dashboard.summary_scroll.max_offset().x,
-        )
+        let d = dash(cx, &shell).read(cx);
+        (d.summary_scroll.offset().x, d.summary_scroll.max_offset().x)
     });
     assert!(max > px(0.), "twelve months overflow the month zone");
     assert!(
@@ -284,22 +281,19 @@ fn changing_the_summary_range_lands_on_the_latest_month(cx: &mut TestAppContext)
     let zone = bounds(cx, handle, "summary:months-0");
     wheel(cx, handle, viewport_centre(zone), 200., 0.);
     draw_frame(cx, handle);
-    let scrolled = cx.update(|cx| shell.read(cx).dashboard.summary_scroll.offset().x);
+    let scrolled = cx.update(|cx| dash(cx, &shell).read(cx).summary_scroll.offset().x);
     assert!(scrolled < max, "the strip is no longer at its right end");
 
     // …and change the range again: the latest month is beside `Total`.
     set_all_time_covering(cx, handle, &shell, 24);
     wait_until(cx, "24 months in the grid", |cx| {
-        shell.read(cx).dashboard.summary.months.len() == 24
+        dash(cx, &shell).read(cx).summary.months.len() == 24
     });
     wait_idle(cx, &shell);
     draw_frame(cx, handle);
     let (offset, max) = cx.update(|cx| {
-        let s = shell.read(cx);
-        (
-            s.dashboard.summary_scroll.offset().x,
-            s.dashboard.summary_scroll.max_offset().x,
-        )
+        let d = dash(cx, &shell).read(cx);
+        (d.summary_scroll.offset().x, d.summary_scroll.max_offset().x)
     });
     assert!(
         (offset + max).abs() < px(1.),
@@ -335,11 +329,8 @@ fn a_short_summary_range_shows_no_horizontal_scrollbar(cx: &mut TestAppContext) 
     draw_frame(cx, handle);
     draw_frame(cx, handle);
     let (offset, max) = cx.update(|cx| {
-        let s = shell.read(cx);
-        (
-            s.dashboard.summary_scroll.offset().x,
-            s.dashboard.summary_scroll.max_offset().x,
-        )
+        let d = dash(cx, &shell).read(cx);
+        (d.summary_scroll.offset().x, d.summary_scroll.max_offset().x)
     });
     assert_eq!(
         max,
