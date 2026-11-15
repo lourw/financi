@@ -714,6 +714,88 @@ fn cancel_and_escape_leave_the_rule_unchanged(cx: &mut TestAppContext) {
     });
 }
 
+/// 3.80: on the Rules page Escape is the page's own `Cancel` — it unwinds
+/// one level per press (the open editor, then the armed delete, then the
+/// ticked rows) and does nothing once all three are clear.
+#[gpui::test]
+fn escape_unwinds_the_rules_page_one_level_at_a_time(cx: &mut TestAppContext) {
+    let (handle, shell, rule, _first, _second) = open_rule_fixture(cx);
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Rules, cx)));
+
+    // Stage all three levels: a ticked row, an open editor, an armed delete.
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.rules_page.update(cx, |p, cx| {
+                p.selected_rules.insert(rule);
+                p.start_edit_rule(rule, window, cx);
+                p.arm_delete_rule(rule, window, cx);
+            });
+        });
+    });
+    draw_frame(cx, handle);
+    cx.update(|cx| {
+        let p = shell.read(cx).rules_page.read(cx);
+        assert_eq!(p.editing_rule, Some(rule));
+        assert_eq!(p.armed_delete_rule, Some(rule));
+        assert_eq!(p.selected_rules.len(), 1);
+    });
+
+    // Focus the search field: it stays rendered while the levels unwind,
+    // and any focus inside the page activates its `Rules` key context.
+    with_window(cx, handle, |window, cx| {
+        let input = shell
+            .read(cx)
+            .rules_page
+            .read(cx)
+            .rules_search
+            .read(cx)
+            .focus_handle(cx);
+        window.focus(&input, cx);
+    });
+    draw_frame(cx, handle);
+
+    cx.simulate_keystrokes(handle, "escape");
+    wait_until(cx, "the first Escape closed the editor", |cx| {
+        let p = shell.read(cx).rules_page.read(cx);
+        p.editing_rule.is_none() && p.armed_delete_rule.is_some()
+    });
+    cx.update(|cx| {
+        let p = shell.read(cx).rules_page.read(cx);
+        assert_eq!(
+            p.selected_rules.len(),
+            1,
+            "the first Escape closes the editor and nothing else"
+        );
+    });
+
+    cx.simulate_keystrokes(handle, "escape");
+    wait_until(cx, "the second Escape released the delete", |cx| {
+        let p = shell.read(cx).rules_page.read(cx);
+        p.armed_delete_rule.is_none() && !p.selected_rules.is_empty()
+    });
+
+    cx.simulate_keystrokes(handle, "escape");
+    wait_until(cx, "the third Escape cleared the ticked rows", |cx| {
+        shell.read(cx).rules_page.read(cx).selected_rules.is_empty()
+    });
+
+    // Nothing left: a fourth press changes nothing.
+    cx.simulate_keystrokes(handle, "escape");
+    cx.run_until_parked();
+    draw_frame(cx, handle);
+    cx.update(|cx| {
+        let s = shell.read(cx);
+        let p = s.rules_page.read(cx);
+        assert!(p.editing_rule.is_none() && p.armed_delete_rule.is_none());
+        assert!(p.selected_rules.is_empty());
+        assert_eq!(
+            s.catalog.read(cx).snap.rules.len(),
+            1,
+            "the whole unwind deletes nothing"
+        );
+    });
+}
+
 /// 3.24: selecting another category cancels the open editor — and clears
 /// the shared preview count with it, so the add-rule row never inherits a
 /// stale editor count.

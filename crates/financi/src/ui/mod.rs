@@ -153,12 +153,23 @@ pub fn init(cx: &mut App) {
         return;
     }
     // Esc clears the dashboard's category selection (3.5); the root view
-    // handles the action in `Render::render`.
-    cx.bind_keys([KeyBinding::new("escape", ClearCategorySelection, None)]);
+    // handles the action in `Render::render`. Scoped to the kit root's
+    // `Root` context (3.80): gpui resolves a context-less binding at the
+    // deepest context, so an unscoped Escape would outrank the pages'
+    // `Cancel` bindings whenever focus sits inside one (a context-bound
+    // binding only wins at or above the depth it names) — and the pages
+    // focus their inputs. `Root` bottoms out every window's context
+    // stack, so this still reaches the pages that have no context of
+    // their own, and any page context (depth ≥ 2) wins over it.
+    cx.bind_keys([KeyBinding::new(
+        "escape",
+        ClearCategorySelection,
+        Some("Root"),
+    )]);
     // 3.79: Escape is each extracted page's own `Cancel` on its key
     // context (the page root handles it in its `Render::render`); the
-    // context-less binding above still reaches the pages that have not
-    // been extracted, and the page's root wins the bubble for its own.
+    // `Root`-scoped binding above still reaches the pages that have not
+    // been extracted, and each page's context outranks it for its own.
     cx.bind_keys([
         KeyBinding::new("escape", Cancel, Some("Transfers")),
         KeyBinding::new("escape", Cancel, Some("Imports")),
