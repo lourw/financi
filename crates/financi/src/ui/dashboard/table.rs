@@ -390,7 +390,9 @@ impl TableDelegate for TxTable {
 impl TxTable {
     /// Replace the rows and build their display cells in one step, so the
     /// cache can never lag behind `rows` (3.85). Every write of `rows`
-    /// goes through here.
+    /// goes through here — including the 3.84 optimistic row edits, hides
+    /// and their rollbacks, which take the vec, change it and hand it
+    /// back, so a repaint always draws the model.
     pub(in crate::ui) fn set_rows(&mut self, rows: Vec<TransactionRow>) {
         self.cells = rows
             .iter()

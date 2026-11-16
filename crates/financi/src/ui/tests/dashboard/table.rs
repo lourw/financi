@@ -97,6 +97,180 @@ fn table_cells_are_built_once_per_load_and_never_per_repaint(cx: &mut TestAppCon
     });
 }
 
+/// 3.85 (3.84's optimistic paint, painted-text side): the row a category
+/// click names paints the new label in the click's frame — `text()` is
+/// what `render_td` draws, so this asserts the paint, not just the model.
+/// The worker is held on the write, so nothing else can touch the table
+/// between the click and the assertion, and the other columns keep
+/// painting their own rows.
+#[gpui::test]
+fn optimistic_category_change_paints_the_new_label(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |c| {
+        create_account(c, "amex", "Cobalt", AccountKind::CreditCard).unwrap();
+    });
+    let (_m, target, _group) = import_and_top_merchant(cx, handle, &shell);
+    add_parent(cx, handle, &shell, "Shopping");
+    add_child(cx, handle, &shell, "Online");
+    let online = cx.update(|cx| find_child(&shell, cx, "Online").unwrap());
+    let row_ix = cx.update(|cx| {
+        table_rows(&shell, cx)
+            .iter()
+            .position(|r| r.id == target)
+            .expect("target row is in the table")
+    });
+
+    let done = block_worker(cx, &shell);
+    with_window(cx, handle, |window, cx| {
+        dash(cx, &shell).update(cx, |d, cx| {
+            d.change_row_category(target, online, window, cx)
+        });
+    });
+    draw_frame(cx, handle);
+    cx.update(|cx| {
+        let table = dash(cx, &shell).read(cx).table.read(cx);
+        let d = table.delegate();
+        assert_eq!(d.rows[row_ix].id, target);
+        assert_eq!(
+            d.text(row_ix, 3).as_str(),
+            "Online",
+            "the category cell paints the new label while the write is still in flight"
+        );
+        for ix in 0..d.rows.len() {
+            assert_eq!(
+                d.text(ix, 2).as_str(),
+                d.rows[ix].description.trim(),
+                "row {ix} paints its own description"
+            );
+        }
+    });
+    drop(done);
+    wait_until(cx, "the write lands and the reload confirms it", |cx| {
+        table_rows(&shell, cx)
+            .iter()
+            .any(|r| r.id == target && r.category.as_deref() == Some("Online"))
+    });
+}
+
+/// 3.85 (3.84's optimistic hide, painted-text side): with *Show hidden*
+/// off the row leaves in the click's frame, and every row that shifted
+/// down one slot keeps painting itself — the display cells are rebuilt
+/// with the rows, so none lags a row behind (3.84's in-place `remove`
+/// left the cache one entry too long and painted each row past the
+/// removed one with its neighbour's text).
+#[gpui::test]
+fn optimistic_hide_realigns_every_painted_row(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_table_filter_rows);
+    wait_until(cx, "three rows", |cx| {
+        dash(cx, &shell).read(cx).row_count == 3
+    });
+    // Hide the middle row, so the last row shifts into its slot.
+    let target = cx.update(|cx| {
+        table_rows(&shell, cx)
+            .iter()
+            .find(|r| r.description == "GROCER STORE")
+            .unwrap()
+            .id
+    });
+
+    let done = block_worker(cx, &shell);
+    with_window(cx, handle, |window, cx| {
+        dash(cx, &shell).update(cx, |d, cx| d.set_row_hidden(target, true, window, cx));
+    });
+    draw_frame(cx, handle);
+    cx.update(|cx| {
+        let table = dash(cx, &shell).read(cx).table.read(cx);
+        let d = table.delegate();
+        assert_eq!(
+            d.rows
+                .iter()
+                .map(|r| r.description.as_str())
+                .collect::<Vec<_>>(),
+            ["CORNER CAFE", "PAYROLL DEPOSIT"],
+            "the row left the table in the click's frame"
+        );
+        assert_eq!(d.cells.len(), d.rows.len(), "the cells follow the rows");
+        for ix in 0..d.rows.len() {
+            assert_eq!(
+                d.text(ix, 2).as_str(),
+                d.rows[ix].description.trim(),
+                "row {ix} paints its own description"
+            );
+            assert_eq!(
+                d.text(ix, 0).as_str(),
+                d.rows[ix].posted_date,
+                "row {ix} paints its own date"
+            );
+            assert_eq!(
+                d.text(ix, 4).as_str(),
+                crate::flow::money(d.rows[ix].amount_cents),
+                "row {ix} paints its own amount"
+            );
+        }
+    });
+    drop(done);
+}
+
+/// 3.85 (3.84's rollback, painted-text side): a hide whose write fails
+/// puts the row back at its index — and the row then paints *its own*
+/// text again, not the neighbour's it shifted into. The transaction is
+/// deleted behind the page's back so the write fails, and the page is
+/// hidden before the failure lands so the write's reload can't overwrite
+/// the rollback before it is observed (3.84's pattern).
+#[gpui::test]
+fn rolled_back_hide_repaints_the_restored_row(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_table_filter_rows);
+    wait_until(cx, "three rows", |cx| {
+        dash(cx, &shell).read(cx).row_count == 3
+    });
+    let (target, index) = cx.update(|cx| {
+        let rows = table_rows(&shell, cx);
+        let i = rows
+            .iter()
+            .position(|r| r.description == "GROCER STORE")
+            .unwrap();
+        (rows[i].id, i)
+    });
+
+    // Make the write fail: an unknown transaction is refused by `set_hidden`.
+    let db = cx.update(|cx| shell.read(cx).db.clone());
+    block_on(db.call(move |c| {
+        c.execute("DELETE FROM transactions WHERE id = ?1", [target])
+            .map(|_| ())
+    }))
+    .expect("the delete job ran")
+    .expect("the transaction delete succeeds");
+
+    let done = block_worker(cx, &shell);
+    with_window(cx, handle, |window, cx| {
+        dash(cx, &shell).update(cx, |d, cx| d.set_row_hidden(target, true, window, cx));
+    });
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::ToCategorize, cx)));
+    drop(done);
+    wait_until(cx, "the failed write reports an error", |cx| {
+        last_toast(&shell, cx).is_some_and(|(_, is_err)| is_err)
+    });
+    draw_frame(cx, handle);
+    cx.update(|cx| {
+        let table = dash(cx, &shell).read(cx).table.read(cx);
+        let d = table.delegate();
+        assert_eq!(d.rows.len(), 3, "the row is back");
+        assert_eq!(d.rows[index].id, target, "in its exact slot");
+        assert_eq!(d.cells.len(), d.rows.len(), "the cells followed it back");
+        assert_eq!(
+            d.text(index, 2).as_str(),
+            "GROCER STORE",
+            "the restored row paints its own description, not its neighbour's"
+        );
+        for ix in 0..d.rows.len() {
+            assert_eq!(
+                d.text(ix, 2).as_str(),
+                d.rows[ix].description.trim(),
+                "row {ix} paints its own description"
+            );
+        }
+    });
+}
+
 #[gpui::test]
 fn sorting_the_amount_header_reorders_rows_without_a_reentrant_panic(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, seed_table_filter_rows);
