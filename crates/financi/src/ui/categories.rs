@@ -20,7 +20,6 @@
 //! that together do what one function did before the extraction.
 
 use super::*;
-use crate::ui::dashboard_chart::category_colors;
 use crate::ui::page::{Cancel, PageEntity, PageEvent, watch_catalog};
 use crate::ui::widgets::*;
 // 3.51: `Button::selected` — the open form's title-row button reads as
@@ -1258,8 +1257,10 @@ impl Render for CategoriesPage {
         // tree flattened parents-then-children, one level of `pl` indent
         // per subcategory; clicking a row selects it (3.23), and the
         // swatches use the same palette the transaction views show
-        // (ui-conventions, *Category colors*).
-        let colors = category_colors(&self.tree, cx.theme());
+        // (ui-conventions, *Category colors*). 3.85: the palette-index
+        // map is the Catalog's, built once per categories reload.
+        let palette = category_palette(cx.theme());
+        let colors = self.catalog.read(cx).cat_colors();
         let mut rows: Vec<TreeListRow> = Vec::new();
         for parent in &self.tree {
             rows.push(TreeListRow {
@@ -1320,7 +1321,10 @@ impl Render for CategoriesPage {
                         return Vec::new();
                     };
                     let row = &tree_rows[*id];
-                    let color = colors.get(&row.id).copied().unwrap_or(muted);
+                    let color = colors
+                        .get(&row.id)
+                        .map(|ix| palette[ix % 12])
+                        .unwrap_or(muted);
                     vec![
                         h_flex()
                             .w_full()

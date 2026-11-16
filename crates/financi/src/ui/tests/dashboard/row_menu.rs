@@ -1,5 +1,6 @@
 //! Dashboard row menu: hide/unhide, category lock and the rule offer.
 
+use financi_core::rules::CompiledRules;
 use gpui_kit::component::menu::PopupMenu;
 
 use super::*;
@@ -87,7 +88,7 @@ fn show_rule_finds_the_deciding_rule_or_gives_the_disabled_reason() {
         is_regex: false,
         category_id: 3,
     };
-    let rules = [coffee];
+    let rules = CompiledRules::new(&[coffee]);
     // An unlocked row that a rule matches: the item works, plain label.
     let row = browse_row(false, false);
     assert_eq!(row_show_rule(&row, &rules, None), RowShowRule::Found(7));

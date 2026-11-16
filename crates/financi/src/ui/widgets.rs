@@ -4,6 +4,10 @@
 
 use super::*;
 use financi_db::{DbError, on_db_typed};
+use gpui_kit::base::{
+    Toast, ToastManager, ToastMotion, ToastOptions, ToastStack, ToastStackState,
+    ToastTransitionStatus,
+};
 use gpui_kit::component::tag::Tag;
 
 /// Every checkbox in the app is built through here (3.14) so they are all
@@ -981,7 +985,35 @@ pub(super) struct ToastMessage {
     pub(super) is_error: bool,
 }
 
-impl Shell {
+/// 3.85: the toast stack as a child entity of [`Shell`] of its own. The
+/// ticker lives here, and it stops as soon as nothing animates: a settled
+/// error toast — which stays until the user closes it — costs no timer
+/// wake-ups and no repaints. And a tick notifies the layer, not the shell,
+/// so while a toast animates or counts down the page underneath it renders
+/// no frame.
+pub(super) struct ToastLayer {
+    /// The mounted toasts, their timeouts and their lifecycle (gpui-base).
+    manager: ToastManager<u64, ToastMessage>,
+    /// The stack element's shared hover/expand state: a toast the user is
+    /// reaching for pauses its auto-hide timer.
+    stack: ToastStackState,
+    next_id: u64,
+    /// A virtual clock the ticker owns (see [`ToastLayer::tick`]).
+    clock: Instant,
+    task: Option<Task<()>>,
+}
+
+impl ToastLayer {
+    pub(super) fn new() -> Self {
+        ToastLayer {
+            manager: ToastManager::new(ToastMotion::sonner()),
+            stack: ToastStackState::default(),
+            next_id: 0,
+            clock: Instant::now(),
+            task: None,
+        }
+    }
+
     /// Success/info feedback: a toast in the bottom-right corner that
     /// dismisses itself after [`TOAST_TIMEOUT`]. Every former
     /// `self.status = Some((msg, false))` call site goes through here.
@@ -995,29 +1027,49 @@ impl Shell {
     }
 
     fn push_toast(&mut self, message: SharedString, is_error: bool, cx: &mut Context<Self>) {
-        let id = self.toast_next_id;
-        self.toast_next_id += 1;
-        self.toasts.push(
+        let id = self.next_id;
+        self.next_id += 1;
+        self.manager.push(
             id,
             ToastMessage { message, is_error },
             ToastOptions {
                 timeout: if is_error { None } else { Some(TOAST_TIMEOUT) },
             },
-            self.toast_clock,
+            self.clock,
         );
-        self.tick_toasts(cx);
+        self.tick(cx);
         cx.notify();
     }
 
     /// The user closed a toast — gpui-base toasts dismiss on click.
     fn dismiss_toast(&mut self, id: u64, cx: &mut Context<Self>) {
-        if self.toasts.dismiss(&id, self.toast_clock) {
-            self.tick_toasts(cx);
+        if self.manager.dismiss(&id, self.clock) {
+            self.tick(cx);
             cx.notify();
         }
     }
 
-    /// Drive the toast lifecycle while anything is mounted.
+    /// Whether any toast is mounted (the tests' feedback assertion).
+    #[cfg(test)]
+    pub(super) fn is_empty(&self) -> bool {
+        self.manager.is_empty()
+    }
+
+    /// The mounted toasts in display order, for the tests' helper.
+    #[cfg(test)]
+    pub(super) fn iter(
+        &self,
+    ) -> impl DoubleEndedIterator<Item = (&u64, &ToastMessage, ToastTransitionStatus)> {
+        self.manager.iter()
+    }
+
+    /// Whether the ticker task is alive, for the counter tests (3.85).
+    #[cfg(test)]
+    pub(super) fn ticker_running(&self) -> bool {
+        self.task.is_some()
+    }
+
+    /// Drive the toast lifecycle while anything still moves.
     ///
     /// `ToastManager` is a pure function of the clock it is handed, so the
     /// ticker advances a *virtual* clock by the timer's interval rather than
@@ -1029,21 +1081,27 @@ impl Shell {
     /// A hovered or focused stack pauses the auto-hide timers (gpui-base's
     /// semantics), so a toast the user is reaching for never vanishes under
     /// the pointer.
-    pub(super) fn tick_toasts(&mut self, cx: &mut Context<Self>) {
-        if self.toast_task.is_some() || self.toasts.is_empty() {
+    ///
+    /// 3.85: the ticker stops once every mounted toast has settled into
+    /// place and holds no pending timeout — a settled toast animates
+    /// nothing, and the only thing a Present toast waits for is its
+    /// timeout, which [`ToastLayer::push_toast`] gives only the non-error
+    /// toasts. Pushing or dismissing restarts it for the next transition.
+    fn tick(&mut self, cx: &mut Context<Self>) {
+        if self.task.is_some() || self.manager.is_empty() {
             return;
         }
-        self.toast_task = Some(cx.spawn(async move |this, cx| {
+        self.task = Some(cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(TOAST_TICK).await;
                 let running = this.update(cx, |this, cx| {
-                    this.toast_clock += TOAST_TICK;
-                    let advanced = this
-                        .toasts
-                        .advance(this.toast_clock, this.toast_stack.is_expanded());
-                    let running = !this.toasts.is_empty();
+                    this.clock += TOAST_TICK;
+                    let advanced = this.manager.advance(this.clock, this.stack.is_expanded());
+                    let running = this.manager.iter().any(|(_, toast, status)| {
+                        status != ToastTransitionStatus::Present || !toast.is_error
+                    });
                     if !running {
-                        this.toast_task = None;
+                        this.task = None;
                     } else if advanced.changed {
                         cx.notify();
                     }
@@ -1055,15 +1113,17 @@ impl Shell {
             }
         }));
     }
+}
 
+impl Render for ToastLayer {
     /// The toast overlay (`docs/ui-conventions.md`, *Feedback*): anchored
     /// bottom-right, stacked, newest in front. It is absolutely positioned,
     /// so it overlays the window and takes no layout space — the page area
     /// starts at the top of the content padding whether or not a toast
     /// shows. Card styling follows the panel rule (border, radius) on the
     /// `popover` surface, `text_sm`; error text is `danger`.
-    pub(super) fn render_toasts(&self, cx: &mut Context<Self>) -> AnyElement {
-        if self.toasts.is_empty() {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.manager.is_empty() {
             return div().into_any_element();
         }
         let (popover, foreground, border, danger, radius) = {
@@ -1076,13 +1136,13 @@ impl Shell {
                 theme.radius,
             )
         };
-        let mut stack = ToastStack::new("toasts", self.toast_stack.clone())
+        let mut stack = ToastStack::new("toasts", self.stack.clone())
             .placement(Anchor::BottomRight)
             .absolute()
             .bottom_4()
             .right_4()
             .w(px(TOAST_W));
-        for (id, toast, status) in self.toasts.iter() {
+        for (id, toast, status) in self.manager.iter() {
             let id = *id;
             stack = stack.item(
                 id,
@@ -1125,8 +1185,24 @@ impl Shell {
         }
         stack.into_any_element()
     }
+}
 
-    // -- rendering ---------------------------------------------------------
+impl Shell {
+    /// Success/info feedback: a toast in the bottom-right corner that
+    /// dismisses itself after [`TOAST_TIMEOUT`]. 3.85: the stack is a
+    /// child entity; the shell only forwards.
+    pub(super) fn notify_ok(&mut self, message: impl Into<SharedString>, cx: &mut Context<Self>) {
+        let message = message.into();
+        self.toasts
+            .update(cx, |layer, cx| layer.notify_ok(message, cx));
+    }
+
+    /// Failure feedback: a toast that stays until the user closes it.
+    pub(super) fn notify_err(&mut self, message: impl Into<SharedString>, cx: &mut Context<Self>) {
+        let message = message.into();
+        self.toasts
+            .update(cx, |layer, cx| layer.notify_err(message, cx));
+    }
 }
 
 /// Run `f` on the database thread, flattening worker and query errors.

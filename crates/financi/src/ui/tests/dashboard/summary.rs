@@ -2,6 +2,16 @@
 
 use super::*;
 
+/// 3.85: a cached view row carries its cells twice — raw cents (what
+/// the sign-dependent colours read) and the drawn text. Tests that
+/// check amounts read `.cents`; this builds the matching drawn strings.
+fn money_cells(values: &[i64]) -> Vec<gpui_kit::SharedString> {
+    values
+        .iter()
+        .map(|&c| gpui_kit::SharedString::from(crate::flow::money(c)))
+        .collect()
+}
+
 /// Two fixed months (March and April 2026): Food (Groceries -1000 -600,
 /// Restaurants -500), Transport (Bus -300), one uncategorized -200, and a
 /// $2,105.00 salary each month. The tests switch to "All time", so the
@@ -202,11 +212,14 @@ fn summary_shows_months_total_and_the_three_total_rows(cx: &mut TestAppContext) 
             ]
         );
         let row = |name: &str| rows.iter().find(|r| r.name == name).unwrap();
-        assert_eq!(row("Food").cells, [1500, 600, 2100]);
-        assert_eq!(row("Uncategorized").cells, [200, 0, 200]);
-        assert_eq!(row("Income").cells, [210500, 210500, 421000]);
-        assert_eq!(row("Spend").cells, [1700, 900, 2600]);
-        assert_eq!(row("Net").cells, [208800, 209600, 418400]);
+        assert_eq!(row("Food").cents, [1500, 600, 2100]);
+        assert_eq!(row("Uncategorized").cents, [200, 0, 200]);
+        assert_eq!(row("Income").cents, [210500, 210500, 421000]);
+        assert_eq!(row("Spend").cents, [1700, 900, 2600]);
+        assert_eq!(row("Net").cents, [208800, 209600, 418400]);
+        // The drawn text is the cents through `flow::money`, formatted
+        // once when the view was built (3.85).
+        assert_eq!(row("Food").cells, money_cells(&[1500, 600, 2100]));
         assert_eq!(
             row("Food").kind,
             SummaryRowKind::Parent {
@@ -218,6 +231,114 @@ fn summary_shows_months_total_and_the_three_total_rows(cx: &mut TestAppContext) 
         assert_eq!(row("Income").kind, SummaryRowKind::Income);
         assert_eq!(row("Spend").kind, SummaryRowKind::Spend);
         assert_eq!(row("Net").kind, SummaryRowKind::Net);
+    });
+}
+
+#[gpui::test]
+fn summary_views_are_built_once_per_load_and_never_per_repaint(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_summary_rows);
+    set_all_time(cx, handle, &shell);
+    wait_until(cx, "table loaded", |cx| {
+        dash(cx, &shell).read(cx).row_count == 7
+    });
+    draw_frame(cx, handle);
+    let built = |cx: &App| dash(cx, &shell).read(cx).summary_views_built.get();
+    let before = cx.update(|cx| built(cx));
+    assert!(before > 0, "the first painted frame built the views");
+    // An unrelated notify and a repaint rebuild nothing: the grid paints
+    // the cached views (3.85).
+    cx.update(|cx| dash(cx, &shell).update(cx, |_, cx| cx.notify()));
+    draw_frame(cx, handle);
+    cx.update(|cx| {
+        assert_eq!(built(cx), before, "a repaint must not rebuild views");
+    });
+    // A load that lands new summary data does. The rebuild happens while
+    // painting, so the frame after the load is what counts it.
+    with_window(cx, handle, |window, cx| {
+        dash(cx, &shell).update(cx, |d, cx| d.set_show_hidden(true, window, cx));
+    });
+    wait_idle(cx, &shell);
+    draw_frame(cx, handle);
+    cx.update(|cx| {
+        assert!(built(cx) > before, "a load must rebuild the views");
+    });
+}
+
+/// 3.85 (review follow-up): the virtualized grid repaints new data with
+/// no scrolling. Categorizing the uncategorized March purchase moves 200
+/// onto the Food rows; when the write's reload lands, the views the row
+/// closure paints — `summary_views`, what `render` draws each frame —
+/// show the new month text on the next plain repaint. Nothing scrolls:
+/// the tracked list keeps no item cache, so a data change is enough.
+#[gpui::test]
+fn summary_rows_repaint_after_a_data_change_without_scrolling(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_summary_rows);
+    set_all_time(cx, handle, &shell);
+    wait_until(cx, "table loaded", |cx| {
+        dash(cx, &shell).read(cx).row_count == 7
+    });
+    draw_frame(cx, handle);
+    let food_cells = |cx: &App| {
+        dash(cx, &shell)
+            .read(cx)
+            .summary_views
+            .iter()
+            .find(|r| r.name == "Food")
+            .map(|r| r.cells.clone())
+    };
+    let paints_uncategorized = |cx: &App| {
+        dash(cx, &shell)
+            .read(cx)
+            .summary_views
+            .iter()
+            .any(|r| r.name == "Uncategorized")
+    };
+    cx.update(|cx| {
+        assert_eq!(
+            food_cells(cx).expect("Food is a painted row"),
+            money_cells(&[1500, 600, 2100]),
+            "the grid paints the seeded month cells"
+        );
+        assert!(
+            paints_uncategorized(cx),
+            "the -200 row starts uncategorized"
+        );
+    });
+
+    let (mystery, groceries) = cx.update(|cx| {
+        let mystery = table_rows(&shell, cx)
+            .iter()
+            .find(|r| r.description == "Mystery Vendor")
+            .unwrap()
+            .id;
+        (mystery, find_child(&shell, cx, "Groceries").unwrap())
+    });
+    with_window(cx, handle, |window, cx| {
+        dash(cx, &shell).update(cx, |d, cx| {
+            d.change_row_category(mystery, groceries, window, cx)
+        });
+    });
+    // Wait for the write's reload to land the new summary data on the
+    // model; the views rebuild during the next paint.
+    wait_until(cx, "the model shows the moved 200", |cx| {
+        dash(cx, &shell)
+            .read(cx)
+            .summary_rows()
+            .iter()
+            .find(|r| r.name == "Food")
+            .is_some_and(|r| r.cents == [1700, 600, 2300])
+    });
+    draw_frame(cx, handle);
+    cx.update(|cx| {
+        assert_eq!(
+            food_cells(cx).expect("Food is still a painted row"),
+            money_cells(&[1700, 600, 2300]),
+            "the next plain repaint draws the new cells — no scroll involved"
+        );
+        assert!(
+            !paints_uncategorized(cx),
+            "the emptied Uncategorized row leaves the painted grid"
+        );
     });
 }
 
@@ -324,7 +445,7 @@ fn expanding_a_summary_parent_shows_its_child_rows(cx: &mut TestAppContext) {
             }
         );
         assert_eq!(rows[1].kind, SummaryRowKind::Child);
-        assert_eq!(rows[1].cells, [1000, 600, 1600]);
+        assert_eq!(rows[1].cents, [1000, 600, 1600]);
         assert_eq!(rows[2].kind, SummaryRowKind::Child);
     });
 
@@ -449,6 +570,6 @@ fn uncategorized_is_the_last_summary_category_row_whatever_its_amount(cx: &mut T
             ]
         );
         assert_eq!(rows[2].kind, SummaryRowKind::Uncategorized);
-        assert_eq!(rows[2].cells, [5200, 0, 5200]);
+        assert_eq!(rows[2].cents, [5200, 0, 5200]);
     });
 }

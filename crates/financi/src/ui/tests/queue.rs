@@ -587,7 +587,8 @@ fn categorizing_a_queue_group_toasts_without_moving_the_page(cx: &mut TestAppCon
     queue_pick(cx, handle, &shell, &merchant, child);
     queue_categorize(cx, handle, &shell, merchant.clone());
     wait_until(cx, "toast up and queue shrinks", |cx| {
-        !shell.read(cx).toasts.is_empty() && shell.read(cx).queue_view.read(cx).groups.len() == 3
+        !shell.read(cx).toasts.read(cx).is_empty()
+            && shell.read(cx).queue_view.read(cx).groups.len() == 3
     });
     cx.update(|cx| {
         assert_eq!(

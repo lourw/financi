@@ -358,6 +358,8 @@ impl DashboardPage {
                 .set_offset(point(px(-1_000_000.), px(0.)));
         }
         self.summary = data.summary;
+        // 3.85: the grid's cached views follow the summary.
+        self.summary_views_dirty = true;
         // Record the filter the applied rows were queried with (3.56).
         self.view_filter = data.view_filter;
         // The rule offer follows a row the user just edited; a load
@@ -373,25 +375,23 @@ impl DashboardPage {
         // 3.82: the row-menu mirrors live on the shell (the Rules and
         // Categories pages read them too); every write refreshed them
         // before this job was dispatched, so they name the same rows
-        // these do.
-        let (child_choices, rules, card_payment) = self
+        // these do. 3.85: the *Show rule* matcher takes the Catalog's
+        // compiled rules — built once per rules reload, not per menu.
+        let compiled_rules = self.catalog.read(cx).compiled_rules();
+        let (child_choices, card_payment) = self
             .shell
             .update(cx, |shell, _| {
-                (
-                    shell.child_choices.clone(),
-                    shell.rules.clone(),
-                    shell.card_payment_category,
-                )
+                (shell.child_choices.clone(), shell.card_payment_category)
             })
             .unwrap_or_default();
         let rule_offer = self.rule_offer.map(|(id, _)| id);
         let sort = self.filter.tx_sort;
         self.table.update(cx, |t, cx| {
             let delegate = t.delegate_mut();
-            delegate.rows = rows;
+            delegate.set_rows(rows);
             delegate.child_choices = child_choices;
             delegate.rule_offer = rule_offer;
-            delegate.rules = rules;
+            delegate.rules = compiled_rules;
             delegate.card_payment_category = card_payment;
             delegate.sort = sort;
             t.refresh(cx);

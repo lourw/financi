@@ -97,11 +97,21 @@ pub(crate) enum SummaryRowKind {
 }
 
 /// A summary row prepared for drawing: the grid values in month order with
-/// the `Total` last.
+/// the `Total` last. 3.85: the cells arrive pre-formatted and the row
+/// carries its element-id key, so the grid's render path formats nothing
+/// and allocates no ids per frame.
 #[derive(Clone, Debug)]
 pub(crate) struct SummaryRowView {
     pub(in crate::ui) id: Option<i64>,
     pub(in crate::ui) name: SharedString,
     pub(in crate::ui) kind: SummaryRowKind,
-    pub(in crate::ui) cells: Vec<i64>,
+    /// Raw cents, months then `Total`: what the sign-dependent colours
+    /// (the `Net` row's danger red) read.
+    pub(in crate::ui) cents: Vec<i64>,
+    /// `cents` through `flow::money` — the drawn text.
+    pub(in crate::ui) cells: Vec<SharedString>,
+    /// Element-id key: the category id, or `income` / `spend` / `net` /
+    /// `uncat` for the fixed rows. 3.85: ids follow the category, not the
+    /// row's position, so a collapsed sibling cannot collide.
+    pub(in crate::ui) key: SharedString,
 }

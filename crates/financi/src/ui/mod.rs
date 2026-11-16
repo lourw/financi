@@ -39,7 +39,7 @@ use std::time::{Duration, Instant};
 use chrono::NaiveDate;
 use financi_core::CategoryKind;
 use financi_core::dates::{DatePreset, preset_range};
-use financi_core::rules::{Rule, pattern_matches, winning_rule};
+use financi_core::rules::{CompiledRules, Rule};
 use financi_db::categories::{
     CategoryNode, create_child, create_parent, delete_category, list_categories, move_child,
     rename as rename_category, transaction_counts,
@@ -61,10 +61,7 @@ use financi_db::{
     spend_by_category, unpair_transaction,
 };
 use gpui_kit::assets::IconName;
-use gpui_kit::base::{
-    Scrollbar, ScrollbarMode, Toast, ToastManager, ToastMotion, ToastOptions, ToastStack,
-    ToastStackState,
-};
+use gpui_kit::base::{Scrollbar, ScrollbarMode};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::calendar::Date as CalendarDate;
 use gpui_kit::component::chart::BarChart;
@@ -336,15 +333,12 @@ pub struct Shell {
     // The Categories page renders the shared rule rows through thin
     // wrappers here (see `ui/rules.rs`).
     // -- Feedback (3.27): toasts, never inline status lines
-    // (`docs/ui-conventions.md`, *Feedback*). The manager owns the mounted
-    // toasts, their per-toast timeouts and their lifecycle; it is advanced
-    // by a ticker task that runs only while something is mounted, against
-    // `toast_clock` — a virtual clock the ticker owns (see `tick_toasts`).
-    toasts: ToastManager<u64, ToastMessage>,
-    toast_stack: ToastStackState,
-    toast_next_id: u64,
-    toast_clock: Instant,
-    toast_task: Option<Task<()>>,
+    // (`docs/ui-conventions.md`, *Feedback*). 3.85: the stack is a child
+    // entity of its own (`widgets::ToastLayer`): it owns the mounted
+    // toasts, their virtual clock and the ticker that advances them, so a
+    // toast tick repaints the layer, never the page, and the ticker stops
+    // while nothing animates.
+    toasts: Entity<ToastLayer>,
     /// 3.75: idle markers for the tests. `refresh_started` counts every
     /// reload dispatched — the full `refresh` and the partial `changed`
     /// calls alike (3.78); `refresh_applied` holds the generation of the
@@ -371,7 +365,8 @@ pub struct Shell {
     /// so a later action can never cancel it mid-flight; its handler checks
     /// the state it touches is still current before applying. Only work that
     /// *should* be replaced when the user moves on keeps a slot — one per
-    /// purpose: `toast_task`, the settings writes on the dashboard page,
+    /// purpose: the toast layer's ticker, the settings writes on the
+    /// dashboard page,
     /// and the Rules page's live-preview task; the reload slots live in
     /// `Catalog`.
     // -- Page state (3.74): each page's fields live with its page module,
@@ -462,7 +457,8 @@ impl Render for Shell {
             )
             // 3.27: feedback toasts overlay the window (absolute, so no
             // layout space) instead of a status line pushing the page down.
-            .child(self.render_toasts(cx))
+            // 3.85: the overlay is the toast layer's own entity.
+            .child(self.toasts.clone())
     }
 }
 
@@ -592,11 +588,7 @@ impl Shell {
             rules: Vec::new(),
             child_choices: Vec::new(),
             card_payment_category: None,
-            toasts: ToastManager::new(ToastMotion::sonner()),
-            toast_stack: ToastStackState::default(),
-            toast_next_id: 0,
-            toast_clock: Instant::now(),
-            toast_task: None,
+            toasts: cx.new(|_| ToastLayer::new()),
             refresh_started: refresh_started.clone(),
             category_selection_settled: 0,
             refresh_applied: refresh_applied.clone(),

@@ -54,6 +54,15 @@ pub(super) const RULE_EDITOR_ERROR_H: f32 = 176.;
 /// 3.28: one entry of the Rules page virtual list — a group header row or a
 /// rule row. Group headers are items too, so collapsing a group just drops
 /// its rows and the list stays virtualized over everything (D5).
+/// 3.85: fingerprint of every input of the grouped list — search text,
+/// Type picker row, test mode, Unused, sort-by-Uses, the sorted collapsed
+/// group ids, and the catalog generation bumped by `apply`.
+type ItemsFingerprint = (String, usize, bool, bool, bool, Vec<i64>, u64);
+
+/// 3.85: the cached row heights with the inputs they were built from —
+/// the items they belong to, the editing row and its error state.
+type SizesCache = (Rc<Vec<RulesItem>>, Option<i64>, bool, Rc<Vec<Size<Pixels>>>);
+
 enum RulesItem {
     Group {
         /// Child-category id; also the collapse key.
@@ -137,12 +146,29 @@ pub(super) struct RulesPage {
     pub(super) rules_reveal: Option<i64>,
     /// 3.28: the Rules page list's scroll handle (headers and rows together).
     pub(super) rules_scroll: VirtualListScrollHandle,
+    /// 3.85: the grouped, filtered list, cached between renders. Every
+    /// input is fingerprinted (the search text and Type picker read
+    /// cheaply; the bools and the collapsed set clone cheaply; the
+    /// catalog mirrors bump [`RulesPage::rules_gen`] when they reload),
+    /// so a frame that changes nothing reuses the same `Rc`.
+    rules_items_cache: Option<Rc<Vec<RulesItem>>>,
+    rules_items_fp: Option<ItemsFingerprint>,
+    /// 3.85: bumped by [`RulesPage::apply`] — the fingerprint component
+    /// covering the catalog mirrors (rules, Uses, category labels).
+    rules_gen: u64,
+    /// 3.85: the list's row heights, cached with the items they were
+    /// built from; rebuilt only when the items or the editing row
+    /// (and its error state) change.
+    rules_sizes_cache: Option<SizesCache>,
     /// 3.28: how many items the Rules page list built last frame (headers
     /// and rows together) and the range it drew, for the long-list tests.
     #[cfg(test)]
     pub(super) rules_page_rows_built: std::cell::Cell<usize>,
     #[cfg(test)]
     pub(super) rules_page_range: std::cell::Cell<(usize, usize)>,
+    /// 3.85: how many times the grouped item list was actually built.
+    #[cfg(test)]
+    pub(super) rules_items_built: std::cell::Cell<usize>,
     // -- `Catalog` snapshot mirrors (3.80).
     /// The shared rule list; the Categories page's list is a view over
     /// the same rows (`Shell` mirrors it too for its other pages).
@@ -228,6 +254,8 @@ impl PageEntity for RulesPage {
         };
         self.rules = rules;
         self.rule_uses = uses;
+        // 3.85: the item cache's catalog inputs just moved.
+        self.rules_gen += 1;
         self.child_choices = tree
             .iter()
             .flat_map(|p| {
@@ -377,10 +405,16 @@ impl RulesPage {
             new_rule_open: false,
             rules_reveal: None,
             rules_scroll: VirtualListScrollHandle::new(),
+            rules_items_cache: None,
+            rules_items_fp: None,
+            rules_gen: 0,
+            rules_sizes_cache: None,
             #[cfg(test)]
             rules_page_rows_built: std::cell::Cell::new(0),
             #[cfg(test)]
             rules_page_range: std::cell::Cell::new((0, 0)),
+            #[cfg(test)]
+            rules_items_built: std::cell::Cell::new(0),
             rules: Vec::new(),
             rule_uses: HashMap::default(),
             child_choices: Vec::new(),
@@ -1006,12 +1040,14 @@ impl RulesPage {
     // -- Rules page (3.28) ----------------------------------------------------
 
     /// "Parent › Child" label of the rule's target category, shared by the
-    /// row, the group headers and the search matching.
-    fn rule_target_label(&self, rule: &Rule) -> String {
-        self.child_choices
-            .iter()
-            .find(|(id, _)| *id == rule.category_id)
-            .map(|(_, n)| n.clone())
+    /// row, the group headers and the search matching. 3.85: the labels
+    /// are the Catalog's map, built once per rules or categories reload
+    /// (the `#{id}` fallback for a missing child baked in); `labels` is
+    /// that map, fetched once per list build.
+    fn rule_target_label(labels: &HashMap<i64, SharedString>, rule: &Rule) -> String {
+        labels
+            .get(&rule.id)
+            .map(|l| l.to_string())
             .unwrap_or_else(|| format!("#{}", rule.category_id))
     }
 
@@ -1039,6 +1075,9 @@ impl RulesPage {
             .map(|ix| ix.row)
             .unwrap_or(0);
         let test = self.rules_test_mode;
+        // 3.85: the Catalog's derived maps, fetched once per list build.
+        let rule_labels = self.catalog.read(cx).rule_labels();
+        let rule_patterns = self.catalog.read(cx).rule_patterns();
         let mut filtered: Vec<&Rule> = self
             .rules
             .iter()
@@ -1053,14 +1092,17 @@ impl RulesPage {
             .filter(|r| {
                 if test {
                     // The search box is the description: only rules that
-                    // match it stay.
+                    // match it stay (3.85: the Catalog's compiled
+                    // patterns, `pattern_matches` semantics unchanged).
                     query
                         .as_deref()
-                        .is_some_and(|q| pattern_matches(&r.pattern, r.is_regex, q))
+                        .is_some_and(|q| rule_patterns.get(&r.id).is_some_and(|p| p.is_match(q)))
                 } else if let Some(q) = &query {
                     // Pattern and target category name, case-insensitive.
                     r.pattern.to_ascii_lowercase().contains(q)
-                        || self.rule_target_label(r).to_ascii_lowercase().contains(q)
+                        || Self::rule_target_label(&rule_labels, r)
+                            .to_ascii_lowercase()
+                            .contains(q)
                 } else {
                     true
                 }
@@ -1078,15 +1120,23 @@ impl RulesPage {
                 .map(|r| RulesItem::Rule { id: r.id })
                 .collect();
         }
-        // Group by target label, groups in label order.
-        let mut groups: Vec<(String, i64, Vec<&Rule>)> = Vec::new();
+        // Group by target label with a map (3.85, spec): labels are
+        // unique per category, so one hash lookup per rule replaces the
+        // linear find over groups. The collect + sort below puts the
+        // groups in label order whatever order the map iterates.
+        let mut grouped: HashMap<String, (i64, Vec<&Rule>)> = HashMap::new();
         for r in &filtered {
-            let label = self.rule_target_label(r);
-            match groups.iter_mut().find(|(l, _, _)| *l == label) {
-                Some((_, _, rules)) => rules.push(r),
-                None => groups.push((label, r.category_id, vec![r])),
-            }
+            let label = Self::rule_target_label(&rule_labels, r);
+            grouped
+                .entry(label)
+                .or_insert((r.category_id, Vec::new()))
+                .1
+                .push(r);
         }
+        let mut groups: Vec<(String, i64, Vec<&Rule>)> = grouped
+            .into_iter()
+            .map(|(label, (category_id, rules))| (label, category_id, rules))
+            .collect();
         groups.sort_by(|a, b| a.0.cmp(&b.0));
         let by_uses = self.rules_sort_by_uses;
         let mut items = Vec::with_capacity(filtered.len() + groups.len());
@@ -1114,6 +1164,85 @@ impl RulesPage {
             items.extend(rules.into_iter().map(|r| RulesItem::Rule { id: r.id }));
         }
         items
+    }
+
+    /// 3.85: the cached grouped list (see [`RulesPage::rules_items_cache`]):
+    /// [`RulesPage::rules_page_items`] runs only when an input actually
+    /// changed, and every frame after that reuses the same `Rc`.
+    fn rules_items_mut(&mut self, cx: &App) -> Rc<Vec<RulesItem>> {
+        let query = self
+            .rules_search
+            .read(cx)
+            .value()
+            .trim()
+            .to_ascii_lowercase();
+        let type_ix = self
+            .rules_type_select
+            .read(cx)
+            .selected_index(cx)
+            .map(|ix| ix.row)
+            .unwrap_or(0);
+        let mut collapsed: Vec<i64> = self.collapsed_rule_groups.iter().copied().collect();
+        collapsed.sort_unstable();
+        let fp = (
+            query,
+            type_ix,
+            self.rules_test_mode,
+            self.rules_unused_only,
+            self.rules_sort_by_uses,
+            collapsed,
+            self.rules_gen,
+        );
+        if self.rules_items_fp.as_ref() != Some(&fp) {
+            let items = self.rules_page_items(cx);
+            #[cfg(test)]
+            self.rules_items_built.set(self.rules_items_built.get() + 1);
+            self.rules_items_cache = Some(Rc::new(items));
+            self.rules_items_fp = Some(fp);
+        }
+        Rc::clone(self.rules_items_cache.as_ref().unwrap())
+    }
+
+    /// 3.85: the list's row heights, cached (see
+    /// [`RulesPage::rules_sizes_cache`]). Rows are 24 px; the row the
+    /// editor replaced reserves `RULE_EDITOR_H` (`RULE_EDITOR_ERROR_H`
+    /// while a validation error is open), like the Categories rule list.
+    fn rules_sizes_mut(
+        &mut self,
+        editing: Option<i64>,
+        edit_error: bool,
+        cx: &mut App,
+    ) -> Rc<Vec<Size<Pixels>>> {
+        let items = self.rules_items_mut(cx);
+        let fresh = self
+            .rules_sizes_cache
+            .as_ref()
+            .is_some_and(|(i, e, err, _)| {
+                Rc::ptr_eq(i, &items) && *e == editing && *err == edit_error
+            });
+        if !fresh {
+            let sizes: Vec<Size<Pixels>> = items
+                .iter()
+                .map(|it| match it {
+                    RulesItem::Group { .. } => size(px(0.), px(24.)),
+                    RulesItem::Rule { id } => size(
+                        px(0.),
+                        if editing == Some(*id) {
+                            if edit_error {
+                                px(RULE_EDITOR_ERROR_H)
+                            } else {
+                                px(RULE_EDITOR_H)
+                            }
+                        } else {
+                            px(24.)
+                        },
+                    ),
+                })
+                .collect();
+            self.rules_sizes_cache = Some((items, editing, edit_error, Rc::new(sizes)));
+        }
+        let (_, _, _, sizes) = self.rules_sizes_cache.as_ref().unwrap();
+        Rc::clone(sizes)
     }
 
     fn toggle_rule_group(&mut self, id: i64, cx: &mut Context<Self>) {
@@ -1432,36 +1561,18 @@ impl Render for RulesPage {
         // The "wins" marker follows [`winning_rule`] exactly, so the page
         // marks the rule the categoriser would actually apply (D5).
         let winner = if self.rules_test_mode && !query.is_empty() {
-            winning_rule(&self.rules, &query)
+            // 3.85: the Catalog's compiled rules, the same matcher the
+            // categoriser ran at import.
+            self.catalog.read(cx).compiled_rules().winning(&query)
         } else {
             None
         };
-        let items = Rc::new(self.rules_page_items(cx));
+        // 3.85: the grouped list and the row heights come from the page's
+        // caches; a frame that changes no input rebuilds neither.
+        let items = self.rules_items_mut(cx);
         let editing = self.editing_rule;
         let edit_error = self.rule_error.is_some();
-        // Rows are 24 px; the row the editor replaced reserves
-        // `RULE_EDITOR_H` (`RULE_EDITOR_ERROR_H` while a validation error
-        // is open), like the Categories rule list.
-        let item_sizes = Rc::new(
-            items
-                .iter()
-                .map(|it| match it {
-                    RulesItem::Group { .. } => size(px(0.), px(24.)),
-                    RulesItem::Rule { id } => size(
-                        px(0.),
-                        if editing == Some(*id) {
-                            if edit_error {
-                                px(RULE_EDITOR_ERROR_H)
-                            } else {
-                                px(RULE_EDITOR_H)
-                            }
-                        } else {
-                            px(24.)
-                        },
-                    ),
-                })
-                .collect::<Vec<_>>(),
-        );
+        let item_sizes = self.rules_sizes_mut(editing, edit_error, cx);
         let list_items = Rc::clone(&items);
         let list = v_virtual_list(
             cx.entity(),

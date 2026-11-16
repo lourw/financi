@@ -23,7 +23,11 @@ impl RowUndo {
     /// a row a reload has meanwhile replaced or dropped is left alone.
     fn restore(&self, cx: &mut App, table: &Entity<TableState<TxTable>>) {
         table.update(cx, |t, cx| {
-            let rows = &mut t.delegate_mut().rows;
+            // 3.85: rows leave and return through `set_rows`, never in
+            // place — the rollback of a hide changes the row count, and a
+            // stale display cell would paint the wrong row forever after.
+            let delegate = t.delegate_mut();
+            let mut rows = std::mem::take(&mut delegate.rows);
             match self {
                 RowUndo::Edited(Some(saved)) => {
                     if let Some(row) = rows.iter_mut().find(|r| r.id == saved.id) {
@@ -37,6 +41,7 @@ impl RowUndo {
                     }
                 }
             }
+            delegate.set_rows(rows);
             t.refresh(cx);
         });
     }
@@ -384,13 +389,13 @@ impl DashboardPage {
             .find_map(|p| p.children.iter().find(|c| c.id == category_id))
             .map(|c| c.name.clone());
         let undo = self.table.update(cx, |t, cx| {
+            // 3.85: the edited row goes back through `set_rows`, so its
+            // cached display cells carry the new category in this same
+            // frame — `text()` is what `render_td` paints.
+            let delegate = t.delegate_mut();
+            let mut rows = std::mem::take(&mut delegate.rows);
             let mut undo = RowUndo::Edited(None);
-            if let Some(row) = t
-                .delegate_mut()
-                .rows
-                .iter_mut()
-                .find(|r| r.id == transaction_id)
-            {
+            if let Some(row) = rows.iter_mut().find(|r| r.id == transaction_id) {
                 undo = RowUndo::Edited(Some(row.clone()));
                 if let Some(label) = &label {
                     row.category_id = Some(category_id);
@@ -398,6 +403,7 @@ impl DashboardPage {
                     row.category_locked = true;
                 }
             }
+            delegate.set_rows(rows);
             t.refresh(cx);
             undo
         });
@@ -465,7 +471,12 @@ impl DashboardPage {
         // slot and all — the rollback puts it back at its index.
         let show_hidden = self.filter.show_hidden;
         let undo = self.table.update(cx, |t, cx| {
-            let rows = &mut t.delegate_mut().rows;
+            // 3.85: the flip (or the removal) goes back through `set_rows`:
+            // a hide with the filter off changes the row count, and cells
+            // that lag `rows` would paint every row past the removed one
+            // with its neighbour's text.
+            let delegate = t.delegate_mut();
+            let mut rows = std::mem::take(&mut delegate.rows);
             let undo = match rows.iter().position(|r| r.id == transaction_id) {
                 Some(index) if hidden && !show_hidden => {
                     let row = rows.remove(index);
@@ -478,6 +489,7 @@ impl DashboardPage {
                 }
                 None => RowUndo::Edited(None),
             };
+            delegate.set_rows(rows);
             t.refresh(cx);
             undo
         });

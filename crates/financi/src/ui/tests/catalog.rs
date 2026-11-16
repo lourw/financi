@@ -196,3 +196,65 @@ fn switching_pages_issues_no_queries(cx: &mut TestAppContext) {
     let names = cx.update(|cx| logged(cx, &shell));
     assert!(names.is_empty(), "a page switch issued queries: {names:?}");
 }
+
+/// 3.85: the derived caches (compiled rules, palette indices, rule
+/// labels) rebuild when a reload lands the sections they derive from and
+/// never on a repaint: a repaint rebuilds nothing, a categories reload
+/// leaves the rules caches alone, and a rules reload leaves the colours
+/// alone.
+#[gpui::test]
+fn caches_rebuild_only_when_their_inputs_change(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |_conn| {});
+    wait_idle(cx, &shell);
+    let counts = |cx: &mut TestAppContext| -> (usize, usize, usize) {
+        cx.update(|cx| shell.read(cx).catalog.read(cx).cache_rebuilds.get())
+    };
+    let (r0, c0, l0) = counts(cx);
+    assert!(
+        r0 >= 1 && c0 >= 1 && l0 >= 1,
+        "the launch load built every cache ({r0}, {c0}, {l0})"
+    );
+    // An unrelated notify and repaint rebuild nothing: the caches live in
+    // `merge`, not in a render path.
+    with_window(cx, handle, |_window, cx| {
+        dash(cx, &shell).update(cx, |_d, cx| cx.notify());
+    });
+    draw_frame(cx, handle);
+    assert_eq!(counts(cx), (r0, c0, l0), "a repaint rebuilt something");
+    // A categories reload rebuilds the colours and the labels, never the
+    // compiled rules.
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.changed(
+                crate::ui::catalog::Domains::single(crate::ui::catalog::Domain::Categories),
+                window,
+                cx,
+            )
+        });
+    });
+    wait_idle(cx, &shell);
+    let (r1, c1, l1) = counts(cx);
+    assert_eq!(r1, r0, "a categories reload recompiled the rules");
+    assert!(
+        c1 > c0 && l1 > l0,
+        "the categories reload rebuilt colours and labels ({c0}->{c1}, {l0}->{l1})"
+    );
+    // A rules reload rebuilds the compiled rules and the labels, never
+    // the colours.
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.changed(
+                crate::ui::catalog::Domains::single(crate::ui::catalog::Domain::Rules),
+                window,
+                cx,
+            )
+        });
+    });
+    wait_idle(cx, &shell);
+    let (r2, c2, l2) = counts(cx);
+    assert!(
+        r2 > r1 && l2 > l1,
+        "the rules reload rebuilt rules and labels ({r1}->{r2}, {l1}->{l2})"
+    );
+    assert_eq!(c2, c1, "a rules reload rebuilt the palette map");
+}

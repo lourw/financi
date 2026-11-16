@@ -260,9 +260,12 @@ fn fifteen_category_bars_keep_their_share_labels_clear(cx: &mut TestAppContext) 
     // thinned-out ones — drop the label call in `chart_bars` or misalign
     // it and this fails.
     let bars = cx.update(|cx| {
-        dash(cx, &shell)
-            .read(cx)
-            .chart_bars(plan_w, &Default::default(), gpui::black())
+        dash(cx, &shell).read(cx).chart_bars(
+            plan_w,
+            &Default::default(),
+            Default::default(),
+            gpui::black(),
+        )
     });
     assert_eq!(bars.len(), 15);
     let wired_slots = bar_label_slots(15, bar_label_plan(plan_w, 15, char_px));
