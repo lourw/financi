@@ -344,8 +344,16 @@ right-aligned; 3.48), one at a time; the editor has no category picker —
 Save keeps the rule's category, and a muted "To move rules to another
 category, use the Rules page." sits under a non-empty rule list. Delete
 is a two-click confirm. Selecting a category or leaving the page closes
-the editor and disarms. Planned: a Uses column (3.49), a focused rule's
-transactions under the list (3.52).
+the editor and disarms. Columns (3.49): Pattern (flex, ellipsized with a
+tooltip; with a parent selected each rule also carries a muted `text_xs`
+tag of its subcategory's name after the pattern — a subcategory view
+paints no tags), Type, and Uses — the transactions this rule categorizes,
+the same `rule_use_stats` mirror the Rules page shows, right-aligned
+`text_xs` through `flow::count` with 0 muted. The Pattern and Uses
+headings toggle the sort (Uses descending with pattern as tie-break, or
+pattern ascending; the active one carries a ↓ marker) and the Uses
+heading's tooltip reads "Transactions this rule categorizes". Planned: a
+focused rule's transactions under the list (3.52).
 
 **Rules.** `PageHeader` ("N rules · M unused", **New rule** opening the
 add-rule row in place). `FilterRow`: Search ("Search rules or

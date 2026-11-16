@@ -2225,7 +2225,8 @@ fn the_regex_switch_lines_up_with_the_rule_fields(cx: &mut TestAppContext) {
 /// label sits on the same line as the others, right-aligned over the
 /// rows' buttons (3.24 MUST-KEEP). A stacked label-plus-buttons column
 /// measured 83.5 px tall, slid the Actions label 64 px up, and pushed
-/// the Type/Category headings 62 px right of their columns.
+/// the Type/Category headings 62 px right of their columns. 3.49: the
+/// third heading is the clickable Uses one over the Uses column.
 #[gpui::test]
 fn the_rule_list_headings_sit_over_their_columns(cx: &mut TestAppContext) {
     let (handle, _shell, rule, _first, _second) = open_rule_fixture(cx);
@@ -2248,9 +2249,9 @@ fn the_rule_list_headings_sit_over_their_columns(cx: &mut TestAppContext) {
             format!("cat:rule-type-col:{rule}"),
         ),
         (
-            "Category",
-            "cat:rule-heading-category",
-            format!("cat:rule-category-col:{rule}"),
+            "Uses",
+            "cat:rule-heading-uses",
+            format!("cat:rule-uses-col:{rule}"),
         ),
     ] {
         let heading = window
@@ -2303,6 +2304,295 @@ fn the_rule_list_headings_sit_over_their_columns(cx: &mut TestAppContext) {
         "the heading sits above the rows: heading y {:?}, row y {:?}",
         heading.origin.y,
         row.origin.y,
+    );
+}
+
+// -- Uses column (3.49) ------------------------------------------------------
+
+/// 3.49: the rule list's third column is Uses — the transactions a rule
+/// categorizes, the same number the Rules page shows — and nothing of the
+/// old Category column paints. The COFFEE rule wins the fixture's two
+/// unlocked rows, so its cell reads 2.
+#[gpui::test]
+fn the_rule_list_shows_uses_instead_of_category(cx: &mut TestAppContext) {
+    let (handle, shell, rule, _first, _second) = open_rule_fixture(cx);
+    resize_and_draw(cx, handle, 1200., 720.);
+    assert!(
+        paints(cx, handle, format!("cat:rule-uses:{rule}:2")),
+        "the Uses cell paints the two rows the rule categorizes"
+    );
+    assert!(
+        paints(cx, handle, "cat:rule-heading-uses"),
+        "the list paints the Uses heading"
+    );
+    assert!(
+        !paints(cx, handle, "cat:rule-heading-category")
+            && !paints(cx, handle, format!("cat:rule-category-col:{rule}")),
+        "nothing of the old Category column paints"
+    );
+    // The Rules page shows the same number for the same rule: both pages
+    // read the one `rule_use_stats` mirror off the shared snapshot.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Rules, cx)));
+    cx.run_until_parked();
+    cx.update(|cx| {
+        assert_eq!(
+            shell
+                .read(cx)
+                .rules_page
+                .read(cx)
+                .rule_uses
+                .get(&rule)
+                .copied(),
+            Some(2),
+            "the Rules page's Uses for the rule matches the Categories list"
+        );
+    });
+}
+
+/// 3.49: Uses counts only the rows a rule wins. `COFFEE SHOP` (added on
+/// top of the `seed_rule_fixture` rule) is the longer pattern, so it wins
+/// both unlocked rows; `COFFEE` wins nothing and reads 0 (muted), and the
+/// locked row counts for neither.
+fn seed_overlapping_rules(conn: &financi_db::rusqlite::Connection) -> (i64, i64, i64) {
+    let (coffee_rule, _first, second) = seed_rule_fixture(conn);
+    let shop_rule = financi_db::rules::add_rule(conn, "COFFEE SHOP", false, second).unwrap();
+    (coffee_rule, shop_rule, second)
+}
+
+#[gpui::test]
+fn the_uses_cell_counts_only_the_rows_the_rule_wins(cx: &mut TestAppContext) {
+    let mut ids = (0i64, 0i64, 0i64);
+    let (handle, shell) = open_shell(cx, |c| ids = seed_overlapping_rules(c));
+    let (coffee_rule, shop_rule, second) = ids;
+    wait_until(cx, "both rules loaded", |cx| {
+        shell.read(cx).rules.len() == 2
+            && shell.read(cx).cat_counts.get(&second).copied().unwrap_or(0) == 3
+    });
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Categories, cx)));
+    let drinks = cx.update(|cx| {
+        shell
+            .read(cx)
+            .categories
+            .iter()
+            .find(|p| p.name == "Drinks")
+            .unwrap()
+            .id
+    });
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| s.select_category(drinks, window, cx));
+    });
+    cx.run_until_parked();
+    resize_and_draw(cx, handle, 1200., 720.);
+    assert!(
+        paints(cx, handle, format!("cat:rule-uses:{shop_rule}:2")),
+        "the winning rule counts the two unlocked rows it won"
+    );
+    assert!(
+        paints(cx, handle, format!("cat:rule-uses:{coffee_rule}:0")),
+        "the rule that wins no rows reads 0 (and paints muted)"
+    );
+}
+
+/// 3.49: the count follows the rule list's own edits — narrowing the
+/// pattern drops the rows the rule no longer wins, and deleting the rule
+/// takes its row out of the list.
+#[gpui::test]
+fn the_uses_count_follows_rule_edits_and_deletes(cx: &mut TestAppContext) {
+    let (handle, shell, rule, _first, _second) = open_rule_fixture(cx);
+    resize_and_draw(cx, handle, 1200., 720.);
+    assert!(paints(cx, handle, format!("cat:rule-uses:{rule}:2")));
+
+    // Edit "COFFEE" down to "SHOP B": one row, and the cell follows.
+    start_rule_edit(cx, handle, &shell, rule);
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.rules_page.update(cx, |p, cx| {
+                p.rule_edit_pattern
+                    .update(cx, |i, cx| i.set_value("SHOP B", window, cx))
+            });
+            s.rules_page
+                .update(cx, |p, cx| p.save_rule_edit(window, cx));
+        });
+    });
+    wait_until(cx, "the count drops to one", |cx| {
+        shell
+            .read(cx)
+            .categories_view
+            .read(cx)
+            .uses
+            .get(&rule)
+            .copied()
+            == Some(1)
+    });
+    draw_frame(cx, handle);
+    assert!(
+        paints(cx, handle, format!("cat:rule-uses:{rule}:1")),
+        "the edited rule's Uses cell repaints with the new count"
+    );
+
+    // Delete (two clicks): the row leaves the list.
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.rules_page
+                .update(cx, |p, cx| p.arm_delete_rule(rule, window, cx))
+        });
+    });
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.rules_page
+                .update(cx, |p, cx| p.arm_delete_rule(rule, window, cx))
+        });
+    });
+    wait_until(cx, "the rule deleted", |cx| shell.read(cx).rules.is_empty());
+    wait_until(cx, "the page applies the delete", |cx| {
+        !shell
+            .read(cx)
+            .categories_view
+            .read(cx)
+            .rules
+            .iter()
+            .any(|r| r.id == rule)
+    });
+    draw_frame(cx, handle);
+    assert!(
+        !paints(cx, handle, format!("cat:rule-row:{rule}")),
+        "the deleted rule's row is gone"
+    );
+}
+
+/// 3.49: with a parent selected, each rule from a subcategory carries a
+/// muted tag of that subcategory's name after its pattern; selecting the
+/// subcategory itself paints no tags.
+#[gpui::test]
+fn a_parent_view_tags_each_rule_with_its_subcategory(cx: &mut TestAppContext) {
+    let (handle, shell, rule, first, _second) = open_rule_fixture(cx);
+    resize_and_draw(cx, handle, 1200., 720.);
+    // The fixture selected Drinks, the rules' parent; the rule targets First.
+    assert!(
+        paints(cx, handle, format!("cat:rule-subcat:{rule}:First")),
+        "a parent's rule rows carry the subcategory tag"
+    );
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| s.select_category(first, window, cx));
+    });
+    cx.run_until_parked();
+    draw_frame(cx, handle);
+    assert!(
+        paints(cx, handle, format!("cat:rule-row:{rule}")),
+        "the rule still lists under its own subcategory"
+    );
+    assert!(
+        !paints(cx, handle, format!("cat:rule-subcat:{rule}:First")),
+        "a subcategory selection paints no tag"
+    );
+}
+
+/// 3.49 fixture: one parent, two subcategories, and two rules whose Uses
+/// run against the pattern order — `UBER` categorizes two rows but sorts
+/// after `AMAZON` (one row) alphabetically. Returns `(drinks, uber, amazon)`.
+fn seed_uses_rules(conn: &financi_db::rusqlite::Connection) -> (i64, i64, i64) {
+    let acct = create_account(conn, "amex", "Cobalt", AccountKind::CreditCard).unwrap();
+    conn.execute(
+        "INSERT INTO imports (account_id, parser_id, file_name, imported_at, header_raw,
+                              encoding, has_bom, line_ending, trailing_newline, row_count)
+         VALUES (?1, 'amex', 'seed.csv', '2026-11-01', X'00', 'utf-8', 0, 'lf', 0, 0)",
+        [acct],
+    )
+    .unwrap();
+    let import = conn.last_insert_rowid();
+    let drinks =
+        financi_db::categories::create_parent(conn, "Drinks", CategoryKind::Expense).unwrap();
+    let coffee = financi_db::categories::create_child(conn, drinks, "Coffee").unwrap();
+    let taxi = financi_db::categories::create_child(conn, drinks, "Taxi").unwrap();
+    for (n, desc) in ["AMAZON ORDER", "UBER TRIP A", "UBER TRIP B"]
+        .iter()
+        .enumerate()
+    {
+        conn.execute(
+            "INSERT INTO transactions (account_id, import_id, source_line, raw_bytes,
+                                       row_hash, posted_date, amount_cents, description_raw)
+             VALUES (?1, ?2, ?3, X'00', ?4, '2026-11-01', -1000, ?5)",
+            (acct, import, n as i64, format!("uses-hash-{n}"), *desc),
+        )
+        .unwrap();
+    }
+    let amazon = financi_db::rules::add_rule(conn, "AMAZON", false, coffee).unwrap();
+    let uber = financi_db::rules::add_rule(conn, "UBER", false, taxi).unwrap();
+    (drinks, uber, amazon)
+}
+
+/// 3.49: clicking the Uses heading sorts the list by Uses descending; the
+/// Pattern heading sorts back, like the Rules page's pair.
+#[gpui::test]
+fn the_uses_heading_sorts_the_rule_list(cx: &mut TestAppContext) {
+    let mut ids = (0i64, 0i64, 0i64);
+    let (handle, shell) = open_shell(cx, |c| ids = seed_uses_rules(c));
+    let (drinks, uber, amazon) = ids;
+    wait_until(cx, "both rules loaded", |cx| {
+        shell.read(cx).rules.len() == 2
+    });
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Categories, cx)));
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| s.select_category(drinks, window, cx));
+    });
+    cx.run_until_parked();
+    resize_and_draw(cx, handle, 1200., 720.);
+    let y = |cx: &mut TestAppContext, id| {
+        f32::from(bounds(cx, handle, format!("cat:rule-row:{id}")).origin.y)
+    };
+    assert!(
+        y(cx, amazon) < y(cx, uber),
+        "the default order is pattern ascending"
+    );
+    assert!(paints(cx, handle, format!("cat:rule-uses:{uber}:2")));
+
+    click(cx, handle, "cat:rule-heading-uses");
+    draw_frame(cx, handle);
+    assert!(
+        y(cx, uber) < y(cx, amazon),
+        "the Uses heading sorts by Uses descending"
+    );
+    cx.update(|cx| {
+        assert!(
+            shell
+                .read(cx)
+                .categories_view
+                .read(cx)
+                .cat_rules_sort_by_uses
+        )
+    });
+
+    click(cx, handle, "cat:rule-heading-pattern");
+    draw_frame(cx, handle);
+    assert!(
+        y(cx, amazon) < y(cx, uber),
+        "the Pattern heading sorts back to pattern order"
+    );
+    cx.update(|cx| {
+        assert!(
+            !shell
+                .read(cx)
+                .categories_view
+                .read(cx)
+                .cat_rules_sort_by_uses
+        )
+    });
+}
+
+/// 3.49: hovering the Uses heading explains the column.
+#[gpui::test]
+fn the_uses_heading_tells_what_it_counts(cx: &mut TestAppContext) {
+    let (handle, _shell, _rule, _first, _second) = open_rule_fixture(cx);
+    resize_and_draw(cx, handle, 1200., 720.);
+    let mut window = VisualTestContext::from_window(handle, cx);
+    let heading = bounds(cx, handle, "cat:rule-heading-uses");
+    window.simulate_mouse_move(heading.center(), None, Modifiers::default());
+    cx.executor().advance_clock(Duration::from_millis(600));
+    cx.run_until_parked();
+    draw_frame(cx, handle);
+    assert!(
+        paints(cx, handle, "cat:rule-heading-uses-tip"),
+        "hovering the Uses heading shows the tooltip"
     );
 }
 
