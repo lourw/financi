@@ -1120,15 +1120,23 @@ impl RulesPage {
                 .map(|r| RulesItem::Rule { id: r.id })
                 .collect();
         }
-        // Group by target label, groups in label order.
-        let mut groups: Vec<(String, i64, Vec<&Rule>)> = Vec::new();
+        // Group by target label with a map (3.85, spec): labels are
+        // unique per category, so one hash lookup per rule replaces the
+        // linear find over groups. The collect + sort below puts the
+        // groups in label order whatever order the map iterates.
+        let mut grouped: HashMap<String, (i64, Vec<&Rule>)> = HashMap::new();
         for r in &filtered {
             let label = Self::rule_target_label(&rule_labels, r);
-            match groups.iter_mut().find(|(l, _, _)| *l == label) {
-                Some((_, _, rules)) => rules.push(r),
-                None => groups.push((label, r.category_id, vec![r])),
-            }
+            grouped
+                .entry(label)
+                .or_insert((r.category_id, Vec::new()))
+                .1
+                .push(r);
         }
+        let mut groups: Vec<(String, i64, Vec<&Rule>)> = grouped
+            .into_iter()
+            .map(|(label, (category_id, rules))| (label, category_id, rules))
+            .collect();
         groups.sort_by(|a, b| a.0.cmp(&b.0));
         let by_uses = self.rules_sort_by_uses;
         let mut items = Vec::with_capacity(filtered.len() + groups.len());
