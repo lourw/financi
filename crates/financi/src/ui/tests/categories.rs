@@ -581,7 +581,9 @@ fn the_categories_page_labels_its_controls(cx: &mut TestAppContext) {
     );
     add_child(cx, handle, &shell, "Restaurants");
     let child_id = cx.update(|cx| find_child(&shell, cx, "Restaurants").unwrap());
-    // Adding a child selects it, so the scan goes back to the parent.
+    // 3.96: adding a subcategory keeps the parent selected; re-select it
+    // anyway so the scan below reads the parent's panel whatever happens
+    // to the selection on the way here.
     with_window(cx, handle, |window, cx| {
         shell.update(cx, |s, cx| s.select_category(parent_id, window, cx));
     });
@@ -1159,6 +1161,233 @@ fn the_add_subcategory_form_stays_open_after_a_successful_add(cx: &mut TestAppCo
     });
 }
 
+/// 3.96: adding a subcategory keeps the parent selected (user request,
+/// 2026-11-15): the detail panel stays on the parent, the input is empty
+/// and still focused for the next name, and the new child appears in the
+/// tree under the parent and in the parent's rule-target picker.
+#[gpui::test]
+fn a_successful_subcategory_add_keeps_the_parent_selected(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |_| {});
+    wait_idle(cx, &shell);
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Categories, cx)));
+    add_parent(cx, handle, &shell, "Food");
+    let food = cx.update(|cx| {
+        shell
+            .read(cx)
+            .categories
+            .iter()
+            .find(|p| p.name == "Food")
+            .unwrap()
+            .id
+    });
+    select_parent(cx, handle, &shell, "Food");
+    click(cx, handle, "cat:title-add-sub");
+    draw_frame(cx, handle);
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.categories_view
+                .read(cx)
+                .new_child_name
+                .clone()
+                .update(cx, |i, cx| i.set_value("Groceries", window, cx));
+        });
+    });
+    click(cx, handle, "label:Add subcategory");
+    wait_until(cx, "the subcategory lands", |cx| {
+        find_child(&shell, cx, "Groceries").is_some()
+    });
+    draw_frame(cx, handle);
+    cx.update(|cx| {
+        let page = shell.read(cx).categories_view.read(cx);
+        assert_eq!(
+            page.selected_category,
+            Some(food),
+            "the parent stays selected"
+        );
+        assert!(
+            page.new_child_name.read(cx).value().is_empty(),
+            "the input is empty for the next name"
+        );
+    });
+    let focused = with_window(cx, handle, |window, cx| {
+        shell
+            .read(cx)
+            .categories_view
+            .read(cx)
+            .new_child_name
+            .read(cx)
+            .focus_handle(cx)
+            .is_focused(window)
+    });
+    assert!(focused, "focus stays in the input for the next name");
+    // The detail panel still shows the parent: its title row carries the
+    // parent-only Add subcategory button, not a child's Move. Had the
+    // selection jumped to the new row, these two would swap.
+    assert!(
+        paints(cx, handle, "cat:title-add-sub"),
+        "the detail panel still shows the parent"
+    );
+    assert!(
+        !paints(cx, handle, "cat:title-move"),
+        "the panel did not switch to the new child"
+    );
+    // The new child paints in the tree, and in the parent's add-rule
+    // picker (3.53) — which didn't exist before: a childless parent shows
+    // the add-a-subcategory hint in place of the add-rule row.
+    let child = cx.update(|cx| find_child(&shell, cx, "Groceries").unwrap());
+    assert!(
+        paints(cx, handle, format!("cat:tree-row:{child}")),
+        "the new child is in the tree"
+    );
+    open_picker_menu(cx, handle, "cat:rule-subcategory-select:cat-add");
+    assert!(
+        paints(cx, handle, "cat:rule-choice:Groceries"),
+        "the new child is in the parent's rule-target picker"
+    );
+}
+
+/// 3.96: Enter adds the subcategory and focus stays in the cleared input,
+/// so three names typed in a row go in as three children (ui-conventions
+/// *Keyboard*: "Enter submits the focused form").
+#[gpui::test]
+fn enter_adds_subcategories_one_after_another(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |_| {});
+    wait_idle(cx, &shell);
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Categories, cx)));
+    add_parent(cx, handle, &shell, "Food");
+    let food = cx.update(|cx| {
+        shell
+            .read(cx)
+            .categories
+            .iter()
+            .find(|p| p.name == "Food")
+            .unwrap()
+            .id
+    });
+    select_parent(cx, handle, &shell, "Food");
+    click(cx, handle, "cat:title-add-sub");
+    draw_frame(cx, handle);
+    // The user clicks into the input; from there Enter does the adding.
+    with_window(cx, handle, |window, cx| {
+        let input = shell
+            .read(cx)
+            .categories_view
+            .read(cx)
+            .new_child_name
+            .clone();
+        let focus = input.read(cx).focus_handle(cx);
+        window.focus(&focus, cx);
+    });
+    for name in ["Groceries", "Meals", "Coffee"] {
+        with_window(cx, handle, |window, cx| {
+            shell.update(cx, |s, cx| {
+                s.categories_view
+                    .read(cx)
+                    .new_child_name
+                    .clone()
+                    .update(cx, |i, cx| i.set_value(name, window, cx));
+            });
+        });
+        cx.simulate_keystrokes(handle, "enter");
+        let owned = name.to_string();
+        let sh = shell.clone();
+        wait_until(cx, &format!("{owned} lands"), move |cx| {
+            find_child(&sh, cx, &owned).is_some()
+        });
+    }
+    cx.update(|cx| {
+        let s = shell.read(cx);
+        let food_row = s.categories.iter().find(|p| p.name == "Food").unwrap();
+        let names: Vec<&str> = food_row.children.iter().map(|c| c.name.as_str()).collect();
+        for want in ["Groceries", "Meals", "Coffee"] {
+            assert!(names.contains(&want), "{want} added under Food: {names:?}");
+        }
+        assert_eq!(names.len(), 3, "exactly the three typed names: {names:?}");
+        assert_eq!(
+            s.categories_view.read(cx).selected_category,
+            Some(food),
+            "the parent stayed selected through all three adds"
+        );
+    });
+    draw_frame(cx, handle);
+    for want in ["Groceries", "Meals", "Coffee"] {
+        let id = cx.update(|cx| find_child(&shell, cx, want).unwrap());
+        assert!(
+            paints(cx, handle, format!("cat:tree-row:{id}")),
+            "{want} is visible in the tree"
+        );
+    }
+}
+
+/// 3.96: a refused add — the database's duplicate-name refusal — keeps the
+/// typed name in the input and shows the error. Nothing clears, the form
+/// stays open and the parent stays selected, so the name can be fixed and
+/// Enter pressed again.
+#[gpui::test]
+fn a_failed_subcategory_add_keeps_the_typed_name(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |conn| {
+        let food =
+            financi_db::categories::create_parent(conn, "Food", CategoryKind::Expense).unwrap();
+        financi_db::categories::create_child(conn, food, "Groceries").unwrap();
+    });
+    wait_until(cx, "the tree loads", |cx| {
+        shell
+            .read(cx)
+            .categories
+            .iter()
+            .any(|p| p.name == "Food" && p.children.len() == 1)
+    });
+    let food = cx.update(|cx| {
+        shell
+            .read(cx)
+            .categories
+            .iter()
+            .find(|p| p.name == "Food")
+            .unwrap()
+            .id
+    });
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Categories, cx)));
+    select_parent(cx, handle, &shell, "Food");
+    click(cx, handle, "cat:title-add-sub");
+    draw_frame(cx, handle);
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.categories_view
+                .read(cx)
+                .new_child_name
+                .clone()
+                .update(cx, |i, cx| i.set_value("Groceries", window, cx));
+        });
+    });
+    click(cx, handle, "label:Add subcategory");
+    wait_until(cx, "the duplicate refusal", |cx| {
+        shell.read(cx).categories_view.read(cx).cat_error.is_some()
+    });
+    draw_frame(cx, handle);
+    cx.update(|cx| {
+        let page = shell.read(cx).categories_view.read(cx);
+        assert_eq!(
+            page.cat_error.as_deref(),
+            Some("a category named \"Groceries\" already exists under the same category"),
+            "the refusal is shown"
+        );
+        assert_eq!(
+            page.new_child_name.read(cx).value(),
+            "Groceries",
+            "the typed name survives the refusal for the retry"
+        );
+        assert_eq!(
+            page.selected_category,
+            Some(food),
+            "the parent stays selected"
+        );
+    });
+    assert!(
+        paints(cx, handle, "cat:form-add-sub"),
+        "the form stays open for the retry"
+    );
+}
+
 /// 3.51: Move and Delete still do their work through the forms — and a
 /// successful one closes its form. The Delete form carries the two-click
 /// question; Cancel closes the form and the question together.
@@ -1364,7 +1593,12 @@ fn every_category_write_shows_loading_until_the_task_ends(cx: &mut TestAppContex
                 .any(|p| p.name == "Food" && p.children.iter().any(|c| c.name == "Restaurants"))
     });
 
-    // -- Rename (the add left "Restaurants" selected).
+    // -- Rename. 3.96: the add kept "Food" selected, so select the new
+    // child explicitly before renaming it.
+    let restaurants = cx.update(|cx| find_child(&shell, cx, "Restaurants").unwrap());
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| s.select_category(restaurants, window, cx));
+    });
     with_window(cx, handle, |window, cx| {
         shell.update(cx, |s, cx| {
             s.categories_view.update(cx, |p, cx| {

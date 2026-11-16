@@ -498,7 +498,7 @@ Start these only after both queues are done (`docs/tasks.md` → *Picking the ne
     Update the *To categorize* paragraph of `ui-conventions.md` and the
     *To categorize queue* line of `plan.md`.
 
-- [ ] **3.96 Adding a subcategory keeps the parent selected.** On
+- [x] **3.96 Adding a subcategory keeps the parent selected.** On
   Categories, adding a subcategory selects the new child
   (`add_child` calls `select_category(id, …)`), so the detail panel
   switches to it and the user has to go back to the parent to add the

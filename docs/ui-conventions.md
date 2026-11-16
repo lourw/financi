@@ -327,7 +327,10 @@ selected category's detail (`flex_1`; with none selected it prompts
 "Select a category to see its rules and settings."). The detail's title
 row holds the name and `small` actions (Rename; Add subcategory, Move,
 Delete each opening an `InlineForm` under it, 3.51); sections are split by
-`border_t_1` dividers. Its Rules section is a `DataList` of the category's
+`border_t_1` dividers. A successful **Add subcategory** keeps its form open
+on the still-selected parent — the name field clears, stays focused, and
+Enter submits the next name, so subcategories go in a row (3.51, 3.96).
+Its Rules section is a `DataList` of the category's
 rules (a category's include its subcategories'; "No rules for this
 category yet" when empty) with an add-rule row (Pattern, regex switch in a
 `control_slot`, Add rule) showing a live "matches N transactions" count.
