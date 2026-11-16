@@ -51,6 +51,9 @@ pub(super) fn field_label(muted: Hsla, text: &'static str) -> Div {
 /// 3.34: the To-categorize panel's column headings — like `field_label`
 /// but `text_sm` (a table heading row, not a form field), keeping the same
 /// `label:<text>` debug selector so headless tests still find them.
+/// 3.91: the queue moved onto [`DataList`], whose own heading row replaces
+/// these; kept until the remaining pages do the same.
+#[allow(dead_code)]
 pub(super) fn heading_label(muted: Hsla, text: &'static str) -> Div {
     div()
         .text_sm()

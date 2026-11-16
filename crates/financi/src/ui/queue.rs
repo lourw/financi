@@ -1,17 +1,25 @@
-//! The To categorize page (3.62, page entity in 3.83).
+//! The To categorize page (3.62, page entity in 3.83). 3.91: the list is
+//! the shared `DataList` inside a `panel()` under a `page_header()`.
+
+use std::cell::RefCell;
 
 use super::*;
 use crate::ui::page::{Cancel, PageEntity, PageEvent, watch_catalog};
 use crate::ui::widgets::*;
 
-/// The To-categorize columns (3.22): heading row and row bodies share these
-/// so each heading sits over its column, and Merchant — the one flex column
-/// — absorbs a narrow window instead of pushing the picker and the
+/// The To-categorize columns (3.22, on the `DataList` in 3.91): heading row
+/// and rows share the column definitions, and Merchant — the one flex
+/// column — absorbs a narrow window instead of pushing the picker and the
 /// Categorize button past the app's minimum width.
 const QUEUE_TXNS_W: f32 = 96.;
 const QUEUE_TOTAL_W: f32 = 110.;
 const QUEUE_DATES_W: f32 = 190.;
 const QUEUE_PICKER_W: f32 = 220.;
+/// The `small` Categorize button's column, wide enough for the button so
+/// the flex Merchant column is what gives at the minimum window (3.16's
+/// heading-over-column rule now holds by construction: the heading and the
+/// rows share these widths).
+const QUEUE_CATEGORIZE_W: f32 = 110.;
 
 /// 3.83: how far outside the rendered range a picker survives a prune — a
 /// screenful (24 rows at 40 px), so scrolling back by less than a page
@@ -41,18 +49,21 @@ pub(super) struct QueuePage {
     /// The queue: uncategorized transactions grouped by merchant, newest
     /// first (as [`uncategorized_by_merchant`] returns them).
     pub(super) groups: Vec<UncategorizedGroup>,
-    /// 3.19: pickers exist only for rows `render` has built, and 3.83
+    /// 3.19: pickers exist only for rows the list has built, and 3.83
     /// prunes the ones that drift outside the rendered range, so this map
-    /// stays the size of the visible slice, not the queue.
-    pub(super) pickers: HashMap<String, Entity<SelectState<Names>>>,
+    /// stays the size of the visible slice, not the queue. 3.91: the
+    /// `DataList` paints rows through `Fn(&V, …)`, so the map lives behind
+    /// a `RefCell` — the cells callback gets or creates pickers through it
+    /// with only `&self`.
+    pub(super) pickers: RefCell<HashMap<String, Entity<SelectState<Names>>>>,
     /// The category list the pickers above currently hold; `apply` re-sets
     /// items only when it changes, not on every refresh.
     pub(super) picker_items: Option<Names>,
     /// 3.34: one per live picker — a `Confirm` re-renders the rows so the
     /// row's Categorize button flips from disabled to enabled the frame a
     /// category is picked. Retired with its picker in `apply` and in
-    /// [`Self::prune_pickers`].
-    pub(super) picker_subs: HashMap<String, Subscription>,
+    /// [`Self::prune_visible`].
+    pub(super) picker_subs: RefCell<HashMap<String, Subscription>>,
     /// 3.83: `apply` has no window, and `SelectState::set_items` needs one,
     /// so a category-list change is flagged here and the pickers catch up
     /// at the top of `render`.
@@ -62,8 +73,17 @@ pub(super) struct QueuePage {
     /// 3.21: the virtualized list's scroll handle, alive as long as the
     /// page (see the note on `tree_scroll` in 3.21).
     pub(super) scroll: VirtualListScrollHandle,
+    /// 3.91: the `DataList` cells callback runs once per painted row,
+    /// top-down. The row id that follows `next_cell` extends the current
+    /// paint pass; one that doesn't starts a new one — that is how the
+    /// page knows what the list just drew without a range argument.
+    next_cell: Cell<usize>,
+    /// 3.91: `[painted_lo, painted_hi)` — the group indices the current
+    /// paint pass has built; the prune window (3.83).
+    painted_lo: Cell<usize>,
+    painted_hi: Cell<usize>,
     /// 3.21: the range of rows the queue built last frame, for the
-    /// long-queue tests (the prune reads the list's own range argument).
+    /// long-queue tests (3.91: folded up from the `DataList` cells calls).
     #[cfg(test)]
     pub(super) range: std::cell::Cell<(usize, usize)>,
     /// 3.19: how many queue rows the virtualized list built for the last
@@ -122,9 +142,11 @@ impl PageEntity for QueuePage {
         // Categorize-mirror subscription retires with it.
         let current: HashSet<&str> = self.groups.iter().map(|g| g.merchant.as_str()).collect();
         self.pickers
+            .borrow_mut()
             .retain(|merchant, _| current.contains(merchant.as_str()));
         self.picker_subs
-            .retain(|merchant, _| current.contains(merchant.as_str()));
+            .borrow_mut()
+            .retain(|merchant, _| self.pickers.borrow().contains_key(merchant.as_str()));
         // 3.19: re-set the survivors' items only when the category list
         // changed, not on every refresh — and 3.83: `set_items` needs a
         // window, so flag it and let `render` push the new items.
@@ -160,12 +182,15 @@ impl QueuePage {
             focus_pending: false,
             _catalog,
             groups: Vec::new(),
-            pickers: HashMap::new(),
+            pickers: RefCell::new(HashMap::new()),
             picker_items: None,
-            picker_subs: HashMap::new(),
+            picker_subs: RefCell::new(HashMap::new()),
             pickers_need_items: false,
             error: None,
             scroll: VirtualListScrollHandle::new(),
+            next_cell: Cell::new(0),
+            painted_lo: Cell::new(0),
+            painted_hi: Cell::new(0),
             #[cfg(test)]
             range: std::cell::Cell::new((0, 0)),
             #[cfg(test)]
@@ -177,8 +202,8 @@ impl QueuePage {
     /// 5.3: a restore replaced the database — every picker selection names
     /// a row or category that may not exist in the new file.
     pub(super) fn reset_after_restore(&mut self, cx: &mut Context<Self>) {
-        self.pickers.clear();
-        self.picker_subs.clear();
+        self.pickers.borrow_mut().clear();
+        self.picker_subs.borrow_mut().clear();
         self.picker_items = None;
         self.pickers_need_items = false;
         self.error = None;
@@ -187,15 +212,19 @@ impl QueuePage {
 
     /// 3.19: the picker for one queue row, built on first use. Only visible
     /// rows render, so the page holds a picker for what's on screen — a
-    /// new one gets the current category list.
-    pub(super) fn queue_picker(
-        &mut self,
+    /// new one gets the current category list. 3.91: the `DataList` cells
+    /// callback only has `&self`, so the map is a `RefCell` and this takes
+    /// `&self` too; `queue_picker` is the same call for tests and callers
+    /// holding `&mut`.
+    fn picker_for_row(
+        &self,
         merchant: &str,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Entity<SelectState<Names>> {
-        if let Some(picker) = self.pickers.get(merchant) {
-            return picker.clone();
+        let existing = self.pickers.borrow().get(merchant).cloned();
+        if let Some(picker) = existing {
+            return picker;
         }
         let items: Names = self.picker_items.clone().unwrap_or_else(|| {
             self.child_choices
@@ -212,31 +241,81 @@ impl QueuePage {
                 cx.notify();
             }
         });
-        self.pickers.insert(merchant.to_string(), picker.clone());
-        self.picker_subs.insert(merchant.to_string(), sub);
+        self.pickers
+            .borrow_mut()
+            .insert(merchant.to_string(), picker.clone());
+        self.picker_subs
+            .borrow_mut()
+            .insert(merchant.to_string(), sub);
         picker
+    }
+
+    /// 3.19: the picker for one queue row (see [`Self::picker_for_row`]).
+    /// 3.91: rows build their picker through `picker_for_row` directly, so
+    /// this entry point is the tests' (they drive a pick the way the
+    /// popup's `Confirm` would).
+    #[cfg(test)]
+    pub(super) fn queue_picker(
+        &mut self,
+        merchant: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<SelectState<Names>> {
+        self.picker_for_row(merchant, window, cx)
+    }
+
+    /// 3.91: fold one `DataList` cells call into the current paint pass.
+    /// Row ids arrive ascending; an id that doesn't continue the sequence
+    /// opens a new pass (a fresh layout, or the next frame), which is what
+    /// replaces the range argument the old `v_virtual_list` closure got.
+    fn note_painted(&self, i: usize) {
+        if i != self.next_cell.get() {
+            self.painted_lo.set(i);
+            self.painted_hi.set(i + 1);
+            #[cfg(test)]
+            {
+                self.rows_built.set(0);
+                self.range.set((i, i + 1));
+            }
+        } else if i + 1 > self.painted_hi.get() {
+            self.painted_hi.set(i + 1);
+        }
+        #[cfg(test)]
+        {
+            self.rows_built.set(self.rows_built.get() + 1);
+            let (start, end) = self.range.get();
+            self.range.set((start.min(i), end.max(i + 1)));
+        }
+        self.next_cell.set(i + 1);
     }
 
     /// 3.83: pickers are built with their rows, so they must also go when
     /// their rows stop being built: keep the pickers whose merchant sits in
-    /// `[start - margin, end + margin]` of the range the list just drew,
-    /// plus any picker holding an active selection — a pick made further up
-    /// the list is a pending action, and the user may be mid-interaction
-    /// with it. A pruned picker rebuilds lazily from the current category
-    /// list the next time its row renders.
-    fn prune_pickers(&mut self, start: usize, end: usize, cx: &App) {
-        let lo = start.saturating_sub(QUEUE_PICKER_MARGIN);
-        let hi = (end + QUEUE_PICKER_MARGIN).min(self.groups.len());
+    /// `[painted_lo - margin, painted_hi + margin]` of the range the list
+    /// just drew, plus any picker holding an active selection — a pick made
+    /// further up the list is a pending action, and the user may be
+    /// mid-interaction with it. A pruned picker rebuilds lazily from the
+    /// current category list the next time its row renders. 3.91: the
+    /// cells callback is where the page learns what painted, so the prune
+    /// runs there too, once per built row; the window it keeps only grows
+    /// within a pass, so the survivors match the old once-per-frame prune.
+    fn prune_visible(&self, cx: &App) {
+        if self.pickers.borrow().is_empty() {
+            return;
+        }
+        let lo = self.painted_lo.get().saturating_sub(QUEUE_PICKER_MARGIN);
+        let hi = (self.painted_hi.get() + QUEUE_PICKER_MARGIN).min(self.groups.len());
         let keep: HashSet<&str> = self.groups[lo..hi]
             .iter()
             .map(|g| g.merchant.as_str())
             .collect();
-        self.pickers.retain(|merchant, picker| {
+        self.pickers.borrow_mut().retain(|merchant, picker| {
             keep.contains(merchant.as_str()) || picker.read(cx).selected_value().is_some()
         });
         // 3.34: the Categorize-mirror subscriptions retire with pickers.
         self.picker_subs
-            .retain(|merchant, _| self.pickers.contains_key(merchant.as_str()));
+            .borrow_mut()
+            .retain(|merchant, _| self.pickers.borrow().contains_key(merchant.as_str()));
     }
 
     /// Categorize a whole merchant group: creates the substring rule and
@@ -252,7 +331,7 @@ impl QueuePage {
         if self.writes_blocked.get() {
             return;
         }
-        let Some(picker) = self.pickers.get(&merchant).cloned() else {
+        let Some(picker) = self.pickers.borrow().get(&merchant).cloned() else {
             return;
         };
         let Some(ix) = picker.read(cx).selected_index(cx) else {
@@ -289,13 +368,35 @@ impl QueuePage {
         .detach();
         cx.notify();
     }
+
+    // -- Test-only views of the picker maps (3.91: they live behind
+    // RefCells now; the long-queue tests read them through here).
+    #[cfg(test)]
+    pub(super) fn has_picker(&self, merchant: &str) -> bool {
+        self.pickers.borrow().contains_key(merchant)
+    }
+
+    #[cfg(test)]
+    pub(super) fn picker(&self, merchant: &str) -> Option<Entity<SelectState<Names>>> {
+        self.pickers.borrow().get(merchant).cloned()
+    }
+
+    #[cfg(test)]
+    pub(super) fn picker_count(&self) -> usize {
+        self.pickers.borrow().len()
+    }
+
+    #[cfg(test)]
+    pub(super) fn picker_sub_count(&self) -> usize {
+        self.picker_subs.borrow().len()
+    }
 }
 
 impl Render for QueuePage {
-    /// The To-categorize page (3.16, 3.19, 3.22, 3.34): header summary, one
-    /// bordered panel holding the heading row and the virtualized list of
-    /// merchant groups, each row with its category picker and Categorize
-    /// button.
+    /// The To-categorize page (3.16, 3.19, 3.22, 3.34, 3.91): page header
+    /// with the counts summary, one bordered panel holding the shared
+    /// `DataList` — its heading row over the virtualized merchant rows,
+    /// each row with its category picker and Categorize button.
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // 3.83: focusing the root when the page is shown waits for the end
         // of the frame so its element exists first (as the other pages).
@@ -309,40 +410,31 @@ impl Render for QueuePage {
         if self.pickers_need_items {
             self.pickers_need_items = false;
             if let Some(items) = self.picker_items.clone() {
-                for picker in self.pickers.values() {
+                let pickers: Vec<_> = self.pickers.borrow().values().cloned().collect();
+                for picker in pickers {
                     picker.update(cx, |s, cx| s.set_items(items.clone(), window, cx));
                 }
             }
         }
-        let (muted, danger, border, list_hover, radius) = {
+        let (muted, danger) = {
             let theme = cx.theme();
-            (
-                theme.muted_foreground,
-                theme.danger,
-                theme.border,
-                theme.list_hover,
-                theme.radius,
-            )
+            (theme.muted_foreground, theme.danger)
         };
         // 3.34: the header summary counts what the list below shows —
         // transactions and merchants, both through `flow::count`. Its
-        // debug selector records the exact text so a test can pin it.
+        // debug selector records the exact text so a test can pin it;
+        // 3.91: `page_header` builds the row, so the selector rides on it.
         let summary = format!(
             "{} transactions · {} merchants",
             flow::count(self.groups.iter().map(|g| g.count).sum()),
             flow::count(self.groups.len() as i64)
         );
+        let header = page_header(cx, "To categorize", summary.clone(), Vec::new())
+            .debug_selector(move || format!("queue:summary:{summary}"));
         // 3.34: one bordered panel (D7: bordered, never filled) fills the
         // rest of the page and holds the list; the empty state is centered
         // inside it.
-        let panel = v_flex()
-            .flex_1()
-            .min_h_0()
-            .rounded(radius)
-            .border_1()
-            .border_color(border)
-            .overflow_hidden()
-            .debug_selector(|| "queue:panel".to_string());
+        let panel = panel(cx, false).debug_selector(|| "queue:panel".to_string());
         let body: AnyElement = if self.groups.is_empty() {
             panel
                 .child(
@@ -356,287 +448,177 @@ impl Render for QueuePage {
                 )
                 .into_any_element()
         } else {
-            let panel = panel.child(
-                // 3.16: a heading row labels every column, the category
-                // picker included — its placeholder alone is not a label.
-                // 3.34: a 32 px row inside the panel — `text_sm` muted,
-                // `px_3`, with a bottom divider — whose children mirror the
-                // queue rows below in order and width, down to an invisible
-                // copy of the Categorize button at its new `small` size, so
-                // each heading sits over its column (the picker's heading
-                // would otherwise slide right by the button's width).
-                // 3.22: the widths come from the QUEUE_*_W consts and
-                // Merchant is the only flex column, so the whole row fits
-                // the minimum window and the headings stay put.
-                h_flex()
-                    .h(px(32.))
-                    .px_3()
-                    .gap_3()
-                    .items_center()
-                    .border_b_1()
-                    .border_color(border)
-                    .child(
-                        heading_label(muted, "Merchant")
-                            .flex_1()
-                            .min_w_0()
-                            .overflow_hidden()
-                            .text_ellipsis(),
-                    )
-                    .child(
-                        heading_label(muted, "Transactions")
-                            .w(px(QUEUE_TXNS_W))
-                            .text_right(),
-                    )
-                    .child(
-                        heading_label(muted, "Total")
-                            .w(px(QUEUE_TOTAL_W))
-                            .text_right(),
-                    )
-                    .child(heading_label(muted, "Dates").w(px(QUEUE_DATES_W)))
-                    .child(heading_label(muted, "Category").w(px(QUEUE_PICKER_W)))
-                    .child(
-                        Button::new("queue-heading-categorize-spacer")
-                            .label("Categorize")
-                            .small()
-                            .opacity(0.0)
-                            .flex_shrink_0(),
-                    ),
-            );
-            // 3.19: virtualized like the Categories-page lists (3.12). The
-            // closure runs during layout with the visible range, so a queue
-            // of thousands builds only the rows that can be on screen, and
-            // `queue_picker` creates a picker only with its row. 3.34: rows
-            // stay 40 px, now `px_3` with a bottom divider (none after the
-            // last row) and `list_hover` on hover.
-            let sizes = Rc::new(vec![size(px(0.), px(40.)); self.groups.len()]);
+            // 3.91: the shared `DataList` (ui-conventions *Lists*, *To
+            // categorize*): its 32 px heading row labels every column —
+            // the category picker included, its placeholder alone is not a
+            // label — and, unlike the hand-built row this replaces, the
+            // headings share the rows' column widths by construction, so
+            // every heading sits over its column and the invisible
+            // spacer-button hack is gone. Merchant is the one flex column,
+            // so the whole row fits the minimum window (3.22).
+            let items: Vec<DataItem> = self
+                .groups
+                .iter()
+                .enumerate()
+                .map(|(id, g)| DataItem::Row {
+                    id,
+                    selected: false,
+                    selector: format!("queue:row:{}", g.merchant),
+                })
+                .collect();
+            let columns = vec![
+                DataCol::new("Merchant", Col::Flex, ColAlign::Left),
+                DataCol::new("Transactions", Col::Fixed(QUEUE_TXNS_W), ColAlign::Right),
+                DataCol::new("Total", Col::Fixed(QUEUE_TOTAL_W), ColAlign::Right),
+                DataCol::new("Dates", Col::Fixed(QUEUE_DATES_W), ColAlign::Left),
+                DataCol::new("Category", Col::Fixed(QUEUE_PICKER_W), ColAlign::Left),
+                DataCol::new("Categorize", Col::Fixed(QUEUE_CATEGORIZE_W), ColAlign::Left),
+            ];
             panel
                 .child(
-                    v_virtual_list(
-                        cx.entity(),
-                        "queue-list",
-                        sizes,
-                        move |this, range, window, cx| {
-                            #[cfg(test)]
-                            let range_bounds = (range.start, range.end);
-                            let start = range.start;
-                            let groups = this.groups[range.clone()].to_vec();
-                            let last = this.groups.len().saturating_sub(1);
-                            let mut rows = Vec::with_capacity(groups.len());
-                            for (i, g) in groups.into_iter().enumerate() {
-                                let merchant = g.merchant.clone();
-                                let picker = this.queue_picker(&merchant, window, cx);
-                                rows.push(
-                                    h_flex()
-                                        // Fill the list's width, or the row
-                                        // stays at its natural width and the
-                                        // Merchant column never grows: the
-                                        // picker and button would then float
-                                        // left of the column headings.
-                                        .w_full()
-                                        .h(px(40.))
-                                        .px_3()
-                                        .gap_3()
-                                        .items_center()
-                                        // 3.34: `list_hover` on hover, and
-                                        // a bottom divider between rows —
-                                        // none after the last row, where
-                                        // the panel's own border ends the
-                                        // list.
-                                        .hover(move |s| s.bg(list_hover))
-                                        .when(start + i < last, |row| {
-                                            row.border_b_1().border_color(border)
+                    DataList::new(cx.entity(), columns, items)
+                        // 3.19: the cells callback runs during layout for
+                        // the visible slice only, so a queue of thousands
+                        // builds (and picks) only what can be on screen;
+                        // 3.83: it is also where the prune runs, so
+                        // pickers retire once their rows stop being built.
+                        .cells(move |this, item, window, cx| {
+                            let DataItem::Row { id, .. } = item else {
+                                return Vec::new();
+                            };
+                            this.note_painted(*id);
+                            let g = &this.groups[*id];
+                            let merchant = g.merchant.clone();
+                            let picker = this.picker_for_row(&merchant, window, cx);
+                            this.prune_visible(cx);
+                            // 3.34: `list_hover`, dividers and the 40 px
+                            // `text_sm` row come from the list; the cells
+                            // are the page's own elements so every test
+                            // selector survives the move.
+                            //
+                            // 3.22: Merchant is the flex column; a name
+                            // too long for the leftover space truncates,
+                            // and the tooltip still shows the full one.
+                            // 3.34: normal weight `foreground` — the row's
+                            // action is what stands out, not its label.
+                            let merchant_cell = div()
+                                .id(SharedString::from(format!("queue-merchant-{merchant}")))
+                                .w_full()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .debug_selector({
+                                    let m = merchant.clone();
+                                    move || format!("queue:merchant-col:{m}")
+                                })
+                                .tooltip({
+                                    let full = merchant.clone();
+                                    move |window, cx| {
+                                        let tip = full.clone();
+                                        Tooltip::element(move |_, _| {
+                                            let sel =
+                                                format!("queue:merchant-tooltip:{}", tip.clone());
+                                            div()
+                                                .debug_selector(move || sel.clone())
+                                                .child(tip.clone())
                                         })
+                                        .build(window, cx)
+                                    }
+                                })
+                                .child(merchant.clone());
+                            // The Transactions cell is just the number
+                            // (3.22); its debug selector records the exact
+                            // text so a test can pin that.
+                            let n = g.count;
+                            let txns_cell = div()
+                                .w_full()
+                                .debug_selector({
+                                    let m = merchant.clone();
+                                    move || format!("queue:txns-col:{m}")
+                                })
+                                .child(
+                                    div()
                                         .debug_selector({
                                             let m = merchant.clone();
-                                            move || format!("queue:row:{m}")
+                                            move || {
+                                                format!("queue:txns-text:{m}:{}", flow::count(n))
+                                            }
                                         })
-                                        .child(
-                                            // 3.22: Merchant is the flex
-                                            // column; a name too long for
-                                            // the leftover space truncates,
-                                            // and the tooltip still shows
-                                            // the full one. 3.34: normal
-                                            // weight `foreground` — the
-                                            // row's action is what stands
-                                            // out, not its label.
-                                            div()
-                                                .id(SharedString::from(format!(
-                                                    "queue-merchant-{merchant}"
-                                                )))
-                                                .flex_1()
-                                                .min_w_0()
-                                                .overflow_hidden()
-                                                .text_ellipsis()
-                                                .debug_selector({
-                                                    let m = merchant.clone();
-                                                    move || {
-                                                        format!("queue:merchant-col:{m}")
-                                                    }
-                                                })
-                                                .tooltip({
-                                                    let full = merchant.clone();
-                                                    move |window, cx| {
-                                                        let tip = full.clone();
-                                                        Tooltip::element(move |_, _| {
-                                                            div()
-                                                                .debug_selector({
-                                                                    let m = tip.clone();
-                                                                    move || {
-                                                                        format!(
-                                                                            "queue:merchant-tooltip:{m}"
-                                                                        )
-                                                                    }
-                                                                })
-                                                                .child(tip.clone())
-                                                        })
-                                                        .build(window, cx)
-                                                    }
-                                                })
-                                                .child(g.merchant.clone()),
-                                        )
-                                        .child(
-                                            // The Transactions cell is just
-                                            // the number (3.22); its debug
-                                            // selector records the exact
-                                            // text so a test can pin that.
-                                            div()
-                                                .w(px(QUEUE_TXNS_W))
-                                                .text_right()
-                                                .debug_selector({
-                                                    let m = merchant.clone();
-                                                    move || {
-                                                        format!("queue:txns-col:{m}")
-                                                    }
-                                                })
-                                                .child(
-                                                    div()
-                                                        .debug_selector({
-                                                            let m = merchant.clone();
-                                                            let n = g.count;
-                                                            move || {
-                                                                format!(
-                                                                    "queue:txns-text:{m}:{}",
-                                                                    flow::count(n)
-                                                                )
-                                                            }
-                                                        })
-                                                        .child(flow::count(g.count)),
-                                                ),
-                                        )
-                                        .child(
-                                            div()
-                                                .w(px(QUEUE_TOTAL_W))
-                                                .text_right()
-                                                .debug_selector({
-                                                    let m = merchant.clone();
-                                                    move || {
-                                                        format!("queue:total-col:{m}")
-                                                    }
-                                                })
-                                                .child(flow::money(g.total_cents)),
-                                        )
-                                        .child(
-                                            div()
-                                                .w(px(QUEUE_DATES_W))
-                                                .min_w_0()
-                                                .overflow_hidden()
-                                                .text_ellipsis()
-                                                .text_sm()
-                                                .text_color(muted)
-                                                .debug_selector({
-                                                    let m = merchant.clone();
-                                                    move || {
-                                                        format!("queue:dates-col:{m}")
-                                                    }
-                                                })
-                                                .child(flow::date_range(
-                                                    &g.first_date,
-                                                    &g.last_date,
-                                                )),
-                                        )
-                                        .child(
-                                            div()
-                                                .w(px(QUEUE_PICKER_W))
-                                                .flex_shrink_0()
-                                                .debug_selector({
-                                                    let m = merchant.clone();
-                                                    move || {
-                                                        format!("queue:picker-col:{m}")
-                                                    }
-                                                })
-                                                .child(
-                                                    Select::new(&picker).placeholder("Category…"),
-                                                ),
-                                        )
-                                        .child(
-                                            div()
-                                                .flex_shrink_0()
-                                                .debug_selector({
-                                                    let m = merchant.clone();
-                                                    move || {
-                                                        format!("queue:categorize-col:{m}")
-                                                    }
-                                                })
-                                                .child({
-                                                    // 3.34: quiet and
-                                                    // disabled until the
-                                                    // row's picker holds a
-                                                    // category; `small` and
-                                                    // outline once one is
-                                                    // picked — row-level
-                                                    // buttons are never
-                                                    // primary (D12), so the
-                                                    // page keeps its one
-                                                    // primary and only rows
-                                                    // ready to apply are
-                                                    // clickable. The debug
-                                                    // selector records the
-                                                    // state for tests.
-                                                    let picked =
-                                                        picker.read(cx).selected_value().is_some();
-                                                    let m = merchant.clone();
-                                                    Button::new(SharedString::from(format!(
-                                                        "categorize-{}",
-                                                        g.merchant
-                                                    )))
-                                                    .label("Categorize")
-                                                    .small()
-                                                    .outline()
-                                                    .disabled(!picked)
-                                                    .debug_selector(move || {
-                                                        format!(
-                                                            "queue:categorize-state:{m}:{}",
-                                                            if picked { "enabled" } else { "disabled" }
-                                                        )
-                                                    })
-                                                    .on_click(cx.listener(
-                                                        move |this, _, window, cx| {
-                                                            this.categorize_merchant(
-                                                                merchant.clone(),
-                                                                window,
-                                                                cx,
-                                                            );
-                                                        }
-                                                    ))
-                                                },
-                                                ),
-                                        ),
+                                        .child(flow::count(n)),
                                 );
-                            }
-                            // 3.83: rows that stopped being built retire
-                            // their pickers, so the map tracks the window.
-                            this.prune_pickers(range.start, range.end, cx);
-                            #[cfg(test)]
-                            this.rows_built.set(rows.len());
-                            #[cfg(test)]
-                            this.range.set(range_bounds);
-                            rows
-                        },
-                    )
-                    // 3.21: page-owned handle (see the tree).
-                    .track_scroll(&self.scroll)
-                    .flex_1()
-                    .min_h_0(),
+                            let total_cell = div()
+                                .w_full()
+                                .debug_selector({
+                                    let m = merchant.clone();
+                                    move || format!("queue:total-col:{m}")
+                                })
+                                .child(flow::money(g.total_cents));
+                            // 3.34: the dates are `text_sm` muted (the
+                            // list already sets `text_sm`).
+                            let dates_cell = div()
+                                .w_full()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .text_color(muted)
+                                .debug_selector({
+                                    let m = merchant.clone();
+                                    move || format!("queue:dates-col:{m}")
+                                })
+                                .child(flow::date_range(&g.first_date, &g.last_date));
+                            let picker_cell = div()
+                                .w_full()
+                                .debug_selector({
+                                    let m = merchant.clone();
+                                    move || format!("queue:picker-col:{m}")
+                                })
+                                .child(Select::new(&picker).placeholder("Category…"));
+                            // 3.34: quiet and disabled until the row's
+                            // picker holds a category; `small` and outline
+                            // once one is picked — row-level buttons are
+                            // never primary (D12), so the page keeps its
+                            // one primary and only rows ready to apply are
+                            // clickable. The debug selector records the
+                            // state for tests.
+                            let picked = picker.read(cx).selected_value().is_some();
+                            let categorize_cell = div()
+                                .w_full()
+                                .debug_selector({
+                                    let m = merchant.clone();
+                                    move || format!("queue:categorize-col:{m}")
+                                })
+                                .child({
+                                    let m = merchant.clone();
+                                    Button::new(SharedString::from(format!(
+                                        "categorize-{merchant}"
+                                    )))
+                                    .label("Categorize")
+                                    .small()
+                                    .outline()
+                                    .disabled(!picked)
+                                    .debug_selector(move || {
+                                        format!(
+                                            "queue:categorize-state:{m}:{}",
+                                            if picked { "enabled" } else { "disabled" }
+                                        )
+                                    })
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.categorize_merchant(merchant.clone(), window, cx);
+                                    }))
+                                });
+                            vec![
+                                ListCell::from(merchant_cell.into_any_element()),
+                                ListCell::from(txns_cell.into_any_element()),
+                                ListCell::from(total_cell.into_any_element()),
+                                ListCell::from(dates_cell.into_any_element()),
+                                ListCell::from(picker_cell.into_any_element()),
+                                ListCell::from(categorize_cell.into_any_element()),
+                            ]
+                        })
+                        .heading_selectors("queue")
+                        // 3.21: page-owned handle (see the tree).
+                        .scroll(self.scroll.clone())
+                        .selector("queue:list"),
                 )
                 .into_any_element()
         };
@@ -659,27 +641,7 @@ impl Render for QueuePage {
                 }
                 cx.propagate();
             }))
-            .child(
-                h_flex()
-                    .gap_2()
-                    .items_center()
-                    .child(
-                        div()
-                            .text_lg()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child("To categorize"),
-                    )
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(muted)
-                            .debug_selector({
-                                let summary = summary.clone();
-                                move || format!("queue:summary:{summary}")
-                            })
-                            .child(summary),
-                    ),
-            )
+            .child(header)
             .children(self.error.clone().map(|e| {
                 div()
                     .text_sm()

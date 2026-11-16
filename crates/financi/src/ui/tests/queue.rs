@@ -162,17 +162,17 @@ fn the_queue_page_builds_only_the_visible_rows(cx: &mut TestAppContext) {
         );
         // 3.19: pickers come with the rows that rendered, not one per group.
         assert!(
-            p.pickers.len() < 100,
+            p.picker_count() < 100,
             "{} pickers for a {}-row window — pickers must be built per visible row",
-            p.pickers.len(),
+            p.picker_count(),
             p.rows_built.get()
         );
         assert!(
-            p.pickers.contains_key("QUEUE MERCHANT 0000"),
+            p.has_picker("QUEUE MERCHANT 0000"),
             "the first visible row has a picker"
         );
         assert!(
-            !p.pickers.contains_key("QUEUE MERCHANT 1999"),
+            !p.has_picker("QUEUE MERCHANT 1999"),
             "the last group is off-screen, so it must not have a picker"
         );
     });
@@ -263,23 +263,23 @@ fn the_queue_keeps_its_scroll_offset(cx: &mut TestAppContext) {
         // Pickers come with the rows that rendered: the bottom group's
         // picker is there, a middle group that was never on screen isn't.
         assert!(
-            p.pickers.contains_key("QUEUE MERCHANT 1999"),
+            p.has_picker("QUEUE MERCHANT 1999"),
             "the bottom group is on screen, so it has a picker"
         );
         assert!(
-            !p.pickers.contains_key("QUEUE MERCHANT 1000"),
+            !p.has_picker("QUEUE MERCHANT 1000"),
             "a middle group never scrolled into view, so it must not have a picker"
         );
         // 3.83: and pruning keeps the map the size of the window — the
         // picker the top row left behind is gone.
         assert!(
-            !p.pickers.contains_key("QUEUE MERCHANT 0000"),
+            !p.has_picker("QUEUE MERCHANT 0000"),
             "a picker scrolled a screenful past is pruned"
         );
         assert!(
-            p.pickers.len() < 100,
+            p.picker_count() < 100,
             "{} pickers after scrolling — pruning must bound the map",
-            p.pickers.len()
+            p.picker_count()
         );
     });
     // A refresh that doesn't replace the queue must not move the offset.
@@ -310,8 +310,8 @@ fn the_queue_prunes_pickers_as_its_window_moves(cx: &mut TestAppContext) {
     // Top of the list: the first row's picker exists and the map is small.
     cx.update(|cx| {
         let p = shell.read(cx).queue_view.read(cx);
-        assert!(p.pickers.contains_key("QUEUE MERCHANT 0000"));
-        assert!(p.pickers.len() < 100);
+        assert!(p.has_picker("QUEUE MERCHANT 0000"));
+        assert!(p.picker_count() < 100);
     });
     // Scroll to the bottom and back to the top.
     cx.update(|cx| {
@@ -326,20 +326,20 @@ fn the_queue_prunes_pickers_as_its_window_moves(cx: &mut TestAppContext) {
     cx.update(|cx| {
         let p = shell.read(cx).queue_view.read(cx);
         assert!(
-            !p.pickers.contains_key("QUEUE MERCHANT 0000"),
+            !p.has_picker("QUEUE MERCHANT 0000"),
             "the top row's picker is pruned once its row stops being built"
         );
         assert!(
-            p.pickers.contains_key("QUEUE MERCHANT 1999"),
+            p.has_picker("QUEUE MERCHANT 1999"),
             "the bottom row is on screen, so it has a picker"
         );
         assert!(
-            p.pickers.len() < 100,
+            p.picker_count() < 100,
             "{} pickers at the bottom — retention must stay bounded",
-            p.pickers.len()
+            p.picker_count()
         );
         // 3.34: subscriptions retire with their pickers, one per survivor.
-        assert_eq!(p.picker_subs.len(), p.pickers.len());
+        assert_eq!(p.picker_sub_count(), p.picker_count());
     });
     cx.update(|cx| {
         shell
@@ -353,7 +353,7 @@ fn the_queue_prunes_pickers_as_its_window_moves(cx: &mut TestAppContext) {
     cx.update(|cx| {
         let p = shell.read(cx).queue_view.read(cx);
         assert!(
-            p.pickers.contains_key("QUEUE MERCHANT 0000"),
+            p.has_picker("QUEUE MERCHANT 0000"),
             "scrolling back rebuilds the row's picker lazily"
         );
     });
@@ -363,7 +363,7 @@ fn the_queue_prunes_pickers_as_its_window_moves(cx: &mut TestAppContext) {
     queue_pick(cx, handle, &shell, "QUEUE MERCHANT 0000", child);
     cx.update(|cx| {
         let p = shell.read(cx).queue_view.read(cx);
-        let picker = p.pickers.get("QUEUE MERCHANT 0000").expect("picker exists");
+        let picker = p.picker("QUEUE MERCHANT 0000").expect("picker exists");
         assert_eq!(
             picker.read(cx).selected_value().map(|v| v.to_string()),
             Some("Food › Groceries".to_string()),
@@ -384,12 +384,11 @@ fn the_queue_prunes_pickers_as_its_window_moves(cx: &mut TestAppContext) {
     cx.update(|cx| {
         let p = shell.read(cx).queue_view.read(cx);
         assert!(
-            p.pickers.contains_key("QUEUE MERCHANT 0000"),
+            p.has_picker("QUEUE MERCHANT 0000"),
             "a picker with an active selection is never pruned mid-interaction"
         );
         assert_eq!(
-            p.pickers
-                .get("QUEUE MERCHANT 0000")
+            p.picker("QUEUE MERCHANT 0000")
                 .unwrap()
                 .read(cx)
                 .selected_value()
@@ -449,12 +448,15 @@ fn the_queue_page_labels_its_columns(cx: &mut TestAppContext) {
     let mut window = VisualTestContext::from_window(handle, cx);
     cx.run_until_parked();
     draw_frame(cx, handle);
+    // 3.91: the heading row belongs to the shared `DataList`, whose
+    // heading selectors are `queue:heading:<column>`.
     for sel in [
-        "label:Merchant",
-        "label:Transactions",
-        "label:Total",
-        "label:Dates",
-        "label:Category",
+        "queue:heading:Merchant",
+        "queue:heading:Transactions",
+        "queue:heading:Total",
+        "queue:heading:Dates",
+        "queue:heading:Category",
+        "queue:heading:Categorize",
     ] {
         assert!(
             window.debug_bounds(sel).is_some(),
@@ -489,7 +491,7 @@ fn the_queue_category_heading_sits_over_the_picker_column(cx: &mut TestAppContex
         ("Dates", format!("queue:dates-col:{merchant}")),
         ("Category", format!("queue:picker-col:{merchant}")),
     ] {
-        let heading = bounds(cx, handle, format!("label:{label}"));
+        let heading = bounds(cx, handle, format!("queue:heading:{label}"));
         let column = bounds(cx, handle, sel);
         assert!(
             (heading.origin.x - column.origin.x).abs() < px(1.),
@@ -500,7 +502,7 @@ fn the_queue_category_heading_sits_over_the_picker_column(cx: &mut TestAppContex
         );
     }
     let heading = window
-        .debug_bounds("label:Category")
+        .debug_bounds("queue:heading:Category")
         .expect("the queue paints a Category heading");
     let picker = bounds(cx, handle, format!("queue:picker-col:{merchant}"));
     assert!(
@@ -656,7 +658,7 @@ fn the_queue_list_paints_inside_one_panel(cx: &mut TestAppContext) {
     // The heading row and the first queue row paint inside the panel, with
     // the heading above the rows.
     let heading = window
-        .debug_bounds("label:Merchant")
+        .debug_bounds("queue:heading:Merchant")
         .expect("the panel's heading row paints");
     let row = bounds(cx, handle, "queue:row:QUEUE MERCHANT 0000");
     assert!(
