@@ -1299,6 +1299,249 @@ fn the_move_and_delete_forms_run_their_actions_and_close(cx: &mut TestAppContext
     });
 }
 
+/// 3.84: every button that starts a category write renders loading,
+/// disabled, while the DB task runs (the Rules page's 3.40 pattern). The
+/// test executor only advances inside `wait_until`, so reading
+/// `cat_pending` right after the handler call observes the write in
+/// flight; each step then waits for the write to land and the flag to
+/// clear. All five writes: add parent, add child, rename, move, delete.
+#[gpui::test]
+fn every_category_write_shows_loading_until_the_task_ends(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |_| {});
+    wait_idle(cx, &shell);
+
+    // -- Add category (a success selects the new parent).
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.categories_view.update(cx, |p, cx| {
+                p.new_parent_name
+                    .update(cx, |i, cx| i.set_value("Food", window, cx));
+            });
+            s.add_parent(window, cx);
+            assert_eq!(
+                s.categories_view.read(cx).cat_pending,
+                Some(PendingCatWrite::AddParent),
+                "Add category shows loading, disabled, while the write runs"
+            );
+        });
+    });
+    wait_until(cx, "Food lands, loading cleared", |cx| {
+        shell
+            .read(cx)
+            .categories_view
+            .read(cx)
+            .cat_pending
+            .is_none()
+            && shell.read(cx).categories.iter().any(|p| p.name == "Food")
+    });
+
+    // -- Add subcategory (the add above left "Food" selected).
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.categories_view.update(cx, |p, cx| {
+                p.new_child_name
+                    .update(cx, |i, cx| i.set_value("Restaurants", window, cx));
+            });
+            s.add_child(window, cx);
+            assert_eq!(
+                s.categories_view.read(cx).cat_pending,
+                Some(PendingCatWrite::AddChild),
+                "Add subcategory shows loading, disabled, while the write runs"
+            );
+        });
+    });
+    wait_until(cx, "Restaurants lands", |cx| {
+        shell
+            .read(cx)
+            .categories_view
+            .read(cx)
+            .cat_pending
+            .is_none()
+            && shell
+                .read(cx)
+                .categories
+                .iter()
+                .any(|p| p.name == "Food" && p.children.iter().any(|c| c.name == "Restaurants"))
+    });
+
+    // -- Rename (the add left "Restaurants" selected).
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.categories_view.update(cx, |p, cx| {
+                p.renaming = true;
+                p.rename_input
+                    .update(cx, |i, cx| i.set_value("Dining", window, cx));
+            });
+            s.categories_view
+                .update(cx, |p, cx| p.save_rename(window, cx));
+            assert_eq!(
+                s.categories_view.read(cx).cat_pending,
+                Some(PendingCatWrite::Rename),
+                "Save shows loading, disabled, while the write runs"
+            );
+        });
+    });
+    wait_until(cx, "the rename lands", |cx| {
+        shell
+            .read(cx)
+            .categories_view
+            .read(cx)
+            .cat_pending
+            .is_none()
+            && shell
+                .read(cx)
+                .categories
+                .iter()
+                .any(|p| p.name == "Food" && p.children.iter().any(|c| c.name == "Dining"))
+    });
+
+    // -- Move: "Dining" from Food under a second parent.
+    add_parent(cx, handle, &shell, "Home");
+    let dining = cx.update(|cx| find_child(&shell, cx, "Dining").unwrap());
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| s.select_category(dining, window, cx));
+    });
+    let home_ix = cx.update(|cx| {
+        let s = shell.read(cx);
+        let food = s.categories.iter().find(|p| p.name == "Food").unwrap().id;
+        s.categories
+            .iter()
+            .filter(|p| p.kind == CategoryKind::Expense && p.id != food)
+            .position(|p| p.name == "Home")
+            .unwrap()
+    });
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.categories_view.update(cx, |p, cx| {
+                p.move_target.update(cx, |sel, cx| {
+                    sel.set_selected_index(
+                        Some(gpui_kit::component::IndexPath::new(home_ix)),
+                        window,
+                        cx,
+                    );
+                })
+            });
+            s.move_child_to_selected_parent(window, cx);
+            assert_eq!(
+                s.categories_view.read(cx).cat_pending,
+                Some(PendingCatWrite::Move),
+                "Move shows loading, disabled, while the write runs"
+            );
+        });
+    });
+    wait_until(cx, "Dining moves under Home", |cx| {
+        shell
+            .read(cx)
+            .categories_view
+            .read(cx)
+            .cat_pending
+            .is_none()
+            && shell
+                .read(cx)
+                .categories
+                .iter()
+                .any(|p| p.name == "Home" && p.children.iter().any(|c| c.name == "Dining"))
+    });
+
+    // -- Delete: a second child inherits the transactions; the first
+    // Delete click only arms, so it must not set the pending flag, and
+    // the second runs the write.
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            let home = s.categories.iter().find(|p| p.name == "Home").unwrap().id;
+            s.select_category(home, window, cx);
+        });
+    });
+    add_child(cx, handle, &shell, "Cafes");
+    let cafes = cx.update(|cx| find_child(&shell, cx, "Cafes").unwrap());
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| s.select_category(dining, window, cx));
+    });
+    let cafes_ix = cx.update(|cx| s_ix(&shell, cx, cafes));
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.categories_view.update(cx, |p, cx| {
+                p.delete_target.update(cx, |sel, cx| {
+                    sel.set_selected_index(
+                        Some(gpui_kit::component::IndexPath::new(cafes_ix)),
+                        window,
+                        cx,
+                    );
+                })
+            });
+            s.arm_delete_category(window, cx);
+            assert_eq!(
+                s.categories_view.read(cx).cat_pending,
+                None,
+                "the first Delete click only asks, it writes nothing"
+            );
+            s.arm_delete_category(window, cx);
+            assert_eq!(
+                s.categories_view.read(cx).cat_pending,
+                Some(PendingCatWrite::Delete),
+                "Delete shows loading, disabled, while the write runs"
+            );
+        });
+    });
+    wait_until(cx, "Dining is deleted", |cx| {
+        shell
+            .read(cx)
+            .categories_view
+            .read(cx)
+            .cat_pending
+            .is_none()
+            && shell
+                .read(cx)
+                .categories
+                .iter()
+                .all(|p| !p.children.iter().any(|c| c.name == "Dining"))
+    });
+}
+
+/// 3.84: when the DB refuses the write, the loading state clears on the
+/// error path too, with the refusal shown and the button clickable again.
+#[gpui::test]
+fn a_refused_category_write_clears_the_loading_state(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |_| {});
+    wait_idle(cx, &shell);
+    add_parent(cx, handle, &shell, "Food");
+    add_child(cx, handle, &shell, "Restaurants");
+    let food = cx.update(|cx| {
+        shell
+            .read(cx)
+            .categories
+            .iter()
+            .find(|p| p.name == "Food")
+            .unwrap()
+            .id
+    });
+    // The database's own refusal: a duplicate subcategory name.
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.select_category(food, window, cx);
+            s.categories_view.update(cx, |p, cx| {
+                p.new_child_name
+                    .update(cx, |i, cx| i.set_value("Restaurants", window, cx));
+            });
+            s.add_child(window, cx);
+            assert_eq!(
+                s.categories_view.read(cx).cat_pending,
+                Some(PendingCatWrite::AddChild),
+                "the add is in flight until the executor runs"
+            );
+        });
+    });
+    wait_until(cx, "the refusal clears the loading state", |cx| {
+        let p = shell.read(cx).categories_view.read(cx);
+        p.cat_pending.is_none() && p.cat_error.is_some()
+    });
+    cx.update(|cx| {
+        let p = shell.read(cx).categories_view.read(cx);
+        assert_eq!(p.cat_pending, None, "loading cleared on the error path too");
+        assert!(p.cat_error.is_some(), "the refusal is shown");
+    });
+}
+
 /// 3.51: system categories can't be deleted, so their title row has no
 /// Delete button at all (and no Rename either, as before).
 #[gpui::test]

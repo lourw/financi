@@ -87,14 +87,17 @@ fn categorizing_a_queue_group_locks_in_a_rule(cx: &mut TestAppContext) {
     queue_categorize(cx, handle, &shell, merchant.clone());
     let gone = merchant.clone();
     let shell_for_gone = shell.clone();
-    wait_until(cx, "queue group gone", move |cx| {
-        !shell_for_gone
-            .read(cx)
-            .queue_view
-            .read(cx)
-            .groups
-            .iter()
-            .any(|g| g.merchant == gone)
+    // 3.84: the group leaves the list in the click's frame, so "gone" no
+    // longer means "written" — wait for the write's report too.
+    wait_until(cx, "queue group gone and counted", move |cx| {
+        shell_for_gone.read(cx).cat_counts.contains_key(&child)
+            && shell_for_gone
+                .read(cx)
+                .queue_view
+                .read(cx)
+                .groups
+                .iter()
+                .all(|g| g.merchant != gone)
     });
     let online = cx.update(|cx| *shell.read(cx).cat_counts.get(&child).unwrap());
     assert!(online >= before, "{online} >= {before} categorized");
@@ -102,6 +105,70 @@ fn categorizing_a_queue_group_locks_in_a_rule(cx: &mut TestAppContext) {
         assert!(
             shell.read(cx).rules.iter().any(|r| r.pattern == merchant),
             "a rule was created for the merchant"
+        );
+    });
+}
+
+/// 3.84: Categorize answers in the click's frame — the group leaves the
+/// list before the write runs (the worker is held). The write is then
+/// made to fail: the picked category is deleted behind the page's back,
+/// so `add_rule` refuses the unknown id while the row's picker still
+/// holds its (mirrored) pick. The rollback puts the group back at its
+/// exact index; the page is hidden before the failure lands so the
+/// write's reload can't overwrite the rollback before it is observed.
+#[gpui::test]
+fn categorize_removes_the_group_in_the_click_frame_and_rolls_back(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |conn| seed_queue_thousands(conn, 3));
+    wait_until(cx, "3 queue groups", |cx| queue_len(&shell, cx) == 3);
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::ToCategorize, cx)));
+    wait_until(cx, "queue applied", |cx| {
+        shell.read(cx).queue_view.read(cx).groups.len() == 3
+    });
+    let child = cx.update(|cx| find_child(&shell, cx, "Groceries").unwrap());
+    // The middle group, so the rollback's index is not the boundary.
+    let merchant = cx.update(|cx| {
+        shell.read(cx).queue_view.read(cx).groups[1]
+            .merchant
+            .clone()
+    });
+
+    // Make the write fail, after the pick resolves against the mirror.
+    queue_pick(cx, handle, &shell, &merchant, child);
+    let db = cx.update(|cx| shell.read(cx).db.clone());
+    block_on(db.call(move |c| {
+        c.execute("DELETE FROM categories WHERE id = ?1", [child])
+            .map(|_| ())
+    }))
+    .expect("the delete job ran")
+    .expect("the category delete succeeds");
+
+    let done = block_worker(cx, &shell);
+    queue_categorize(cx, handle, &shell, merchant.clone());
+    draw_frame(cx, handle);
+    cx.update(|cx| {
+        let p = shell.read(cx).queue_view.read(cx);
+        assert!(
+            !p.groups.iter().any(|g| g.merchant == merchant),
+            "the group leaves the queue before the write has run"
+        );
+    });
+
+    // Hide the page, then let the write fail.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
+    drop(done);
+    wait_until(cx, "the failed write reports", |cx| {
+        shell.read(cx).queue_view.read(cx).error.is_some()
+    });
+    cx.update(|cx| {
+        let p = shell.read(cx).queue_view.read(cx);
+        assert_eq!(p.groups.len(), 3, "the rolled-back group is back");
+        assert_eq!(
+            p.groups[1].merchant, merchant,
+            "at its exact index, picker and all"
+        );
+        assert!(
+            p.has_picker(&merchant),
+            "the row's picker survived the round trip"
         );
     });
 }
@@ -200,14 +267,17 @@ fn a_queue_group_at_the_very_bottom_can_still_be_categorized(cx: &mut TestAppCon
     queue_categorize(cx, handle, &shell, last.clone());
     let gone = last.clone();
     let shell_for_gone = shell.clone();
-    wait_until(cx, "bottom queue group gone", move |cx| {
-        !shell_for_gone
-            .read(cx)
-            .queue_view
-            .read(cx)
-            .groups
-            .iter()
-            .any(|g| g.merchant == gone)
+    // 3.84: the group leaves the list in the click's frame, so "gone" no
+    // longer means "written" — wait for the write's report too.
+    wait_until(cx, "bottom queue group categorized", move |cx| {
+        let s = shell_for_gone.read(cx);
+        s.cat_counts.get(&child).copied().unwrap_or(0) == 2
+            && s.rules.iter().any(|r| r.pattern == gone)
+            && s.queue_view
+                .read(cx)
+                .groups
+                .iter()
+                .all(|g| g.merchant != gone)
     });
     cx.update(|cx| {
         let s = shell.read(cx);

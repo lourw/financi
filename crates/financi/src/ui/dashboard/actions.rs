@@ -4,6 +4,50 @@
 use super::*;
 use crate::ui::page::{Cancel, PageEvent};
 
+/// What one optimistic click changed in the table (3.84), so a failed
+/// write can put it back exactly.
+enum RowUndo {
+    /// The row was edited in place; the saved copy goes back where its id
+    /// is — `None` when the row wasn't in the table at click time, which
+    /// leaves nothing to undo.
+    Edited(Option<TransactionRow>),
+    /// The row left the table; it goes back at its old index unless a
+    /// reload has already brought it back.
+    Removed(usize, TransactionRow),
+}
+
+impl RowUndo {
+    /// Put back what the click painted (3.84). The failed write left the
+    /// database at the pre-click values and the `PageEvent::Changed` that
+    /// follows reloads them, so this only covers the frames in between;
+    /// a row a reload has meanwhile replaced or dropped is left alone.
+    fn restore(&self, cx: &mut App, table: &Entity<TableState<TxTable>>) {
+        table.update(cx, |t, cx| {
+            let rows = &mut t.delegate_mut().rows;
+            match self {
+                RowUndo::Edited(Some(saved)) => {
+                    if let Some(row) = rows.iter_mut().find(|r| r.id == saved.id) {
+                        *row = saved.clone();
+                    }
+                }
+                RowUndo::Edited(None) => {}
+                RowUndo::Removed(index, row) => {
+                    if !rows.iter().any(|r| r.id == row.id) {
+                        rows.insert((*index).min(rows.len()), row.clone());
+                    }
+                }
+            }
+            t.refresh(cx);
+        });
+    }
+}
+
+/// Roll back one failed write's optimistic paint (3.84); see
+/// [`RowUndo::restore`].
+fn restore_row(cx: &mut App, table: &Entity<TableState<TxTable>>, undo: &RowUndo) {
+    undo.restore(cx, table)
+}
+
 impl DashboardPage {
     /// Put a date range on the state and the controls without persisting
     /// and without refreshing (3.65: split from `apply_date_range` so the
@@ -308,10 +352,14 @@ impl DashboardPage {
         cx.notify();
         self.reload(cx);
     }
+}
 
+impl DashboardPage {
     /// Change one transaction's category from the row menu (2.9). `set_category`
     /// locks the row so rules never move it again (2.6); on success the row
     /// starts offering to extend this choice to its whole merchant group.
+    /// 3.84: the row repaints with the new category in the click's frame,
+    /// before the write runs; a failed write restores the saved row.
     pub(in crate::ui) fn change_row_category(
         &mut self,
         transaction_id: i64,
@@ -324,6 +372,35 @@ impl DashboardPage {
         if self.writes_blocked.get() {
             return;
         }
+        // 3.84: paint the new category on the row now — same frame as the
+        // click, before the write runs. The page's category mirror gives
+        // the DB's own label for a child: its name, not the menu's
+        // "Parent › Child" (3.64); an id the mirror doesn't know (a parent,
+        // or a category added since the last load) paints nothing and just
+        // waits for the write's reload. The saved row is the rollback.
+        let label = self
+            .categories
+            .iter()
+            .find_map(|p| p.children.iter().find(|c| c.id == category_id))
+            .map(|c| c.name.clone());
+        let undo = self.table.update(cx, |t, cx| {
+            let mut undo = RowUndo::Edited(None);
+            if let Some(row) = t
+                .delegate_mut()
+                .rows
+                .iter_mut()
+                .find(|r| r.id == transaction_id)
+            {
+                undo = RowUndo::Edited(Some(row.clone()));
+                if let Some(label) = &label {
+                    row.category_id = Some(category_id);
+                    row.category = Some(label.clone());
+                    row.category_locked = true;
+                }
+            }
+            t.refresh(cx);
+            undo
+        });
         let db = self.db.clone();
         // 3.64: record the choice now — the continuation compares against
         // it, and the table's rows lag a whole refresh behind.
@@ -347,7 +424,10 @@ impl DashboardPage {
                             this.rule_offer = Some((transaction_id, category_id));
                         }
                     }
-                    Err(e) => this.notify_err(e, cx),
+                    Err(e) => {
+                        restore_row(cx, &this.table, &undo);
+                        this.notify_err(e, cx);
+                    }
                 }
                 // 3.82: the write's report goes out as a `PageEvent`; the
                 // shell reloads the shared sections, the `DataChanged`
@@ -360,6 +440,10 @@ impl DashboardPage {
 
     /// Hide or unhide a transaction from the row menu (2.9). Hidden rows leave
     /// the table, the sidebar counts and the To-categorize queue at once.
+    /// 3.84: the table answers in the click's frame — the row flips its
+    /// hidden flag in place where the filter still shows it, and leaves the
+    /// table where it doesn't (the row and its slot kept for a rollback);
+    /// a failed write puts it back.
     pub(in crate::ui) fn set_row_hidden(
         &mut self,
         transaction_id: i64,
@@ -375,12 +459,35 @@ impl DashboardPage {
         if self.rule_offer.is_some_and(|(id, _)| id == transaction_id) {
             self.rule_offer = None;
         }
+        // 3.84: the paint. With *Show hidden* on, a hidden row stays in the
+        // table greyed (its own `hidden` flag renders it), so the flip is
+        // in place; with it off, a hide takes the row out of the table now,
+        // slot and all — the rollback puts it back at its index.
+        let show_hidden = self.filter.show_hidden;
+        let undo = self.table.update(cx, |t, cx| {
+            let rows = &mut t.delegate_mut().rows;
+            let undo = match rows.iter().position(|r| r.id == transaction_id) {
+                Some(index) if hidden && !show_hidden => {
+                    let row = rows.remove(index);
+                    RowUndo::Removed(index, row)
+                }
+                Some(index) => {
+                    let saved = rows[index].clone();
+                    rows[index].hidden = hidden;
+                    RowUndo::Edited(Some(saved))
+                }
+                None => RowUndo::Edited(None),
+            };
+            t.refresh(cx);
+            undo
+        });
         let db = self.db.clone();
         // 3.64: detached — see `change_row_category`.
         cx.spawn(async move |this, cx| {
             let result = on_db(&db, move |c| set_hidden(c, transaction_id, hidden)).await;
             let _ = this.update(cx, |this, cx| {
                 if let Err(e) = result {
+                    restore_row(cx, &this.table, &undo);
                     this.notify_err(e, cx);
                 }
                 cx.emit(PageEvent::Changed(Domains::TX));
