@@ -19,7 +19,7 @@ fn seed_import(conn: &financi_db::rusqlite::Connection, account: i64) -> i64 {
 /// Chequing → savings tie: one debit on Alpha could pair with either of two
 /// equal credits on Beta, so the engine opens exactly one review (on the
 /// debit) and pairs nothing. Returns `(debit, credit_a, credit_b)`.
-fn seed_transfer_tie(conn: &financi_db::rusqlite::Connection) -> (i64, i64, i64) {
+pub(super) fn seed_transfer_tie(conn: &financi_db::rusqlite::Connection) -> (i64, i64, i64) {
     let alpha = create_account(conn, "simplii", "Alpha Chequing", AccountKind::Chequing).unwrap();
     let beta = create_account(conn, "simplii", "Beta Savings", AccountKind::Savings).unwrap();
     let ai = seed_import(conn, alpha);

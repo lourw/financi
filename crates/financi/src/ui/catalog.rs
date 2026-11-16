@@ -11,17 +11,37 @@ use financi_db::{DbError, QueryLog};
 
 /// One slice of the shared data.
 ///
-/// This is *the* writer table (3.78): every mutation's UI handler reports
-/// what it changed with these, and page sections declare what they depend
-/// on ( [`Catalog::sections_for`]). Nothing picks a reload per click.
+/// This is *the* reload table (3.78, 3.57), both lists in one. The
+/// **write** rows are the writer side: every mutation's UI handler
+/// reports exactly the domains marked `●` — nothing picks a reload per
+/// click, and only the full-reload writes ([`Domains::ALL`]: import, undo
+/// import, restore) report everything. The **page** rows are the reader
+/// side: each page entity's `const DEPENDS` (see `ui/page.rs`). A write
+/// reloads a shown page — and dirties a hidden one, which reloads when
+/// next shown — exactly when its `●` meets that page's `✓` in some
+/// column; the page switch itself never queries.
+/// [`Catalog::sections_for`] maps a report to the queries behind the
+/// columns.
 ///
-/// | write | reports |
-/// |---|---|
-/// | rule add / edit / delete / move | `Rules \| Transactions` |
-/// | set category, hide, unhide | `Transactions` |
-/// | category add / rename / move / delete | `Categories \| Rules \| Transactions` |
-/// | pair / unpair / transfer review | `Transfers \| Transactions` |
-/// | import, undo import, restore | [`Domains::ALL`] (the full reload) |
+/// | | Accounts | Categories | Rules | Transactions | Imports | Transfers | Settings |
+/// |---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
+/// | **write** rule add / edit / delete / move | | | ● | ● | | | |
+/// | **write** set category, hide, unhide | | | | ● | | | |
+/// | **write** category add / rename / move / delete | | ● | ● | ● | | | |
+/// | **write** pair / unpair / transfer review | | | | ● | | ● | |
+/// | **write** new account (import panel) | ● | | | | | | |
+/// | **write** import, undo import, restore | ● | ● | ● | ● | ● | ● | ● |
+/// | **page** Dashboard | ✓ | ✓ | ✓ | ✓ | ✓ | | ✓ |
+/// | **page** To-categorize | | ✓ | ✓ | ✓ | | | |
+/// | **page** Categories | | ✓ | ✓ | ✓ | | | |
+/// | **page** Rules | | ✓ | ✓ | ✓ | | | |
+/// | **page** Transfers | | | | | ✓ | ✓ | |
+/// | **page** Imports | | | | | ✓ | | |
+///
+/// The dashboard's view settings are the one write that never travels
+/// through a report: they move only the dashboard's rows, chart and
+/// summary, and the page reloads itself off them (3.56) — which is why
+/// `sections_for` maps `Settings` to no shared section at all.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Domain {
     Accounts,
