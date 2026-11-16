@@ -290,6 +290,8 @@ type CellsFn<V> = Rc<dyn Fn(&V, &DataItem, &mut Window, &mut Context<V>) -> Vec<
 type ActionsFn<V> = Rc<dyn Fn(&V, &DataItem, &mut Window, &mut Context<V>) -> Vec<AnyElement>>;
 /// A group header's chevron callback (see [`DataList::toggle`]).
 type ToggleFn<V> = Rc<dyn Fn(&mut V, i64, &mut Window, &mut Context<V>)>;
+/// A whole-row click (see [`DataList::row_click`]).
+type RowFn<V> = Rc<dyn Fn(&mut V, usize, &mut Window, &mut Context<V>)>;
 /// A heading click's sort callback (see [`DataList::sort`]).
 type SortFn<V> = Rc<dyn Fn(&mut V, &'static str, SortState, &mut Window, &mut Context<V>)>;
 
@@ -321,6 +323,9 @@ pub(super) struct DataList<V: Render> {
     actions_width: Option<f32>,
     actions: Option<ActionsFn<V>>,
     on_toggle: Option<ToggleFn<V>>,
+    /// Whole-row click, for lists where the row itself is the action
+    /// (see [`DataList::row_click`]).
+    on_row: Option<RowFn<V>>,
     sort: Option<SortFn<V>>,
     sorted_by: Option<(&'static str, SortState)>,
     heading_selectors: Option<SharedString>,
@@ -354,6 +359,7 @@ impl<V: Render> DataList<V> {
             actions_width: None,
             actions: None,
             on_toggle: None,
+            on_row: None,
             sort: None,
             sorted_by: None,
             heading_selectors: None,
@@ -398,6 +404,19 @@ impl<V: Render> DataList<V> {
         f: impl Fn(&mut V, i64, &mut Window, &mut Context<V>) + 'static,
     ) -> Self {
         self.on_toggle = Some(Rc::new(f));
+        self
+    }
+
+    /// Make whole rows clickable — for a list whose row *is* the action,
+    /// like selecting a row (3.91: the category tree). `ix` is the row's
+    /// own [`DataItem::Row::id`]; the row gets a pointer cursor and an id,
+    /// and a click on it — anywhere not taken by an inner control — runs
+    /// `f`.
+    pub fn row_click(
+        mut self,
+        f: impl Fn(&mut V, usize, &mut Window, &mut Context<V>) + 'static,
+    ) -> Self {
+        self.on_row = Some(Rc::new(f));
         self
     }
 
@@ -532,6 +551,7 @@ impl<V: Render> RenderOnce for DataList<V> {
         let actions = self.actions.clone();
         let actions_width = self.actions_width;
         let on_toggle = self.on_toggle.clone();
+        let on_row = self.on_row.clone();
         let total = items.len();
         let list = v_virtual_list(
             self.host.clone(),
@@ -545,7 +565,9 @@ impl<V: Render> RenderOnce for DataList<V> {
                     let painted = cells(view, item, window, cx);
                     let line = match item {
                         DataItem::Row {
-                            selected, selector, ..
+                            id,
+                            selected,
+                            selector,
                         } => {
                             let group = format!("financi-list-row-{selector}");
                             let selected = *selected;
@@ -583,7 +605,19 @@ impl<V: Render> RenderOnce for DataList<V> {
                                         .children(painted),
                                 );
                             }
-                            row.into_any_element()
+                            match &on_row {
+                                None => row.into_any_element(),
+                                Some(f) => {
+                                    let f = f.clone();
+                                    let ix = *id;
+                                    row.id(SharedString::from(format!("financi-row-{selector}")))
+                                        .cursor_pointer()
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            f(this, ix, window, cx)
+                                        }))
+                                        .into_any_element()
+                                }
+                            }
                         }
                         DataItem::Group {
                             id,
@@ -775,7 +809,6 @@ pub(super) fn inline_form(cx: &App) -> Div {
 /// A category color swatch (ui-conventions *Category colors*): a 10 px
 /// square with a 2 px radius beside the category name. (Built ahead of
 /// the pages that move onto it; 3.51 adopts it.)
-#[allow(dead_code)]
 pub(super) fn swatch(color: Hsla) -> Div {
     div().size(px(10.)).flex_none().rounded(px(2.)).bg(color)
 }

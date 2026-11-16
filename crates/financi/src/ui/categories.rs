@@ -566,6 +566,10 @@ pub(super) struct CategoriesPage {
     tree_rows_built: Rc<std::cell::Cell<usize>>,
     #[cfg(test)]
     tree_range: Rc<std::cell::Cell<(usize, usize)>>,
+    /// 3.91: the tree row id the shared list will ask for next; see
+    /// [`CategoriesPage::note_tree_painted`] (not test-only, like the
+    /// Queue page's `next_cell`).
+    tree_next_cell: std::cell::Cell<usize>,
     #[cfg(test)]
     rule_rows_built: Rc<std::cell::Cell<usize>>,
     #[cfg(test)]
@@ -671,6 +675,7 @@ impl CategoriesPage {
             tree_rows_built: Rc::new(std::cell::Cell::new(0)),
             #[cfg(test)]
             tree_range: Rc::new(std::cell::Cell::new((0, 0))),
+            tree_next_cell: std::cell::Cell::new(0),
             #[cfg(test)]
             rule_rows_built: Rc::new(std::cell::Cell::new(0)),
             #[cfg(test)]
@@ -1122,80 +1127,38 @@ impl CategoriesPage {
         cx.notify();
     }
 
-    /// One clickable row of the category tree (3.23): a color swatch
-    /// (`category_colors`, the same color the transaction views show),
-    /// the name — semibold for a top-level category — truncating with an
-    /// ellipsis, and the transaction count right-aligned. The selected row
-    /// takes `list_active`, an unselected one lights up `list_hover` under
-    /// the pointer (gpui-component's `list_item` pattern).
-    fn tree_row(
-        &self,
-        node: &CategoryNode,
-        depth: u8,
-        selected: bool,
-        palette: (Hsla, Hsla, Hsla),
-        colors: &HashMap<i64, Hsla>,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let (muted, list_active, list_hover) = palette;
-        let id = node.id;
-        let count = self.node_count(node);
-        let radius = cx.theme().radius;
-        let color = colors.get(&id).copied().unwrap_or(muted);
-        div()
-            .id(SharedString::from(format!("cat-row-{id}")))
-            // Fill the list's width, or the row stays at its natural width:
-            // the counts would not line up at the right edge, the selection
-            // background would cover only the text, and a long name would
-            // never truncate (the queue rows, 3.16).
-            .w_full()
-            .h_8()
-            .px_2()
-            .pl(px(8. + 16. * depth as f32))
-            .flex()
-            .items_center()
-            .gap_2()
-            .rounded(radius)
-            .cursor_pointer()
-            .debug_selector(move || format!("cat:tree-row:{id}"))
-            .when(selected, |d| d.bg(list_active))
-            // A selected row keeps its `list_active` under the pointer.
-            .hover(move |s| if selected { s } else { s.bg(list_hover) })
-            .child(
-                div()
-                    .w(px(10.))
-                    .h(px(10.))
-                    .flex_shrink_0()
-                    .rounded(px(2.))
-                    .bg(color),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .overflow_hidden()
-                    .text_ellipsis()
-                    .when(depth == 0, |d| d.font_weight(FontWeight::SEMIBOLD))
-                    .child(node.name.clone()),
-            )
-            .when(node.is_system, |d| {
-                d.child(div().text_xs().text_color(muted).child("system"))
-            })
-            .child(
-                div()
-                    .w(px(48.))
-                    .flex_shrink_0()
-                    .text_right()
-                    .text_xs()
-                    .text_color(muted)
-                    .child(flow::count(count)),
-            )
-            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                this.select_category(id, window, cx);
-            }))
-            .into_any_element()
+    /// 3.91: fold one `DataList` cells call into the current paint pass.
+    /// The shared list gives the page no visible range, so the counters
+    /// the tests read are rebuilt from the row ids it paints, exactly
+    /// like the Queue page's `note_painted`: an id that doesn't continue
+    /// the sequence opens a new pass.
+    fn note_tree_painted(&self, i: usize) {
+        // An id that doesn't continue the sequence opens a new pass; the
+        // counters themselves are the tests' (the Queue page's shape).
+        let _continued = i == self.tree_next_cell.get();
+        #[cfg(test)]
+        {
+            if !_continued {
+                self.tree_rows_built.set(0);
+                self.tree_range.set((i, i + 1));
+            }
+            self.tree_rows_built.set(self.tree_rows_built.get() + 1);
+            let (start, end) = self.tree_range.get();
+            self.tree_range.set((start.min(i), end.max(i + 1)));
+        }
+        self.tree_next_cell.set(i + 1);
     }
 }
+/// 3.91: one line of the category tree as the shared list sees it — the
+/// fields the cells callback needs, so it never borrows the tree itself.
+struct TreeListRow {
+    id: i64,
+    name: SharedString,
+    depth: u8,
+    is_system: bool,
+    count: i64,
+}
+
 impl Render for CategoriesPage {
     /// The Categories page (3.23's layout): header, the new-category form,
     /// then the tree panel and the detail panel side by side. The rule
@@ -1215,105 +1178,118 @@ impl Render for CategoriesPage {
         let Some(shell) = self.shell.upgrade() else {
             return div().into_any_element();
         };
-        let (muted, border, list_active, list_hover, danger) = {
+        let (muted, border, danger) = {
             let theme = cx.theme();
-            (
-                theme.muted_foreground,
-                theme.border,
-                theme.list_active,
-                theme.list_hover,
-                theme.danger,
-            )
+            (theme.muted_foreground, theme.border, theme.danger)
         };
-        let palette = (muted, list_active, list_hover);
-        // 3.23: the tree's swatches use the same palette and assignment the
-        // transaction views show (ui-conventions, *Category colors*).
-        let colors = Rc::new(category_colors(&self.tree, cx.theme()));
-
-        // 3.12: the tree is virtualized (gpui-kit `v_virtual_list`). The
-        // closure runs during layout with the visible range, so a tree of
-        // thousands builds only the rows that can be on screen. Rows are
-        // fixed height (`tree_row`'s `h_8` = 32 px); the panel's `gap_1`
-        // is added to the stride by the list.
-        let n_tree_rows: usize = self.tree.iter().map(|p| 1 + p.children.len()).sum();
-        let tree_sizes = Rc::new(vec![size(px(0.), px(32.)); n_tree_rows]);
+        // 3.91: the tree is the shared list (ui-conventions *Lists*): a
+        // 32 px heading over virtualized 40 px rows. Its lines are the
+        // tree flattened parents-then-children, one level of `pl` indent
+        // per subcategory; clicking a row selects it (3.23), and the
+        // swatches use the same palette the transaction views show
+        // (ui-conventions, *Category colors*).
+        let colors = category_colors(&self.tree, cx.theme());
+        let mut rows: Vec<TreeListRow> = Vec::new();
+        for parent in &self.tree {
+            rows.push(TreeListRow {
+                id: parent.id,
+                name: parent.name.clone().into(),
+                depth: 0,
+                is_system: parent.is_system,
+                count: self.node_count(parent),
+            });
+            for child in &parent.children {
+                rows.push(TreeListRow {
+                    id: child.id,
+                    name: child.name.clone().into(),
+                    depth: 1,
+                    is_system: child.is_system,
+                    count: self.node_count(child),
+                });
+            }
+        }
+        let tree_rows: Rc<Vec<TreeListRow>> = Rc::new(rows);
+        let tree_items: Vec<DataItem> = tree_rows
+            .iter()
+            .enumerate()
+            .map(|(ix, row)| DataItem::Row {
+                id: ix,
+                selected: self.selected_category == Some(row.id),
+                selector: format!("cat:tree-row:{}", row.id),
+            })
+            .collect();
+        let click_rows = Rc::clone(&tree_rows);
         // 3.23: the tree lives in its own bordered panel beside the detail
-        // panel (ui-conventions, *Pages*).
-        // `h_flex` centers children on the cross axis (unlike `v_flex`), so
-        // each column needs `h_full` for the virtual list inside it to
-        // resolve a real height; without it the lists collapse to 0 px and
-        // the page opens blank (3.18).
-        let tree_colors = Rc::clone(&colors);
-        let tree = v_flex()
-            .w(px(300.))
-            .flex_shrink_0()
+        // panel (ui-conventions, *Pages*); `flex_none` keeps the fixed
+        // 300 px column against the shared `panel`'s `flex_1`.
+        let tree = panel(cx, false)
+            .flex_none()
             .h_full()
-            .min_h_0()
-            .p_2()
-            .gap_1()
-            .border_1()
-            .border_color(border)
-            .rounded_lg()
+            .w(px(300.))
             .debug_selector(|| "cat:tree-panel".into())
-            .child(region_title("Category tree"))
             .child(
-                v_virtual_list(
+                DataList::new(
                     cx.entity(),
-                    "category-tree",
-                    tree_sizes,
-                    move |this, range, _window, cx| {
-                        let mut rows = Vec::new();
-                        let mut ix = 0usize;
-                        for parent in &this.tree {
-                            if ix >= range.end {
-                                break;
-                            }
-                            if ix >= range.start {
-                                let selected = this.selected_category == Some(parent.id);
-                                rows.push(this.tree_row(
-                                    parent,
-                                    0,
-                                    selected,
-                                    palette,
-                                    &tree_colors,
-                                    cx,
-                                ));
-                            }
-                            ix += 1;
-                            for child in &parent.children {
-                                if ix >= range.end {
-                                    break;
-                                }
-                                if ix >= range.start {
-                                    let selected = this.selected_category == Some(child.id);
-                                    rows.push(this.tree_row(
-                                        child,
-                                        1,
-                                        selected,
-                                        palette,
-                                        &tree_colors,
-                                        cx,
-                                    ));
-                                }
-                                ix += 1;
-                            }
-                        }
-                        #[cfg(test)]
-                        this.tree_rows_built.set(rows.len());
-                        #[cfg(test)]
-                        this.tree_range.set((range.start, range.end));
-                        rows
-                    },
+                    vec![
+                        DataCol::new("Category tree", Col::Flex, ColAlign::Left),
+                        DataCol::new("Txns", Col::Fixed(48.), ColAlign::Right),
+                    ],
+                    tree_items,
                 )
+                .heading_selectors("cat")
                 // 3.21: track the page-owned handle, not the fresh one
-                // `v_virtual_list` creates per render — that one resets the
+                // the list creates per render — that one resets the
                 // offset to 0 every frame.
-                .track_scroll(&self.tree_scroll)
-                .gap_1()
-                .flex_1()
-                .min_h_0(),
+                .scroll(self.tree_scroll.clone())
+                .cells(move |this, item, _window, _cx| {
+                    let DataItem::Row { id, .. } = item else {
+                        return Vec::new();
+                    };
+                    this.note_tree_painted(*id);
+                    let row = &tree_rows[*id];
+                    let color = colors.get(&row.id).copied().unwrap_or(muted);
+                    vec![
+                        h_flex()
+                            .w_full()
+                            .min_w_0()
+                            .gap_2()
+                            .items_center()
+                            .pl(px(16. * row.depth as f32))
+                            .child(swatch(color))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .when(row.depth == 0, |d| d.font_weight(FontWeight::SEMIBOLD))
+                                    .child(row.name.clone()),
+                            )
+                            .when(row.is_system, |d| {
+                                d.child(
+                                    div()
+                                        .flex_none()
+                                        .text_xs()
+                                        .text_color(muted)
+                                        .child("system"),
+                                )
+                            })
+                            .into_any_element()
+                            .into(),
+                        div()
+                            .text_xs()
+                            .text_color(muted)
+                            .child(flow::count(row.count))
+                            .into_any_element()
+                            .into(),
+                    ]
+                })
+                .row_click(move |this, ix, window, cx| {
+                    if let Some(row) = click_rows.get(ix) {
+                        this.select_category(row.id, window, cx);
+                    }
+                }),
             );
-
         // Rules of the selected category (3.23): the list shows only these
         // (`visible_rules`). The list is virtualized like the tree (3.12);
         // rows are fixed height (24 px), except the one row 3.24's editor
@@ -2096,23 +2072,11 @@ impl Render for CategoriesPage {
             // Page header (3.23): title, count summary, and the primary
             // action that opens the new-category form in place.
             .child(
-                h_flex()
-                    .gap_2()
-                    .items_center()
-                    .child(
-                        div()
-                            .text_lg()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child("Categories"),
-                    )
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(muted)
-                            .debug_selector(move || format!("label:{count_sel}"))
-                            .child(count_text),
-                    )
-                    .child(
+                page_header(
+                    cx,
+                    "Categories",
+                    count_text,
+                    vec![
                         Button::new("new-category")
                             .icon(IconName::Plus)
                             .label(NEW_CATEGORY)
@@ -2123,8 +2087,13 @@ impl Render for CategoriesPage {
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.new_category_open = true;
                                 cx.notify();
-                            })),
-                    ),
+                            }))
+                            .into_any_element(),
+                    ],
+                )
+                // The count summary's selector moves onto the whole header
+                // row (the Queue page's precedent, 3.91).
+                .debug_selector(move || format!("label:{count_sel}")),
             )
             .children(
                 self.cat_error
@@ -2135,13 +2104,7 @@ impl Render for CategoriesPage {
             // opens it; Cancel and a successful add close it.
             .when(self.new_category_open, |page| {
                 page.child(
-                    h_flex()
-                        .gap_2()
-                        .items_end()
-                        .p_2()
-                        .border_1()
-                        .border_color(border)
-                        .rounded_lg()
+                    inline_form(cx)
                         .debug_selector(|| "cat:new-form".into())
                         .child(
                             v_flex()

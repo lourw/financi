@@ -6,7 +6,7 @@ Do these in the order listed (`docs/tasks.md` → *Picking the next task*). Each
 
 Steps 1–15 of `docs/tasks/gpui.md` → *GPUI best practices*, task by task.
 
-- [ ] **3.91 Every existing page uses the shared components.**
+- [x] **3.91 Every existing page uses the shared components.**
   (Architecture, 2026-11-11.) After 3.89 and the page extractions
   (3.79–3.83); one commit per page, so it can be reviewed in parts. Move
   what's built by hand today onto 3.89's components, keeping each page's
