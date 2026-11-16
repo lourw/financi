@@ -47,22 +47,3 @@ Steps 1–15 of `docs/tasks/gpui.md` → *GPUI best practices*, task by task.
     unrelated notify (counter hooks); a toast tick doesn't re-render the
     page.
 
-- [x] **3.86 Layout from measured sizes.** (Code review, 2026-11-11.)
-  Before 3.36 and 3.26. The chart's label budget and the table's flexible
-  column widths are computed from the window width minus constants
-  (`chart_plot_width = window_width − SIDEBAR_W − 2·PAGE_PAD …`,
-  `tx_flex_widths(page_w)`, `history_flex_widths`) and from guessed
-  character widths (`CHART_CHAR_PX`, `TEXT_SM_CHAR_PX`). Every layout
-  change (3.36's legend, 3.45's full-width chart, 3.26's scrollbar
-  gutter, a different font on Linux) silently breaks them.
-  - Measure the plot area and the tables' containers: read their bounds
-    in a `canvas` / `on_prepaint`, store them on the page, and
-    `cx.notify()` when they change. Derive the chart's label plan and the
-    tables' column widths from the measured bounds. DataTable has no flex
-    columns, so widths are still computed, but from measured bounds.
-  - Measure text with `window.text_system()` instead of per-character
-    estimates where labels are truncated or thinned.
-  - Delete `SIDEBAR_W`-based arithmetic outside the sidebar itself.
-  - Tests: the label plan and column widths follow the measured width at
-    1200 and 1600 px; changing the sidebar width constant changes no
-    chart or table test result.

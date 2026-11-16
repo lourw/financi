@@ -1865,3 +1865,23 @@ Hidden pages dirty-then-reload; a clean page switch issues no query.
 8 tests in `ui/tests/reloads.rs` pin each table row through the
 query-count hook (exact sets, "no query", "exactly once"); review found
 no lost-update path in the dirty/generation logic.
+### 3.86 Layout from measured sizes ✅
+
+**Done 2026-11-16** — commit `8bb1d58`, merged as v0.37.0.
+
+`bounds_probe<R>()` (absolute canvas in widgets.rs) reports container
+widths via `window.defer` to the pages; the chart's label plan, the tx
+table's flex widths and the imports history widths now derive from
+measured bounds; char-width guesses (`CHART_CHAR_PX`, the undo-column
+estimate) replaced by `measure_text_width`. `Shell::window_bounds_changed`
+and both `widths_changed` handlers deleted; no `SIDEBAR_W` width-plan
+arithmetic outside `sidebar.rs` remains (tests asserting painted page-edge
+POSITIONS against the sidebar were accepted as position, not plan).
+New tests: stored width == painted container ±0.5 px at 1200/1600, plan
+monotonic in width, column sums == measured + borders.
+
+**Follow-ups (accepted):** stale parenthetical at categories.rs:156
+("no text-measurement path" — there is one now) and two stale doc
+comments (dashboard/table.rs:131, view.rs:61) — fix on next touches;
+first-frame layout seeds collapsed (~1–2 frames until the probe settles),
+degrade-safe.
