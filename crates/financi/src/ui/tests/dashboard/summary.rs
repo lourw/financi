@@ -264,6 +264,84 @@ fn summary_views_are_built_once_per_load_and_never_per_repaint(cx: &mut TestAppC
     });
 }
 
+/// 3.85 (review follow-up): the virtualized grid repaints new data with
+/// no scrolling. Categorizing the uncategorized March purchase moves 200
+/// onto the Food rows; when the write's reload lands, the views the row
+/// closure paints — `summary_views`, what `render` draws each frame —
+/// show the new month text on the next plain repaint. Nothing scrolls:
+/// the tracked list keeps no item cache, so a data change is enough.
+#[gpui::test]
+fn summary_rows_repaint_after_a_data_change_without_scrolling(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_summary_rows);
+    set_all_time(cx, handle, &shell);
+    wait_until(cx, "table loaded", |cx| {
+        dash(cx, &shell).read(cx).row_count == 7
+    });
+    draw_frame(cx, handle);
+    let food_cells = |cx: &App| {
+        dash(cx, &shell)
+            .read(cx)
+            .summary_views
+            .iter()
+            .find(|r| r.name == "Food")
+            .map(|r| r.cells.clone())
+    };
+    let paints_uncategorized = |cx: &App| {
+        dash(cx, &shell)
+            .read(cx)
+            .summary_views
+            .iter()
+            .any(|r| r.name == "Uncategorized")
+    };
+    cx.update(|cx| {
+        assert_eq!(
+            food_cells(cx).expect("Food is a painted row"),
+            money_cells(&[1500, 600, 2100]),
+            "the grid paints the seeded month cells"
+        );
+        assert!(
+            paints_uncategorized(cx),
+            "the -200 row starts uncategorized"
+        );
+    });
+
+    let (mystery, groceries) = cx.update(|cx| {
+        let mystery = table_rows(&shell, cx)
+            .iter()
+            .find(|r| r.description == "Mystery Vendor")
+            .unwrap()
+            .id;
+        (mystery, find_child(&shell, cx, "Groceries").unwrap())
+    });
+    with_window(cx, handle, |window, cx| {
+        dash(cx, &shell).update(cx, |d, cx| {
+            d.change_row_category(mystery, groceries, window, cx)
+        });
+    });
+    // Wait for the write's reload to land the new summary data on the
+    // model; the views rebuild during the next paint.
+    wait_until(cx, "the model shows the moved 200", |cx| {
+        dash(cx, &shell)
+            .read(cx)
+            .summary_rows()
+            .iter()
+            .find(|r| r.name == "Food")
+            .is_some_and(|r| r.cents == [1700, 600, 2300])
+    });
+    draw_frame(cx, handle);
+    cx.update(|cx| {
+        assert_eq!(
+            food_cells(cx).expect("Food is still a painted row"),
+            money_cells(&[1700, 600, 2300]),
+            "the next plain repaint draws the new cells — no scroll involved"
+        );
+        assert!(
+            !paints_uncategorized(cx),
+            "the emptied Uncategorized row leaves the painted grid"
+        );
+    });
+}
+
 #[gpui::test]
 fn clicking_a_summary_cell_filters_the_table_to_category_and_month(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, seed_summary_rows);

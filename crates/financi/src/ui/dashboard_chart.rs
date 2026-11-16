@@ -806,7 +806,11 @@ impl DashboardPage {
         );
         // 3.85: the grid body virtualizes (only visible rows build
         // elements) and renders the cached, pre-formatted views, so no
-        // `flow::money` call runs per row per frame. `DataList` was
+        // `flow::money` call runs per row per frame. The list re-runs
+        // this closure on every paint — gpui-base's `VirtualList` keeps
+        // no item cache and `track_scroll` persists only the scroll
+        // offset — which is why it only copies from `views` and does no
+        // deriving of its own. `DataList` was
         // considered and does not fit: it pins 40 px rows (this grid
         // measures 30.5), paints its own row hover and heading, and keys
         // rows by `EntityId`. The `VirtualList` base already locks the
