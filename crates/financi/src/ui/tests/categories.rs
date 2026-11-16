@@ -592,7 +592,7 @@ fn the_categories_page_labels_its_controls(cx: &mut TestAppContext) {
         // carries the list's `{prefix}:heading:{column}` selector.
         "cat:heading:Category tree",
         "label:New category name",
-        "label:Kind",
+        "label:Category type",
         "label:Rules",
         "label:Pattern",
         "label:Subcategory",
@@ -813,7 +813,7 @@ fn the_categories_page_never_says_parent_or_child(cx: &mut TestAppContext) {
     for sel in [
         "cat:heading:Category tree",
         "label:New category name",
-        "label:Kind",
+        "label:Category type",
         "label:Add category",
     ] {
         assert!(
@@ -2010,6 +2010,43 @@ fn the_new_category_button_opens_and_closes_the_form(cx: &mut TestAppContext) {
     assert!(
         window.debug_bounds("cat:new-form").is_none(),
         "leaving the page closes the form"
+    );
+}
+
+/// 3.60: the new-category form's kind picker is captioned "Category type",
+/// and no control is captioned "Kind" any more (the detail panel's muted
+/// value line, "Expense · N transactions", is unaffected). The longer
+/// caption must still fit the form's row at the 1200 × 720 minimum window
+/// the shell opens at: the form ends inside the page, as in
+/// [`the_categories_page_fits_the_minimum_window`].
+#[gpui::test]
+fn the_new_category_form_labels_its_picker_category_type(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |_| {});
+    wait_idle(cx, &shell);
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Categories, cx)));
+    with_window(cx, handle, |_, cx| {
+        shell.update(cx, |s, cx| {
+            s.categories_view
+                .update(cx, |p, _| p.new_category_open = true)
+        })
+    });
+    cx.run_until_parked();
+    draw_frame(cx, handle);
+    assert!(
+        paints(cx, handle, "label:Category type"),
+        "the new-category form paints the \"Category type\" label"
+    );
+    assert!(
+        !paints(cx, handle, "label:Kind"),
+        "no control on the Categories page is captioned \"Kind\" any more"
+    );
+    let page_right = px(1200. - PAGE_PAD);
+    let b = bounds(cx, handle, "cat:new-form");
+    assert!(
+        b.origin.x + b.size.width <= page_right + px(1.),
+        "with the longer caption the new-category form ends at x {:?}, \
+         past the page edge {page_right:?}",
+        b.origin.x + b.size.width,
     );
 }
 

@@ -271,7 +271,7 @@ Start these only after both queues are done (`docs/tasks.md` → *Picking the ne
 
     Update the *Rules* row of `ui-conventions.md`.
 
-- [ ] **3.60 "Category type" label.** From `plan.md` → *Label the
+- [x] **3.60 "Category type" label.** From `plan.md` → *Label the
   category type dropdown* (never made a task; user confirmed
   2026-11-11). The New category form labels its kind picker "Kind". Make
   the field label "Category type" (`ui.rs`, the `cat:new-form`). The

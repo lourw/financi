@@ -2174,7 +2174,7 @@ impl Render for CategoriesPage {
                         .child(
                             v_flex()
                                 .gap_1()
-                                .child(field_label(muted, "Kind"))
+                                .child(field_label(muted, "Category type"))
                                 .child(div().w(px(140.)).child(Select::new(&self.new_parent_kind))),
                         )
                         .child(
