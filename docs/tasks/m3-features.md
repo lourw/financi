@@ -271,40 +271,6 @@ Start these only after both queues are done (`docs/tasks.md` → *Picking the ne
 
     Update the *Rules* row of `ui-conventions.md`.
 
-- [x] **3.49 A Uses column instead of Category.** Since 3.23 the
-  Categories page's rule list only shows the selected category's rules, so
-  on a subcategory every Category cell says the same thing. The user
-  wants the count of transactions each rule matches there instead (user
-  requests, 2026-11-11).
-  - **Review update (2026-11-11):** Also moves the Categories rule list onto 3.89's `DataList` with 40 px rows, using the same row renderer as the Rules page (3.81), so a rule looks the same on both pages. Uses come from 3.87's `rule_use_stats`.
-  - **Replace the Category column with Uses** (`RULE_USES_W`, 80 px,
-    right-aligned, `flow::count`), the same number and wording as the
-    Rules page's Uses column (`rule_use_stats` from 3.58, its `count`): the transactions
-    the rule *decides*, so it agrees with stored categories and with
-    3.52's "decided by this rule". A heading tooltip says "Transactions
-    this rule categorizes". 0 shows in `muted_foreground`. The counts are
-    loaded in the same refresh as the rules (one `rule_use_stats` call; no
-    per-row queries) and update after every rule change.
-  - **Parent selected:** its list mixes its subcategories' rules, so the
-    subcategory also shows: a muted `text_xs` tag with the child's name
-    (not "Parent › Child") after the pattern, inside the Pattern column,
-    ellipsized first. A subcategory selection shows no tag.
-  - Clicking the Uses heading sorts by it (descending), clicking Pattern
-    goes back, as on the Rules page. Reuse its sort state if it fits;
-    otherwise a separate `cat_rules_sort_by_uses`.
-  - Tests:
-    - no "Category" heading or cell paints;
-    - "Uses" paints with each rule's count, and matches the Rules page
-      for the same rule;
-    - a rule overlapped by a longer one shows only the rows it wins;
-    - the count updates after a rule edit or delete;
-    - on a parent, the subcategory tags paint, and on a subcategory they
-      don't;
-    - Uses sort works;
-    - 3.23's heading alignment and fit tests pass.
-
-    Update the *Categories* row of `ui-conventions.md`.
-
 - [ ] **3.43 No buttons end in "…".** The user doesn't want "…" on
   buttons; use an icon instead, or just drop it (user request,
   2026-11-11). This applies 3.32's Imports-header rule to every button.

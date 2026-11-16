@@ -1770,3 +1770,28 @@ the UI; tests cover 2.1–2.9.
 - Follow-ups: a stale sentence in categories.rs (~1794) still mentions
   the "context-less binding" behind Escape; `ui/dashboard.rs` hit ~2.0k
   lines → housekeeping H3.
+
+### 3.49 A Uses column instead of Category
+
+**Done 2026-11-15** — commit `705882f`, merged `a489929` (v0.34.0).
+
+The Categories rule list's third column is now the rule's **Uses** count —
+transactions it categorizes — off the shared catalog snapshot's
+`rule_use_stats` mirror (`Shell::rule_uses`), so it agrees with the Rules
+page and updates after every edit/delete. 0 reads muted. The Uses heading
+carries the explanation tooltip ("Transactions this rule categorizes.
+Change the rule or delete it to change the count." — plain Text
+tooltip_element, hover-only), and the Pattern/Uses heading pair sorts the
+list (`cat_rules_sort_by_uses`: Uses descending, pattern ascending ties,
+exact re-tap flips). `rule_row`/`rule_editor_row` moved to `rules.rs` as
+shared pub helpers — both pages render rules identically.
+
+**Deviations (accepted at review):** the DataList/40px part of the
+Review-update note is NOT done — `DataList` hardcodes 40px rows and cannot
+host the 148/176px inline editor; the page migrates at 3.58. Heading sort
+uses clickable muted labels, not ghost buttons (3.23's fit test caps the
+heading row < 24px).
+
+**Follow-up:** `categories_heading_shows_uses_tip` proves the tip PAINTS
+on hover but not its wording — fold an exact-text assertion into the next
+categories task.
