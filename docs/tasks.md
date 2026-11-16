@@ -80,6 +80,14 @@ worktree from the current `main`.
 - **Housekeeping (AGENTS.md → *File size*), run when a slot is free and
   nothing in flight touches the file** (pure moves, own `refactor:` commit,
   no behaviour change, no other change): none open.
+- **Small fixes waiting for a free slot** (own `fix:` commit):
+  - **H4** `queue.rs` `note_painted` (from 3.91 review): the paint-window
+    reset only fires when the painted-id sequence breaks, so exact-page
+    scrolls (e.g. PageDown at a viewport height that's a multiple of the
+    40 px row) let the picker/subscription map grow unbounded — the old
+    virtual-list range arg was exact. Cap the pass width in `note_painted`
+    using the height available in the cells callback, or teach `DataList`
+    to expose the pass start (then drop the heuristic).
 3. **Last in M3: 3.26** (scrollbars, in `docs/tasks/m3-features.md`), once
    the lanes are empty.
 4. **Then M5** (`docs/tasks/m5.md`: 5.3, 5.4 and whatever of 5.1 / 5.2 is left), **then the
