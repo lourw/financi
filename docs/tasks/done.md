@@ -1835,3 +1835,19 @@ doc comments; a guard-test note for whoever next touches it — check the
 walk still reaches `ui/dashboard/`'s sub-modules (it passed post-H3, but
 confirm the dashboard files are actually scanned, not just the count
 floor).
+
+### 3.91 Every existing page uses the shared components ✅
+
+**Done 2026-11-16** — phase 1 `ec14f55` (merged `fb62505`, v0.35.2:
+Queue, Dashboard, Sidebar), phase 2 `23b02b1` (Categories: `PageHeader`,
+`InlineForm`, tree as `DataList` with 16 px/level indented swatch rows).
+
+Pages no longer hand-build heading rows, dividers or alignment spacers
+(grep-clean outside `widgets.rs` and the rule list deferred to 3.58).
+`DataList` gained an additive `row_click` builder (click-to-select rows;
+inner controls win). Review proved click-to-select with a real center
+click, all 37 categories + 13 queue tests kept, fit tests hold.
+
+**Follow-ups:** H4 (`note_painted`/`note_tree_painted` share the same
+pass-width edge case — fix both together); the rule list's two
+`.opacity(0.0)` heading spacers die with 3.58.

@@ -6,28 +6,6 @@ Do these in the order listed (`docs/tasks.md` → *Picking the next task*). Each
 
 Steps 1–15 of `docs/tasks/gpui.md` → *GPUI best practices*, task by task.
 
-- [x] **3.91 Every existing page uses the shared components.**
-  (Architecture, 2026-11-11.) After 3.89 and the page extractions
-  (3.79–3.83); one commit per page, so it can be reviewed in parts. Move
-  what's built by hand today onto 3.89's components, keeping each page's
-  behaviour and tests (update selectors, don't delete tests):
-  - **To categorize** (`QueuePage`): the list from 3.34 becomes a
-    `DataList` (columns as today) inside a `Panel`, under a `PageHeader`.
-  - **Categories** (`CategoriesPage`): the header becomes a `PageHeader`
-    and the New category form an `InlineForm`; the tree becomes a
-    `DataList` with indented subcategory rows (`Swatch`, name, count
-    column), dropping its hand-rolled row layout.
-  - **Dashboard** (`DashboardPage`): the filter row becomes a `FilterRow`
-    (its Options popover is the shared one); the chart and summary panels
-    become `Panel`s with title rows.
-  - **Rules** stays for 3.58, and the Categories rule list for 3.49 (both
-    already planned on the components).
-  - **Sidebar:** replace the ad-hoc `sidebar_foreground.opacity(0.7)` tint
-    with the `muted_foreground` token.
-  - Done when no page builds its own heading row, divider rows, or
-    invisible `.opacity(0.0)` alignment spacers (grep shows none outside
-    `widgets.rs`), and every page fits 1200 × 720 as before.
-
 - [ ] **3.57 Every page reloads only what it depends on.** Rewritten
   2026-11-11: the old 3.57 is split into this task, 3.84 (feedback within
   a frame) and 3.85 (render caches). Do it after the page extractions
