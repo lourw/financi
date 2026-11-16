@@ -566,10 +566,6 @@ pub(super) struct CategoriesPage {
     tree_rows_built: Rc<std::cell::Cell<usize>>,
     #[cfg(test)]
     tree_range: Rc<std::cell::Cell<(usize, usize)>>,
-    /// 3.91: the tree row id the shared list will ask for next; see
-    /// [`CategoriesPage::note_tree_painted`] (not test-only, like the
-    /// Queue page's `next_cell`).
-    tree_next_cell: std::cell::Cell<usize>,
     #[cfg(test)]
     rule_rows_built: Rc<std::cell::Cell<usize>>,
     #[cfg(test)]
@@ -675,7 +671,6 @@ impl CategoriesPage {
             tree_rows_built: Rc::new(std::cell::Cell::new(0)),
             #[cfg(test)]
             tree_range: Rc::new(std::cell::Cell::new((0, 0))),
-            tree_next_cell: std::cell::Cell::new(0),
             #[cfg(test)]
             rule_rows_built: Rc::new(std::cell::Cell::new(0)),
             #[cfg(test)]
@@ -1127,26 +1122,18 @@ impl CategoriesPage {
         cx.notify();
     }
 
-    /// 3.91: fold one `DataList` cells call into the current paint pass.
-    /// The shared list gives the page no visible range, so the counters
-    /// the tests read are rebuilt from the row ids it paints, exactly
-    /// like the Queue page's `note_painted`: an id that doesn't continue
-    /// the sequence opens a new pass.
-    fn note_tree_painted(&self, i: usize) {
-        // An id that doesn't continue the sequence opens a new pass; the
-        // counters themselves are the tests' (the Queue page's shape).
-        let _continued = i == self.tree_next_cell.get();
+    /// 3.91: record one tree paint pass in the counters the tests read.
+    /// H4: `DataList::on_pass` hands over the exact range — like the
+    /// Queue page's `note_paint_pass`, minus the sequence heuristic that
+    /// could not see an exact-page scroll (ids continuing with no break).
+    /// Unlike the Queue page's window nothing here drives a prune: the
+    /// counters are the tests' own.
+    fn note_tree_paint_pass(&self, _range: std::ops::Range<usize>) {
         #[cfg(test)]
         {
-            if !_continued {
-                self.tree_rows_built.set(0);
-                self.tree_range.set((i, i + 1));
-            }
-            self.tree_rows_built.set(self.tree_rows_built.get() + 1);
-            let (start, end) = self.tree_range.get();
-            self.tree_range.set((start.min(i), end.max(i + 1)));
+            self.tree_rows_built.set(_range.len());
+            self.tree_range.set((_range.start, _range.end));
         }
-        self.tree_next_cell.set(i + 1);
     }
 }
 /// 3.91: one line of the category tree as the shared list sees it — the
@@ -1241,11 +1228,13 @@ impl Render for CategoriesPage {
                 // the list creates per render — that one resets the
                 // offset to 0 every frame.
                 .scroll(self.tree_scroll.clone())
-                .cells(move |this, item, _window, _cx| {
+                // H4: the counters track the exact pass range (the tests'
+                // own — see [`Self::note_tree_paint_pass`]).
+                .on_pass(move |this, range| this.note_tree_paint_pass(range))
+                .cells(move |_this, item, _window, _cx| {
                     let DataItem::Row { id, .. } = item else {
                         return Vec::new();
                     };
-                    this.note_tree_painted(*id);
                     let row = &tree_rows[*id];
                     let color = colors.get(&row.id).copied().unwrap_or(muted);
                     vec![
