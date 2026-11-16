@@ -46,9 +46,13 @@ pub struct ImportHistoryTable {
     /// The import whose Undo button is waiting for its second click.
     pub(super) confirm_id: Option<i64>,
     /// Widths of the two flexible columns (`File`, `Account`), kept in
-    /// step with the window by the shell (3.20); they truncate with an
-    /// ellipsis rather than push the table past the page.
+    /// step with the measured container by [`ImportsPage::set_history_width`]
+    /// (3.86); they truncate with an ellipsis rather than push the table
+    /// past the page.
     pub(super) flex_widths: (f32, f32),
+    /// The Undo column's width in px, from [`history_undo_col_w`] with
+    /// the label measured at construction (3.86).
+    pub(super) undo_col_w: f32,
     pub(super) on_undo: UndoFn,
 }
 
@@ -86,8 +90,9 @@ impl TableDelegate for ImportHistoryTable {
                 .width(px(HISTORY_ROWS_W))
                 .text_right(),
             4 => Column::new("dates", "Dates").width(px(HISTORY_DATES_W)),
-            // Wide enough for both labels (3.20), so neither clips.
-            _ => Column::new("undo", "").width(px(history_undo_col_w())),
+            // Wide enough for both labels (3.20, 3.86: measured), so
+            // neither clips.
+            _ => Column::new("undo", "").width(px(self.undo_col_w)),
         }
     }
 
@@ -813,25 +818,23 @@ pub(super) const UNDO_LABEL: &str = "Undo";
 /// The Undo button's widest label; the column must fit this without
 /// clipping whatever the window size.
 pub(super) const UNDO_LABEL_MAX: &str = "Click again to undo";
-/// The Undo column's width: the widest of the button's two labels at
-/// `TEXT_SM_CHAR_PX`, plus the button's icon and horizontal padding and
-/// the cell's — so both states show in full (3.37), and no wider, since
-/// every extra pixel comes off `File` and `Account`.
-pub(super) fn history_undo_col_w() -> f32 {
-    let label_chars = UNDO_LABEL
-        .chars()
-        .count()
-        .max(UNDO_LABEL_MAX.chars().count()) as f32;
-    (label_chars * TEXT_SM_CHAR_PX + BUTTON_PAD_X + UNDO_ICON_W + CELL_PAD_X).ceil()
+/// The Undo column's width: the measured pixel width of the widest of
+/// the button's two labels (3.86: measured against the real text system
+/// at the button's own 12 px size, not a character-count guess), plus
+/// the button's icon and horizontal padding and the cell's — so both
+/// states show in full (3.37), and no wider, since every extra pixel
+/// comes off `File` and `Account`. The +1 px keeps sub-pixel rounding
+/// between the measurement and the drawn button from clipping a glyph.
+pub(super) fn history_undo_col_w(label_w: f32) -> f32 {
+    (label_w + BUTTON_PAD_X + UNDO_ICON_W + CELL_PAD_X + 1.).ceil()
 }
 
 /// The history table's `File` and `Account` widths for `page_w` pixels
-/// of page (window width minus sidebar and page padding): everything
-/// the fixed columns leave over, split evenly, never below
-/// `HISTORY_FLEX_MIN_W` each.
-pub(super) fn history_flex_widths(page_w: f32) -> (f32, f32) {
-    let fixed =
-        HISTORY_TIME_W + HISTORY_ROWS_W + HISTORY_DATES_W + history_undo_col_w() + TABLE_BORDER_X;
+/// of *measured* table container (3.86: the container's own laid-out
+/// width, no window arithmetic): everything the fixed columns leave
+/// over, split evenly, never below `HISTORY_FLEX_MIN_W` each.
+pub(super) fn history_flex_widths(page_w: f32, undo_col_w: f32) -> (f32, f32) {
+    let fixed = HISTORY_TIME_W + HISTORY_ROWS_W + HISTORY_DATES_W + undo_col_w + TABLE_BORDER_X;
     let flex = (page_w - fixed).max(2. * HISTORY_FLEX_MIN_W);
     (flex / 2., flex / 2.)
 }
@@ -860,6 +863,13 @@ pub(super) struct ImportsPage {
     /// The history table's rows, newest first.
     pub(super) import_history: Vec<ImportEntry>,
     pub(super) history_table: Entity<TableState<ImportHistoryTable>>,
+    /// 3.86: the Undo column's width in px — the widest Undo label
+    /// measured against the real text system at the button's own size
+    /// (construction), shared by the column plan and the flex split.
+    pub(super) undo_col_w: f32,
+    /// 3.86: the history table container's measured width in px (0.
+    /// until the first frame paints the `history:container` probe).
+    pub(super) history_w: f32,
     /// The import whose Undo… button is armed ("Click again to undo").
     pub(super) confirm_undo_import: Option<i64>,
     /// 3.94: counts file opens, whose read and parse run on the
@@ -929,15 +939,23 @@ impl ImportsPage {
                 let _ = page.update(cx, |this, cx| this.undo_import(id, window, cx));
             }) as Rc<dyn Fn(i64, &mut Window, &mut App)>
         };
+        // 3.86: the Undo column's label measured against the real text
+        // system at the xsmall button's own size (`text_xs` = 0.75 rem),
+        // replacing the old character-count guess.
+        let undo_col_w = history_undo_col_w(gpui_kit::base::plot::label::measure_text_width(
+            &UNDO_LABEL_MAX.into(),
+            window.rem_size() * 0.75,
+            window,
+        ));
         let history_table = cx.new(|cx| {
             TableState::new(
                 ImportHistoryTable {
                     rows: Vec::new(),
                     confirm_id: None,
-                    // 3.20: start at the widths the current window allows.
-                    flex_widths: history_flex_widths(
-                        (window.bounds().size.width.as_f32() - SIDEBAR_W - 2. * PAGE_PAD).max(0.),
-                    ),
+                    // 3.86: start collapsed; the `history:container`
+                    // bounds probe feeds the real width on the first frame.
+                    flex_widths: history_flex_widths(0., undo_col_w),
+                    undo_col_w,
                     on_undo,
                 },
                 window,
@@ -959,6 +977,8 @@ impl ImportsPage {
             import: None,
             import_history: Vec::new(),
             history_table,
+            undo_col_w,
+            history_w: 0.,
             confirm_undo_import: None,
             load_generation: 0,
             exporting: false,
@@ -988,15 +1008,22 @@ impl ImportsPage {
         });
     }
 
-    /// Re-flex the history table's columns for a new page width (3.20);
-    /// `Shell::window_bounds_changed` forwards resizes here.
-    pub(super) fn widths_changed(&mut self, page_w: f32, cx: &mut App) {
-        let flex = history_flex_widths(page_w);
+    /// 3.86: re-flex the history table's columns for the container's
+    /// *measured* width (the `history:container` bounds probe reports it
+    /// on every frame it changes). Notify-on-change only: an identical
+    /// width must not re-render, or the probe would feed a paint loop.
+    pub(super) fn set_history_width(&mut self, w: f32, cx: &mut Context<Self>) {
+        if (self.history_w - w).abs() < 0.5 {
+            return;
+        }
+        self.history_w = w;
+        let flex = history_flex_widths(w, self.undo_col_w);
         self.history_table.update(cx, |t, cx| {
             t.delegate_mut().flex_widths = flex;
             // Re-read the delegate's columns with the new widths.
             t.refresh(cx);
         });
+        cx.notify();
     }
 
     /// Feedback goes to the shell's toast stack (3.79: a page never owns
@@ -1467,6 +1494,14 @@ impl Render for ImportsPage {
                 div()
                     .flex_1()
                     .min_h_0()
+                    .relative()
+                    .debug_selector(|| "history:container".into())
+                    // 3.86: the column plan comes from this container's
+                    // own measured width, reported by the probe (no
+                    // window-width arithmetic).
+                    .child(bounds_probe(cx.entity().downgrade(), |this, w, cx| {
+                        this.set_history_width(w, cx)
+                    }))
                     .child(DataTable::new(&self.history_table).stripe(false)),
             )
             .into_any_element()

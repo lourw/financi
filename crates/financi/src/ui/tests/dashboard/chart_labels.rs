@@ -39,13 +39,13 @@ fn colliding_short_labels_fall_back_to_their_full_names() {
 #[test]
 fn band_label_budget_keeps_labels_inside_their_spacing() {
     // A wide plot with few bands: label every band with room to spare.
-    let (chars, labels) = band_label_budget(779., 7);
+    let (chars, labels) = band_label_budget(779., 7, CHART_CHAR_PX);
     assert_eq!(labels, 7);
     assert!(chars >= 12, "{chars} chars at 779px across 7 bands");
 
     // The minimum-window plot (~167px) with 7 bands: too tight for all
     // seven, so labels are thinned out but still legible.
-    let (chars, labels) = band_label_budget(167., 7);
+    let (chars, labels) = band_label_budget(167., 7, CHART_CHAR_PX);
     assert!((1..7).contains(&labels), "{labels} labels at 167px");
     assert!(chars >= CHART_LABEL_MIN_CHARS, "{chars}");
 
@@ -55,7 +55,7 @@ fn band_label_budget_keeps_labels_inside_their_spacing() {
     // plot's edges.
     for width in [100., 167., 400., 779., 1600., 3000.] {
         for count in 1..=30usize {
-            let (chars, labels) = band_label_budget(width, count);
+            let (chars, labels) = band_label_budget(width, count, CHART_CHAR_PX);
             assert!(
                 labels >= 1 && labels <= count,
                 "width {width}, count {count}"
@@ -68,7 +68,7 @@ fn band_label_budget_keeps_labels_inside_their_spacing() {
             );
         }
     }
-    assert_eq!(band_label_budget(779., 0), (0, 0));
+    assert_eq!(band_label_budget(779., 0, CHART_CHAR_PX), (0, 0));
 }
 
 // -- Bar share labels and the slim legend (3.31) ------------------------
@@ -124,14 +124,18 @@ fn bar_share_labels_read_as_whole_percents() {
 #[test]
 fn bar_label_plan_thins_share_labels_without_collisions() {
     // A wide plot with few bands: every bar keeps its share label.
-    assert_eq!(bar_label_plan(779., 7), 7);
+    assert_eq!(bar_label_plan(779., 7, CHART_CHAR_PX), 7);
     // The 1200 × 720 plot (~247 px) with 15 bars: too narrow for all
     // fifteen, so the labels are thinned out.
-    let labels = bar_label_plan(247., 15);
+    let labels = bar_label_plan(247., 15, CHART_CHAR_PX);
     assert!((1..15).contains(&labels), "{labels} labels at 247px");
-    assert_eq!(bar_label_plan(0., 5), 1, "a degenerate plot labels one bar");
-    assert_eq!(bar_label_plan(100., 0), 0);
-    assert_eq!(bar_label_plan(100., 1), 1);
+    assert_eq!(
+        bar_label_plan(0., 5, CHART_CHAR_PX),
+        1,
+        "a degenerate plot labels one bar"
+    );
+    assert_eq!(bar_label_plan(100., 0, CHART_CHAR_PX), 0);
+    assert_eq!(bar_label_plan(100., 1, CHART_CHAR_PX), 1);
 
     // The invariant for every window size and category count: drawn
     // labels are spread first-to-last and their band centres sit at
@@ -139,7 +143,7 @@ fn bar_label_plan_thins_share_labels_without_collisions() {
     let need = BAR_LABEL_MAX_CHARS as f32 * CHART_CHAR_PX;
     for width in [100., 247., 400., 779., 1600., 3000.] {
         for count in 1..=30usize {
-            let labels = bar_label_plan(width, count);
+            let labels = bar_label_plan(width, count, CHART_CHAR_PX);
             assert!(
                 (1..=count).contains(&labels),
                 "width {width}, count {count}: {labels} labels"

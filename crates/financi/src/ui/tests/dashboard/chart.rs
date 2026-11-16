@@ -34,6 +34,9 @@ fn chart_labels_adapt_to_the_window_size(cx: &mut TestAppContext) {
     wait_until(cx, "three chart rows", |cx| {
         dash(cx, &shell).read(cx).chart_rows.len() == 3
     });
+    // 3.86: the label plan reads the *measured* plot width, so the
+    // probes must have settled before the plan says anything.
+    settle(cx, handle);
 
     // `open_shell` opens 1200 wide: with the legend beside it the plot is
     // narrow, so the labels are truncated to a small character budget.
@@ -45,13 +48,12 @@ fn chart_labels_adapt_to_the_window_size(cx: &mut TestAppContext) {
     );
 
     // A large window: every band gets its label again, and the labels
-    // grow. The window-bounds observer must have updated the plan.
+    // grow. The `chart:plot` probe must have re-measured after the resize.
     with_window(cx, handle, |window, cx| {
         window.resize(size(px(2000.), px(900.)));
         window.bounds_changed(cx);
     });
-    cx.run_until_parked();
-    assert_eq!(cx.update(|cx| shell.read(cx).window_width), 2000.);
+    settle(cx, handle);
     let (big_chars, big_labels) = cx.update(|cx| dash(cx, &shell).read(cx).chart_label_plan());
     assert_eq!(big_labels, 3, "a wide window labels every band");
     assert!(big_chars > small_chars, "{big_chars} vs {small_chars}");
@@ -92,6 +94,7 @@ fn the_chart_renders_long_names_and_many_categories(cx: &mut TestAppContext) {
     // The plan stays bounded, and the chart draws without panic at the
     // test window's width and at the minimum size. 25 bands across the
     // narrow plot must thin the labels out, not squeeze them flat.
+    settle(cx, _handle);
     let (chars, labels) = cx.update(|cx| dash(cx, &shell).read(cx).chart_label_plan());
     assert!((1..25).contains(&labels), "{labels} labels for 25 bands");
     assert!((1..=CHART_LABEL_MAX_CHARS).contains(&chars));
@@ -217,6 +220,9 @@ fn fifteen_category_bars_keep_their_share_labels_clear(cx: &mut TestAppContext) 
         cx.notify();
     });
     resize_and_draw(cx, handle, 1200., 720.);
+    // 3.86: settle the probes, and read the measured per-character width.
+    settle(cx, handle);
+    let char_px = cx.update(|cx| dash(cx, &shell).read(cx).chart_char_px);
     let mut window = VisualTestContext::from_window(handle, cx);
 
     let plot = window.debug_bounds("chart:plot").expect("the plot paints");
@@ -225,15 +231,15 @@ fn fifteen_category_bars_keep_their_share_labels_clear(cx: &mut TestAppContext) 
         .expect("the chart panel paints");
     let plan_w = cx.update(|cx| dash(cx, &shell).read(cx).chart_plot_width());
     assert!(
-        (f32::from(plot.size.width) - plan_w).abs() <= 3.,
-        "the plan measured the plot at {plan_w:.1}px, it painted {:?} \
-         (the panel's 1 px borders are the only expected slack)",
+        (f32::from(plot.size.width) - plan_w).abs() <= 0.5,
+        "the plan reads the plot's own measured bounds: the probe stored \
+         {plan_w:.1}px, the container painted {:?} (3.86)",
         plot.size.width,
     );
 
     // The bars are too narrow for fifteen labels: the plan thins them.
     let plot_w = f32::from(plot.size.width);
-    let labels = bar_label_plan(plot_w, 15);
+    let labels = bar_label_plan(plot_w, 15, char_px);
     assert!((1..15).contains(&labels), "{labels} labels for 15 bars");
 
     // Drawn labels: first-to-last, centres at least a whole label apart,
@@ -259,7 +265,7 @@ fn fifteen_category_bars_keep_their_share_labels_clear(cx: &mut TestAppContext) 
             .chart_bars(plan_w, &Default::default(), gpui::black())
     });
     assert_eq!(bars.len(), 15);
-    let wired_slots = bar_label_slots(15, bar_label_plan(plan_w, 15));
+    let wired_slots = bar_label_slots(15, bar_label_plan(plan_w, 15, char_px));
     for (ix, bar) in bars.iter().enumerate() {
         let want = if wired_slots[ix] {
             bar_share_label(bar.share)
@@ -274,7 +280,7 @@ fn fifteen_category_bars_keep_their_share_labels_clear(cx: &mut TestAppContext) 
     );
 
     let band_w = plot_w / 15.;
-    let half = BAR_LABEL_MAX_CHARS as f32 * CHART_CHAR_PX / 2.;
+    let half = BAR_LABEL_MAX_CHARS as f32 * char_px / 2.;
     for pair in drawn.windows(2) {
         assert!(
             (pair[1] - pair[0]) as f32 * band_w >= 2. * half,
@@ -293,5 +299,61 @@ fn fifteen_category_bars_keep_their_share_labels_clear(cx: &mut TestAppContext) 
     assert!(
         f32::from(last_right) <= f32::from(panel.origin.x + panel.size.width),
         "the last bar's label spills past the panel's right border",
+    );
+}
+
+/// 3.86: the label plan is derived from *measured* bounds. At 1200 × 720
+/// and at 1600 × 900 the stored plot width equals the painted
+/// `chart:plot` container's own width, the plan equals the budget computed
+/// from that painted width and the measured per-character width, and
+/// widening the window grows the budget — no window-width-minus-constants
+/// arithmetic anywhere.
+#[gpui::test]
+fn the_label_plan_follows_the_measured_plot_at_1200_and_1600(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_chart_rows);
+    wait_until(cx, "three chart rows", |cx| {
+        dash(cx, &shell).read(cx).chart_rows.len() == 3
+    });
+    let mut plans = Vec::new();
+    for w in [1200., 1600.] {
+        resize_and_draw(cx, handle, w, 900.);
+        settle(cx, handle);
+        let painted = {
+            let mut window = VisualTestContext::from_window(handle, cx);
+            f32::from(
+                window
+                    .debug_bounds("chart:plot")
+                    .expect("the plot paints")
+                    .size
+                    .width,
+            )
+        };
+        let (stored, chars, labels, char_px) = cx.update(|cx| {
+            let page = dash(cx, &shell).read(cx);
+            let (chars, labels) = page.chart_label_plan();
+            (page.chart_plot_width(), chars, labels, page.chart_char_px)
+        });
+        assert!(
+            (stored - painted).abs() <= 0.5,
+            "at {w}px the probe stored {stored:.1}px but `chart:plot` \
+             painted {painted:.1}px",
+        );
+        assert!(
+            char_px > 0. && char_px < 12.,
+            "measured char width {char_px}"
+        );
+        assert_eq!(
+            (chars, labels),
+            band_label_budget(painted, 3, char_px),
+            "at {w}px the plan must be the budget of the measured width"
+        );
+        plans.push((chars, labels));
+    }
+    assert!(
+        plans[1].0 > plans[0].0,
+        "a wider window measures more plot, so the budget grows: \
+         {:?} vs {:?}",
+        plans[1],
+        plans[0]
     );
 }
