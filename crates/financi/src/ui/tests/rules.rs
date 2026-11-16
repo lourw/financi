@@ -1590,6 +1590,41 @@ fn rules_page_builds_only_the_visible_rows(cx: &mut TestAppContext) {
     );
 }
 
+/// 3.85: the grouped item list is cached — an unrelated notify re-renders
+/// the page without rebuilding it, and a real input change (the Unused
+/// checkbox) does.
+#[gpui::test]
+fn rules_page_rebuilds_its_items_only_when_inputs_change(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_thousands);
+    wait_until(cx, "two thousand rules", |cx| {
+        shell.read(cx).rules.len() == 2_000
+    });
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Rules, cx)));
+    draw_frame(cx, handle);
+    let built = shell.read_with(cx, |s, app| s.rules_page.read(app).rules_items_built.get());
+    assert!(built >= 1, "opening the page built the list");
+    // An unrelated notify: the page re-renders, the inputs do not move.
+    cx.update(|cx| shell.update(cx, |s, cx| s.rules_page.update(cx, |_, cx| cx.notify())));
+    draw_frame(cx, handle);
+    assert_eq!(
+        shell.read_with(cx, |s, app| s.rules_page.read(app).rules_items_built.get()),
+        built,
+        "an unrelated notify did not rebuild the item list"
+    );
+    // A real input: the Unused checkbox.
+    with_window(cx, handle, |_, cx| {
+        shell.update(cx, |s, cx| {
+            s.rules_page.update(cx, |p, _cx| p.rules_unused_only = true);
+            cx.notify();
+        });
+    });
+    draw_frame(cx, handle);
+    assert!(
+        shell.read_with(cx, |s, app| s.rules_page.read(app).rules_items_built.get()) > built,
+        "the Unused toggle rebuilt the item list"
+    );
+}
+
 /// 3.43: the Rules page's buttons carry their Lucide icon left of the
 /// label and no label ends in an ellipsis: the header's New rule (plus)
 /// and each rule row's Edit (pencil) and Delete (trash). The buttons'
