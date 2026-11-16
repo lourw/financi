@@ -261,6 +261,7 @@ fn toasts(shell: &Entity<Shell>, cx: &App) -> Vec<(String, bool)> {
     shell
         .read(cx)
         .toasts
+        .read(cx)
         .iter()
         .map(|(_, toast, _)| (toast.message.to_string(), toast.is_error))
         .collect()

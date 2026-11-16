@@ -610,6 +610,69 @@ fn an_error_toast_stays_until_the_user_closes_it(cx: &mut TestAppContext) {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+/// 3.85: the ticker stops once nothing animates. An error toast has no
+/// timeout, so after its entrance it just sits there — the old ticker
+/// woke every 100 ms forever and re-rendered the whole shell each time it
+/// saw a change; the layer's must be asleep while the toast stays mounted.
+#[gpui::test]
+fn a_settled_error_toast_stops_the_ticker(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |_| {});
+    wait_idle(cx, &shell);
+    with_window(cx, handle, |_window, cx| {
+        shell.update(cx, |s, cx| s.notify_err("the ticker test failed", cx));
+    });
+    wait_until(cx, "the toast is up", |cx| {
+        !shell.read(cx).toasts.read(cx).is_empty()
+    });
+    // Entrance is 400 ms of virtual time; five ticks settle the toast.
+    tick_toasts(cx, 5);
+    cx.update(|cx| {
+        let layer = shell.read(cx).toasts.read(cx);
+        assert_eq!(layer.iter().count(), 1, "the error toast is still mounted");
+        assert!(
+            !layer.ticker_running(),
+            "a settled error toast must stop the ticker"
+        );
+    });
+    // And it stays stopped while the toast sits: ten more seconds of
+    // virtual time wake nothing and change nothing.
+    tick_toasts(cx, 100);
+    cx.update(|cx| {
+        assert_eq!(toasts(&shell, cx).len(), 1, "the toast is still there");
+        assert!(
+            !shell.read(cx).toasts.read(cx).ticker_running(),
+            "nothing woke the ticker back up"
+        );
+    });
+    // The 3.27 click test above covers restart-on-dismiss: with the
+    // ticker asleep, a click must wake it for the exit animation.
+}
+
+/// 3.85: a toast tick dirties the toast layer, never the shell — the
+/// page under a live toast renders no frame because the ticker notifies.
+#[gpui::test]
+fn a_toast_tick_does_not_notify_the_shell(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |_| {});
+    wait_idle(cx, &shell);
+    let notices = std::rc::Rc::new(std::cell::Cell::new(0usize));
+    let count = notices.clone();
+    let _watch = cx.update(|cx| cx.observe(&shell, move |_, _| count.set(count.get() + 1)));
+    with_window(cx, handle, |_window, cx| {
+        shell.update(cx, |s, cx| s.notify_ok("a quiet tick", cx));
+    });
+    let after_push = notices.get();
+    // The whole life of the info toast: entrance, 4 s timeout, exit.
+    tick_toasts(cx, 50);
+    cx.update(|cx| {
+        assert!(toasts(&shell, cx).is_empty(), "the toast lived and died");
+        assert_eq!(
+            notices.get(),
+            after_push,
+            "a toast tick must not dirty the shell"
+        );
+    });
+}
+
 // ---------------------------------------------------------------------------
 // Import end-to-end (task 3.9): run both demo exports through the real
 // import panel, then visit every page and check the values shown against
