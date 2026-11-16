@@ -388,7 +388,7 @@ impl DashboardPage {
         let sort = self.filter.tx_sort;
         self.table.update(cx, |t, cx| {
             let delegate = t.delegate_mut();
-            delegate.rows = rows;
+            delegate.set_rows(rows);
             delegate.child_choices = child_choices;
             delegate.rule_offer = rule_offer;
             delegate.rules = compiled_rules;

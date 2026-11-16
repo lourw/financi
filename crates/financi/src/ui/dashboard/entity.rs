@@ -215,6 +215,9 @@ impl DashboardPage {
             TableState::new(
                 TxTable {
                     rows: Vec::new(),
+                    cells: Vec::new(),
+                    #[cfg(test)]
+                    cells_built: std::cell::Cell::new(0),
                     child_choices: Vec::new(),
                     rule_offer: None,
                     rules: Rc::new(CompiledRules::new(&[])),

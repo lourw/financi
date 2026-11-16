@@ -235,6 +235,36 @@ fn summary_shows_months_total_and_the_three_total_rows(cx: &mut TestAppContext) 
 }
 
 #[gpui::test]
+fn summary_views_are_built_once_per_load_and_never_per_repaint(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_summary_rows);
+    set_all_time(cx, handle, &shell);
+    wait_until(cx, "table loaded", |cx| {
+        dash(cx, &shell).read(cx).row_count == 7
+    });
+    draw_frame(cx, handle);
+    let built = |cx: &App| dash(cx, &shell).read(cx).summary_views_built.get();
+    let before = cx.update(|cx| built(cx));
+    assert!(before > 0, "the first painted frame built the views");
+    // An unrelated notify and a repaint rebuild nothing: the grid paints
+    // the cached views (3.85).
+    cx.update(|cx| dash(cx, &shell).update(cx, |_, cx| cx.notify()));
+    draw_frame(cx, handle);
+    cx.update(|cx| {
+        assert_eq!(built(cx), before, "a repaint must not rebuild views");
+    });
+    // A load that lands new summary data does. The rebuild happens while
+    // painting, so the frame after the load is what counts it.
+    with_window(cx, handle, |window, cx| {
+        dash(cx, &shell).update(cx, |d, cx| d.set_show_hidden(true, window, cx));
+    });
+    wait_idle(cx, &shell);
+    draw_frame(cx, handle);
+    cx.update(|cx| {
+        assert!(built(cx) > before, "a load must rebuild the views");
+    });
+}
+
+#[gpui::test]
 fn clicking_a_summary_cell_filters_the_table_to_category_and_month(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, seed_summary_rows);
     set_all_time(cx, handle, &shell);

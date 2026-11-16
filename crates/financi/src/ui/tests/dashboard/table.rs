@@ -62,6 +62,42 @@ fn show_hidden_toggle_reveals_hidden_rows(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn table_cells_are_built_once_per_load_and_never_per_repaint(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_table_filter_rows);
+    wait_until(cx, "three rows", |cx| {
+        dash(cx, &shell).read(cx).row_count == 3
+    });
+    let built = |cx: &App| {
+        dash(cx, &shell)
+            .read(cx)
+            .table
+            .read(cx)
+            .delegate()
+            .cells_built
+            .get()
+    };
+    let before = cx.update(|cx| built(cx));
+    assert!(before > 0, "the first load built the cells");
+    // An unrelated notify and a repaint rebuild nothing: the cells live
+    // in the delegate, not in `render_td` (3.85).
+    cx.update(|cx| dash(cx, &shell).update(cx, |_, cx| cx.notify()));
+    draw_frame(cx, handle);
+    cx.update(|cx| {
+        assert_eq!(built(cx), before, "a repaint must not rebuild cells");
+    });
+    // A row load does.
+    with_window(cx, handle, |window, cx| {
+        dash(cx, &shell).update(cx, |d, cx| d.set_show_hidden(true, window, cx));
+    });
+    wait_until(cx, "hidden row appears", |cx| {
+        dash(cx, &shell).read(cx).row_count == 4
+    });
+    cx.update(|cx| {
+        assert!(built(cx) > before, "a row load must rebuild cells");
+    });
+}
+
+#[gpui::test]
 fn sorting_the_amount_header_reorders_rows_without_a_reentrant_panic(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, seed_table_filter_rows);
     wait_until(cx, "three visible rows", |cx| {

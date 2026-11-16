@@ -11,6 +11,18 @@ pub(crate) type UnpairFn = Rc<dyn Fn(i64, &mut Window, &mut App)>;
 /// Called with the deciding rule's id from the *Show rule* menu item (3.29).
 pub(crate) type ShowRuleFn = Rc<dyn Fn(i64, &mut Window, &mut App)>;
 
+/// The painted text of one transaction row, built when the rows are set
+/// (3.85): the *Date*, *Account*, *Description*, *Category* and *Amount*
+/// cells plus the parsed merchant, so painting a cell never formats or
+/// parses anything — it only clones a [`SharedString`].
+pub(in crate::ui) struct TxRowCells {
+    text: [SharedString; 5],
+    /// `financi_core::parse::merchant` over the description, for the
+    /// post-edit rule offer (2.6), which asks for it on every repaint of
+    /// the row's *Category* cell.
+    merchant: SharedString,
+}
+
 /// One entry of a transaction row's right-click menu (2.9).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum RowMenuItem {
@@ -103,6 +115,14 @@ pub fn row_show_rule(
 
 pub struct TxTable {
     pub(in crate::ui) rows: Vec<TransactionRow>,
+    /// One entry per row of `rows`, built by [`TxTable::set_rows`]: the
+    /// formatted cell text and parsed merchant, so `render_td` never
+    /// works per frame (3.85).
+    pub(in crate::ui) cells: Vec<TxRowCells>,
+    /// Counts `set_rows` calls, for the counter test; proves the cells are
+    /// built once per row load, not once per repaint (3.85).
+    #[cfg(test)]
+    pub(in crate::ui) cells_built: std::cell::Cell<usize>,
     /// Child categories as `(id, "Parent › Child")` for the *Change category…*
     /// submenu, mirroring the shell's `child_choices`.
     pub(in crate::ui) child_choices: Vec<(i64, String)>,
@@ -309,7 +329,7 @@ impl TableDelegate for TxTable {
         }
         if col_ix == 3 {
             let row = &self.rows[row_ix];
-            let merchant = financi_core::parse::merchant(&row.description);
+            let merchant = self.cells[row_ix].merchant.clone();
             if self.rule_offer == Some(row.id) && !merchant.is_empty() {
                 let txn = row.id;
                 let on_apply = self.on_apply_rule.clone();
@@ -368,14 +388,32 @@ impl TableDelegate for TxTable {
 }
 
 impl TxTable {
-    pub(in crate::ui) fn text(&self, row_ix: usize, col_ix: usize) -> String {
-        let r = &self.rows[row_ix];
-        match col_ix {
-            0 => r.posted_date.clone(),
-            1 => r.account.clone(),
-            2 => r.description.trim().to_string(),
-            3 => r.category.clone().unwrap_or_else(|| "Uncategorized".into()),
-            _ => flow::money(r.amount_cents),
-        }
+    /// Replace the rows and build their display cells in one step, so the
+    /// cache can never lag behind `rows` (3.85). Every write of `rows`
+    /// goes through here.
+    pub(in crate::ui) fn set_rows(&mut self, rows: Vec<TransactionRow>) {
+        self.cells = rows
+            .iter()
+            .map(|r| TxRowCells {
+                text: [
+                    r.posted_date.clone().into(),
+                    r.account.clone().into(),
+                    r.description.trim().into(),
+                    r.category
+                        .clone()
+                        .unwrap_or_else(|| "Uncategorized".into())
+                        .into(),
+                    flow::money(r.amount_cents).into(),
+                ],
+                merchant: financi_core::parse::merchant(&r.description).into(),
+            })
+            .collect();
+        self.rows = rows;
+        #[cfg(test)]
+        self.cells_built.set(self.cells_built.get() + 1);
+    }
+
+    pub(in crate::ui) fn text(&self, row_ix: usize, col_ix: usize) -> SharedString {
+        self.cells[row_ix].text[col_ix].clone()
     }
 }
