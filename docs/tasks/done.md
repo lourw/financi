@@ -1885,3 +1885,13 @@ monotonic in width, column sums == measured + borders.
 comments (dashboard/table.rs:131, view.rs:61) — fix on next touches;
 first-frame layout seeds collapsed (~1–2 frames until the probe settles),
 degrade-safe.
+
+- [x] **3.84 Every click answers within a frame.** (From the old 3.57,
+  split 2026-11-11.) After 3.64 (per-action tasks), so a rollback can't
+  be cancelled. Every button that starts DB work either updates the
+  screen optimistically with rollback on error (row category change,
+  hide / unhide, queue Categorize) or shows `.loading(true)` and is
+  disabled until it finishes (rule and category edits; 3.47 / 3.54 make
+  those optimistic later). Tests: change category, hide and Categorize
+  update the row in the same frame before the DB job runs, and roll back
+  on error; every other DB-backed button shows loading until done.
