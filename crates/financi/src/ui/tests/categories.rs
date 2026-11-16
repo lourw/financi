@@ -2275,7 +2275,7 @@ fn the_rule_list_headings_sit_over_their_columns(cx: &mut TestAppContext) {
         );
     }
     // The Actions label is right-aligned over the buttons: its right
-    // edge is the row's right edge (the Delete… button ends there).
+    // edge is the row's right edge (the Delete button ends there).
     let actions = window
         .debug_bounds("cat:rule-heading-actions")
         .expect("the rules list paints the Actions heading");
@@ -2316,6 +2316,84 @@ fn the_rule_list_headings_sit_over_their_columns(cx: &mut TestAppContext) {
 }
 
 // -- Uses column (3.49) ------------------------------------------------------
+
+/// 3.43: the Categories page's buttons carry their Lucide icon left of the
+/// label and no label ends in an ellipsis: New category (plus), Rename
+/// (pencil), the delete form's confirm (trash) and the rule row's Edit
+/// (pencil) and Delete (trash). Each button's selector names the icon
+/// asset it draws; the old "…" labels draw nothing, and the drawn widths
+/// show the icons actually paint.
+#[gpui::test]
+fn the_category_buttons_paint_icons_instead_of_ellipses(cx: &mut TestAppContext) {
+    let (handle, _shell, rule, _first, _second) = open_rule_fixture(cx);
+    resize_and_draw(cx, handle, 1200., 720.);
+    for old in ["label:New category…", "label:Rename…", "label:Delete…"] {
+        assert!(!paints(cx, handle, old), "{old} no longer paints");
+    }
+    let new_btn = bounds(cx, handle, format!("label:{NEW_CATEGORY}"));
+    let rename = bounds(cx, handle, "cat:title-rename:icons/pencil.svg");
+    let edit = bounds(cx, handle, format!("cat:rule-edit:{rule}:icons/pencil.svg"));
+    let delete = bounds(
+        cx,
+        handle,
+        format!("cat:rule-delete:{rule}:icons/trash.svg"),
+    );
+    // The delete form's confirm button: open the form, then measure it
+    // idle — armed it reads "Click again to delete" (unchanged).
+    click(cx, handle, "cat:title-delete");
+    draw_frame(cx, handle);
+    let del_go = bounds(cx, handle, "cat:form-delete-go");
+
+    let mut refs = open_icon_text_refs(
+        cx,
+        vec![
+            ("ref:cat-new", NEW_CATEGORY),
+            ("ref:cat-rename", "Rename"),
+            ("ref:cat-delete", "Delete"),
+            ("ref:cat-edit", "Edit"),
+        ],
+    );
+    for (what, btn, text_sel) in [
+        ("the New category button", new_btn, "ref:cat-new"),
+        ("the Rename button", rename, "ref:cat-rename"),
+        ("the delete form's confirm", del_go, "ref:cat-delete"),
+        ("the rule row's Edit", edit, "ref:cat-edit"),
+        ("the rule row's Delete", delete, "ref:cat-delete"),
+    ] {
+        assert_button_paints_icon(
+            &mut refs,
+            what,
+            btn,
+            text_sel,
+            MEDIUM_ICON_BLOCK_W,
+            MEDIUM_BUTTON_PAD_X,
+        );
+    }
+
+    // 3.43: 3.23's fit rule with the icons in (≈ 24 px per button): at
+    // the minimum window and at 1600 × 900 the row's Edit and Delete
+    // still paint fully inside the detail panel.
+    for (w, h) in [(1200., 720.), (1600., 900.)] {
+        resize_and_draw(cx, handle, w, h);
+        let panel = bounds(cx, handle, "cat:detail-panel");
+        let edit = bounds(cx, handle, format!("cat:rule-edit:{rule}:icons/pencil.svg"));
+        let delete = bounds(
+            cx,
+            handle,
+            format!("cat:rule-delete:{rule}:icons/trash.svg"),
+        );
+        for (what, b) in [("Edit", edit), ("Delete", delete)] {
+            assert!(
+                b.origin.x >= panel.origin.x
+                    && b.origin.x + b.size.width <= panel.origin.x + panel.size.width,
+                "{what} paints inside the detail panel at {w} × {h}: button \
+                 right {:?}, panel right {:?}",
+                b.origin.x + b.size.width,
+                panel.origin.x + panel.size.width,
+            );
+        }
+    }
+}
 
 /// 3.49: the rule list's third column is Uses — the transactions a rule
 /// categorizes, the same number the Rules page shows — and nothing of the

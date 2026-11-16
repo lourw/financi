@@ -14,8 +14,9 @@ use crate::ui::page::{Cancel, PageEntity, PageEvent, watch_catalog};
 use crate::ui::widgets::*;
 
 /// 3.28: the Rules page's header action; it opens the add-rule row in
-/// place under the header (ui-conventions, *Pages*).
-pub(super) const NEW_RULE: &str = "New rule…";
+/// place under the header (ui-conventions, *Pages*). 3.43: no trailing
+/// "…" — the button carries a `plus` icon instead.
+pub(super) const NEW_RULE: &str = "New rule";
 /// 3.28: the Move bar's target picker (moving checked rules between
 /// categories).
 const MOVE_RULES_TO_PH: &str = "Move rules to…";
@@ -69,7 +70,7 @@ enum RulesItem {
 }
 
 /// 3.40: the rule-editor button currently waiting on the DB (Save on a
-/// rule edit, Add rule, or a row's Delete…). While one is pending that
+/// rule edit, Add rule, or a row's Delete). While one is pending that
 /// button renders `.loading(true)` and disabled, so a slow save can't be
 /// double-submitted; the task clears it when it finishes, on success or
 /// error.
@@ -168,7 +169,7 @@ pub(super) struct RulesPage {
     /// loads the rule into the editor's own controls, so the editor is the
     /// add-rule row's shape with the row swapped out.
     pub(super) editing_rule: Option<i64>,
-    /// 3.24: the rule whose Delete… button is armed ("Click again to
+    /// 3.24: the rule whose Delete button is armed ("Click again to
     /// delete"). Armed per row; `select_category` and `go_page` disarm it
     /// with the page's other transient confirmations.
     pub(super) armed_delete_rule: Option<i64>,
@@ -658,7 +659,7 @@ impl RulesPage {
         cx.notify();
     }
 
-    /// 3.24: Delete… with the two-click confirm (ui-conventions,
+    /// 3.24: Delete with the two-click confirm (ui-conventions,
     /// *Interaction*): the first click only arms the button ("Click again
     /// to delete"), the second deletes through [`delete_rule`] — whose
     /// re-run leaves the freed rows to the remaining rules or
@@ -708,7 +709,7 @@ impl RulesPage {
 
 /// One row of a category's rule list (3.12: built lazily by the
 /// virtualized rule list, fixed height to match its `item_sizes`). 3.24:
-/// every row carries Edit and Delete… at its right end — small ghost
+/// every row carries Edit and Delete at its right end — small ghost
 /// buttons, visible on every row, built only for the rows the list
 /// renders. 3.23: the columns line up with the list's headings
 /// (`RULE_TYPE_W`/`RULE_USES_W`); the pattern column is the flex one and
@@ -811,24 +812,30 @@ fn rule_row(
         )
         .child(
             Button::new(SharedString::from(format!("rule-edit-{id}")))
+                .icon(IconName::Pencil)
                 .label("Edit")
                 .ghost()
                 .text_xs()
                 .flex_shrink_0()
+                .debug_selector(move || format!("cat:rule-edit:{id}:{}", "icons/pencil.svg"))
                 .on_click(move |_, window, cx| {
                     edit_entity.update(cx, |page, cx| page.start_edit_rule(id, window, cx));
                 }),
         )
         .child(
             Button::new(SharedString::from(format!("rule-delete-{id}")))
+                .icon(IconName::Trash)
+                // 3.43: "Delete" with a trash icon, no "…"; armed it still
+                // reads "Click again to delete".
                 .label(if armed {
                     "Click again to delete"
                 } else {
-                    "Delete…"
+                    "Delete"
                 })
                 .ghost()
                 .text_xs()
                 .flex_shrink_0()
+                .debug_selector(move || format!("cat:rule-delete:{id}:{}", "icons/trash.svg"))
                 // 3.40: loading + disabled while the delete runs.
                 .loading(delete_pending)
                 .disabled(delete_pending)
@@ -1263,7 +1270,7 @@ impl RulesPage {
 
     /// One rule row of the Rules page: checkbox, Pattern (the flex column,
     /// ellipsized with a tooltip like the Categories row), a "wins" marker
-    /// in test mode, Type, Uses (right-aligned) and Edit / Delete…. The
+    /// in test mode, Type, Uses (right-aligned) and Edit / Delete. The
     /// row the editor is open on swaps for [`rule_editor_row`], which is
     /// the same editor the Categories page uses. The row *Show rule* (3.29)
     /// landed on paints with the `list_active` background; its debug
@@ -1360,10 +1367,12 @@ impl RulesPage {
             )
             .child(
                 Button::new(SharedString::from(format!("rule-edit-{id}")))
+                    .icon(IconName::Pencil)
                     .label("Edit")
                     .ghost()
                     .text_xs()
                     .flex_shrink_0()
+                    .debug_selector(move || format!("rules:row-edit:{id}:{}", "icons/pencil.svg"))
                     .on_click(
                         cx.listener(move |this, _, window, cx| {
                             this.start_edit_rule(id, window, cx)
@@ -1372,14 +1381,16 @@ impl RulesPage {
             )
             .child(
                 Button::new(SharedString::from(format!("rule-delete-{id}")))
+                    .icon(IconName::Trash)
                     .label(if armed {
                         "Click again to delete"
                     } else {
-                        "Delete…"
+                        "Delete"
                     })
                     .ghost()
                     .text_xs()
                     .flex_shrink_0()
+                    .debug_selector(move || format!("rules:row-delete:{id}:{}", "icons/trash.svg"))
                     // 3.40: loading + disabled while the delete runs.
                     .loading(self.rule_action_pending(PendingRuleAction::Delete(id)))
                     .disabled(self.rule_action_pending(PendingRuleAction::Delete(id)))
@@ -1394,7 +1405,7 @@ impl RulesPage {
 }
 
 impl Render for RulesPage {
-    /// The Rules page (3.28, D5): header with the rule count and New rule…,
+    /// The Rules page (3.28, D5): header with the rule count and New rule,
     /// the add-rule row under it, the filter row (Search, Test a
     /// description, Type, Unused), the Move bar over the list while rows
     /// are checked, and the virtualized list of group headers and rule
@@ -1536,8 +1547,8 @@ impl Render for RulesPage {
                 }
                 cx.propagate();
             }))
-            // Page header: title, count, New rule… (opens the add row in
-            // place, like the Categories header's New category…).
+            // Page header: title, count, New rule (opens the add row in
+            // place, like the Categories header's New category.).
             .child(
                 h_flex()
                     .gap_2()
@@ -1557,6 +1568,7 @@ impl Render for RulesPage {
                     )
                     .child(
                         Button::new("new-rule")
+                            .icon(IconName::Plus)
                             .label(NEW_RULE)
                             .debug_selector(move || format!("label:{NEW_RULE}"))
                             .primary()

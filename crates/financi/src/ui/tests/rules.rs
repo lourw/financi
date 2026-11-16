@@ -1590,6 +1590,58 @@ fn rules_page_builds_only_the_visible_rows(cx: &mut TestAppContext) {
     );
 }
 
+/// 3.43: the Rules page's buttons carry their Lucide icon left of the
+/// label and no label ends in an ellipsis: the header's New rule (plus)
+/// and each rule row's Edit (pencil) and Delete (trash). The buttons'
+/// selectors name the icon assets they draw, the old "…" labels draw
+/// nothing, and the drawn widths show the icons actually paint.
+#[gpui::test]
+fn the_rules_buttons_paint_icons_instead_of_ellipses(cx: &mut TestAppContext) {
+    let mut ids = (0i64, 0i64);
+    let (handle, shell) = open_shell(cx, |c| ids = seed_categories_fit(c));
+    let (_child, rule) = ids;
+    wait_until(cx, "the rule loaded", |cx| shell.read(cx).rules.len() == 1);
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Rules, cx)));
+    resize_and_draw(cx, handle, 1200., 720.);
+    for old in ["label:New rule…", "label:Delete…"] {
+        assert!(!paints(cx, handle, old), "{old} no longer paints");
+    }
+    let new_btn = bounds(cx, handle, format!("label:{NEW_RULE}"));
+    let edit = bounds(
+        cx,
+        handle,
+        format!("rules:row-edit:{rule}:icons/pencil.svg"),
+    );
+    let delete = bounds(
+        cx,
+        handle,
+        format!("rules:row-delete:{rule}:icons/trash.svg"),
+    );
+
+    let mut refs = open_icon_text_refs(
+        cx,
+        vec![
+            ("ref:rules-new", NEW_RULE),
+            ("ref:rules-delete", "Delete"),
+            ("ref:rules-edit", "Edit"),
+        ],
+    );
+    for (what, btn, text_sel) in [
+        ("the New rule button", new_btn, "ref:rules-new"),
+        ("the rule row's Edit", edit, "ref:rules-edit"),
+        ("the rule row's Delete", delete, "ref:rules-delete"),
+    ] {
+        assert_button_paints_icon(
+            &mut refs,
+            what,
+            btn,
+            text_sel,
+            MEDIUM_ICON_BLOCK_W,
+            MEDIUM_BUTTON_PAD_X,
+        );
+    }
+}
+
 /// 3.28: at the 1200 × 720 minimum window the Rules page fits: header,
 /// filter row, group header and a rule row with long names stay inside the
 /// page, and the long pattern truncates to its column.
