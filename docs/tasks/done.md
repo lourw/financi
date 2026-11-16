@@ -1810,3 +1810,28 @@ Behaviour, look and public paths unchanged.
 comment says the `load` re-exports are "used by tests via ui::…" — only
 lines 29/33 are test-consumed; `DashboardData`/`load_dashboard` are
 path-stability only. Fix the comment on the next dashboard touch.
+
+### 3.43 No buttons end in "…" ✅
+
+**Done 2026-11-15** — commit `375a764`, merged `cb80af3` (v0.35.0).
+
+Every button label lost its trailing "…" and gained a Lucide icon:
+New category / New rule +`Plus`, Rename +`Pencil`, the delete-form
+confirm +`Trash`, rule-row Edit +`Pencil` / Delete +`Trash` (shared
+`rule_row`, so both pages), heading spacers matched. Armed two-click
+labels unchanged. Menus, submenu items, select placeholders and the
+"+ New account…" picker keep "…" (platform convention). Guard test
+`no_button_label_ends_in_an_ellipsis` scans every `ui/*.rs` source for
+`.label("…")` / const-used-as-label (empirically validated; one exact
+allowlist entry: the dashboard "Restore from export…" `.link()`).
+*Copy*/*Categories* rows in `ui-conventions.md` were already in the
+target wording (6bfe2ec).
+
+**Deviations (accepted):** `IconName::Trash` for the spec's `trash-2`
+(absent from pinned gpui-kit-assets 0.9.0; same as 3.50/3.51).
+
+**Follow-ups:** stale "Delete…" prose in `ui/tests/rules.rs:991,1101`
+doc comments; a guard-test note for whoever next touches it — check the
+walk still reaches `ui/dashboard/`'s sub-modules (it passed post-H3, but
+confirm the dashboard files are actually scanned, not just the count
+floor).

@@ -271,40 +271,6 @@ Start these only after both queues are done (`docs/tasks.md` → *Picking the ne
 
     Update the *Rules* row of `ui-conventions.md`.
 
-- [x] **3.43 No buttons end in "…".** The user doesn't want "…" on
-  buttons; use an icon instead, or just drop it (user request,
-  2026-11-11). This applies 3.32's Imports-header rule to every button.
-  All of them are on the Categories page today:
-  - **Review update (2026-11-11):** The *Copy* wording is already in `ui-conventions.md` (rewritten 2026-11-11). Rule-row Edit / Delete come from 3.89's `row_action_button`; what's left is the title-row and header buttons on the Categories page, and the guard test.
-  - **New category…** (`NEW_CATEGORY`, header, primary): `plus` icon +
-    "New category".
-  - **Rename…** (detail panel title row): `pencil` icon + "Rename".
-  - **Delete…** in the Delete form (3.51 moved it there; `confirm_label`):
-    `trash-2` icon + "Delete"; armed, it still reads "Click again to
-    delete" in `danger`.
-  - Rule rows (on both the Categories and the Rules page; skip what
-    3.58 already changed): **Edit** gets `pencil`, **Delete…** becomes `trash-2` +
-    "Delete" (armed text unchanged); both stay `.ghost()` `text_xs`. The
-    invisible heading spacers (`rule-heading-edit-spacer`,
-    `rule-heading-delete-spacer`) change the same way so the headings stay
-    aligned with the columns.
-  - **Not buttons, unchanged:** app-menu items ("Import CSV…", "Export…",
-    "Restore…"), the row context menu's "Change category…" submenu,
-    select placeholders ("Move to category…", "Category…") and the
-    "+ New account…" picker item. Menus keep the platform's "…" for items
-    that open a dialog.
-  - Check 3.23's fit rule still holds (Edit / Delete paint inside the
-    detail panel at 1200 × 720 and 1600 × 900): an icon adds ~20 px per
-    button.
-  - Tests: each of the buttons above paints an icon and its text has no
-    "…"; the armed labels are unchanged (existing two-click tests); a
-    guard test that scans `ui.rs` for `.label("…")` / `const … = "……"`
-    used as a button label and fails, so no new one creeps in; 3.23's
-    heading-alignment and fit tests pass. In `ui-conventions.md`, replace
-    the *Copy* bullet's "Use an ellipsis when the button opens a dialog or
-    picker" with "Buttons never end in "…"; actions carry a Lucide icon
-    left of the label (menus keep "…")", and update the *Categories* row.
-
 - [ ] **3.60 "Category type" label.** From `plan.md` → *Label the
   category type dropdown* (never made a task; user confirmed
   2026-11-11). The New category form labels its kind picker "Kind". Make
