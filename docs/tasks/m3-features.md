@@ -271,16 +271,6 @@ Start these only after both queues are done (`docs/tasks.md` → *Picking the ne
 
     Update the *Rules* row of `ui-conventions.md`.
 
-- [x] **3.60 "Category type" label.** From `plan.md` → *Label the
-  category type dropdown* (never made a task; user confirmed
-  2026-11-11). The New category form labels its kind picker "Kind". Make
-  the field label "Category type" (`ui.rs`, the `cat:new-form`). The
-  detail panel's muted "Expense · N transactions" line shows the value,
-  not the word, and stays. Check no other user-visible "Kind" remains.
-  Keep the form fitting the header row at 1200 × 720. Tests: the form
-  paints "Category type" and no "Kind" label. Tick the `plan.md` box and
-  update the *Categories* row of `ui-conventions.md`.
-
 - [ ] **3.52 A rule's transactions under the rule list.** Nice-to-have
   (user request, 2026-11-11): clicking a rule shows, in its own scrollable
   area, the transactions that rule matches. Do it after 3.51 (which frees
