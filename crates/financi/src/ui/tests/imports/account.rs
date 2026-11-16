@@ -38,8 +38,12 @@ fn drop_create_account_inline_and_import(cx: &mut TestAppContext) {
     });
     click_import(cx, handle, &shell);
 
+    // 3.82: the import switched to the Imports page; go back, where the
+    // hidden dashboard reloads.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
     wait_until(cx, "import finished and table refreshed", |cx| {
-        shell.read(cx).imports.read(cx).import.is_none() && shell.read(cx).dashboard.row_count == 11
+        shell.read(cx).imports.read(cx).import.is_none()
+            && dash(cx, &shell).read(cx).row_count == 11
     });
     cx.update(|cx| {
         let s = shell.read(cx);
@@ -215,8 +219,11 @@ fn overlap_with_another_account_blocks_until_overridden(cx: &mut TestAppContext)
     click_import(cx, handle, &shell);
     // 68 imported rows minus the card payment: transfers are hidden by
     // default (task 3.3).
+    // 3.82: the import switched to the Imports page; go back, where the
+    // hidden dashboard reloads.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
     wait_until(cx, "Cobalt import", |cx| {
-        shell.read(cx).dashboard.row_count == 67
+        dash(cx, &shell).read(cx).row_count == 67
     });
 
     open_and_choose(
@@ -248,8 +255,11 @@ fn overlap_with_another_account_blocks_until_overridden(cx: &mut TestAppContext)
         panel(&shell, cx).update(cx, |p, _| p.override_overlap = true); // the checkbox's handler
     });
     click_import(cx, handle, &shell);
+    // 3.82: the import switched to the Imports page; go back, where the
+    // hidden dashboard reloads.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
     wait_until(cx, "Gold import with override", |cx| {
         shell.read(cx).imports.read(cx).import.is_none()
-            && shell.read(cx).dashboard.row_count == 67 + 100
+            && dash(cx, &shell).read(cx).row_count == 67 + 100
     });
 }

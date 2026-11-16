@@ -59,8 +59,11 @@ fn near_match_is_offered_and_a_confirmed_same_charge_replaces(cx: &mut TestAppCo
     open_path_and_choose(cx, handle, &shell, &base, "American Express · Cobalt");
     wait_until(cx, "base plan", |cx| plan_ready(&shell, cx));
     click_import(cx, handle, &shell);
+    // 3.82: the import switched to the Imports page; go back, where the
+    // hidden dashboard reloads.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
     wait_until(cx, "base import", |cx| {
-        shell.read(cx).imports.read(cx).import.is_none() && shell.read(cx).dashboard.row_count == 1
+        shell.read(cx).imports.read(cx).import.is_none() && dash(cx, &shell).read(cx).row_count == 1
     });
 
     open_path_and_choose(cx, handle, &shell, &tip, "American Express · Cobalt");
@@ -90,11 +93,8 @@ fn near_match_is_offered_and_a_confirmed_same_charge_replaces(cx: &mut TestAppCo
         shell.read(cx).imports.read(cx).import.is_none()
     });
     cx.update(|cx| {
-        let s = shell.read(cx);
-        assert_eq!(
-            s.dashboard.row_count, 1,
-            "the existing row was replaced, not added"
-        );
+        let d = dash(cx, &shell).read(cx);
+        assert_eq!(d.row_count, 1, "the existing row was replaced, not added");
         assert_eq!(
             last_toast(&shell, cx),
             Some((

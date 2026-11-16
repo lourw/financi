@@ -3,6 +3,7 @@
 //! which every catalog reload names as it runs its queries — and a page
 //! switch reloads nothing at all.
 
+use super::dashboard::dash;
 use super::*;
 
 /// The names recorded since the last `clear`.
@@ -37,6 +38,11 @@ fn a_rule_edit_reloads_only_the_sections_it_touches(cx: &mut TestAppContext) {
                 .update(cx, |p, cx| p.save_rule_edit(window, cx))
         });
     });
+    wait_idle(cx, &shell);
+    // 3.82: the dashboard was hidden behind the editor while the save
+    // reloaded its domains; its one load is deferred to the visit, so
+    // show it and let that query land before reading the log.
+    shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx));
     wait_idle(cx, &shell);
     let names = cx.update(|cx| logged(cx, &shell));
     for expected in [
@@ -141,7 +147,7 @@ fn a_full_reload_superseded_mid_flight_keeps_the_newer_rows(cx: &mut TestAppCont
         }
     });
     wait_idle(cx, &shell);
-    cx.update(|cx| assert_eq!(shell.read(cx).dashboard.row_count, 3));
+    cx.update(|cx| assert_eq!(dash(cx, &shell).read(cx).row_count, 3));
     // Hold the writer thread, then start the full reload: it waits behind
     // the blocker, its filters snapshotted at dispatch (no search yet).
     let blocker = block_worker(cx, &shell);
@@ -151,10 +157,10 @@ fn a_full_reload_superseded_mid_flight_keeps_the_newer_rows(cx: &mut TestAppCont
     // The user searches while the writer is held: the keyed reload runs on
     // the idle reader and the table shows the user's (empty) result.
     with_window(cx, handle, |window, cx| {
-        shell.update(cx, |s, cx| s.apply_search("no such merchant", window, cx));
+        dash(cx, &shell).update(cx, |d, cx| d.apply_search("no such merchant", window, cx));
     });
     wait_until(cx, "the search's reload lands", |cx| {
-        shell.read(cx).dashboard.row_count == 0
+        dash(cx, &shell).read(cx).row_count == 0
     });
     // Release the writer: the full reload runs now and lands late with the
     // three rows its stale filter returned.
@@ -162,7 +168,7 @@ fn a_full_reload_superseded_mid_flight_keeps_the_newer_rows(cx: &mut TestAppCont
     wait_idle(cx, &shell);
     cx.update(|cx| {
         assert_eq!(
-            shell.read(cx).dashboard.row_count,
+            dash(cx, &shell).read(cx).row_count,
             0,
             "a superseded full reload resurrected rows the user's search removed"
         );

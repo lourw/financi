@@ -6,7 +6,7 @@ Do these in the order listed (`docs/tasks.md` → *Picking the next task*). Each
 
 Steps 1–15 of `docs/tasks/gpui.md` → *GPUI best practices*, task by task.
 
-- [ ] **3.82 The Dashboard becomes its own view.** (Architecture.) Same
+- [x] **3.82 The Dashboard becomes its own view.** (Architecture.) Same
   pattern as 3.79, for `DashboardPage`, after 3.56 and before 3.36. Owns
   the `DashboardFilter` (3.56), chart, summary, table and their loaders;
   `DEPENDS = Transactions | Categories | Accounts | Rules`. Its `Cancel`

@@ -775,7 +775,8 @@ impl Render for ImportPanel {
 // ---------------------------------------------------------------------------
 // Main window
 
-actions!(dashboard, [ClearCategorySelection]);
+// 3.82: `ClearCategorySelection` (3.5) is gone — Esc is now `Cancel` on the
+// dashboard page's own key context (see `ui/page.rs` and `ui::init`).
 
 // File actions (3.7): the native menu bar's File menu, the ⌘ shortcuts and
 // the Imports page header buttons all dispatch these, so no action depends

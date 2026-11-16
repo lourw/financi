@@ -23,13 +23,21 @@ fn restore_replaces_the_data_and_resets_transient_state(cx: &mut TestAppContext)
     let (handle, shell) = open_shell_on_file(cx, |_| {});
     wait_idle(cx, &shell);
     import_demo_file(cx, handle, &shell, "amex-sep-oct.csv", "Amex");
-    wait_until(cx, "67 rows", |cx| shell.read(cx).dashboard.row_count == 67);
+    // 3.82: the import switched to the Imports page; go back, where the
+    // hidden dashboard reloads.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
+    wait_until(cx, "67 rows", |cx| {
+        dash(cx, &shell).read(cx).row_count == 67
+    });
     let zip = scratch_file("snapshot.zip");
     export_to(cx, handle, &shell, &zip);
 
     import_demo_file(cx, handle, &shell, "simplii-chequing.csv", "Simplii");
+    // 3.82: the import switched to the Imports page; go back, where the
+    // hidden dashboard reloads.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
     wait_until(cx, "the second import lands", |cx| {
-        shell.read(cx).dashboard.row_count > 67 && shell.read(cx).accounts.len() == 2
+        dash(cx, &shell).read(cx).row_count > 67 && shell.read(cx).accounts.len() == 2
     });
     // Arm the history Undo: a transient id naming a row of the *old*
     // database, which must not survive the restore.
@@ -48,8 +56,11 @@ fn restore_replaces_the_data_and_resets_transient_state(cx: &mut TestAppContext)
     );
 
     answer_restore(cx, handle, Some(zip.clone()));
+    // 3.82: the import switched to the Imports page; go back, where the
+    // hidden dashboard reloads.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
     wait_until(cx, "the restored rows land", |cx| {
-        shell.read(cx).dashboard.row_count == 67 && shell.read(cx).accounts.len() == 1
+        dash(cx, &shell).read(cx).row_count == 67 && shell.read(cx).accounts.len() == 1
     });
     wait_idle(cx, &shell);
     cx.update(|cx| {
@@ -77,7 +88,12 @@ fn restore_of_a_file_that_is_not_an_export_stays_until_closed(cx: &mut TestAppCo
     let (handle, shell) = open_shell_on_file(cx, |_| {});
     wait_idle(cx, &shell);
     import_demo_file(cx, handle, &shell, "amex-sep-oct.csv", "Amex");
-    wait_until(cx, "67 rows", |cx| shell.read(cx).dashboard.row_count == 67);
+    // 3.82: the import switched to the Imports page; go back, where the
+    // hidden dashboard reloads.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
+    wait_until(cx, "67 rows", |cx| {
+        dash(cx, &shell).read(cx).row_count == 67
+    });
     let not_zip = scratch_file("not-an-export.zip");
     std::fs::write(&not_zip, b"not a zip at all").unwrap();
 
@@ -87,7 +103,7 @@ fn restore_of_a_file_that_is_not_an_export_stays_until_closed(cx: &mut TestAppCo
     });
     wait_idle(cx, &shell);
     cx.update(|cx| {
-        assert_eq!(shell.read(cx).dashboard.row_count, 67, "data untouched");
+        assert_eq!(dash(cx, &shell).read(cx).row_count, 67, "data untouched");
         assert!(!shell.read(cx).imports.read(cx).restoring, "not stuck busy");
     });
     // Errors stay until closed: ten seconds of ticker and it is up.
@@ -120,7 +136,12 @@ fn the_empty_state_offers_restore_from_export(cx: &mut TestAppContext) {
     // … restored into an empty one from the dashboard's empty state.
     let (handle, shell) = open_shell_on_file(cx, |_| {});
     wait_idle(cx, &shell);
-    cx.update(|cx| assert_eq!(shell.read(cx).dashboard_body(), DashboardBody::NoData));
+    cx.update(|cx| {
+        assert_eq!(
+            dash(cx, &shell).read(cx).dashboard_body(),
+            DashboardBody::NoData
+        )
+    });
     click(cx, handle, "dashboard:restore-link");
     assert!(cx.did_prompt_for_paths(), "the link opened the file dialog");
     cx.simulate_path_prompt_response(move |_| Some(vec![zip]));
@@ -149,14 +170,22 @@ fn restore_supersedes_an_in_flight_dashboard_load(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell_on_file(cx, |_| {});
     wait_idle(cx, &shell);
     import_demo_file(cx, handle, &shell, "amex-sep-oct.csv", "Amex");
-    wait_until(cx, "67 rows", |cx| shell.read(cx).dashboard.row_count == 67);
+    // 3.82: the import switched to the Imports page; go back, where the
+    // hidden dashboard reloads.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
+    wait_until(cx, "67 rows", |cx| {
+        dash(cx, &shell).read(cx).row_count == 67
+    });
     let zip = scratch_file("snapshot.zip");
     export_to(cx, handle, &shell, &zip);
     import_demo_file(cx, handle, &shell, "simplii-chequing.csv", "Simplii");
+    // 3.82: the import switched to the Imports page; go back, where the
+    // hidden dashboard reloads.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
     wait_until(cx, "the second import lands", |cx| {
-        shell.read(cx).dashboard.row_count > 67
+        dash(cx, &shell).read(cx).row_count > 67
     });
-    let mid = cx.update(|cx| shell.read(cx).dashboard.row_count);
+    let mid = cx.update(|cx| dash(cx, &shell).read(cx).row_count);
 
     // Hold the worker, start a dashboard load, and restore while its
     // query waits in the queue behind the blocker.
@@ -167,7 +196,7 @@ fn restore_supersedes_an_in_flight_dashboard_load(cx: &mut TestAppContext) {
     cx.run_until_parked();
     let (started, applied) = cx.update(|cx| {
         let s = shell.read(cx);
-        (s.refresh_started, s.refresh_applied)
+        (s.refresh_started.get(), s.refresh_applied.get())
     });
     assert!(started > applied, "the dashboard load is in flight");
 
@@ -183,16 +212,21 @@ fn restore_supersedes_an_in_flight_dashboard_load(cx: &mut TestAppContext) {
     // database, the restore follows, and its refresh supersedes the
     // load's task — the load's result is dropped on the floor.
     drop(block);
+    // 3.82: the import switched to the Imports page; go back, where the
+    // hidden dashboard reloads.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
     wait_until(cx, "the restored rows land", |cx| {
-        shell.read(cx).dashboard.row_count == 67
+        dash(cx, &shell).read(cx).row_count == 67
     });
     wait_idle(cx, &shell);
     cx.update(|cx| {
         let s = shell.read(cx);
-        assert_eq!(s.dashboard.row_count, 67, "the restored data stands");
-        assert_ne!(s.dashboard.row_count, mid, "the late load never landed");
+        let d = dash(cx, &shell).read(cx);
+        assert_eq!(d.row_count, 67, "the restored data stands");
+        assert_ne!(d.row_count, mid, "the late load never landed");
         assert_eq!(
-            s.refresh_started, s.refresh_applied,
+            s.refresh_started.get(),
+            s.refresh_applied.get(),
             "the restore's own refresh was the last to apply"
         );
     });

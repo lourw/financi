@@ -29,7 +29,12 @@ fn export_writes_the_chosen_zip_and_toasts(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell_on_file(cx, |_| {});
     wait_idle(cx, &shell);
     import_demo_file(cx, handle, &shell, "amex-sep-oct.csv", "Amex");
-    wait_until(cx, "67 rows", |cx| shell.read(cx).dashboard.row_count == 67);
+    // 3.82: the import switched to the Imports page; go back, where the
+    // hidden dashboard reloads.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
+    wait_until(cx, "67 rows", |cx| {
+        dash(cx, &shell).read(cx).row_count == 67
+    });
     let zip = scratch_file("snapshot.zip");
 
     cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Imports, cx)));
@@ -81,9 +86,8 @@ fn cmd_e_opens_the_export_save_dialog(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, |_| {});
     wait_idle(cx, &shell);
     with_window(cx, handle, |window, cx| {
-        let input = shell
+        let input = dash(cx, &shell)
             .read(cx)
-            .dashboard
             .search_input
             .read(cx)
             .focus_handle(cx);

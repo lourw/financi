@@ -5,6 +5,7 @@ use super::dashboard_filters::{
     FILTER_CONTROL_H, FILTER_DATE_MIN_W, FILTER_DATE_RANGE_W, FILTER_DATE_W, FILTER_SEARCH_MIN_W,
 };
 use super::*;
+use crate::ui::page::{Cancel, PageEntity, PageEvent, watch_catalog};
 use crate::ui::widgets::*;
 use financi_db::QueryLog;
 
@@ -615,7 +616,7 @@ pub(super) fn load_dashboard(
         .collect();
     // "Nothing checked" with accounts present: empty results, no queries.
     if ids.is_empty() && !accounts.is_empty() {
-        let view_filter = filter.view_filter(Shell::today(), ids);
+        let view_filter = filter.view_filter(DashboardPage::today(), ids);
         return Ok(DashboardData {
             rows: Vec::new(),
             chart: Vec::new(),
@@ -627,7 +628,7 @@ pub(super) fn load_dashboard(
             settings,
         });
     }
-    let view_filter = filter.view_filter(Shell::today(), ids);
+    let view_filter = filter.view_filter(DashboardPage::today(), ids);
     let table_filter = filter.table_filter();
     log.record("list_transactions_filtered");
     let rows = list_transactions_filtered(c, &view_filter, &table_filter)?;
@@ -654,9 +655,43 @@ pub(super) fn load_dashboard(
     })
 }
 
-/// This page's state (3.74): the filter, the chart and summary panels'
-/// data, the date-range pickers and the transaction table.
-pub(super) struct DashboardState {
+/// The Dashboard page (3.82): its own entity — the filter, the chart and
+/// summary panels' data, the date-range pickers and the transaction table
+/// all live here, and the page drives its one load job (3.56) from the
+/// `Catalog` events it watches (see [`crate::ui::page`]). Like the other
+/// extracted pages it renders itself, refreshes itself, and hears nothing
+/// from `Shell` except through visibility calls; it keeps the two mirrors
+/// the row menus need and the test idle counters through the same weak
+/// handle back the Categories page uses (see `CategoriesPage`'s doc).
+pub(super) struct DashboardPage {
+    db: DbWorker,
+    /// The shared data model (3.78); `apply` reads the account list off
+    /// its snapshot, never a query of its own.
+    catalog: Entity<Catalog>,
+    /// 5.3 review fix: shared with the shell — while an export or restore
+    /// is in flight every write here is refused.
+    writes_blocked: Rc<Cell<bool>>,
+    pub(super) focus: FocusHandle,
+    visible: bool,
+    dirty: bool,
+    focus_pending: bool,
+    /// The `Catalog` subscription (3.82); lives as long as the page.
+    _catalog: Subscription,
+    /// Back-pointer for the few things that are not this page's: the
+    /// restore link (the Imports page owns the flow), *Unpair* (the
+    /// Transfers page's), the rule-row mirrors the table delegate is
+    /// filled from, and the test idle counters the load job shares with
+    /// the shell's reloads.
+    shell: WeakEntity<Shell>,
+    /// The Rules page entity: *Show rule* forwards there, and Esc
+    /// cancels an open rule editor before clearing a selection (3.80).
+    rules_page: Entity<RulesPage>,
+    /// 3.56: the dispatch generation of the newest load this page
+    /// started. A result whose dispatch is older than this was overtaken
+    /// — the newer load's result replaces it, so the stale one is
+    /// dropped whole.
+    load_gen: u64,
+    // -- Page state (3.74).
     /// 3.56: the whole filter state, one comparable value (see
     /// [`DashboardFilter`]).
     pub(super) filter: DashboardFilter,
@@ -666,6 +701,12 @@ pub(super) struct DashboardState {
     /// settings (`ui.date_range`, `ui.include_transfers`) inside its own
     /// query; the first load consumes it, so later ones skip the reads.
     pub(super) startup_settings: bool,
+    /// A persisted control (the date range or the transfers toggle) moved
+    /// since launch. The 3.65 "their change wins" rule needs this in 3.82:
+    /// a scripted change (the tests set a preset right after opening) can
+    /// land *before* the launch load is even dispatched, so the generation
+    /// guard alone would let the launch settings overwrite it.
+    filter_touched: bool,
     /// The search box.
     pub(super) search_input: Entity<InputState>,
     /// 3.56: the pending debounced search. Each keystroke replaces it, so
@@ -703,15 +744,50 @@ pub(super) struct DashboardState {
     /// only while its own choice is the newest one on that row — the
     /// table's rows are a refresh behind, so they cannot answer that.
     last_category_choice: Option<(i64, i64)>,
+    /// The account list from the `Catalog` snapshot (3.82): the filter
+    /// checkboxes and their labels, and what a load is resolved against.
+    pub(super) accounts: Vec<Account>,
+    /// The category tree from the `Catalog` snapshot (3.82): the chart
+    /// colors and the drill-down's parent lookup, like the shell mirror
+    /// before the extraction.
+    pub(super) categories: Vec<CategoryNode>,
+    /// The sidebar's visible-row total from the snapshot (3.82): the
+    /// "empty database" signal for the empty state, like the shell mirror
+    /// before the extraction.
+    pub(super) total_visible: i64,
+    /// 3.75 idle markers shared with the shell: the page takes part in the
+    /// same counting so `wait_idle` covers its loads too, and so the
+    /// restore test can prove work happened between two points. Cells
+    /// because `apply` runs while the shell is being borrowed, and a
+    /// re-entrant `shell.update` there would panic.
+    refresh_started: Rc<Cell<u64>>,
+    refresh_applied: Rc<Cell<u64>>,
+    /// The window width `window_bounds_changed` last reported — the
+    /// chart's label plan reads it (3.15).
+    pub(super) window_width: f32,
+    /// 3.82: `set_date_range` marks the pickers; `render` re-syncs them
+    /// (a load landing has no window, see [`Self::sync_date_widgets`]).
+    date_widgets_stale: bool,
     /// The pickers and inputs above subscribe here.
     _subs: Vec<Subscription>,
 }
 
-impl DashboardState {
-    pub(super) fn new(window: &mut Window, cx: &mut Context<Shell>) -> Self {
-        // 3.76: the table's callbacks capture the shell *weakly* — the
+impl DashboardPage {
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn new(
+        db: DbWorker,
+        writes_blocked: Rc<Cell<bool>>,
+        catalog: &Entity<Catalog>,
+        rules_page: Entity<RulesPage>,
+        shell: WeakEntity<Shell>,
+        refresh_started: Rc<Cell<u64>>,
+        refresh_applied: Rc<Cell<u64>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        // 3.76: the table's callbacks capture the page *weakly* — the
         // table is a child entity, and a strong handle here would form a
-        // reference cycle that keeps every Shell alive for the whole app.
+        // reference cycle that keeps every page alive for the whole app.
         let on_set_category = {
             let shell = cx.weak_entity();
             Rc::new(
@@ -845,21 +921,20 @@ impl DashboardState {
                 match ev {
                     InputEvent::Change => {
                         let value = input.read(cx).value().trim().to_string();
-                        this.dashboard.search_task =
-                            Some(cx.spawn_in(window, async move |this, cx| {
-                                cx.background_executor()
-                                    .timer(std::time::Duration::from_millis(200))
-                                    .await;
-                                let _ = this.update_in(cx, move |this, window, cx| {
-                                    this.dashboard.search_task = None;
-                                    this.apply_search(&value, window, cx);
-                                });
-                            }));
+                        this.search_task = Some(cx.spawn_in(window, async move |this, cx| {
+                            cx.background_executor()
+                                .timer(std::time::Duration::from_millis(200))
+                                .await;
+                            let _ = this.update_in(cx, move |this, window, cx| {
+                                this.search_task = None;
+                                this.apply_search(&value, window, cx);
+                            });
+                        }));
                     }
                     InputEvent::PressEnter { .. } => {
                         // Enter means "now": cancel the pending debounce
                         // and apply the current text.
-                        this.dashboard.search_task = None;
+                        this.search_task = None;
                         let value = input.read(cx).value().trim().to_string();
                         this.apply_search(&value, window, cx);
                     }
@@ -868,9 +943,21 @@ impl DashboardState {
             },
         );
         Self {
+            db,
+            catalog: catalog.clone(),
+            writes_blocked,
+            focus: cx.focus_handle(),
+            visible: false,
+            dirty: true,
+            focus_pending: false,
+            _catalog: watch_catalog(catalog, cx),
+            shell,
+            rules_page,
+            load_gen: 0,
             filter: DashboardFilter::default(),
             include_transfers_task: None,
             startup_settings: true,
+            filter_touched: false,
             search_input,
             search_task: None,
             chart_rows: Vec::new(),
@@ -889,100 +976,328 @@ impl DashboardState {
             row_count: 0,
             rule_offer: None,
             last_category_choice: None,
+            accounts: Vec::new(),
+            categories: Vec::new(),
+            total_visible: 0,
+            refresh_started,
+            refresh_applied,
+            // Seed the width mirror from the window the page is built on,
+            // like the shell does; later resizes arrive through
+            // `widths_changed` (3.82).
+            window_width: window.bounds().size.width.as_f32(),
+            date_widgets_stale: false,
             _subs: vec![date_preset_sub, date_from_sub, date_to_sub, search_sub],
         }
     }
 }
 
-impl Shell {
-    /// Apply the dashboard's one load result (3.56), last: the table's
-    /// delegate reads the child choices and card-payment category
-    /// `sync_category_choices` just set. A selection the new data no
-    /// longer supports is corrected and the load restarted — and the
-    /// half-matched rows are *not* applied (3.56: the screen never shows
-    /// rows queried under a filter the controls no longer hold).
-    pub(super) fn apply_dashboard_rows(
+impl EventEmitter<PageEvent> for DashboardPage {}
+
+impl PageEntity for DashboardPage {
+    /// The rows, chart and summary answer to everything except the
+    /// transfer reviews (3.56's `dash_touched`, now the watcher's filter):
+    /// accounts, categories, rules, transactions, imports — and the
+    /// page's own settings domain, which the launch load consumes.
+    const DEPENDS: Domains = Domains::CATEGORIES_RULES_TX
+        .union(Domains::ACCOUNTS)
+        .union(Domains::IMPORTS)
+        .union(Domains::SETTINGS);
+
+    fn visible(&self) -> bool {
+        self.visible
+    }
+
+    fn dirty(&self) -> bool {
+        self.dirty
+    }
+
+    fn set_dirty(&mut self, dirty: bool) {
+        self.dirty = dirty;
+    }
+
+    fn set_shown(&mut self, visible: bool) {
+        self.visible = visible;
+    }
+
+    /// 3.11: no transient UI travels across a page switch — the rule offer
+    /// belongs to the dashboard it was raised on. The filter selections are
+    /// *not* cleared: the date range and toggles are persisted settings and
+    /// the legend/month selection survives a visit like they do (3.5/3.6).
+    ///
+    /// Unlike the trait default, hiding does **not** raise the dirty flag:
+    /// this page's `apply` runs a query, not just a snapshot copy, and 3.78's
+    /// page-switch invariant holds — a revisit with nothing changed issues
+    /// no query. Staleness is exactly a `DataChanged` arriving while hidden,
+    /// which `watch_catalog` already records.
+    fn set_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
+        self.rule_offer = None;
+        self.set_shown(visible);
+        if visible {
+            self.apply_if_dirty(cx);
+            self.set_focus_pending(true);
+        }
+    }
+
+    fn set_focus_pending(&mut self, pending: bool) {
+        self.focus_pending = pending;
+    }
+
+    /// Pull the account list out of the snapshot — the checkboxes resolve
+    /// against it (task 3.17) — and start the page's one load (3.56).
+    /// The snapshot is merged before `DataChanged` is emitted, so the
+    /// list handed to the job is the one the write produced: the same
+    /// round trip still settles the checkboxes (3.17), and the job never
+    /// runs `list_accounts` of its own. The launch call carries the
+    /// `startup_settings` flag, so the saved date range and transfers
+    /// choice are queried in the same trip (3.65).
+    fn apply(&mut self, cx: &mut Context<Self>) {
+        // Applying consumes the drift `watch_catalog` recorded, whether it
+        // arrived through a show or straight through the visible branch.
+        self.set_dirty(false);
+        let snap = {
+            let cat = self.catalog.read(cx);
+            (
+                cat.snap.accounts.clone(),
+                cat.snap.tree.clone(),
+                cat.snap.total,
+            )
+        };
+        self.accounts = snap.0;
+        self.categories = snap.1;
+        self.total_visible = snap.2;
+        self.sync_account_filter();
+        let startup = std::mem::take(&mut self.startup_settings);
+        // An empty account list means the snapshot has not landed yet
+        // (the launch `apply` runs off the first `DataChanged`, which may
+        // carry only some sections): the job then reads the accounts
+        // itself, like the stale-filter re-query below.
+        let accounts = (!self.accounts.is_empty()).then(|| self.accounts.clone());
+        self.start_load(accounts, startup, cx);
+    }
+}
+
+impl DashboardPage {
+    /// Today, for the preset ranges; `preset_range` itself never reads a
+    /// clock.
+    pub(super) fn today() -> NaiveDate {
+        chrono::Local::now().date_naive()
+    }
+
+    /// Take the next dispatch generation. It comes off the shell's shared
+    /// reload counter (3.75): the tests' `wait_idle` compares that
+    /// counter's two marks, and this page's loads must be counted in it
+    /// or waiting would race them. The cell — not the shell entity — is
+    /// what makes the bump safe to take from inside the page's own
+    /// update even when the shell is borrowed around it (an apply
+    /// arriving through `go_page`).
+    fn next_generation(&self) -> u64 {
+        let g = self.refresh_started.get() + 1;
+        self.refresh_started.set(g);
+        g
+    }
+
+    /// Stamp the idle marker (3.75): the maximum, since generations only
+    /// move forward and a replaced load never stamps.
+    fn stamp_applied(&self, generation: u64) {
+        self.refresh_applied
+            .set(self.refresh_applied.get().max(generation));
+    }
+
+    /// 3.56: start the page's one load — filtered rows, chart and summary
+    /// in a single keyed job (3.77: a burst of filter changes leaves at
+    /// most one in flight plus the newest, and every replaced job resolves
+    /// `Superseded` without touching the screen). The filter is snapshotted
+    /// now, so the load runs with exactly what the controls showed when it
+    /// started. `accounts`: the snapshot list `apply` just pulled (3.82);
+    /// `None` reads it in the job (the stale-filter re-query below).
+    /// `startup` reads the persisted settings in the same trip (3.65).
+    fn start_load(
         &mut self,
-        data: DashboardData,
-        window: &mut Window,
-        cx: &mut Context<Shell>,
+        accounts: Option<Vec<Account>>,
+        startup: bool,
+        cx: &mut Context<Self>,
     ) {
+        let generation = self.next_generation();
+        self.load_gen = generation;
+        let filter = self.filter.clone();
+        let db = self.db.clone();
+        let log = db.query_log();
+        // Detached (3.64): nothing may cancel the continuation between
+        // the query finishing and the result being guarded in.
+        cx.spawn(async move |this, cx| {
+            let result = db
+                .call_keyed("dashboard", move |c| {
+                    load_dashboard(c, &log, filter, accounts, startup)
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| match result {
+                Ok(data) => this.finish_load(generation, data, cx),
+                // A newer filter change took over while this ran; its
+                // result replaces this one's.
+                Err(DbError::Superseded) => {}
+                Err(e) => {
+                    this.notify_err(format!("Database error: {e}"), cx);
+                    this.stamp_applied(generation);
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// A dashboard load came back: apply it, unless a newer load was
+    /// dispatched while it ran — then this result is stale whole, rows
+    /// included, and the newer load's landing replaces it (3.56).
+    fn finish_load(&mut self, generation: u64, mut data: DashboardData, cx: &mut Context<Self>) {
+        if generation < self.load_gen {
+            return;
+        }
+        // 3.65: the launch settings the job already queried with land on
+        // the state and the filter controls before the data of the same
+        // round trip is applied, so the first frame shows the saved range
+        // everywhere. The guard above is what "the user changed it since,
+        // and their change wins" means here: a newer dispatch replaced
+        // this load, and its result carries the newer controls. In 3.82
+        // the change can also arrive *before* the launch load was even
+        // dispatched (a scripted preset change right after opening): the
+        // job still ran with the saved values, so the result is dropped
+        // and the user's filter is re-queried instead of applied.
+        if let Some((range, include_transfers)) = data.settings {
+            if self.filter_touched {
+                self.reload(cx);
+                self.stamp_applied(generation);
+                return;
+            }
+            self.set_date_range(range, cx);
+            self.filter.include_transfers = include_transfers;
+            data.view_filter.include_transfers = include_transfers;
+        }
+        self.apply_dashboard_rows(data, cx);
+        self.stamp_applied(generation);
+        cx.notify();
+    }
+
+    /// Re-run the load with the current controls (3.56): what every
+    /// filter-control change below ends in, in place of the old
+    /// `Shell::changed(Domains::SETTINGS)` round trip — the shared
+    /// sections never change on a filter change, only this page's rows.
+    pub(super) fn reload(&mut self, cx: &mut Context<Self>) {
+        // A control can move before the first snapshot lands (the tests
+        // script a preset change right after opening the window): with no
+        // account list yet, the job reads it, so a scripted change never
+        // supersedes the launch load with an empty-account query.
+        let accounts = (!self.accounts.is_empty()).then(|| self.accounts.clone());
+        self.start_load(accounts, false, cx);
+    }
+
+    /// Feedback out: the shell paints toasts (3.27); the page only
+    /// reports what happened.
+    fn notify_err(&self, message: impl Into<String>, cx: &mut Context<Self>) {
+        cx.emit(PageEvent::Toast {
+            message: message.into(),
+            error: true,
+        });
+    }
+
+    fn notify_ok(&self, message: impl Into<String>, cx: &mut Context<Self>) {
+        cx.emit(PageEvent::Toast {
+            message: message.into(),
+            error: false,
+        });
+    }
+
+    /// Apply the dashboard's one load result (3.56), last: the table's
+    /// delegate reads the child choices and card-payment category the
+    /// shell's `sync_category_choices` set on the last `DataChanged` —
+    /// which arrived before this job was even dispatched. A selection the
+    /// new data no longer supports is corrected and the load restarted —
+    /// and the half-matched rows are *not* applied (3.56: the screen
+    /// never shows rows queried under a filter the controls no longer
+    /// hold).
+    fn apply_dashboard_rows(&mut self, data: DashboardData, cx: &mut Context<Self>) {
         // Revalidate the legend state against the rows we can actually
         // show: a date/accounts change can empty the chart out from under
         // a selection or a drill-down, and the table filter must not keep
         // narrowing by a category that is no longer there.
         let mut stale = false;
-        let drilled = self.dashboard.filter.chart_parent;
+        let drilled = self.filter.chart_parent;
         if drilled.is_some() && data.chart.is_empty() {
-            self.dashboard.filter.chart_parent = None;
+            self.filter.chart_parent = None;
             stale = true;
         }
-        let selection_gone = match self.dashboard.filter.legend_selection {
+        let selection_gone = match self.filter.legend_selection {
             Some(LegendSelection::Category(id)) => {
                 // While drilled, the selected parent itself is not among
                 // the child rows — it stays.
                 drilled != Some(id) && !data.chart.iter().any(|r| r.id == Some(id))
             }
             Some(LegendSelection::Uncategorized) => {
-                self.dashboard.filter.chart_parent.is_none()
-                    && !data.chart.iter().any(|r| r.id.is_none())
+                self.filter.chart_parent.is_none() && !data.chart.iter().any(|r| r.id.is_none())
             }
             None => false,
         };
         if selection_gone {
-            self.dashboard.filter.legend_selection = None;
+            self.filter.legend_selection = None;
             stale = true;
         }
         // The month selection (3.6) goes the same way when the grid no
         // longer contains that month.
-        if self.dashboard.filter.summary_month.is_some()
+        if self.filter.summary_month.is_some()
             && !data
                 .summary
                 .months
                 .iter()
-                .any(|m| Some(m.as_str()) == self.dashboard.filter.summary_month.as_deref())
+                .any(|m| Some(m.as_str()) == self.filter.summary_month.as_deref())
         {
-            self.dashboard.filter.summary_month = None;
+            self.filter.summary_month = None;
             stale = true;
         }
         if stale {
             // Re-query with the corrected filter so the table, chart and
             // state agree again. The half-matched rows are dropped: the
             // new load's result takes their place.
-            self.start_dashboard(None, false, window, cx);
+            self.reload(cx);
             return;
         }
-        self.dashboard.row_count = data.rows.len();
-        self.dashboard.chart_rows = data.chart;
+        self.row_count = data.rows.len();
+        self.chart_rows = data.chart;
         // A range change shows new months: park the month strip (3.30) at
         // its right end so the most recent month sits beside the pinned
         // `Total` column. The huge negative offset clamps to the true
         // maximum when the strip next paints.
-        if self.dashboard.summary.months != data.summary.months {
-            self.dashboard
-                .summary_scroll
+        if self.summary.months != data.summary.months {
+            self.summary_scroll
                 .set_offset(point(px(-1_000_000.), px(0.)));
         }
-        self.dashboard.summary = data.summary;
+        self.summary = data.summary;
         // Record the filter the applied rows were queried with (3.56).
-        self.dashboard.view_filter = data.view_filter;
+        self.view_filter = data.view_filter;
         // The rule offer follows a row the user just edited; a load
         // that drops the row (hidden, filtered out, deleted) drops the
         // offer with it.
         if self
-            .dashboard
             .rule_offer
             .is_some_and(|(id, _)| !data.rows.iter().any(|r| r.id == id))
         {
-            self.dashboard.rule_offer = None;
+            self.rule_offer = None;
         }
         let rows = data.rows;
-        let child_choices = self.child_choices.clone();
-        let rule_offer = self.dashboard.rule_offer.map(|(id, _)| id);
-        let sort = self.dashboard.filter.tx_sort;
-        let rules = self.rules.clone();
-        let card_payment = self.card_payment_category;
-        self.dashboard.table.update(cx, |t, cx| {
+        // 3.82: the row-menu mirrors live on the shell (the Rules and
+        // Categories pages read them too); every write refreshed them
+        // before this job was dispatched, so they name the same rows
+        // these do.
+        let (child_choices, rules, card_payment) = self
+            .shell
+            .update(cx, |shell, _| {
+                (
+                    shell.child_choices.clone(),
+                    shell.rules.clone(),
+                    shell.card_payment_category,
+                )
+            })
+            .unwrap_or_default();
+        let rule_offer = self.rule_offer.map(|(id, _)| id);
+        let sort = self.filter.tx_sort;
+        self.table.update(cx, |t, cx| {
             let delegate = t.delegate_mut();
             delegate.rows = rows;
             delegate.child_choices = child_choices;
@@ -995,39 +1310,40 @@ impl Shell {
     }
 }
 
-impl Shell {
-    /// Today, for the preset ranges; `preset_range` itself never reads a
-    /// clock.
-    pub(super) fn today() -> NaiveDate {
-        chrono::Local::now().date_naive()
-    }
-
+impl DashboardPage {
     /// Put a date range on the state and the controls without persisting
     /// and without refreshing (3.65: split from `apply_date_range` so the
     /// launch settings can land inside the refresh that loaded them).
-    pub(super) fn set_date_range(
-        &mut self,
-        range: DateRange,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.dashboard.filter.date_range = range;
+    /// 3.82: the widgets are only marked — a load landing has no window
+    /// to drive them with, and `render` catches up the same frame.
+    pub(super) fn set_date_range(&mut self, range: DateRange, _cx: &mut Context<Self>) {
+        self.filter.date_range = range;
         let (from, to) = range.range(Self::today());
-        self.dashboard.view_filter.from = from;
-        self.dashboard.view_filter.to = to;
+        self.view_filter.from = from;
+        self.view_filter.to = to;
+        self.date_widgets_stale = true;
+    }
+
+    /// Mirror `filter.date_range` into the preset Select and the From/To
+    /// pickers (3.82, run from `render`): `set_selected_index`,
+    /// `set_value` and `set_date` don't emit their Change events, so this
+    /// never re-persists or re-selects.
+    fn sync_date_widgets(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !std::mem::take(&mut self.date_widgets_stale) {
+            return;
+        }
         let index = DatePreset::ALL
             .iter()
-            .position(|p| *p == range.preset())
+            .position(|p| *p == self.filter.date_range.preset())
             .unwrap_or(0);
-        self.dashboard.date_preset_select.update(cx, |select, cx| {
+        self.date_preset_select.update(cx, |select, cx| {
             select.set_selected_index(Some(gpui_kit::component::IndexPath::new(index)), window, cx);
         });
-        if let DateRange::Custom { from, to } = range {
-            // `set_date` does not emit `Change`, so this never re-persists.
-            self.dashboard.date_from_picker.update(cx, |picker, cx| {
+        if let DateRange::Custom { from, to } = self.filter.date_range {
+            self.date_from_picker.update(cx, |picker, cx| {
                 picker.set_date(CalendarDate::Single(Some(from)), window, cx);
             });
-            self.dashboard.date_to_picker.update(cx, |picker, cx| {
+            self.date_to_picker.update(cx, |picker, cx| {
                 picker.set_date(CalendarDate::Single(Some(to)), window, cx);
             });
         }
@@ -1036,9 +1352,10 @@ impl Shell {
     /// Apply a date range to the state and the controls without
     /// persisting; user changes persist on top via [`Self::persist_date_range`].
     /// The table reads the date range, so this re-queries.
-    fn apply_date_range(&mut self, range: DateRange, window: &mut Window, cx: &mut Context<Self>) {
-        self.set_date_range(range, window, cx);
-        self.changed(Domains::SETTINGS, window, cx);
+    fn apply_date_range(&mut self, range: DateRange, cx: &mut Context<Self>) {
+        self.filter_touched = true;
+        self.set_date_range(range, cx);
+        self.reload(cx);
         cx.notify();
     }
 
@@ -1050,8 +1367,8 @@ impl Shell {
             return;
         }
         let db = self.db.clone();
-        let range = self.dashboard.filter.date_range;
-        self.dashboard.date_range_task = Some(cx.spawn(async move |_, _| {
+        let range = self.filter.date_range;
+        self.date_range_task = Some(cx.spawn(async move |_, _| {
             let _ = on_db(&db, move |c| settings::set_date_range(c, &range)).await;
         }));
     }
@@ -1060,7 +1377,7 @@ impl Shell {
     pub(super) fn change_date_preset(
         &mut self,
         preset: DatePreset,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let range = if preset == DatePreset::Custom {
@@ -1071,7 +1388,7 @@ impl Shell {
         } else {
             DateRange::Preset(preset)
         };
-        self.apply_date_range(range, window, cx);
+        self.apply_date_range(range, cx);
         self.persist_date_range(cx);
     }
 
@@ -1080,10 +1397,10 @@ impl Shell {
         &mut self,
         is_end: bool,
         day: NaiveDate,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let (from, to) = match self.dashboard.filter.date_range {
+        let (from, to) = match self.filter.date_range {
             DateRange::Custom { from, to } => {
                 if is_end {
                     (from, day)
@@ -1100,7 +1417,7 @@ impl Shell {
         // order back into both pickers, so the widgets never show `from >
         // to` either.
         let (from, to) = if from > to { (to, from) } else { (from, to) };
-        self.apply_date_range(DateRange::Custom { from, to }, window, cx);
+        self.apply_date_range(DateRange::Custom { from, to }, cx);
         self.persist_date_range(cx);
     }
 
@@ -1109,7 +1426,7 @@ impl Shell {
     fn selected_account_ids(&self) -> Vec<i64> {
         self.accounts
             .iter()
-            .filter(|a| !self.dashboard.filter.excluded_accounts.contains(&a.id))
+            .filter(|a| !self.filter.excluded_accounts.contains(&a.id))
             .map(|a| a.id)
             .collect()
     }
@@ -1119,12 +1436,11 @@ impl Shell {
     /// collapses to empty, which reads as "all" to the chart queries; the
     /// table path handles that case itself in [`Self::refresh`].
     pub(super) fn sync_account_filter(&mut self) {
-        self.dashboard.view_filter.account_ids =
-            if self.dashboard.filter.excluded_accounts.is_empty() {
-                Vec::new()
-            } else {
-                self.selected_account_ids()
-            };
+        self.view_filter.account_ids = if self.filter.excluded_accounts.is_empty() {
+            Vec::new()
+        } else {
+            self.selected_account_ids()
+        };
     }
 
     /// Check or uncheck one account in the filter dropdown; the table
@@ -1133,18 +1449,18 @@ impl Shell {
         &mut self,
         id: i64,
         on: bool,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.dashboard.filter.excluded_accounts.retain(|x| *x != id);
+        self.filter.excluded_accounts.retain(|x| *x != id);
         if !on {
-            self.dashboard.filter.excluded_accounts.push(id);
+            self.filter.excluded_accounts.push(id);
         }
         self.sync_account_filter();
         // 3.65: the checkbox repaints with this click, not when the
         // answer comes back.
         cx.notify();
-        self.changed(Domains::SETTINGS, window, cx);
+        self.reload(cx);
     }
 
     /// The "Include transfers" checkbox: update the filter, refresh the
@@ -1152,37 +1468,43 @@ impl Shell {
     pub(super) fn set_include_transfers(
         &mut self,
         on: bool,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         // 5.3 review fix: refuse writes while an export/restore is in flight.
         if self.writes_blocked.get() {
             return;
         }
-        if on == self.dashboard.filter.include_transfers {
+        if on == self.filter.include_transfers {
             return;
         }
-        self.dashboard.filter.include_transfers = on;
-        self.dashboard.view_filter.include_transfers = on;
+        self.filter_touched = true;
+        self.filter.include_transfers = on;
+        self.view_filter.include_transfers = on;
         let db = self.db.clone();
-        self.dashboard.include_transfers_task = Some(cx.spawn(async move |_, _| {
+        self.include_transfers_task = Some(cx.spawn(async move |_, _| {
             let _ = on_db(&db, move |c| settings::set_include_transfers(c, on)).await;
         }));
         // 3.65: the checkbox and the Options label repaint with this click.
         cx.notify();
-        self.changed(Domains::SETTINGS, window, cx);
+        self.reload(cx);
     }
 
     /// The search box changed: re-run the table query with the new term.
     /// Empty text clears the search.
-    pub(super) fn apply_search(&mut self, term: &str, window: &mut Window, cx: &mut Context<Self>) {
-        if term == self.dashboard.filter.search {
+    pub(super) fn apply_search(
+        &mut self,
+        term: &str,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if term == self.filter.search {
             return;
         }
-        self.dashboard.filter.search = term.to_string();
+        self.filter.search = term.to_string();
         // 3.65: the box repaints with the keystroke, not with the answer.
         cx.notify();
-        self.changed(Domains::SETTINGS, window, cx);
+        self.reload(cx);
     }
 
     /// The "Uncategorized only" checkbox: narrow the table to rows with no
@@ -1192,41 +1514,41 @@ impl Shell {
     pub(super) fn set_uncategorized_only(
         &mut self,
         on: bool,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if on == self.dashboard.filter.uncategorized_only {
+        if on == self.filter.uncategorized_only {
             return;
         }
-        self.dashboard.filter.uncategorized_only = on;
+        self.filter.uncategorized_only = on;
         if on
             && matches!(
-                self.dashboard.filter.legend_selection,
+                self.filter.legend_selection,
                 Some(LegendSelection::Category(_))
             )
         {
-            self.dashboard.filter.legend_selection = None;
-            self.dashboard.filter.summary_month = None;
+            self.filter.legend_selection = None;
+            self.filter.summary_month = None;
         }
         // 3.65: the box and any cleared legend highlight repaint at once.
         cx.notify();
-        self.changed(Domains::SETTINGS, window, cx);
+        self.reload(cx);
     }
 
     /// The "Show hidden" checkbox: include hidden rows in the table (greyed).
     pub(super) fn set_show_hidden(
         &mut self,
         on: bool,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if on == self.dashboard.filter.show_hidden {
+        if on == self.filter.show_hidden {
             return;
         }
-        self.dashboard.filter.show_hidden = on;
+        self.filter.show_hidden = on;
         // 3.65: the checkbox repaints with this click, not with the answer.
         cx.notify();
-        self.changed(Domains::SETTINGS, window, cx);
+        self.reload(cx);
     }
 
     /// A header sort icon was clicked: adopt the new ordering and re-query.
@@ -1238,34 +1560,34 @@ impl Shell {
     pub(super) fn set_tx_sort(
         &mut self,
         sort: TxSort,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.dashboard.filter.tx_sort = sort;
+        self.filter.tx_sort = sort;
         // 3.65: the header icon repaints with this click.
         cx.notify();
-        self.changed(Domains::SETTINGS, window, cx);
+        self.reload(cx);
     }
 
     /// Click the "← All categories" row: back to the parent level with no
     /// category filter on the table.
-    pub(super) fn show_all_categories(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.dashboard.filter.chart_parent = None;
-        self.dashboard.filter.legend_selection = None;
-        self.dashboard.filter.summary_month = None;
+    pub(super) fn show_all_categories(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        self.filter.chart_parent = None;
+        self.filter.legend_selection = None;
+        self.filter.summary_month = None;
         // 3.65: the legend repaints with this click, not with the answer.
         cx.notify();
-        self.changed(Domains::SETTINGS, window, cx);
+        self.reload(cx);
     }
 
-    /// Esc (the `dashboard::ClearCategorySelection` action): clear the
+    /// Esc (the `dashboard::Cancel` action): clear the
     /// drill-down, the legend selection and the summary month together —
     /// they are one concept. 3.24: an open rule editor is the innermost
     /// thing, so Esc cancels it first and nothing else.
     pub(super) fn clear_category_selection(
         &mut self,
-        _: &ClearCategorySelection,
-        window: &mut Window,
+        _: &Cancel,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         // 3.80: the editor lives on the Rules page.
@@ -1274,19 +1596,19 @@ impl Shell {
             self.rules_page.update(cx, |p, cx| p.cancel_edit_rule(cx));
             return;
         }
-        if self.dashboard.filter.chart_parent.is_none()
-            && self.dashboard.filter.legend_selection.is_none()
-            && self.dashboard.filter.summary_month.is_none()
+        if self.filter.chart_parent.is_none()
+            && self.filter.legend_selection.is_none()
+            && self.filter.summary_month.is_none()
         {
             return;
         }
-        self.dashboard.filter.chart_parent = None;
-        self.dashboard.filter.legend_selection = None;
-        self.dashboard.filter.summary_month = None;
+        self.filter.chart_parent = None;
+        self.filter.legend_selection = None;
+        self.filter.summary_month = None;
         // 3.65: the drill-down, legend highlight and summary-cell highlight
         // repaint with this Esc, not with the answer.
         cx.notify();
-        self.changed(Domains::SETTINGS, window, cx);
+        self.reload(cx);
     }
 
     /// Change one transaction's category from the row menu (2.9). `set_category`
@@ -1296,7 +1618,7 @@ impl Shell {
         &mut self,
         transaction_id: i64,
         category_id: i64,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         // 5.3 review fix: refuse writes while an export/restore is in
@@ -1307,12 +1629,12 @@ impl Shell {
         let db = self.db.clone();
         // 3.64: record the choice now — the continuation compares against
         // it, and the table's rows lag a whole refresh behind.
-        self.dashboard.last_category_choice = Some((transaction_id, category_id));
+        self.last_category_choice = Some((transaction_id, category_id));
         // 3.64: detached — a later action must not cancel the write's
         // continuation and swallow its refresh.
-        cx.spawn_in(window, async move |this, cx| {
+        cx.spawn(async move |this, cx| {
             let result = on_db(&db, move |c| set_category(c, transaction_id, category_id)).await;
-            let _ = this.update_in(cx, |this, window, cx| {
+            let _ = this.update(cx, |this, cx| {
                 match result {
                     Ok(()) => {
                         // The row itself starts offering the rule (2.6); no
@@ -1321,16 +1643,18 @@ impl Shell {
                         // in flight (3.64): only a *different* later choice
                         // on the same row supersedes this one.
                         let superseded = this
-                            .dashboard
                             .last_category_choice
                             .is_some_and(|(id, cat)| id == transaction_id && cat != category_id);
                         if !superseded {
-                            this.dashboard.rule_offer = Some((transaction_id, category_id));
+                            this.rule_offer = Some((transaction_id, category_id));
                         }
                     }
                     Err(e) => this.notify_err(e, cx),
                 }
-                this.changed(Domains::TX, window, cx);
+                // 3.82: the write's report goes out as a `PageEvent`; the
+                // shell reloads the shared sections, the `DataChanged`
+                // comes back, and this page reloads its rows with it.
+                cx.emit(PageEvent::Changed(Domains::TX));
             });
         })
         .detach();
@@ -1342,7 +1666,7 @@ impl Shell {
         &mut self,
         transaction_id: i64,
         hidden: bool,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         // 5.3 review fix: refuse writes while an export/restore is in flight.
@@ -1350,22 +1674,18 @@ impl Shell {
             return;
         }
         // Hiding the row a rule offer is on would strand the offer.
-        if self
-            .dashboard
-            .rule_offer
-            .is_some_and(|(id, _)| id == transaction_id)
-        {
-            self.dashboard.rule_offer = None;
+        if self.rule_offer.is_some_and(|(id, _)| id == transaction_id) {
+            self.rule_offer = None;
         }
         let db = self.db.clone();
         // 3.64: detached — see `change_row_category`.
-        cx.spawn_in(window, async move |this, cx| {
+        cx.spawn(async move |this, cx| {
             let result = on_db(&db, move |c| set_hidden(c, transaction_id, hidden)).await;
-            let _ = this.update_in(cx, |this, window, cx| {
+            let _ = this.update(cx, |this, cx| {
                 if let Err(e) = result {
                     this.notify_err(e, cx);
                 }
-                this.changed(Domains::TX, window, cx);
+                cx.emit(PageEvent::Changed(Domains::TX));
             });
         })
         .detach();
@@ -1377,45 +1697,54 @@ impl Shell {
     pub(super) fn apply_row_rule(
         &mut self,
         transaction_id: i64,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         // 5.3 review fix: refuse writes while an export/restore is in flight.
         if self.writes_blocked.get() {
             return;
         }
-        let Some((_, category_id)) = self
-            .dashboard
-            .rule_offer
-            .filter(|(id, _)| *id == transaction_id)
-        else {
+        let Some((_, category_id)) = self.rule_offer.filter(|(id, _)| *id == transaction_id) else {
             return;
         };
-        self.dashboard.rule_offer = None;
+        self.rule_offer = None;
         let db = self.db.clone();
         // 3.64: detached — see `change_row_category`.
-        cx.spawn_in(window, async move |this, cx| {
+        cx.spawn(async move |this, cx| {
             let result = on_db(&db, move |c| {
                 apply_rule_from_merchant(c, transaction_id, category_id)
             })
             .await;
-            let _ = this.update_in(cx, |this, window, cx| {
+            let _ = this.update(cx, |this, cx| {
                 match result {
                     Ok(_) => {
                         this.notify_ok("Applied the category to all matching rows", cx);
                     }
                     Err(e) => this.notify_err(e, cx),
                 }
-                this.changed(Domains::RULES_TX, window, cx);
+                cx.emit(PageEvent::Changed(Domains::RULES_TX));
             });
         })
         .detach();
         cx.notify();
     }
 
-    // -- toasts (3.27) ------------------------------------------------------
+    // -- render (3.82) --------------------------------------------------------
+}
 
-    pub(super) fn render_dashboard(&mut self, cx: &mut Context<Self>) -> AnyElement {
+impl Render for DashboardPage {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // 3.82: the page takes focus on the frame it is first shown, like
+        // the other extracted pages — deferred so no element is borrowed
+        // while the focus moves, and only once (D5).
+        if self.focus_pending {
+            self.focus_pending = false;
+            let focus = self.focus.clone();
+            window.defer(cx, move |window, cx| window.focus(&focus, cx));
+        }
+        // A load that landed without a window (3.82) marked the pickers;
+        // re-sync them now that one is here.
+        self.sync_date_widgets(window, cx);
         let muted = cx.theme().muted_foreground;
         let body = self.dashboard_body();
         v_flex()
@@ -1424,6 +1753,17 @@ impl Shell {
             .min_h_0()
             .min_w_0()
             .gap_3()
+            // 3.82: the page is a focus root on its own key context, and
+            // Esc — `Cancel` on "Dashboard" (bound in `ui::init`) — clears
+            // the category selection, the behaviour the Root-scoped
+            // `ClearCategorySelection` binding had before the extraction
+            // (3.5). Deeper contexts still win: an open picker or menu
+            // takes the Escape first.
+            .track_focus(&self.focus)
+            .key_context("Dashboard")
+            .on_action(cx.listener(|this, action: &Cancel, window, cx| {
+                this.clear_category_selection(action, window, cx);
+            }))
             // One filter row (3.35, ui-conventions *Pages*): no region
             // title and no label lines. Every control is 32 px tall and
             // centred on the row; the controls without a visible label
@@ -1444,7 +1784,7 @@ impl Shell {
                             div()
                                 .debug_selector(|| "filters:date-range".into())
                                 .w(FILTER_DATE_RANGE_W)
-                                .child(Select::new(&self.dashboard.date_preset_select)),
+                                .child(Select::new(&self.date_preset_select)),
                         )
                         .flex_none(),
                     )
@@ -1452,7 +1792,7 @@ impl Shell {
                     // (floor 110 px) when the row runs out of room, so the
                     // custom range fits the minimum window (3.25, 3.35).
                     .when(
-                        matches!(self.dashboard.filter.date_range, DateRange::Custom { .. }),
+                        matches!(self.filter.date_range, DateRange::Custom { .. }),
                         |g| {
                             g.child(
                                 div()
@@ -1460,7 +1800,7 @@ impl Shell {
                                     .w(FILTER_DATE_W)
                                     .flex_shrink(1.)
                                     .min_w(FILTER_DATE_MIN_W)
-                                    .child(DatePicker::new(&self.dashboard.date_from_picker)),
+                                    .child(DatePicker::new(&self.date_from_picker)),
                             )
                             .child(
                                 div()
@@ -1468,7 +1808,7 @@ impl Shell {
                                     .w(FILTER_DATE_W)
                                     .flex_shrink(1.)
                                     .min_w(FILTER_DATE_MIN_W)
-                                    .child(DatePicker::new(&self.dashboard.date_to_picker)),
+                                    .child(DatePicker::new(&self.date_to_picker)),
                             )
                         },
                     )
@@ -1494,7 +1834,7 @@ impl Shell {
                             .flex_1()
                             .min_w(FILTER_SEARCH_MIN_W)
                             .child(
-                                Input::new(&self.dashboard.search_input)
+                                Input::new(&self.search_input)
                                     .prefix(Icon::new(IconName::Search).small().text_color(muted)),
                             ),
                     )
@@ -1519,7 +1859,7 @@ impl Shell {
                             .text_color(muted)
                             .child(format!(
                                 "{} transactions",
-                                flow::count(self.dashboard.row_count as i64)
+                                flow::count(self.row_count as i64)
                             )),
                     ),
             )
@@ -1563,9 +1903,7 @@ impl Shell {
                                 .child(if body == DashboardBody::NoMatches {
                                     self.no_matches_panel(cx)
                                 } else {
-                                    DataTable::new(&self.dashboard.table)
-                                        .stripe(false)
-                                        .into_any_element()
+                                    DataTable::new(&self.table).stripe(false).into_any_element()
                                 }),
                         )
                         .into_any_element()
@@ -1573,27 +1911,90 @@ impl Shell {
             })
             .into_any_element()
     }
+}
 
+impl DashboardPage {
     /// "Clear filters": drop every filter that narrows the table — search,
     /// "Uncategorized only", and the category/month selection with its
     /// chart drill-down. `set_value` doesn't emit `InputEvent::Change`, so
-    /// `self.dashboard.filter.search` is cleared here too before the single re-query.
+    /// `self.filter.search` is cleared here too before the single re-query.
     pub(super) fn clear_filters(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // A keystroke within the last 200 ms left a debounced search pending
         // that would re-apply the dead query right after this reset, so drop
         // it with the text.
-        self.dashboard.search_task = None;
-        self.dashboard
-            .search_input
+        self.search_task = None;
+        self.search_input
             .update(cx, |input, cx| input.set_value("", window, cx));
-        self.dashboard.filter.search.clear();
-        self.dashboard.filter.uncategorized_only = false;
-        self.dashboard.filter.chart_parent = None;
-        self.dashboard.filter.legend_selection = None;
-        self.dashboard.filter.summary_month = None;
+        self.filter.search.clear();
+        self.filter.uncategorized_only = false;
+        self.filter.chart_parent = None;
+        self.filter.legend_selection = None;
+        self.filter.summary_month = None;
         // 3.65: the cleared box, legend highlight and summary-cell highlight
         // repaint with this click, not with the answer.
         cx.notify();
-        self.changed(Domains::SETTINGS, window, cx);
+        self.reload(cx);
+    }
+}
+
+impl DashboardPage {
+    // -- shell forwards (3.82) ------------------------------------------------
+    //
+    // The file actions live on the Imports page and transfer pairing on the
+    // Transfers page, like the other extracted pages' forwards; the shared
+    // rule rows and the *Show rule* reveal live on the Rules page. The page
+    // reaches them through the shell handle — the same routes the sidebar
+    // and the global action listeners use, so the behaviour is identical.
+
+    pub(super) fn restore_backup(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let shell = self.shell.clone();
+        if let Some(shell) = shell.upgrade() {
+            shell.update(cx, |this, cx| this.restore_backup(window, cx));
+        }
+    }
+
+    pub(super) fn unpair_row(
+        &mut self,
+        transaction_id: i64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let shell = self.shell.clone();
+        if let Some(shell) = shell.upgrade() {
+            shell.update(cx, |this, cx| this.unpair_row(transaction_id, window, cx));
+        }
+    }
+
+    pub(super) fn show_rule(&mut self, rule_id: i64, window: &mut Window, cx: &mut Context<Self>) {
+        self.rules_page
+            .update(cx, |p, cx| p.show_rule(rule_id, window, cx));
+    }
+
+    /// A window resize re-flexes the table's columns (3.25) and re-renders
+    /// for the chart's label plan (3.15); `Shell::window_bounds_changed`
+    /// forwards the window width here (3.82). The chart deducts the chrome
+    /// itself, so the page keeps the raw width.
+    pub(super) fn widths_changed(&mut self, window_width: f32, cx: &mut Context<Self>) {
+        self.window_width = window_width;
+        let page_w = (window_width - SIDEBAR_W - 2. * PAGE_PAD).max(0.);
+        let flex = tx_flex_widths(page_w);
+        self.table.update(cx, |t, cx| {
+            t.delegate_mut().flex_widths = flex;
+            t.refresh(cx);
+        });
+    }
+
+    /// A restore replaced the whole database behind the UI (5.3): the
+    /// legend, month and drill-down selections name categories and months
+    /// the restored file may not have, and the rule offer names rows whose
+    /// dense ids may point elsewhere now. `Shell::reset_pages_after_restore`
+    /// forwards here (3.82).
+    pub(super) fn reset_after_restore(&mut self, cx: &mut Context<Self>) {
+        self.filter.legend_selection = None;
+        self.filter.summary_month = None;
+        self.filter.chart_parent = None;
+        self.rule_offer = None;
+        self.last_category_choice = None;
+        cx.notify();
     }
 }

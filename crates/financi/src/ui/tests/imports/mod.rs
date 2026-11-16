@@ -5,6 +5,7 @@
 //! the `pub(super)` seed `tests/page.rs` imports) live here. New tests go
 //! next to related ones in the right sub-file.
 
+use super::dashboard::dash;
 use super::*;
 
 mod account;

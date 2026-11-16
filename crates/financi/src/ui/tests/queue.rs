@@ -2,7 +2,7 @@
 //! is a `QueuePage` entity on `Shell::queue_view`; waits that may run while
 //! the page is hidden read the `Catalog` snapshot instead.
 
-use super::dashboard::{click_chart_legend, seed_chart_rows, top_category_id};
+use super::dashboard::{click_chart_legend, dash, seed_chart_rows, top_category_id};
 use super::*;
 
 /// Pick `child` in the merchant row's picker (the same get-or-create the
@@ -68,7 +68,10 @@ fn categorizing_a_queue_group_locks_in_a_rule(cx: &mut TestAppContext) {
     );
     wait_until(cx, "plan", |cx| plan_ready(&shell, cx));
     click_import(cx, handle, &shell);
-    wait_until(cx, "import", |cx| shell.read(cx).dashboard.row_count == 67);
+    // 3.82: the import switched to the Imports page; go back, where the
+    // hidden dashboard reloads.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
+    wait_until(cx, "import", |cx| dash(cx, &shell).read(cx).row_count == 67);
     add_parent(cx, handle, &shell, "Shopping");
     add_child(cx, handle, &shell, "Online");
     let child = cx.update(|cx| find_child(&shell, cx, "Online").unwrap());
@@ -748,22 +751,24 @@ fn the_queue_categorize_button_waits_for_its_picker(cx: &mut TestAppContext) {
 /// 3.83: Escape on the To-categorize page is the page's own `Cancel`, and
 /// the queue's one transient is its error banner: the first press clears
 /// it, and the consumed keystroke must not reach the dashboard drill.
-/// With nothing left the handler propagates to the `Root`-scoped binding,
-/// and the next Escape clears the drill.
+/// With nothing left the keystroke no longer means anything here — 3.82
+/// moved the drill-clearing Escape onto the Dashboard page itself, so the
+/// drill waits for an Escape *there*.
 #[gpui::test]
 fn escape_on_the_queue_page_clears_the_error_then_propagates(cx: &mut TestAppContext) {
     // `seed_chart_rows` leaves one uncategorized row ("Mystery Vendor"),
     // so the queue has a group to fail on, and the chart has rows to drill.
     let (handle, shell) = open_shell(cx, seed_chart_rows);
     wait_until(cx, "chart rows load", |cx| {
-        shell.read(cx).dashboard.chart_rows.len() == 3
+        dash(cx, &shell).read(cx).chart_rows.len() == 3
     });
-    // Drill the dashboard chart first: the drill lives on the shell and
-    // survives the page switch, so it waits here for the last Escape.
+    // Drill the dashboard chart first: the drill lives on the dashboard
+    // page entity and survives the page switch, so it waits here for the
+    // last Escape.
     let food = cx.update(|cx| top_category_id(&shell, cx, "Food"));
     click_chart_legend(cx, handle, &shell, Some(food));
     wait_until(cx, "drilled into Food", |cx| {
-        shell.read(cx).dashboard.filter.chart_parent == Some(food)
+        dash(cx, &shell).read(cx).filter.chart_parent == Some(food)
     });
     cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::ToCategorize, cx)));
     wait_until(cx, "queue populated", |cx| {
@@ -796,7 +801,7 @@ fn escape_on_the_queue_page_clears_the_error_then_propagates(cx: &mut TestAppCon
             "Escape cleared the error banner"
         );
         assert_eq!(
-            shell.read(cx).dashboard.filter.chart_parent,
+            dash(cx, &shell).read_with(cx, |d, _| d.filter.chart_parent),
             Some(food),
             "the consumed Escape did not clear the drill"
         );
@@ -811,11 +816,25 @@ fn escape_on_the_queue_page_clears_the_error_then_propagates(cx: &mut TestAppCon
         "the banner is gone from the page"
     );
 
-    // 2. With nothing open the handler propagates and the `Root`-scoped
-    // binding clears the drill — Escape still means *clear* here.
+    // 2. With nothing open the keystroke means nothing here: the pages
+    // keep their own Escapes now (3.82), so the drill survives one
+    // pressed on the queue. Visit the dashboard and press it once —
+    // Escape still means *clear* on the page that owns the drill.
+    cx.simulate_keystrokes(handle, "escape");
+    cx.run_until_parked();
+    cx.update(|cx| {
+        assert_eq!(
+            dash(cx, &shell).read_with(cx, |d, _| d.filter.chart_parent),
+            Some(food),
+            "Escape on the queue page leaves the drill alone"
+        );
+    });
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
+    let dash_root = cx.update(|cx| dash(cx, &shell).read(cx).focus.clone());
+    with_window(cx, handle, |window, cx| window.focus(&dash_root, cx));
     cx.simulate_keystrokes(handle, "escape");
     wait_until(cx, "drill and legend selection cleared", |cx| {
-        shell.read(cx).dashboard.filter.chart_parent.is_none()
-            && shell.read(cx).dashboard.filter.legend_selection.is_none()
+        dash(cx, &shell).read(cx).filter.chart_parent.is_none()
+            && dash(cx, &shell).read(cx).filter.legend_selection.is_none()
     });
 }

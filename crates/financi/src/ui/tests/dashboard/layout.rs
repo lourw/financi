@@ -49,15 +49,18 @@ fn the_dashboard_shows_the_imported_totals_without_touching_the_range(cx: &mut T
         settings::set(c, UI_DATE_RANGE, "all").unwrap();
     });
     wait_until(cx, "all-time range restored", |cx| {
-        shell.read(cx).dashboard.filter.date_range == DateRange::Preset(DatePreset::AllTime)
+        dash(cx, &shell).read(cx).filter.date_range == DateRange::Preset(DatePreset::AllTime)
     });
 
     import_demo_file(cx, handle, &shell, "amex-sep-nov.csv", "Amex");
+    // Opening the file switched to the Imports page; go back, where the
+    // hidden page reloads (3.82).
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
 
     // Nothing else touches the shell: these numbers can only come from the
-    // refresh the finished import triggers.
+    // load the page switch runs (3.82), fetching the finished import.
     wait_until(cx, "dashboard shows the import", |cx| {
-        shell.read(cx).dashboard.row_count == 100 && shell.read(cx).total_visible == 102
+        dash(cx, &shell).read(cx).row_count == 100 && shell.read(cx).total_visible == 102
     });
 
     // Spend per month from expected.json: the two money-in rows are the
@@ -74,14 +77,10 @@ fn the_dashboard_shows_the_imported_totals_without_touching_the_range(cx: &mut T
         .collect();
     let total: i64 = want.iter().sum();
     cx.update(|cx| {
-        let s = shell.read(cx);
-        assert_eq!(
-            s.dashboard.summary.months,
-            ["2026-09", "2026-10", "2026-11"]
-        );
+        let d = dash(cx, &shell).read(cx);
+        assert_eq!(d.summary.months, ["2026-09", "2026-10", "2026-11"]);
         let row = |name: &str| {
-            s.dashboard
-                .summary
+            d.summary
                 .rows
                 .iter()
                 .find(|r| r.name == name)
@@ -92,8 +91,7 @@ fn the_dashboard_shows_the_imported_totals_without_touching_the_range(cx: &mut T
         assert_eq!(row("Income").total, 0);
         assert_eq!(row("Net").total, -total);
         assert_eq!(
-            s.dashboard
-                .chart_rows
+            d.chart_rows
                 .iter()
                 .map(|r| (r.name.as_str(), r.spend_cents))
                 .collect::<Vec<_>>(),
@@ -115,30 +113,33 @@ fn a_range_that_excludes_everything_shows_no_matches_not_the_import_prompt(
     });
     wait_until(cx, "custom range restored", |cx| {
         matches!(
-            shell.read(cx).dashboard.filter.date_range,
+            dash(cx, &shell).read(cx).filter.date_range,
             DateRange::Custom { .. }
         )
     });
 
     import_demo_file(cx, handle, &shell, "amex-sep-nov.csv", "Amex");
+    // Opening the file switched to the Imports page; go back, where the
+    // hidden page reloads (3.82).
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
 
     // The 2020 range keeps every 2026 row out of the table, while the
     // unfiltered count still sees them.
     wait_until(cx, "table empty over a full database", |cx| {
-        shell.read(cx).total_visible == 102 && shell.read(cx).dashboard.row_count == 0
+        shell.read(cx).total_visible == 102 && dash(cx, &shell).read(cx).row_count == 0
     });
 
     cx.update(|cx| {
-        let s = shell.read(cx);
+        let d = dash(cx, &shell).read(cx);
         assert_eq!(
-            s.dashboard_body(),
+            d.dashboard_body(),
             DashboardBody::NoMatches,
             "data exists but the range selects none: the table's empty \
              state shows, not the import prompt"
         );
-        assert!(s.dashboard.chart_rows.is_empty());
+        assert!(d.chart_rows.is_empty());
         assert!(
-            !s.summary_has_data(),
+            !d.summary_has_data(),
             "the padded all-zero grid must read as empty"
         );
     });
@@ -151,7 +152,10 @@ fn an_empty_database_shows_the_import_prompt(cx: &mut TestAppContext) {
     let (_handle, shell) = open_shell(cx, |_c| {});
     cx.run_until_parked();
     cx.update(|cx| {
-        assert_eq!(shell.read(cx).dashboard_body(), DashboardBody::NoData);
+        assert_eq!(
+            dash(cx, &shell).read(cx).dashboard_body(),
+            DashboardBody::NoData
+        );
     });
 }
 
@@ -163,38 +167,45 @@ fn clear_filters_restores_a_table_emptied_by_search(cx: &mut TestAppContext) {
         settings::set(c, UI_DATE_RANGE, "all").unwrap();
     });
     wait_until(cx, "all-time range restored", |cx| {
-        shell.read(cx).dashboard.filter.date_range == DateRange::Preset(DatePreset::AllTime)
+        dash(cx, &shell).read(cx).filter.date_range == DateRange::Preset(DatePreset::AllTime)
     });
     import_demo_file(cx, handle, &shell, "amex-sep-nov.csv", "Amex");
+    // Opening the file switched to the Imports page; go back, where the
+    // hidden page reloads (3.82).
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
     wait_until(cx, "import shows", |cx| {
-        shell.read(cx).dashboard.row_count == 100
+        dash(cx, &shell).read(cx).row_count == 100
     });
 
     with_window(cx, handle, |window, cx| {
-        shell.update(cx, |s, cx| {
-            s.dashboard
-                .search_input
+        dash(cx, &shell).update(cx, |d, cx| {
+            d.search_input
                 .update(cx, |i, cx| i.set_value("zzz-no-match", window, cx));
-            s.apply_search("zzz-no-match", window, cx);
+            d.apply_search("zzz-no-match", window, cx);
         });
     });
     wait_until(cx, "search empties the table", |cx| {
-        shell.read(cx).dashboard.row_count == 0 && shell.read(cx).total_visible == 102
-    });
-    cx.update(|cx| assert_eq!(shell.read(cx).dashboard_body(), DashboardBody::NoMatches));
-
-    with_window(cx, handle, |window, cx| {
-        shell.update(cx, |s, cx| s.clear_filters(window, cx));
-    });
-    wait_until(cx, "clear filters restores the rows", |cx| {
-        shell.read(cx).dashboard.row_count == 100
+        dash(cx, &shell).read(cx).row_count == 0 && shell.read(cx).total_visible == 102
     });
     cx.update(|cx| {
-        let s = shell.read(cx);
-        assert_eq!(s.dashboard_body(), DashboardBody::Rows);
-        assert!(s.dashboard.filter.search.is_empty());
+        assert_eq!(
+            dash(cx, &shell).read(cx).dashboard_body(),
+            DashboardBody::NoMatches
+        )
+    });
+
+    with_window(cx, handle, |window, cx| {
+        dash(cx, &shell).update(cx, |d, cx| d.clear_filters(window, cx));
+    });
+    wait_until(cx, "clear filters restores the rows", |cx| {
+        dash(cx, &shell).read(cx).row_count == 100
+    });
+    cx.update(|cx| {
+        let d = dash(cx, &shell).read(cx);
+        assert_eq!(d.dashboard_body(), DashboardBody::Rows);
+        assert!(d.filter.search.is_empty());
         assert!(
-            s.dashboard.search_input.read(cx).value().is_empty(),
+            d.search_input.read(cx).value().is_empty(),
             "the search box clears with the filter"
         );
     });
@@ -237,8 +248,8 @@ fn the_dashboard_filter_region_is_one_untitled_row(cx: &mut TestAppContext) {
     }
     // Custom range: the pickers join the row and carry no labels either.
     with_window(cx, handle, |window, cx| {
-        shell.update(cx, |s, cx| {
-            s.change_date_preset(DatePreset::Custom, window, cx)
+        dash(cx, &shell).update(cx, |d, cx| {
+            d.change_date_preset(DatePreset::Custom, window, cx)
         });
     });
     cx.run_until_parked();
@@ -303,14 +314,15 @@ fn the_dashboard_panels_name_themselves(cx: &mut TestAppContext) {
         settings::set(c, UI_DATE_RANGE, "all").unwrap();
     });
     wait_until(cx, "all-time range restored", |cx| {
-        shell.read(cx).dashboard.filter.date_range == DateRange::Preset(DatePreset::AllTime)
+        dash(cx, &shell).read(cx).filter.date_range == DateRange::Preset(DatePreset::AllTime)
     });
     import_demo_file(cx, handle, &shell, "amex-sep-nov.csv", "Amex");
-    wait_until(cx, "dashboard shows the import", |cx| {
-        shell.read(cx).dashboard.row_count == 100 && shell.read(cx).total_visible == 102
-    });
-    // Opening the file switched to the Imports page; go back.
+    // Opening the file switched to the Imports page; go back, where the
+    // hidden page reloads (3.82).
     cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
+    wait_until(cx, "dashboard shows the import", |cx| {
+        dash(cx, &shell).read(cx).row_count == 100 && shell.read(cx).total_visible == 102
+    });
     let mut window = VisualTestContext::from_window(handle, cx);
     draw_frame(cx, handle);
     for sel in ["label:Spending by category", "label:Monthly summary"] {
@@ -331,13 +343,15 @@ fn open_dashboard_for_geometry(
         settings::set(c, UI_DATE_RANGE, "all").unwrap();
     });
     wait_until(cx, "all-time range restored", |cx| {
-        shell.read(cx).dashboard.filter.date_range == DateRange::Preset(DatePreset::AllTime)
+        dash(cx, &shell).read(cx).filter.date_range == DateRange::Preset(DatePreset::AllTime)
     });
     import_demo_file(cx, handle, &shell, "amex-sep-nov.csv", "Amex");
-    wait_until(cx, "dashboard shows the import", |cx| {
-        shell.read(cx).dashboard.row_count == 100 && shell.read(cx).total_visible == 102
-    });
+    // Opening the file switched to the Imports page; go back, where the
+    // hidden page reloads (3.82).
     cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
+    wait_until(cx, "dashboard shows the import", |cx| {
+        dash(cx, &shell).read(cx).row_count == 100 && shell.read(cx).total_visible == 102
+    });
     resize_and_draw(cx, handle, w, h);
     (handle, shell)
 }
@@ -443,13 +457,13 @@ fn the_dashboard_stays_aligned_with_a_custom_date_range(cx: &mut TestAppContext)
     for (w, h) in [(1200., 720.), (1600., 1000.)] {
         let (handle, shell) = open_dashboard_for_geometry(cx, w, h);
         with_window(cx, handle, |window, cx| {
-            shell.update(cx, |s, cx| {
-                s.change_date_preset(DatePreset::Custom, window, cx)
+            dash(cx, &shell).update(cx, |d, cx| {
+                d.change_date_preset(DatePreset::Custom, window, cx)
             });
         });
         wait_until(cx, "custom range open", |cx| {
             matches!(
-                shell.read(cx).dashboard.filter.date_range,
+                dash(cx, &shell).read(cx).filter.date_range,
                 DateRange::Custom { .. }
             )
         });

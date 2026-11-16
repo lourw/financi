@@ -20,11 +20,14 @@ fn undo_needs_a_second_click_and_removes_the_latest_import(cx: &mut TestAppConte
     );
     wait_until(cx, "plan", |cx| plan_ready(&shell, cx));
     click_import(cx, handle, &shell);
-    wait_until(cx, "import", |cx| shell.read(cx).dashboard.row_count == 67);
-
     wait_until(cx, "import history", |cx| {
         shell.read(cx).imports.read(cx).import_history.len() == 1
     });
+    // 3.82: the dashboard reloads when shown — a quick visit proves the
+    // import's rows landed — then back to Imports for the undo flow.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
+    wait_until(cx, "import", |cx| dash(cx, &shell).read(cx).row_count == 67);
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Imports, cx)));
 
     with_window(cx, handle, |window, cx| {
         let id = shell.read(cx).imports.read(cx).import_history[0].id;
@@ -36,15 +39,18 @@ fn undo_needs_a_second_click_and_removes_the_latest_import(cx: &mut TestAppConte
             Some(id),
             "first click only asks to confirm"
         );
-        assert_eq!(shell.read(cx).dashboard.row_count, 67);
+        assert_eq!(dash(cx, &shell).read_with(cx, |d, _| d.row_count), 67);
         shell.update(cx, |s, cx| {
             s.imports.update(cx, |p, cx| p.undo_import(id, window, cx))
         });
     });
 
     wait_until(cx, "undo", |cx| {
-        shell.read(cx).dashboard.row_count == 0
-            && shell.read(cx).imports.read(cx).import_history.is_empty()
+        shell.read(cx).imports.read(cx).import_history.is_empty()
+    });
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
+    wait_until(cx, "undo rows", |cx| {
+        dash(cx, &shell).read(cx).row_count == 0
     });
     cx.update(|cx| {
         assert_eq!(
@@ -78,8 +84,12 @@ fn the_undo_action_arms_then_undoes_the_newest_import(cx: &mut TestAppContext) {
     click_import(cx, handle, &shell);
     wait_until(cx, "import history", |cx| {
         shell.read(cx).imports.read(cx).import_history.len() == 1
-            && shell.read(cx).dashboard.row_count == 67
     });
+    // 3.82: a quick dashboard visit proves its rows landed, then back to
+    // Imports for the undo flow.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
+    wait_until(cx, "import", |cx| dash(cx, &shell).read(cx).row_count == 67);
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Imports, cx)));
     let id = cx.update(|cx| shell.read(cx).imports.read(cx).import_history[0].id);
 
     with_window(cx, handle, |window, cx| {
@@ -97,8 +107,11 @@ fn the_undo_action_arms_then_undoes_the_newest_import(cx: &mut TestAppContext) {
         window.dispatch_action(Box::new(UndoLastImport), cx)
     });
     wait_until(cx, "undo", |cx| {
-        shell.read(cx).dashboard.row_count == 0
-            && shell.read(cx).imports.read(cx).import_history.is_empty()
+        shell.read(cx).imports.read(cx).import_history.is_empty()
+    });
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
+    wait_until(cx, "undo rows", |cx| {
+        dash(cx, &shell).read(cx).row_count == 0
     });
 }
 

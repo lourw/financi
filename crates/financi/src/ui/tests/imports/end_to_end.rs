@@ -26,9 +26,27 @@ fn an_import_commit_still_reloads_every_page(cx: &mut TestAppContext) {
     });
     cx.update(|cx| shell.read(cx).db.query_log().clear());
     click_import(cx, handle, &shell);
+    // 3.82: the import switched to the Imports page; go back, where the
+    // hidden dashboard reloads.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
     wait_until(cx, "import finished and table refreshed", |cx| {
-        shell.read(cx).imports.read(cx).import.is_none() && shell.read(cx).dashboard.row_count == 11
+        shell.read(cx).imports.read(cx).import.is_none()
+            && dash(cx, &shell).read(cx).row_count == 11
     });
+    // The dashboard job is the fastest of the reload and the row check
+    // above can pass before the commit's full reload is even dispatched
+    // (3.82: the dashboard reloads on its own visit). Wait for the last
+    // of the catalog queries, then for everything to settle, before
+    // reading the log.
+    wait_until(cx, "full reload dispatched", |cx| {
+        shell
+            .read(cx)
+            .db
+            .query_log()
+            .names()
+            .contains(&"list_imports".to_string())
+    });
+    wait_idle(cx, &shell);
     let names = cx.update(|cx| shell.read(cx).db.query_log().names());
     for expected in [
         "list_accounts",
@@ -48,6 +66,45 @@ fn an_import_commit_still_reloads_every_page(cx: &mut TestAppContext) {
             "an import must reload {expected}; ran {names:?}"
         );
     }
+}
+
+/// 3.82: the hidden dashboard picks up a commit made on the Imports page
+/// through the full reload's `DataChanged` alone — one visit shows the new
+/// totals, with no manual refresh and no second navigation round trip.
+#[gpui::test]
+fn a_committed_import_shows_on_the_dashboard_without_a_manual_refresh(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |_| {});
+    import_demo_file(
+        cx,
+        handle,
+        &shell,
+        "simplii-chequing.csv",
+        "No Fee Chequing",
+    );
+    wait_idle(cx, &shell);
+    // 3.82: the import left the shell on the Imports page; visit the
+    // dashboard once to see the first file's rows.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
+    wait_until(cx, "first import on the dashboard", |cx| {
+        dash(cx, &shell).read(cx).row_count == 11
+    });
+
+    // Second file, committed from the Imports page into a second account:
+    // the dashboard is hidden while it lands.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Imports, cx)));
+    import_demo_file(cx, handle, &shell, "amex-sep-oct.csv", "Cobalt");
+    cx.update(|cx| {
+        assert_eq!(shell.read(cx).page, Page::Imports, "still on Imports");
+    });
+
+    // The one visit shows both files: the hidden reload already ran.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
+    // 11 + 67, minus the card payment the second account finally matches:
+    // 77 rows with transfers hidden (the same arithmetic the Cobalt-only
+    // import test makes).
+    wait_until(cx, "both imports on the dashboard", |cx| {
+        dash(cx, &shell).read(cx).row_count == 77
+    });
 }
 
 #[gpui::test]
@@ -70,8 +127,8 @@ fn import_end_to_end_shows_expected_values_on_every_page(cx: &mut TestAppContext
     // The fixtures carry fixed 2026 dates, so pin the range to All time:
     // the test must pass whenever it runs.
     with_window(cx, handle, |window, cx| {
-        shell.update(cx, |s, cx| {
-            s.change_date_preset(DatePreset::AllTime, window, cx)
+        dash(cx, &shell).update(cx, |d, cx| {
+            d.change_date_preset(DatePreset::AllTime, window, cx)
         });
     });
     // amex-sep-nov: 102 rows (100 unique + 2 genuine repeats), of which the
@@ -80,8 +137,8 @@ fn import_end_to_end_shows_expected_values_on_every_page(cx: &mut TestAppContext
     // PAY DEMO AMEX" debits pair with those payments (4.2) and are
     // categorized as Card Payment too.
     wait_until(cx, "all-time view over both imports", |cx| {
-        shell.read(cx).dashboard.summary.months == ["2026-09", "2026-10", "2026-11"]
-            && shell.read(cx).dashboard.row_count == 109
+        dash(cx, &shell).read(cx).summary.months == ["2026-09", "2026-10", "2026-11"]
+            && dash(cx, &shell).read(cx).row_count == 109
     });
 
     // Spend per month from expected.json with transfers excluded: the Amex
@@ -110,9 +167,9 @@ fn import_end_to_end_shows_expected_values_on_every_page(cx: &mut TestAppContext
     cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
     cx.update(|cx| {
         let s = shell.read(cx);
+        let d = dash(cx, &shell).read(cx);
         let row = |name: &str| {
-            s.dashboard
-                .summary
+            d.summary
                 .rows
                 .iter()
                 .find(|r| r.name == name)
@@ -127,8 +184,7 @@ fn import_end_to_end_shows_expected_values_on_every_page(cx: &mut TestAppContext
         assert_eq!(row("Uncategorized").total, spend_total);
         assert_eq!(row("Uncategorized").total, row("Spend").total);
         // Chart + legend (3.5): the single Uncategorized row.
-        let chart: Vec<(&str, i64)> = s
-            .dashboard
+        let chart: Vec<(&str, i64)> = d
             .chart_rows
             .iter()
             .map(|r| (r.name.as_str(), r.spend_cents))

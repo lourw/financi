@@ -53,9 +53,8 @@ fn cmd_o_opens_the_file_picker_and_the_preview(cx: &mut TestAppContext) {
     // Actions dispatch along the focus path, so focus the search input
     // first — like a user who clicked into the window.
     with_window(cx, handle, |window, cx| {
-        let input = shell
+        let input = dash(cx, &shell)
             .read(cx)
-            .dashboard
             .search_input
             .read(cx)
             .focus_handle(cx);

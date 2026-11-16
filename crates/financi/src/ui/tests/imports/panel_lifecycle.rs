@@ -98,8 +98,11 @@ fn a_committing_import_disables_cancel_and_ignores_new_files(cx: &mut TestAppCon
             "the ignored file left no trace: {msg}"
         );
     });
+    // 3.82: the import switched to the Imports page; go back, where the
+    // hidden dashboard reloads.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
     wait_idle(cx, &shell);
-    assert_eq!(shell.update(cx, |s, _| s.dashboard.row_count), 67);
+    assert_eq!(dash(cx, &shell).read_with(cx, |d, _| d.row_count), 67);
 }
 
 /// 3.94 regression: the reverse order of the test above — a file is
@@ -164,8 +167,11 @@ fn a_load_landing_mid_commit_never_replaces_the_committing_panel(cx: &mut TestAp
             "the ignored file left no trace: {msg}"
         );
     });
+    // 3.82: the import switched to the Imports page; go back, where the
+    // hidden dashboard reloads.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
     wait_idle(cx, &shell);
-    assert_eq!(shell.update(cx, |s, _| s.dashboard.row_count), 67);
+    assert_eq!(dash(cx, &shell).read_with(cx, |d, _| d.row_count), 67);
 }
 
 /// 3.64: every opened panel subscribes the shell to it, and the
@@ -373,7 +379,12 @@ fn archive_results_landing_after_the_window_closes_are_dropped(cx: &mut TestAppC
     let (handle, shell) = open_shell_on_file(cx, |_| {});
     wait_idle(cx, &shell);
     import_demo_file(cx, handle, &shell, "amex-sep-oct.csv", "Amex");
-    wait_until(cx, "67 rows", |cx| shell.read(cx).dashboard.row_count == 67);
+    // 3.82: the import switched to the Imports page; go back, where the
+    // hidden dashboard reloads.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
+    wait_until(cx, "67 rows", |cx| {
+        dash(cx, &shell).read(cx).row_count == 67
+    });
     let snapshot = scratch_file("snapshot.zip");
     export_to(cx, handle, &shell, &snapshot);
     let db = shell.update(cx, |s, _| s.db.clone());
@@ -391,8 +402,11 @@ fn archive_results_landing_after_the_window_closes_are_dropped(cx: &mut TestAppC
     let snapshot_rows = raw_count(&db);
     assert_eq!(snapshot_rows, 68, "raw rows the snapshot carries");
     import_demo_file(cx, handle, &shell, "simplii-chequing.csv", "Simplii");
+    // 3.82: the import switched to the Imports page; go back, where the
+    // hidden dashboard reloads.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
     wait_until(cx, "the second import lands", |cx| {
-        shell.read(cx).dashboard.row_count > 67
+        dash(cx, &shell).read(cx).row_count > 67
     });
     assert!(raw_count(&db) > snapshot_rows, "the second import landed");
 
@@ -420,8 +434,11 @@ fn archive_results_landing_after_the_window_closes_are_dropped(cx: &mut TestAppC
     let (handle2, shell2) = open_shell_on_file(cx, |_| {});
     wait_idle(cx, &shell2);
     import_demo_file(cx, handle2, &shell2, "amex-sep-oct.csv", "Amex");
+    // 3.82: the import switched to the Imports page; go back, where the
+    // hidden dashboard reloads.
+    cx.update(|cx| shell2.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
     wait_until(cx, "67 rows again", |cx| {
-        shell2.read(cx).dashboard.row_count == 67
+        dash(cx, &shell2).read(cx).row_count == 67
     });
     let block2 = block_worker(cx, &shell2);
     with_window(cx, handle2, |window, cx| {

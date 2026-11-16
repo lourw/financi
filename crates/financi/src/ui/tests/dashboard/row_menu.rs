@@ -57,7 +57,7 @@ fn row_menu_and_cells_past_the_end_are_empty(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, |_| {});
     wait_idle(cx, &shell);
     with_window(cx, handle, |window, cx| {
-        let table = shell.read(cx).dashboard.table.clone();
+        let table = dash(cx, &shell).read(cx).table.clone();
         assert!(
             table.read(cx).delegate().rows.is_empty(),
             "fresh table, no rows"
@@ -148,12 +148,12 @@ fn changing_a_rows_category_locks_it_and_offers_the_rule(cx: &mut TestAppContext
     let groceries = cx.update(|cx| find_child(&shell, cx, "Groceries").unwrap());
 
     with_window(cx, handle, |window, cx| {
-        shell.update(cx, |s, cx| {
-            s.change_row_category(target, online, window, cx)
+        dash(cx, &shell).update(cx, |d, cx| {
+            d.change_row_category(target, online, window, cx)
         });
     });
     wait_until(cx, "target categorized and offer up", |cx| {
-        shell.read(cx).dashboard.rule_offer == Some((target, online))
+        dash(cx, &shell).read(cx).rule_offer == Some((target, online))
             && table_rows(&shell, cx)
                 .iter()
                 .any(|r| r.id == target && r.category.as_deref() == Some("Online"))
@@ -218,19 +218,19 @@ fn applying_the_row_offer_categorizes_the_whole_merchant(cx: &mut TestAppContext
     assert!(all_uncategorized, "the group starts uncategorized");
 
     with_window(cx, handle, |window, cx| {
-        shell.update(cx, |s, cx| {
-            s.change_row_category(target, online, window, cx)
+        dash(cx, &shell).update(cx, |d, cx| {
+            d.change_row_category(target, online, window, cx)
         });
     });
     wait_until(cx, "offer up", |cx| {
-        shell.read(cx).dashboard.rule_offer == Some((target, online))
+        dash(cx, &shell).read(cx).rule_offer == Some((target, online))
     });
 
     with_window(cx, handle, |window, cx| {
-        shell.update(cx, |s, cx| s.apply_row_rule(target, window, cx));
+        dash(cx, &shell).update(cx, |d, cx| d.apply_row_rule(target, window, cx));
     });
     wait_until(cx, "rule created and offer cleared", |cx| {
-        shell.read(cx).dashboard.rule_offer.is_none()
+        dash(cx, &shell).read(cx).rule_offer.is_none()
             && shell.read(cx).rules.iter().any(|r| r.pattern == m)
     });
     // 3.56: the rules list lands with the rule write, the table rows with
@@ -262,7 +262,7 @@ fn hiding_and_unhiding_a_row_updates_the_table_and_sidebar_counts(cx: &mut TestA
     assert!(target_visible, "the target row is visible before hiding it");
 
     with_window(cx, handle, |window, cx| {
-        shell.update(cx, |s, cx| s.set_row_hidden(target, true, window, cx));
+        dash(cx, &shell).update(cx, |d, cx| d.set_row_hidden(target, true, window, cx));
     });
     wait_until(cx, "hidden row leaves table and counts", |cx| {
         !table_rows(&shell, cx).iter().any(|r| r.id == target)
@@ -271,7 +271,7 @@ fn hiding_and_unhiding_a_row_updates_the_table_and_sidebar_counts(cx: &mut TestA
     });
 
     with_window(cx, handle, |window, cx| {
-        shell.update(cx, |s, cx| s.set_row_hidden(target, false, window, cx));
+        dash(cx, &shell).update(cx, |d, cx| d.set_row_hidden(target, false, window, cx));
     });
     wait_until(cx, "unhidden row returns to table and counts", |cx| {
         table_rows(&shell, cx).iter().any(|r| r.id == target)

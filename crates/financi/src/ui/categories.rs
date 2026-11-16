@@ -20,6 +20,7 @@
 //! that together do what one function did before the extraction.
 
 use super::*;
+use crate::ui::dashboard_chart::category_colors;
 use crate::ui::page::{Cancel, PageEntity, PageEvent, watch_catalog};
 use crate::ui::widgets::*;
 // 3.51: `Button::selected` — the open form's title-row button reads as
@@ -288,7 +289,10 @@ impl Shell {
                 page.renaming = false;
             });
         }
-        if confirm.is_some_and(|id| !known(id)) {
+        // 3.82 review fix: the same staleness guard as the selection
+        // prune above — a tree read dispatched before this category
+        // existed must not dismiss a delete the user just armed.
+        if generation >= self.category_selection_settled && confirm.is_some_and(|id| !known(id)) {
             self.categories_view
                 .update(cx, |page, _| page.confirm_delete_category = None);
         }
@@ -419,7 +423,7 @@ impl Shell {
         // 3.78 review fix: from the next dispatch on, a refresh result
         // was queried with this selection in mind and may prune it;
         // results of older dispatches may not (see the field docs).
-        self.category_selection_settled = self.refresh_started + 1;
+        self.category_selection_settled = self.refresh_started.get() + 1;
         self.categories_page.selected_category = Some(id);
         // 3.24: selecting another category closes the rule editor (with its
         // preview count) and disarms any armed rule delete — the same
@@ -1198,7 +1202,7 @@ impl Render for CategoriesPage {
         let palette = (muted, list_active, list_hover);
         // 3.23: the tree's swatches use the same palette and assignment the
         // transaction views show (ui-conventions, *Category colors*).
-        let colors = Rc::new(shell.read(cx).category_colors(cx.theme()));
+        let colors = Rc::new(category_colors(&self.tree, cx.theme()));
 
         // 3.12: the tree is virtualized (gpui-kit `v_virtual_list`). The
         // closure runs during layout with the visible range, so a tree of

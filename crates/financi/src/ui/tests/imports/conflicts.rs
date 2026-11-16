@@ -55,7 +55,12 @@ fn restore_in_flight_refuses_an_import(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell_on_file(cx, |_| {});
     wait_idle(cx, &shell);
     import_demo_file(cx, handle, &shell, "amex-sep-oct.csv", "Amex");
-    wait_until(cx, "67 rows", |cx| shell.read(cx).dashboard.row_count == 67);
+    // 3.82: the import switched to the Imports page; go back, where the
+    // hidden dashboard reloads.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
+    wait_until(cx, "67 rows", |cx| {
+        dash(cx, &shell).read(cx).row_count == 67
+    });
     let zip = scratch_file("snapshot.zip");
     export_to(cx, handle, &shell, &zip);
 
@@ -111,9 +116,12 @@ fn restore_in_flight_refuses_an_import(cx: &mut TestAppContext) {
 
     // Release the writer: the restore lands and the import never happened.
     drop(block);
+    // 3.82: the import switched to the Imports page; go back, where the
+    // hidden dashboard reloads.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
     wait_until(cx, "the restored rows land", |cx| {
         !shell.read(cx).imports.read(cx).restoring
-            && shell.read(cx).dashboard.row_count == 67
+            && dash(cx, &shell).read(cx).row_count == 67
             && shell.read(cx).accounts.len() == 1
     });
     wait_idle(cx, &shell);
@@ -149,7 +157,12 @@ fn restore_in_flight_refuses_a_queue_apply(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell_on_file(cx, |_| {});
     wait_idle(cx, &shell);
     import_demo_file(cx, handle, &shell, "amex-sep-oct.csv", "Amex");
-    wait_until(cx, "67 rows", |cx| shell.read(cx).dashboard.row_count == 67);
+    // 3.82: the import switched to the Imports page; go back, where the
+    // hidden dashboard reloads.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
+    wait_until(cx, "67 rows", |cx| {
+        dash(cx, &shell).read(cx).row_count == 67
+    });
     add_parent(cx, handle, &shell, "Shopping");
     add_child(cx, handle, &shell, "Online");
     wait_until(cx, "queue populated", |cx| {
@@ -206,8 +219,11 @@ fn restore_in_flight_refuses_a_queue_apply(cx: &mut TestAppContext) {
     });
 
     drop(block);
+    // 3.82: the import switched to the Imports page; go back, where the
+    // hidden dashboard reloads.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
     wait_until(cx, "the restored rows land", |cx| {
-        !shell.read(cx).imports.read(cx).restoring && shell.read(cx).dashboard.row_count == 67
+        !shell.read(cx).imports.read(cx).restoring && dash(cx, &shell).read(cx).row_count == 67
     });
     wait_idle(cx, &shell);
     cx.update(|cx| {
@@ -279,8 +295,11 @@ fn a_cancelled_export_dialog_leaves_import_working(cx: &mut TestAppContext) {
         assert!(p.read(cx).can_import(), "Import is live after the cancel");
     });
     click_import(cx, handle, &shell);
+    // 3.82: the import switched to the Imports page; go back, where the
+    // hidden dashboard reloads.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
     wait_until(cx, "the import lands", |cx| {
-        shell.read(cx).dashboard.row_count == 67
+        dash(cx, &shell).read(cx).row_count == 67
     });
     wait_idle(cx, &shell);
 }

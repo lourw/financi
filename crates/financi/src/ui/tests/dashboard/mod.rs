@@ -6,9 +6,18 @@
 //! New tests go next to related ones in the right sub-file.
 
 use super::*;
+use crate::ui::dashboard::DashboardPage;
 
 mod accounts;
 mod chart;
+
+// 3.82: the Dashboard is an entity. Tests reach its state through this
+// accessor instead of `shell.read(cx).dashboard`, and drive its handlers on
+// the page entity. Shell stays free whenever a test updates an entity, so
+// a handler that forwards to Shell (a toast, a page switch) works.
+pub(super) fn dash<C: gpui::AppContext>(cx: &C, shell: &Entity<Shell>) -> Entity<DashboardPage> {
+    shell.read_with(cx, |s, _| s.dashboard.clone())
+}
 mod chart_labels;
 mod date_range;
 mod drill_down;
@@ -76,14 +85,14 @@ pub(super) fn click_chart_legend(
     // 3.65: a selected row paints `chart:legend-row:<ix>:active` — click
     // the selector the row answers to *now*, same rule as the checkboxes.
     let (ix, selected) = cx.update(|cx| {
-        let s = shell.read(cx);
-        let ix = s.dashboard.chart_rows.iter().position(|r| r.id == id);
-        let selected = match (id, s.dashboard.filter.legend_selection) {
+        let d = dash(cx, shell).read(cx);
+        let ix = d.chart_rows.iter().position(|r| r.id == id);
+        let selected = match (id, d.filter.legend_selection) {
             (None, _) => {
                 matches!(
-                    s.dashboard.filter.legend_selection,
+                    d.filter.legend_selection,
                     Some(LegendSelection::Uncategorized)
-                ) || s.dashboard.filter.uncategorized_only
+                ) || d.filter.uncategorized_only
             }
             (Some(id), Some(LegendSelection::Category(c))) => c == id,
             _ => false,
@@ -98,9 +107,8 @@ pub(super) fn click_chart_legend(
 }
 
 pub(super) fn top_category_id(shell: &Entity<Shell>, cx: &App, name: &str) -> i64 {
-    shell
+    dash(cx, shell)
         .read(cx)
-        .dashboard
         .chart_rows
         .iter()
         .find(|r| r.name == name)
@@ -205,6 +213,6 @@ fn set_uncategorized_only(
     on: bool,
 ) {
     with_window(cx, handle, |window, cx| {
-        shell.update(cx, |s, cx| s.set_uncategorized_only(on, window, cx));
+        dash(cx, shell).update(cx, |d, cx| d.set_uncategorized_only(on, window, cx));
     });
 }
