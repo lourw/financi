@@ -73,13 +73,9 @@ pub(super) struct QueuePage {
     /// 3.21: the virtualized list's scroll handle, alive as long as the
     /// page (see the note on `tree_scroll` in 3.21).
     pub(super) scroll: VirtualListScrollHandle,
-    /// 3.91: the `DataList` cells callback runs once per painted row,
-    /// top-down. The row id that follows `next_cell` extends the current
-    /// paint pass; one that doesn't starts a new one — that is how the
-    /// page knows what the list just drew without a range argument.
-    next_cell: Cell<usize>,
     /// 3.91: `[painted_lo, painted_hi)` — the group indices the current
-    /// paint pass has built; the prune window (3.83).
+    /// paint pass builds; the prune window (3.83). H4: set from the
+    /// exact pass range `DataList::on_pass` reports.
     painted_lo: Cell<usize>,
     painted_hi: Cell<usize>,
     /// 3.21: the range of rows the queue built last frame, for the
@@ -188,7 +184,6 @@ impl QueuePage {
             pickers_need_items: false,
             error: None,
             scroll: VirtualListScrollHandle::new(),
-            next_cell: Cell::new(0),
             painted_lo: Cell::new(0),
             painted_hi: Cell::new(0),
             #[cfg(test)]
@@ -264,29 +259,22 @@ impl QueuePage {
         self.picker_for_row(merchant, window, cx)
     }
 
-    /// 3.91: fold one `DataList` cells call into the current paint pass.
-    /// Row ids arrive ascending; an id that doesn't continue the sequence
-    /// opens a new pass (a fresh layout, or the next frame), which is what
-    /// replaces the range argument the old `v_virtual_list` closure got.
-    fn note_painted(&self, i: usize) {
-        if i != self.next_cell.get() {
-            self.painted_lo.set(i);
-            self.painted_hi.set(i + 1);
-            #[cfg(test)]
-            {
-                self.rows_built.set(0);
-                self.range.set((i, i + 1));
-            }
-        } else if i + 1 > self.painted_hi.get() {
-            self.painted_hi.set(i + 1);
-        }
+    /// 3.91: record the lines one `DataList` paint pass builds. H4:
+    /// `DataList::on_pass` hands over the exact range — the range
+    /// argument the old `v_virtual_list` closure got — so the window is
+    /// set, not inferred from the row ids: an exact-page scroll (PageDown
+    /// at a viewport height that's a multiple of the 40 px row)
+    /// continues the ids with no break, and the old sequence heuristic
+    /// let the pass, and the prune window below it, grow unbounded.
+    /// `pub(super)` so the tests can drive passes the list would report.
+    pub(super) fn note_paint_pass(&self, range: std::ops::Range<usize>) {
+        self.painted_lo.set(range.start);
+        self.painted_hi.set(range.end);
         #[cfg(test)]
         {
-            self.rows_built.set(self.rows_built.get() + 1);
-            let (start, end) = self.range.get();
-            self.range.set((start.min(i), end.max(i + 1)));
+            self.rows_built.set(range.len());
+            self.range.set((range.start, range.end));
         }
-        self.next_cell.set(i + 1);
     }
 
     /// 3.83: pickers are built with their rows, so they must also go when
@@ -297,9 +285,10 @@ impl QueuePage {
     /// mid-interaction with it. A pruned picker rebuilds lazily from the
     /// current category list the next time its row renders. 3.91: the
     /// cells callback is where the page learns what painted, so the prune
-    /// runs there too, once per built row; the window it keeps only grows
-    /// within a pass, so the survivors match the old once-per-frame prune.
-    fn prune_visible(&self, cx: &App) {
+    /// runs there too, once per built row; H4: the window is the exact
+    /// pass range, set before any row builds, so the survivors match the
+    /// old once-per-frame prune. `pub(super)` for the same tests.
+    pub(super) fn prune_visible(&self, cx: &App) {
         if self.pickers.borrow().is_empty() {
             return;
         }
@@ -477,6 +466,10 @@ impl Render for QueuePage {
             panel
                 .child(
                     DataList::new(cx.entity(), columns, items)
+                        // H4: the prune window is the exact pass range,
+                        // so an exact-page scroll moves it instead of
+                        // growing it (see [`Self::note_paint_pass`]).
+                        .on_pass(move |this, range| this.note_paint_pass(range))
                         // 3.19: the cells callback runs during layout for
                         // the visible slice only, so a queue of thousands
                         // builds (and picks) only what can be on screen;
@@ -486,7 +479,6 @@ impl Render for QueuePage {
                             let DataItem::Row { id, .. } = item else {
                                 return Vec::new();
                             };
-                            this.note_painted(*id);
                             let g = &this.groups[*id];
                             let merchant = g.merchant.clone();
                             let picker = this.picker_for_row(&merchant, window, cx);

@@ -399,6 +399,108 @@ fn the_queue_prunes_pickers_as_its_window_moves(cx: &mut TestAppContext) {
     });
 }
 
+/// H4: exact-page scrolls. Scrolling to the offset where the previous
+/// pass ended makes the built ids continue with no break (PageDown at a
+/// viewport height that's a multiple of the 40 px row); the old sequence
+/// heuristic only reset the paint window on a break, so window and picker
+/// map grew with every page. The exact pass range from
+/// `DataList::on_pass` moves the window page to page instead, and the
+/// map stays the size of the visible slice.
+#[gpui::test]
+fn exact_page_scrolls_move_the_window_instead_of_growing_it(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |conn| seed_queue_thousands(conn, 2_000));
+    wait_until(cx, "2000 queue groups", |cx| queue_len(&shell, cx) == 2_000);
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::ToCategorize, cx)));
+    draw_frame(cx, handle);
+    // Walk down twenty exact pages: each offset puts the row the previous
+    // pass ended on right at the viewport top, so the new pass starts
+    // exactly at the old pass's end.
+    for page in 0..20 {
+        let end = cx.update(|cx| {
+            let p = shell.read(cx).queue_view.read(cx);
+            let end = p.range.get().1;
+            p.scroll.set_offset(point(px(0.), px(-(end as f32 * 40.))));
+            end
+        });
+        draw_frame(cx, handle);
+        cx.update(|cx| {
+            let p = shell.read(cx).queue_view.read(cx);
+            let (start, next_end) = p.range.get();
+            assert_eq!(
+                start, end,
+                "page {page}: the ids continued at {end}, no break"
+            );
+            assert!(
+                next_end > start && p.rows_built.get() < 100,
+                "page {page}: the window is one screenful, not the walk ({start}..{next_end})",
+            );
+            assert!(
+                p.picker_count() < 100,
+                "page {page}: {} pickers after exact-page scrolls — the map must stay \
+                 the size of the window",
+                p.picker_count()
+            );
+        });
+    }
+    // Nothing walked past survives: the first page left the window
+    // twenty screens ago.
+    cx.update(|cx| {
+        let p = shell.read(cx).queue_view.read(cx);
+        assert!(
+            !p.has_picker("QUEUE MERCHANT 0000"),
+            "a picker an exact-page walk left behind is pruned"
+        );
+    });
+}
+
+/// H4 (direct): passes whose ids continue exactly at the previous
+/// pass's end — the case the 3.91 review flagged, where nothing breaks
+/// the sequence for the old heuristic to see. The harness lays out
+/// before it paints, and measuring re-builds row 0, so even an exact
+/// scrolled frame breaks the sequence in a test; the no-break walk can
+/// only be driven through the pass hook itself. `note_paint_pass` takes
+/// the exact range `DataList::on_pass` reports, so every pass moves the
+/// prune window and the map stops growing with the walk.
+#[gpui::test]
+fn a_pass_that_continues_the_ids_still_moves_the_window(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |conn| seed_queue_thousands(conn, 2_000));
+    wait_until(cx, "2000 queue groups", |cx| queue_len(&shell, cx) == 2_000);
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::ToCategorize, cx)));
+    draw_frame(cx, handle);
+    cx.update(|cx| {
+        let p = shell.read(cx).queue_view.read(cx);
+        let window = p.range.get().1;
+        assert!(
+            p.has_picker("QUEUE MERCHANT 0000"),
+            "the top page has pickers"
+        );
+        // Walk down the queue one exact page at a time: every pass
+        // starts where the last ended, the ids continuing with no break.
+        for page in 1.. {
+            let lo = page * window;
+            if lo + window > p.groups.len() {
+                break;
+            }
+            p.note_paint_pass(lo..lo + window);
+            p.prune_visible(cx);
+            assert_eq!(
+                p.rows_built.get(),
+                window,
+                "page {page}: a pass is one window"
+            );
+            assert!(
+                p.picker_count() < 100,
+                "page {page}: {} pickers — the map must stop growing with the walk",
+                p.picker_count()
+            );
+        }
+        assert!(
+            !p.has_picker("QUEUE MERCHANT 0000"),
+            "the top page's pickers are pruned even though the ids never broke"
+        );
+    });
+}
+
 /// 3.27: categorizing a queue group answers with a toast, and the toast is an
 /// overlay — the top of the page paints in exactly the same place with a card
 /// showing, where the old inline status line used to shift everything down.

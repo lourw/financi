@@ -286,6 +286,9 @@ pub(super) enum DataItem {
 
 /// Paints one line's cells (see [`DataList::cells`]).
 type CellsFn<V> = Rc<dyn Fn(&V, &DataItem, &mut Window, &mut Context<V>) -> Vec<ListCell>>;
+/// Notified once per paint pass with the lines about to be built (see
+/// [`DataList::on_pass`]).
+type PassFn<V> = Rc<dyn Fn(&V, std::ops::Range<usize>)>;
 /// Paints one line's actions (see [`DataList::actions`]).
 type ActionsFn<V> = Rc<dyn Fn(&V, &DataItem, &mut Window, &mut Context<V>) -> Vec<AnyElement>>;
 /// A group header's chevron callback (see [`DataList::toggle`]).
@@ -320,6 +323,7 @@ pub(super) struct DataList<V: Render> {
     items: Rc<Vec<DataItem>>,
     sizes: Rc<Vec<Size<Pixels>>>,
     cells: CellsFn<V>,
+    on_pass: Option<PassFn<V>>,
     actions_width: Option<f32>,
     actions: Option<ActionsFn<V>>,
     on_toggle: Option<ToggleFn<V>>,
@@ -356,6 +360,7 @@ impl<V: Render> DataList<V> {
             items,
             sizes,
             cells: Rc::new(|_, _, _, _| Vec::new()),
+            on_pass: None,
             actions_width: None,
             actions: None,
             on_toggle: None,
@@ -379,6 +384,19 @@ impl<V: Render> DataList<V> {
         f: impl Fn(&V, &DataItem, &mut Window, &mut Context<V>) -> Vec<ListCell> + 'static,
     ) -> Self {
         self.cells = Rc::new(f);
+        self
+    }
+
+    /// Call `f` once per paint pass with the exact range of lines the
+    /// list is about to build — the range argument the old
+    /// `v_virtual_list` closure got. Pages that count built rows use
+    /// this instead of inferring the pass from the row ids the `cells`
+    /// callback sees: an exact-page scroll (PageDown at a viewport
+    /// height that is a multiple of the row) continues the ids with no
+    /// break, so a sequence heuristic misses the window move and lets
+    /// it grow unbounded (H4).
+    pub fn on_pass(mut self, f: impl Fn(&V, std::ops::Range<usize>) + 'static) -> Self {
+        self.on_pass = Some(Rc::new(f));
         self
     }
 
@@ -548,6 +566,7 @@ impl<V: Render> RenderOnce for DataList<V> {
         let columns = self.columns.clone();
         let items = self.items.clone();
         let cells = self.cells.clone();
+        let on_pass = self.on_pass.clone();
         let actions = self.actions.clone();
         let actions_width = self.actions_width;
         let on_toggle = self.on_toggle.clone();
@@ -558,6 +577,12 @@ impl<V: Render> RenderOnce for DataList<V> {
             "financi-data-list",
             self.sizes.clone(),
             move |view, range, window, cx| {
+                // H4: hand the page the exact pass range before any of
+                // its rows build, so its window is this frame's, not the
+                // union of every frame since the ids last broke.
+                if let Some(f) = &on_pass {
+                    f(view, range.clone());
+                }
                 let start = range.start;
                 let mut lines = Vec::with_capacity(range.len());
                 for (i, item) in items[range].iter().enumerate() {
