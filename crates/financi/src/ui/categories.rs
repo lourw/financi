@@ -542,6 +542,10 @@ pub(super) struct CategoriesPage {
     pub(super) cat_pending: Option<PendingCatWrite>,
     /// The `Catalog` subscription (3.79); lives as long as the page.
     _catalog: Subscription,
+    /// 3.96: Enter in the new-subcategory input adds the subcategory
+    /// (ui-conventions *Keyboard*: "Enter submits the focused form"), so
+    /// several names go in a row from the open form.
+    _new_child_enter: Subscription,
     // -- Snapshot mirrors (3.81). `uses` (3.49) is the per-rule count the
     // rule list's Uses column shows — the same `rule_use_stats` mirror the
     // Rules page reads, taken off the shared snapshot rather than the
@@ -649,6 +653,24 @@ impl CategoriesPage {
         });
         let new_child_name =
             cx.new(|cx| InputState::new(window, cx).placeholder("New subcategory name"));
+        // 3.96: Enter submits the open Add subcategory form (ui-conventions
+        // *Keyboard*). The keystroke can only reach this input while the
+        // form is open; while the write is in flight the Enter does what the
+        // disabled Add button does — nothing (3.84).
+        let _new_child_enter = cx.subscribe_in(
+            &new_child_name,
+            window,
+            |this, _input, ev: &InputEvent, window, cx| match ev {
+                InputEvent::PressEnter {
+                    secondary: false, ..
+                } if this.detail_form == Some(DetailForm::AddSubcategory)
+                    && this.cat_pending != Some(PendingCatWrite::AddChild) =>
+                {
+                    this.add_child(window, cx)
+                }
+                _ => {}
+            },
+        );
         let rename_input = cx.new(|cx| InputState::new(window, cx).placeholder("New name"));
         let move_target = cx.new(|cx| SelectState::new(Names::new(), None, window, cx));
         let delete_target = cx.new(|cx| SelectState::new(Names::new(), None, window, cx));
@@ -665,6 +687,7 @@ impl CategoriesPage {
             dirty: true,
             focus_pending: false,
             _catalog,
+            _new_child_enter,
             tree: Vec::new(),
             counts: HashMap::new(),
             rules: Vec::new(),
@@ -912,7 +935,8 @@ impl CategoriesPage {
         cx.notify();
     }
 
-    /// Add a child under the selected parent.
+    /// Add a child under the selected parent (3.96: the parent keeps the
+    /// selection — the new child never takes it).
     pub(super) fn add_child(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // 5.3 review fix: refuse writes while an export/restore is in flight.
         if self.writes_blocked.get() {
@@ -937,7 +961,8 @@ impl CategoriesPage {
         // 3.84: the Add subcategory button shows loading, disabled,
         // until the DB is done.
         self.cat_pending = Some(PendingCatWrite::AddChild);
-        // 3.64: the selection this add may claim (see `add_parent`).
+        // 3.64 / 3.96: the selection the open form belongs to — a success
+        // must not disturb any selection made while the write ran.
         let prior_selection = self.selected_category;
         // 3.51: submitted from the Add subcategory form? Then a success
         // keeps the form open and focused, parent still selected, so
@@ -951,7 +976,14 @@ impl CategoriesPage {
                     this.cat_pending = None;
                 }
                 match result {
-                    Ok(id) => {
+                    Ok(_id) => {
+                        // 3.96: the new child never takes the selection —
+                        // `select_category(id)` used to run here and moved
+                        // the detail panel onto the new row, so the user
+                        // had to click back to the parent for the next
+                        // name (2026-11-15). The parent stays selected, and
+                        // the child appears in the tree and in the parent's
+                        // rule-target picker with the refresh below.
                         // 3.64: don't wipe a newer draft (see `add_parent`).
                         let unchanged = this.new_child_name.read(cx).value().trim() == submitted;
                         if unchanged {
@@ -970,10 +1002,6 @@ impl CategoriesPage {
                                 let handle = this.new_child_name.focus_handle(cx);
                                 window.defer(cx, move |window, cx| window.focus(&handle, cx));
                             }
-                        } else if unchanged && this.selected_category == prior_selection {
-                            // 3.64: nor steal a newer selection, nor leave an
-                            // open rename session on it (see `add_parent`).
-                            this.select_category(id, window, cx);
                         }
                     }
                     Err(e) => this.cat_error = Some(e),
