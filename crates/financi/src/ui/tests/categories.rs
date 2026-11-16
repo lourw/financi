@@ -588,7 +588,9 @@ fn the_categories_page_labels_its_controls(cx: &mut TestAppContext) {
     cx.run_until_parked();
     draw_frame(cx, handle);
     for sel in [
-        "label:Category tree",
+        // 3.91: the tree's heading belongs to the shared list, so it
+        // carries the list's `{prefix}:heading:{column}` selector.
+        "cat:heading:Category tree",
         "label:New category name",
         "label:Kind",
         "label:Rules",
@@ -809,7 +811,7 @@ fn the_categories_page_never_says_parent_or_child(cx: &mut TestAppContext) {
             .sum::<usize>()
     });
     for sel in [
-        "label:Category tree",
+        "cat:heading:Category tree",
         "label:New category name",
         "label:Kind",
         "label:Add category",
@@ -1962,13 +1964,14 @@ fn the_categories_page_fits_the_minimum_window(cx: &mut TestAppContext) {
 
     // A tree row fills its panel: a content-width row would leave the
     // counts floating mid-panel and a long name would never truncate, so
-    // the row's right edge is the tree panel's content edge (border 1 px
-    // + `p_2`).
+    // the row's right edge is the tree panel's content edge — 3.91: the
+    // shared list runs edge to edge, so only the panel's 1 px border
+    // stands between the row and the panel's outer edge.
     let tree = window
         .debug_bounds("cat:tree-panel")
         .expect("the tree panel");
     let row = bounds(cx, handle, format!("cat:tree-row:{child}"));
-    let tree_content_right = tree.origin.x + tree.size.width - px(9.);
+    let tree_content_right = tree.origin.x + tree.size.width - px(1.);
     assert!(
         (row.origin.x + row.size.width - tree_content_right).abs() < px(1.),
         "the tree row fills the panel to its content edge: row right {:?}, \
