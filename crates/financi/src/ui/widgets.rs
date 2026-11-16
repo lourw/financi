@@ -863,19 +863,29 @@ pub(super) fn row_action_button(
 // 10px `TEXT_SIZE` and offers no truncation, so the app prepares the
 // text: names are ellipsized to a character budget, and when even short
 // labels cannot share a band they are thinned out with
-// `BarChart::band_tick_count`. The budgets come from the window's live
-// width (tracked through `observe_window_bounds`), so labels grow as the
-// window grows and never overlap or spill past the panel at the minimum
-// size (1200 × 720) or above.
+// `BarChart::band_tick_count`. Since 3.86 the budgets come from the
+// measured plot area (a `bounds_probe` on the chart's own container) and
+// a measured per-character width, so labels grow as the window grows and
+// never overlap or spill past the panel at the minimum size (1200 × 720)
+// or above.
 //
 // Layout widths shared by the dashboard and the budget maths: the fixed
 // sidebar, the legend column inside the chart panel, the panel's share
 // of the dashboard's middle row, the 16px padding of pages and panels
-// (`p_4`) and the 12px gap between regions (`gap_3`).
+// (`p_4`) and the 12px gap between regions (`gap_3`). Since 3.86 the
+// pages read their real widths from `bounds_probe` measurements, so
+// these describe the chrome for the view tree itself — no layout maths
+// deducts the sidebar from a window width any more.
 pub(super) const SIDEBAR_W: f32 = 210.;
+/// The 16 px page padding (`p_4`), applied by the view tree's styling;
+/// since 3.86 only the tests' geometry expectations name it, hence the
+/// `allow` in the bin build.
+#[allow(dead_code)]
 pub(super) const PAGE_PAD: f32 = 16.;
 /// Generous width of one 10px system-font character, rounded up so the
 /// budget errs towards labels that are too short rather than overlapping.
+/// 3.86: a *seed* only — the dashboard measures the chart font's actual
+/// per-character width at construction and plans with that.
 pub(super) const CHART_CHAR_PX: f32 = 6.5;
 /// A generous width of one 14 px (`text_sm`) system-font character, the
 /// same rounding-up spirit as `CHART_CHAR_PX` (which covers the chart's
@@ -894,6 +904,43 @@ pub(super) const UNDO_ICON_W: f32 = 16.;
 pub(super) const CELL_PAD_X: f32 = 16.;
 /// The table's 1 px border on each side; the page width includes it.
 pub(super) const TABLE_BORDER_X: f32 = 2.;
+
+/// A probe that measures the width of the container it is attached to
+/// (3.86): add it as a child of a `.relative()` container, and the
+/// container's own laid-out content width — not a window-width guess —
+/// arrives at `set` once layout is known.
+///
+/// ```ignore
+/// div().relative().child(bounds_probe(cx.entity().downgrade(), |this, w, cx| {
+///     this.set_plot_width(w, cx);
+/// }))
+/// ```
+///
+/// The probe is an absolutely positioned canvas: it takes no part in
+/// layout and reports in `prepaint`, when the containing block's bounds
+/// are final. The report goes through `window.defer`, so the receiving
+/// entity updates after the frame rather than in the middle of the
+/// prepaint pass. `set` must store the width and `cx.notify()` only when
+/// the value actually changed — the notify repaints, the probe measures
+/// the same width and stays quiet, and the loop converges one frame
+/// later. It must also never resize the probed container: plans that
+/// feed back into the container's own width would oscillate.
+pub(super) fn bounds_probe<R: 'static>(
+    observee: WeakEntity<R>,
+    set: impl Fn(&mut R, f32, &mut Context<R>) + 'static,
+) -> impl IntoElement {
+    canvas(
+        move |bounds, window, cx| {
+            let width = bounds.size.width.as_f32();
+            window.defer(cx, move |_, cx| {
+                observee.update(cx, |this, cx| set(this, width, cx)).ok();
+            });
+        },
+        |_, _, _, _| {},
+    )
+    .absolute()
+    .size_full()
+}
 
 /// The category palette (ui-conventions, *Category colors*): the six base
 /// colors then their light variants, so red and green — which also mean

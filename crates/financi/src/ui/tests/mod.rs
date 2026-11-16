@@ -875,6 +875,18 @@ fn draw_frame(cx: &mut TestAppContext, handle: AnyWindowHandle) {
     });
 }
 
+/// 3.86: draw until the bounds probes have settled. A probe reports in
+/// prepaint through `window.defer`, so each report needs a completed
+/// frame *and* a `run_until_parked` to land; the notify it raises wants
+/// one more frame, whose probe reports the same width and stays quiet.
+/// Three rounds covers probe → store → repaint → stable.
+fn settle(cx: &mut TestAppContext, handle: AnyWindowHandle) {
+    for _ in 0..3 {
+        draw_frame(cx, handle);
+        cx.run_until_parked();
+    }
+}
+
 /// 3.21: wheel `dx` × `dy` pixels over a point — `v_virtual_list` scrolls
 /// under the mouse, so tests aim at the centre of the list handle's
 /// viewport. Sideways scrolling is `dx` (3.30: on Linux Shift+wheel

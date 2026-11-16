@@ -2,38 +2,89 @@
 
 use super::*;
 
-/// 3.25: the dashboard table's width plan — the flexed `Account`,
+/// 3.25, 3.86: the dashboard table's width plan — the flexed `Account`,
 /// `Description` and `Category` columns plus the fixed ones always sum to
-/// exactly the page width, so the table reaches the page's right edge
-/// without overhanging it at any window size (the wrapper alone cannot
-/// pin this, and the old fixed 300/360/260 columns overflowed 1200 px).
+/// exactly the *measured* container width, so the table fills its panel
+/// without overhanging it at any width (the wrapper alone cannot pin
+/// this, and the old fixed 300/360/260 columns overflowed 1200 px).
 #[test]
 fn dashboard_table_columns_fit_every_page_width() {
-    for win in [1200., 1600., 1920., 2560.] {
-        let page_w = win - SIDEBAR_W - 2. * PAGE_PAD;
-        let (account, description, category) = tx_flex_widths(page_w);
+    for w in [1200., 1600., 1920., 2560.] {
+        let (account, description, category) = tx_flex_widths(w);
         let total = TX_FIXED_W + TABLE_BORDER_X + account + description + category;
         assert!(
-            (total - page_w).abs() <= 0.01,
-            "window {win}: columns sum to {total}, page is {page_w}"
+            (total - w).abs() <= 0.01,
+            "container {w}: columns sum to {total}, width is {w}"
         );
         assert!(
             account >= HISTORY_FLEX_MIN_W
                 && description >= HISTORY_FLEX_MIN_W
                 && category >= HISTORY_FLEX_MIN_W,
-            "window {win}: flexed columns below the floor"
+            "container {w}: flexed columns below the floor"
         );
     }
-    // The columns grow with the window...
-    let small = tx_flex_widths(1200. - SIDEBAR_W - 2. * PAGE_PAD).1;
-    let big = tx_flex_widths(2560. - SIDEBAR_W - 2. * PAGE_PAD).1;
+    // The columns grow with the measured width...
+    let small = tx_flex_widths(1200.).1;
+    let big = tx_flex_widths(2560.).1;
     assert!(big > small, "{big} vs {small}");
-    // ...and below any real window the flexed total stops at its floor.
+    // ...and below any real container the flexed total stops at its floor.
     let (a, d, c) = tx_flex_widths(100.);
     assert!(
         (a + d + c - 3. * HISTORY_FLEX_MIN_W).abs() <= 0.01,
         "floored total {} is not 3 × {HISTORY_FLEX_MIN_W}",
         a + d + c,
+    );
+}
+
+/// 3.86: the table's column widths follow the measured container. At
+/// 1200 × 720 and at 1600 × 900 the stored panel width equals the
+/// painted `panel:table` width, the columns the table renders sum to
+/// that measured width, and widening the window grows the flex columns
+/// — no `SIDEBAR_W` arithmetic in the plan.
+#[gpui::test]
+fn the_dashboard_table_follows_the_measured_panel_at_1200_and_1600(cx: &mut TestAppContext) {
+    let mut sums = Vec::new();
+    for w in [1200., 1600.] {
+        let (handle, shell) = open_dashboard_for_geometry(cx, w, 900.);
+        // 3.86: `open_dashboard_for_geometry` draws once; settle so the
+        // `panel:table` probe's report has landed and been applied.
+        settle(cx, handle);
+        let painted = {
+            let mut window = VisualTestContext::from_window(handle, cx);
+            f32::from(
+                window
+                    .debug_bounds("panel:table")
+                    .expect("the table panel paints")
+                    .size
+                    .width,
+            )
+        };
+        let (stored, widths) = cx.update(|cx| {
+            let page = dash(cx, &shell).read(cx);
+            let table = page.table.read(cx);
+            let widths: Vec<f32> = (0..5)
+                .map(|i| table.col_width(i).unwrap().as_f32())
+                .collect();
+            (page.tx_panel_w, widths)
+        });
+        assert!(
+            (stored - painted).abs() <= 0.5,
+            "at {w}px the probe stored {stored:.1}px but `panel:table` \
+             painted {painted:.1}px",
+        );
+        assert!(
+            (widths.iter().sum::<f32>() + TABLE_BORDER_X - painted).abs() <= 0.5,
+            "at {w}px the columns plus the table's 1 px borders sum to {} \
+             but the panel measured {painted:.1}px",
+            widths.iter().sum::<f32>() + TABLE_BORDER_X,
+        );
+        sums.push(widths[1]);
+    }
+    assert!(
+        sums[1] > sums[0],
+        "the flex columns grow with the measured panel: {:?} vs {:?}",
+        sums[1],
+        sums[0]
     );
 }
 

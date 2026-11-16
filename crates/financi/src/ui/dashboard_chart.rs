@@ -6,7 +6,6 @@ use super::*;
 use crate::ui::widgets::*;
 
 const CHART_PANEL_SHARE: f32 = 0.45;
-const REGION_GAP: f32 = 12.;
 /// Minimum horizontal gap between two neighbouring drawn band labels.
 pub(super) const CHART_LABEL_GAP: f32 = 8.;
 /// Cap on a band label, so a wide chart never paints a sentence.
@@ -19,14 +18,17 @@ pub(super) const CHART_LABEL_MIN_CHARS: usize = 4;
 /// and only `labels` of them are drawn, spread evenly first-to-last by
 /// `BarChart::band_tick_count`. A centred label cannot collide with its
 /// neighbours once every drawn label owns `chart_width / labels` pixels,
-/// so that slice always buys `chars · CHART_CHAR_PX + CHART_LABEL_GAP`.
-pub(super) fn band_label_budget(chart_width: f32, count: usize) -> (usize, usize) {
+/// so that slice always buys `chars · char_px + CHART_LABEL_GAP`.
+/// `char_px` is the chart font's per-character width — measured from the
+/// rendered font (3.86), or `CHART_CHAR_PX` as the pre-measurement seed.
+pub(super) fn band_label_budget(chart_width: f32, count: usize, char_px: f32) -> (usize, usize) {
     if count == 0 {
         return (0, 0);
     }
+    let char_px = char_px.max(1.);
     let chars_for = |labels: usize| {
         let per = chart_width / labels as f32;
-        (((per - CHART_LABEL_GAP) / CHART_CHAR_PX).max(0.)) as usize
+        (((per - CHART_LABEL_GAP) / char_px).max(0.)) as usize
     };
     // Prefer labelling every band.
     if chars_for(count) >= CHART_LABEL_MIN_CHARS {
@@ -34,7 +36,7 @@ pub(super) fn band_label_budget(chart_width: f32, count: usize) -> (usize, usize
     }
     // Too tight: thin the labels out until each drawn one buys the
     // minimum budget, then truncate to what its wider slice allows.
-    let min_spacing = CHART_LABEL_MIN_CHARS as f32 * CHART_CHAR_PX + CHART_LABEL_GAP;
+    let min_spacing = CHART_LABEL_MIN_CHARS as f32 * char_px + CHART_LABEL_GAP;
     let labels = ((chart_width / min_spacing) as usize).clamp(1, count);
     (chars_for(labels).clamp(1, CHART_LABEL_MAX_CHARS), labels)
 }
@@ -112,16 +114,17 @@ pub(super) fn chart_tooltip_value(cents: i64, share: f64, parent: &str) -> Strin
 /// `chart_width` pixels. A drawn label is at most `BAR_LABEL_MAX_CHARS`
 /// characters wide and keeps `CHART_LABEL_GAP` from its neighbours, so
 /// their band centres must sit
-/// `BAR_LABEL_MAX_CHARS · CHART_CHAR_PX + CHART_LABEL_GAP` apart; the
+/// `BAR_LABEL_MAX_CHARS · char_px + CHART_LABEL_GAP` apart; the
 /// even first-to-last spread keeps the closest pair
 /// `floor((count − 1) / (labels − 1))` bands apart, which the formula
-/// below inverts.
-pub(super) fn bar_label_plan(chart_width: f32, count: usize) -> usize {
+/// below inverts. `char_px` is the measured chart-font character width
+/// (3.86), as in [`band_label_budget`].
+pub(super) fn bar_label_plan(chart_width: f32, count: usize, char_px: f32) -> usize {
     if count <= 1 {
         return count;
     }
     let band_w = chart_width / count as f32;
-    let need = BAR_LABEL_MAX_CHARS as f32 * CHART_CHAR_PX + CHART_LABEL_GAP;
+    let need = BAR_LABEL_MAX_CHARS as f32 * char_px.max(1.) + CHART_LABEL_GAP;
     // Whole bands a drawn label needs beside it; at least one. A zero
     // width saturates `step`, and the division below leaves one label.
     let step = (need / band_w).ceil().max(1.) as usize;
@@ -150,9 +153,10 @@ pub(super) fn bar_label_slots(count: usize, labels: usize) -> Vec<bool> {
 /// Fill each row's `bar_label` with its share of the spend (3.31): on the
 /// bars the plan fits across `plot_width`, nothing on the thinned-out
 /// ones. The tooltip carries the exact amount and share for every bar,
-/// labelled or not.
-fn bar_share_labels(rows: &mut [ChartRow], plot_width: f32) {
-    let slots = bar_label_slots(rows.len(), bar_label_plan(plot_width, rows.len()));
+/// labelled or not. `char_px` is the measured chart-font character width
+/// the plan uses (3.86).
+fn bar_share_labels(rows: &mut [ChartRow], plot_width: f32, char_px: f32) {
+    let slots = bar_label_slots(rows.len(), bar_label_plan(plot_width, rows.len(), char_px));
     for (row, labeled) in rows.iter_mut().zip(slots) {
         if labeled {
             row.bar_label = bar_share_label(row.share).into();
@@ -355,18 +359,46 @@ pub(super) fn category_colors(
 }
 
 impl DashboardPage {
-    /// The plot's width for the current window: the sidebar and page
-    /// padding come off the window width, `CHART_PANEL_SHARE` of what
-    /// remains is the chart panel, and inside the panel its padding, the
-    /// legend and the gap come off before the plot is left.
+    /// The plot's width the last probe measured (3.86): the `chart:plot`
+    /// container's own laid-out width, reported from its `bounds_probe`
+    /// as the view tree paints. `0.` until the first frame has measured
+    /// it, which the label plans degrade safely.
     pub(super) fn chart_plot_width(&self) -> f32 {
-        let page_w = (self.window_width - SIDEBAR_W - 2. * PAGE_PAD).max(0.);
-        (page_w * CHART_PANEL_SHARE - 2. * PAGE_PAD - LEGEND_W - REGION_GAP).max(0.)
+        self.plot_w
     }
-    /// The chart's label plan (3.15) for the current window: how many
+    /// Store a freshly measured plot width (3.86, from the probe on the
+    /// `chart:plot` container); repaint for the new label plan only when
+    /// the width actually moved, so the measure-then-repaint loop settles.
+    pub(in crate::ui) fn set_plot_width(&mut self, w: f32, cx: &mut Context<Self>) {
+        if (self.plot_w - w).abs() < 0.5 {
+            return;
+        }
+        self.plot_w = w;
+        cx.notify();
+    }
+    /// Store a freshly measured table-container width (3.86, from the
+    /// probe on `panel:table`) and re-flex the table's columns to it —
+    /// notify-on-change only, like [`Self::set_plot_width`].
+    pub(in crate::ui) fn set_table_width(&mut self, w: f32, cx: &mut Context<Self>) {
+        if (self.tx_panel_w - w).abs() < 0.5 {
+            return;
+        }
+        self.tx_panel_w = w;
+        let flex = tx_flex_widths(w);
+        self.table.update(cx, |t, cx| {
+            t.delegate_mut().flex_widths = flex;
+            t.refresh(cx);
+        });
+        cx.notify();
+    }
+    /// The chart's label plan (3.15) for the measured plot: how many
     /// characters a band label may use and how many labels are drawn.
     pub(super) fn chart_label_plan(&self) -> (usize, usize) {
-        band_label_budget(self.chart_plot_width(), self.chart_rows.len())
+        band_label_budget(
+            self.chart_plot_width(),
+            self.chart_rows.len(),
+            self.chart_char_px,
+        )
     }
     /// The chart's rows prepared for drawing (3.15, 3.31): band labels
     /// fitted to the current budget, each row's share over its bar
@@ -406,7 +438,7 @@ impl DashboardPage {
             .collect();
         // Uncategorized is always the last category row, whatever its amount.
         rows.sort_by_key(|r| r.id.is_none());
-        bar_share_labels(&mut rows, plot_width);
+        bar_share_labels(&mut rows, plot_width, self.chart_char_px);
         rows
     }
     /// The dashboard middle row (3.5): the `BarChart` of spend per category
@@ -458,7 +490,14 @@ impl DashboardPage {
             div()
                 .flex_1()
                 .min_w_0()
+                .relative()
                 .debug_selector(|| "chart:plot".into())
+                // 3.86: the plot's width comes from this container's own
+                // measured bounds (the probe paints nothing and takes no
+                // part in layout), not from window-width arithmetic.
+                .child(bounds_probe(cx.entity().downgrade(), |this, w, cx| {
+                    this.set_plot_width(w, cx)
+                }))
                 .child(
                     BarChart::new(rows.clone())
                         .id("category-chart")

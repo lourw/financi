@@ -170,7 +170,14 @@ impl Render for DashboardPage {
                                 .min_w_0()
                                 .flex_1()
                                 .min_h_0()
+                                .relative()
                                 .debug_selector(|| "panel:table".into())
+                                // 3.86: the column plan comes from this
+                                // panel's own measured width, reported by
+                                // the probe (no window-width arithmetic).
+                                .child(bounds_probe(cx.entity().downgrade(), |this, w, cx| {
+                                    this.set_table_width(w, cx)
+                                }))
                                 .child(if body == DashboardBody::NoMatches {
                                     self.no_matches_panel(cx)
                                 } else {

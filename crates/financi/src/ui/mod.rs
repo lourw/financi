@@ -315,11 +315,9 @@ pub struct Shell {
     // the pages own their data (3.79–3.83).
     accounts: Vec<Account>,
     page: Page,
-    // -- Responsive chart (3.15): the window's current width in pixels,
-    // tracked with `observe_window_bounds`, so the chart can shorten and
-    // thin its band labels to the space left beside the legend, and the
-    // two tables (3.20, 3.25) can flex their columns.
-    window_width: f32,
+    // 3.86: the window-width mirror and its `observe_window_bounds`
+    // subscription are gone — the chart and both tables now derive their
+    // plans from their own measured bounds (see `bounds_probe`).
     // -- Sidebar counts: the visible and uncategorized transaction totals
     // (the Transfers pill counts `transfers.transfer_reviews`).
     total_visible: i64,
@@ -482,12 +480,8 @@ impl Shell {
         // 3.76: the global wiring (key bindings, menus, file-action
         // listeners) lives in `ui::init` now — once per app, not once per
         // window.
-        // The chart's label plan follows the window width (3.15), and so
-        // do the Imports history table's (3.20) and the dashboard table's
-        // flexible columns (3.25).
-        let bounds_sub = cx.observe_window_bounds(window, |this, window, cx| {
-            this.window_bounds_changed(window, cx);
-        });
+        // 3.86: no window-bounds subscription any more — the chart and
+        // both tables read their widths from their own measured bounds.
         // Each page's state is built by its own constructor (3.74).
         let categories_page = CategoriesState::new(window, cx);
         // 3.78: one shared data model, fed by the same worker.
@@ -591,7 +585,6 @@ impl Shell {
             catalog: catalog.clone(),
             accounts: Vec::new(),
             page: Page::Dashboard,
-            window_width: window.bounds().size.width.as_f32(),
             total_visible: 0,
             uncategorized_visible: 0,
             categories: Vec::new(),
@@ -616,7 +609,6 @@ impl Shell {
             transfers,
             imports,
             _subs: vec![
-                bounds_sub,
                 categories_events,
                 dashboard_events,
                 transfers_events,
@@ -646,24 +638,6 @@ impl Shell {
         // first data frame already uses them and nothing re-queries.
         shell.refresh(window, cx);
         shell
-    }
-
-    /// A window resize re-flexes the two tables' columns (3.20, 3.25) and
-    /// re-renders for the chart's label plan (3.15).
-    fn window_bounds_changed(&mut self, window: &mut Window, cx: &mut Context<Shell>) {
-        let width = window.bounds().size.width.as_f32();
-        if self.window_width == width {
-            return;
-        }
-        self.window_width = width;
-        let page_w = (width - SIDEBAR_W - 2. * PAGE_PAD).max(0.);
-        // 3.79: the Imports history table lives on its page entity now;
-        // 3.82 so does the dashboard table.
-        self.imports
-            .update(cx, |page, cx| page.widths_changed(page_w, cx));
-        self.dashboard
-            .update(cx, |page, cx| page.widths_changed(width, cx));
-        cx.notify();
     }
 
     /// Re-query everything the pages show — the full reload, plus the

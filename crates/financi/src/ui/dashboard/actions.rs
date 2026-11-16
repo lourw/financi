@@ -490,20 +490,6 @@ impl DashboardPage {
             .update(cx, |p, cx| p.show_rule(rule_id, window, cx));
     }
 
-    /// A window resize re-flexes the table's columns (3.25) and re-renders
-    /// for the chart's label plan (3.15); `Shell::window_bounds_changed`
-    /// forwards the window width here (3.82). The chart deducts the chrome
-    /// itself, so the page keeps the raw width.
-    pub(in crate::ui) fn widths_changed(&mut self, window_width: f32, cx: &mut Context<Self>) {
-        self.window_width = window_width;
-        let page_w = (window_width - SIDEBAR_W - 2. * PAGE_PAD).max(0.);
-        let flex = tx_flex_widths(page_w);
-        self.table.update(cx, |t, cx| {
-            t.delegate_mut().flex_widths = flex;
-            t.refresh(cx);
-        });
-    }
-
     /// A restore replaced the whole database behind the UI (5.3): the
     /// legend, month and drill-down selections name categories and months
     /// the restored file may not have, and the rule offer names rows whose
