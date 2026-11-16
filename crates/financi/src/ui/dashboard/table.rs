@@ -80,11 +80,12 @@ impl RowShowRule {
 /// The *Show rule* state (3.29) for a row, as a pure function so the gating
 /// rule is testable without a window. Card payments are locked at import
 /// (2.5), so the card-payment check comes before *Set by hand* (both are
-/// locked rows); an unlocked row asks [`winning_rule`] — the same matcher
-/// import runs — so no rule id is ever stored on the transaction.
+/// locked rows); an unlocked row asks [`CompiledRules::winning`] — the same
+/// matcher import runs — so no rule id is ever stored on the transaction.
+/// 3.85: the rules arrive pre-compiled (the Catalog's cache).
 pub fn row_show_rule(
     row: &TransactionRow,
-    rules: &[Rule],
+    rules: &CompiledRules,
     card_payment_category: Option<i64>,
 ) -> RowShowRule {
     if row.category_locked {
@@ -93,7 +94,7 @@ pub fn row_show_rule(
         } else {
             RowShowRule::SetByHand
         }
-    } else if let Some(id) = winning_rule(rules, &row.description) {
+    } else if let Some(id) = rules.winning(&row.description) {
         RowShowRule::Found(id)
     } else {
         RowShowRule::NoRule
@@ -108,9 +109,11 @@ pub struct TxTable {
     /// The row that just got a manual category and now offers to apply it to
     /// every matching row (2.6's rule offer, 2.9). Its transaction id.
     pub(in crate::ui) rule_offer: Option<i64>,
-    /// The shell's rules, kept in sync on every refresh: the *Show rule*
-    /// item (3.29) runs [`winning_rule`] over them when the menu opens.
-    pub(in crate::ui) rules: Vec<Rule>,
+    /// The shell's rules, compiled once per rules reload (3.85, the
+    /// Catalog's cache), kept in sync on every refresh: the *Show rule*
+    /// item (3.29) runs [`CompiledRules::winning`] over them when the
+    /// menu opens.
+    pub(in crate::ui) rules: Rc<CompiledRules>,
     /// The id of the system `Transfers > Card Payment` category (3.29), the
     /// same lookup `financi-db` uses; `None` only before the first refresh.
     pub(in crate::ui) card_payment_category: Option<i64>,

@@ -1006,12 +1006,14 @@ impl RulesPage {
     // -- Rules page (3.28) ----------------------------------------------------
 
     /// "Parent › Child" label of the rule's target category, shared by the
-    /// row, the group headers and the search matching.
-    fn rule_target_label(&self, rule: &Rule) -> String {
-        self.child_choices
-            .iter()
-            .find(|(id, _)| *id == rule.category_id)
-            .map(|(_, n)| n.clone())
+    /// row, the group headers and the search matching. 3.85: the labels
+    /// are the Catalog's map, built once per rules or categories reload
+    /// (the `#{id}` fallback for a missing child baked in); `labels` is
+    /// that map, fetched once per list build.
+    fn rule_target_label(labels: &HashMap<i64, SharedString>, rule: &Rule) -> String {
+        labels
+            .get(&rule.id)
+            .map(|l| l.to_string())
             .unwrap_or_else(|| format!("#{}", rule.category_id))
     }
 
@@ -1039,6 +1041,9 @@ impl RulesPage {
             .map(|ix| ix.row)
             .unwrap_or(0);
         let test = self.rules_test_mode;
+        // 3.85: the Catalog's derived maps, fetched once per list build.
+        let rule_labels = self.catalog.read(cx).rule_labels();
+        let rule_patterns = self.catalog.read(cx).rule_patterns();
         let mut filtered: Vec<&Rule> = self
             .rules
             .iter()
@@ -1053,14 +1058,17 @@ impl RulesPage {
             .filter(|r| {
                 if test {
                     // The search box is the description: only rules that
-                    // match it stay.
+                    // match it stay (3.85: the Catalog's compiled
+                    // patterns, `pattern_matches` semantics unchanged).
                     query
                         .as_deref()
-                        .is_some_and(|q| pattern_matches(&r.pattern, r.is_regex, q))
+                        .is_some_and(|q| rule_patterns.get(&r.id).is_some_and(|p| p.is_match(q)))
                 } else if let Some(q) = &query {
                     // Pattern and target category name, case-insensitive.
                     r.pattern.to_ascii_lowercase().contains(q)
-                        || self.rule_target_label(r).to_ascii_lowercase().contains(q)
+                        || Self::rule_target_label(&rule_labels, r)
+                            .to_ascii_lowercase()
+                            .contains(q)
                 } else {
                     true
                 }
@@ -1081,7 +1089,7 @@ impl RulesPage {
         // Group by target label, groups in label order.
         let mut groups: Vec<(String, i64, Vec<&Rule>)> = Vec::new();
         for r in &filtered {
-            let label = self.rule_target_label(r);
+            let label = Self::rule_target_label(&rule_labels, r);
             match groups.iter_mut().find(|(l, _, _)| *l == label) {
                 Some((_, _, rules)) => rules.push(r),
                 None => groups.push((label, r.category_id, vec![r])),
@@ -1432,7 +1440,9 @@ impl Render for RulesPage {
         // The "wins" marker follows [`winning_rule`] exactly, so the page
         // marks the rule the categoriser would actually apply (D5).
         let winner = if self.rules_test_mode && !query.is_empty() {
-            winning_rule(&self.rules, &query)
+            // 3.85: the Catalog's compiled rules, the same matcher the
+            // categoriser ran at import.
+            self.catalog.read(cx).compiled_rules().winning(&query)
         } else {
             None
         };

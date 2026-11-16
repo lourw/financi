@@ -1772,7 +1772,7 @@ fn show_rule_from_a_row_lands_on_the_deciding_rule(cx: &mut TestAppContext) {
     assert_eq!(
         cx.update(|cx| shell.update(cx, |s, _| row_show_rule(
             &row,
-            &s.rules,
+            &financi_core::rules::CompiledRules::new(&s.rules),
             s.card_payment_category
         ))),
         RowShowRule::Found(r1)

@@ -334,30 +334,6 @@ impl DashboardPage {
     }
 }
 
-/// The 3.23 category palette: parents and children sorted by id, colors
-/// assigned in that order. The dashboard chart and the Categories tree
-/// show the same color for the same category (ui-conventions, *Category
-/// colors*); 3.82 made it a free function so both pages call it with
-/// their own tree mirror.
-pub(super) fn category_colors(
-    tree: &[CategoryNode],
-    theme: &gpui_kit::component::theme::Theme,
-) -> HashMap<i64, Hsla> {
-    let palette = category_palette(theme);
-    let mut colors = HashMap::new();
-    let mut parents: Vec<&CategoryNode> = tree.iter().collect();
-    parents.sort_by_key(|n| n.id);
-    for (ix, parent) in parents.iter().enumerate() {
-        colors.insert(parent.id, palette[ix % 12]);
-        let mut kids: Vec<&CategoryNode> = parent.children.iter().collect();
-        kids.sort_by_key(|n| n.id);
-        for (cix, kid) in kids.iter().enumerate() {
-            colors.insert(kid.id, palette[cix % 12]);
-        }
-    }
-    colors
-}
-
 impl DashboardPage {
     /// The plot's width the last probe measured (3.86): the `chart:plot`
     /// container's own laid-out width, reported from its `bounds_probe`
@@ -403,12 +379,14 @@ impl DashboardPage {
     /// The chart's rows prepared for drawing (3.15, 3.31): band labels
     /// fitted to the current budget, each row's share over its bar
     /// thinned to `plot_width`, and `Uncategorized` last whatever its
-    /// amount. `colors` maps category ids to palette colors; `muted`
-    /// paints the `Uncategorized` swatch.
+    /// amount. `colors` maps category ids to palette indices (3.85, the
+    /// Catalog's map); `palette` is the current theme's 12 colours and
+    /// `muted` paints the `Uncategorized` swatch.
     pub(super) fn chart_bars(
         &self,
         plot_width: f32,
-        colors: &HashMap<i64, Hsla>,
+        colors: &HashMap<i64, usize>,
+        palette: [Hsla; 12],
         muted: Hsla,
     ) -> Vec<ChartRow> {
         let (label_chars, _) = self.chart_label_plan();
@@ -431,9 +409,9 @@ impl DashboardPage {
                 bar_label: SharedString::default(),
                 cents: r.spend_cents,
                 share: r.share,
-                color: r
-                    .id
-                    .map_or(muted, |id| colors.get(&id).copied().unwrap_or(muted)),
+                color: r.id.map_or(muted, |id| {
+                    colors.get(&id).map(|ix| palette[ix % 12]).unwrap_or(muted)
+                }),
             })
             .collect();
         // Uncategorized is always the last category row, whatever its amount.
@@ -446,20 +424,23 @@ impl DashboardPage {
     /// (3.6) takes the right half later. `BarChart` takes no clicks, so all
     /// interactivity lives in the legend rows (ui-conventions, *Interaction*).
     pub(super) fn chart_panel(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let (muted, list_active, radius, colors) = {
+        // 3.85: the palette-index map comes from the Catalog, built once
+        // per categories reload; the palette itself is the current theme's.
+        let (muted, list_active, radius, colors, palette) = {
             let theme = cx.theme();
             (
                 theme.muted_foreground,
                 theme.list_active,
                 theme.radius,
-                category_colors(&self.categories, theme),
+                self.catalog.read(cx).cat_colors(),
+                category_palette(theme),
             )
         };
         // Band label thinning for the axis (3.15); the rows themselves —
         // fitted names and share labels (3.15, 3.31) — come from the same
         // preparation the tests exercise.
         let label_count = self.chart_label_plan().1;
-        let rows = self.chart_bars(self.chart_plot_width(), &colors, muted);
+        let rows = self.chart_bars(self.chart_plot_width(), &colors, palette, muted);
         let selection = self.filter.legend_selection;
         // The `Uncategorized` row is active when the 3.4 checkbox drives the
         // same clause, so the legend never contradicts the toolbar.
@@ -652,7 +633,8 @@ impl DashboardPage {
     /// *Interaction*). Amounts are positive spend; `Net` is the one signed
     /// row, `danger` when negative; `Income` reads as money in (`success`).
     fn summary_panel(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let (border, muted, list_active, danger, success, radius, colors) = {
+        // 3.85: palette indices from the Catalog (see `chart_panel`).
+        let (border, muted, list_active, danger, success, radius, colors, palette) = {
             let theme = cx.theme();
             (
                 theme.border,
@@ -661,7 +643,8 @@ impl DashboardPage {
                 theme.danger,
                 theme.success,
                 theme.radius,
-                category_colors(&self.categories, theme),
+                self.catalog.read(cx).cat_colors(),
+                category_palette(theme),
             )
         };
         // `month_grid` fills the range's months even when no transaction
@@ -775,9 +758,11 @@ impl DashboardPage {
                     SummaryRowKind::Income | SummaryRowKind::Spend | SummaryRowKind::Net
                 );
                 let swatch = match row.kind {
-                    SummaryRowKind::Parent { .. } | SummaryRowKind::Child => {
-                        Some(id.and_then(|id| colors.get(&id)).copied().unwrap_or(muted))
-                    }
+                    SummaryRowKind::Parent { .. } | SummaryRowKind::Child => Some(
+                        id.and_then(|id| colors.get(&id))
+                            .map(|ix| palette[*ix % 12])
+                            .unwrap_or(muted),
+                    ),
                     SummaryRowKind::Uncategorized => Some(muted),
                     _ => None,
                 };

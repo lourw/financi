@@ -7,6 +7,7 @@
 
 use super::*;
 use crate::ui::widgets::on_db;
+use financi_core::rules::{CompiledPattern, CompiledRules};
 use financi_db::{DbError, QueryLog};
 
 /// One slice of the shared data.
@@ -76,6 +77,12 @@ pub(super) struct Domains(u8);
 
 impl Domains {
     pub(super) const NONE: Self = Self(0);
+    /// 3.85: the one-domain set, spelled by the cache-rebuild test (the
+    /// writer table's writes all report shorthands that bundle domains).
+    #[cfg(test)]
+    pub(super) fn single(domain: Domain) -> Self {
+        Self(domain.bit())
+    }
     pub(super) const ALL: Self = Self(0b0111_1111);
     // The writer table's shorthands, spelled once.
     pub(super) const TX: Self = Self(Domain::Transactions.bit());
@@ -235,6 +242,29 @@ pub(super) struct Catalog {
     /// what a bit has already applied is stale and must not write that
     /// bit; it may still write the rest.
     applied_gen: [u64; 7],
+    /// 3.85: `snap.rules` compiled once per rules reload, so render paths
+    /// (the table's *Show rule* marker, the Rules page's test mode) match
+    /// descriptions without recompiling patterns every frame. Same
+    /// semantics as [`financi_core::rules::winning_rule`].
+    compiled: Rc<CompiledRules>,
+    /// 3.85: every rule's own compiled pattern, keyed by rule id — the
+    /// Rules page's test-mode filter asks "does this rule match the text"
+    /// per rule, which [`CompiledRules`] does not expose per rule.
+    patterns: Rc<HashMap<i64, CompiledPattern>>,
+    /// 3.85: rule id → "Parent › Child" target label (the `#{id}`
+    /// fallback for a missing child included), so the Rules page builds
+    /// its rows without a per-rule tree lookup. Rebuilt whenever the
+    /// tree or the rules change.
+    rule_labels: Rc<HashMap<i64, SharedString>>,
+    /// 3.85: category id → index into the 12-colour palette (the 3.23
+    /// assignment order). Theme-independent, so it survives a repaint:
+    /// consumers resolve `palette[ix % 12]` with the *current* theme,
+    /// exactly as the per-frame `category_colors` build did.
+    cat_colors: Rc<HashMap<i64, usize>>,
+    /// 3.85 test hook: rebuild counts per derived cache, asserted by
+    /// `caches_rebuild_only_when_their_inputs_change`.
+    #[cfg(test)]
+    pub(super) cache_rebuilds: std::cell::Cell<(usize, usize, usize)>,
 }
 
 impl Catalog {
@@ -244,7 +274,34 @@ impl Catalog {
             snap: Snapshot::default(),
             full_task: None,
             applied_gen: [0; 7],
+            compiled: Rc::new(CompiledRules::new(&[])),
+            patterns: Rc::new(HashMap::new()),
+            rule_labels: Rc::new(HashMap::new()),
+            cat_colors: Rc::new(HashMap::new()),
+            #[cfg(test)]
+            cache_rebuilds: std::cell::Cell::new((0, 0, 0)),
         }
+    }
+
+    /// The rules compiled once per rules reload (3.85).
+    pub(super) fn compiled_rules(&self) -> Rc<CompiledRules> {
+        Rc::clone(&self.compiled)
+    }
+
+    /// The rule id → compiled pattern map (3.85).
+    pub(super) fn rule_patterns(&self) -> Rc<HashMap<i64, CompiledPattern>> {
+        Rc::clone(&self.patterns)
+    }
+
+    /// The rule id → target label map (3.85).
+    pub(super) fn rule_labels(&self) -> Rc<HashMap<i64, SharedString>> {
+        Rc::clone(&self.rule_labels)
+    }
+
+    /// The category id → palette index map (3.85); resolve indices with
+    /// [`category_palette`] at draw time.
+    pub(super) fn cat_colors(&self) -> Rc<HashMap<i64, usize>> {
+        Rc::clone(&self.cat_colors)
     }
 
     /// The reader dependency map: the sections `domains` reloads.
@@ -400,13 +457,71 @@ impl Catalog {
         if sections & S_ACCOUNTS != 0 {
             self.snap.accounts = s.accounts;
         }
-        if sections & S_CATEGORIES != 0 {
+        let fresh_categories = sections & S_CATEGORIES != 0;
+        let fresh_rules = sections & S_RULES != 0;
+        if fresh_categories {
             self.snap.tree = s.tree;
             self.snap.counts = s.counts;
+            // 3.85: the palette-index map is a pure function of the tree.
+            let mut colors = HashMap::new();
+            let mut parents: Vec<&CategoryNode> = self.snap.tree.iter().collect();
+            parents.sort_by_key(|n| n.id);
+            for (ix, parent) in parents.iter().enumerate() {
+                colors.insert(parent.id, ix);
+                let mut kids: Vec<&CategoryNode> = parent.children.iter().collect();
+                kids.sort_by_key(|n| n.id);
+                for (cix, kid) in kids.iter().enumerate() {
+                    colors.insert(kid.id, cix);
+                }
+            }
+            self.cat_colors = Rc::new(colors);
+            #[cfg(test)]
+            self.bump_cache(1);
         }
-        if sections & S_RULES != 0 {
+        if fresh_rules {
             self.snap.rules = s.rules;
             self.snap.uses = s.uses;
+            // 3.85: patterns and the winner table are pure functions of
+            // the rule list; compile them once here, not per frame.
+            self.compiled = Rc::new(CompiledRules::new(&self.snap.rules));
+            self.patterns = self
+                .snap
+                .rules
+                .iter()
+                .map(|r| (r.id, CompiledPattern::new(&r.pattern, r.is_regex)))
+                .collect::<HashMap<_, _>>()
+                .into();
+            #[cfg(test)]
+            self.bump_cache(0);
+        }
+        if fresh_categories || fresh_rules {
+            // 3.85: "Parent › Child" per rule — the child map is a pure
+            // function of the tree, resolved against every rule.
+            let children: HashMap<i64, SharedString> = self
+                .snap
+                .tree
+                .iter()
+                .flat_map(|p| {
+                    p.children
+                        .iter()
+                        .map(move |c| (c.id, format!("{} › {}", p.name, c.name).into()))
+                })
+                .collect();
+            self.rule_labels = self
+                .snap
+                .rules
+                .iter()
+                .map(|r| {
+                    let label = children
+                        .get(&r.category_id)
+                        .cloned()
+                        .unwrap_or_else(|| format!("#{}", r.category_id).into());
+                    (r.id, label)
+                })
+                .collect::<HashMap<_, _>>()
+                .into();
+            #[cfg(test)]
+            self.bump_cache(2);
         }
         if sections & S_SIDEBAR != 0 {
             self.snap.total = s.total;
@@ -421,6 +536,18 @@ impl Catalog {
         if sections & S_IMPORTS != 0 {
             self.snap.imports = s.imports;
         }
+    }
+
+    /// 3.85 test hook: count a rebuild of one derived cache —
+    /// 0 = compiled rules, 1 = category colours, 2 = rule labels.
+    #[cfg(test)]
+    fn bump_cache(&mut self, which: usize) {
+        let (a, b, c) = self.cache_rebuilds.get();
+        self.cache_rebuilds.set(match which {
+            0 => (a + 1, b, c),
+            1 => (a, b + 1, c),
+            _ => (a, b, c + 1),
+        });
     }
 }
 

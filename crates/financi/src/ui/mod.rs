@@ -39,7 +39,7 @@ use std::time::{Duration, Instant};
 use chrono::NaiveDate;
 use financi_core::CategoryKind;
 use financi_core::dates::{DatePreset, preset_range};
-use financi_core::rules::{Rule, pattern_matches, winning_rule};
+use financi_core::rules::{CompiledRules, Rule};
 use financi_db::categories::{
     CategoryNode, create_child, create_parent, delete_category, list_categories, move_child,
     rename as rename_category, transaction_counts,

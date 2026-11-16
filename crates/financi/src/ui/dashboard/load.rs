@@ -373,15 +373,13 @@ impl DashboardPage {
         // 3.82: the row-menu mirrors live on the shell (the Rules and
         // Categories pages read them too); every write refreshed them
         // before this job was dispatched, so they name the same rows
-        // these do.
-        let (child_choices, rules, card_payment) = self
+        // these do. 3.85: the *Show rule* matcher takes the Catalog's
+        // compiled rules — built once per rules reload, not per menu.
+        let compiled_rules = self.catalog.read(cx).compiled_rules();
+        let (child_choices, card_payment) = self
             .shell
             .update(cx, |shell, _| {
-                (
-                    shell.child_choices.clone(),
-                    shell.rules.clone(),
-                    shell.card_payment_category,
-                )
+                (shell.child_choices.clone(), shell.card_payment_category)
             })
             .unwrap_or_default();
         let rule_offer = self.rule_offer.map(|(id, _)| id);
@@ -391,7 +389,7 @@ impl DashboardPage {
             delegate.rows = rows;
             delegate.child_choices = child_choices;
             delegate.rule_offer = rule_offer;
-            delegate.rules = rules;
+            delegate.rules = compiled_rules;
             delegate.card_payment_category = card_payment;
             delegate.sort = sort;
             t.refresh(cx);

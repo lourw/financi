@@ -16,7 +16,7 @@ pub(crate) struct DashboardPage {
     pub(super) db: DbWorker,
     /// The shared data model (3.78); `apply` reads the account list off
     /// its snapshot, never a query of its own.
-    pub(super) catalog: Entity<Catalog>,
+    pub(in crate::ui) catalog: Entity<Catalog>,
     /// 5.3 review fix: shared with the shell — while an export or restore
     /// is in flight every write here is refused.
     pub(super) writes_blocked: Rc<Cell<bool>>,
@@ -204,7 +204,7 @@ impl DashboardPage {
                     rows: Vec::new(),
                     child_choices: Vec::new(),
                     rule_offer: None,
-                    rules: Vec::new(),
+                    rules: Rc::new(CompiledRules::new(&[])),
                     card_payment_category: None,
                     sort: TxSort::default(),
                     on_set_category,
