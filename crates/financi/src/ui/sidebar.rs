@@ -63,7 +63,9 @@ impl SidebarItem for NavItem {
                 .items_center()
                 .px(px(NAV_ROW_INSET))
                 .text_xs()
-                .text_color(cx.theme().sidebar_foreground.opacity(0.7))
+                // 3.91: the shared muted token instead of a hand-tuned
+                // opacity on the sidebar foreground.
+                .text_color(cx.theme().muted_foreground)
                 .child(label.to_uppercase())
                 .into_any_element(),
         }

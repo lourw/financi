@@ -14,10 +14,9 @@ fn options_label(on: usize) -> String {
         format!("Options · {on}")
     }
 }
-// Filter row (3.35): the height every filter control shares, the date-range
-// select's width (fits "Last 12 months" on one line), and the search box's
-// floor.
-pub(super) const FILTER_CONTROL_H: Pixels = px(32.);
+// Filter row (3.35): the date-range select's width (fits "Last 12 months"
+// on one line), and the search box's floor. The row itself and the shared
+// control height moved to `widgets::filter_row` in 3.91.
 pub(super) const FILTER_DATE_RANGE_W: Pixels = px(170.);
 pub(super) const FILTER_SEARCH_MIN_W: Pixels = px(140.);
 /// The custom range's From/To pickers: 140 px when there is room, shrinking

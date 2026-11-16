@@ -51,6 +51,9 @@ pub(super) fn field_label(muted: Hsla, text: &'static str) -> Div {
 /// 3.34: the To-categorize panel's column headings — like `field_label`
 /// but `text_sm` (a table heading row, not a form field), keeping the same
 /// `label:<text>` debug selector so headless tests still find them.
+/// 3.91: the queue moved onto [`DataList`], whose own heading row replaces
+/// these; kept until the remaining pages do the same.
+#[allow(dead_code)]
 pub(super) fn heading_label(muted: Hsla, text: &'static str) -> Div {
     div()
         .text_sm()
@@ -745,8 +748,7 @@ pub(super) fn page_header(
 
 /// The filter strip (ui-conventions *Filtering*): one 32 px row of
 /// controls with the standard 8 px gap. (Built ahead of the pages that
-/// move onto it; 3.51 and 3.52 adopt it.)
-#[allow(dead_code)]
+/// move onto it; the dashboard adopted it in 3.91.)
 pub(super) fn filter_row() -> Div {
     h_flex().w_full().h(px(32.)).gap_2().items_center()
 }

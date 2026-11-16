@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::ui::dashboard_filters::{
-    FILTER_CONTROL_H, FILTER_DATE_MIN_W, FILTER_DATE_RANGE_W, FILTER_DATE_W, FILTER_SEARCH_MIN_W,
+    FILTER_DATE_MIN_W, FILTER_DATE_RANGE_W, FILTER_DATE_W, FILTER_SEARCH_MIN_W,
 };
 use crate::ui::page::Cancel;
 
@@ -38,19 +38,16 @@ impl Render for DashboardPage {
             .on_action(cx.listener(|this, action: &Cancel, window, cx| {
                 this.clear_category_selection(action, window, cx);
             }))
-            // One filter row (3.35, ui-conventions *Pages*): no region
-            // title and no label lines. Every control is 32 px tall and
+            // One filter row (3.35, ui-conventions *Pages*; 3.91: the
+            // shared `filter_row` strip): no region title and no label
+            // lines. Every control is 32 px tall and
             // centred on the row; the controls without a visible label
             // name themselves in a hover tooltip. Left to right: date
             // range, the custom From/To pickers, accounts, search (takes
             // the slack), Options (the three toggles), then the count.
             .child(
-                h_flex()
-                    .w_full()
-                    .h(FILTER_CONTROL_H)
+                filter_row()
                     .debug_selector(|| "filters:region".into())
-                    .gap_2()
-                    .items_center()
                     .child(
                         filter_tip(
                             "filters:date-range-tip",
