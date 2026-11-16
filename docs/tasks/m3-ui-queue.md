@@ -6,7 +6,7 @@ Do these in the order listed (`docs/tasks.md` → *Picking the next task*). Each
 
 Steps 1–15 of `docs/tasks/gpui.md` → *GPUI best practices*, task by task.
 
-- [ ] **3.57 Every page reloads only what it depends on.** Rewritten
+- [x] **3.57 Every page reloads only what it depends on.** Rewritten
   2026-11-11: the old 3.57 is split into this task, 3.84 (feedback within
   a frame) and 3.85 (render caches). Do it after the page extractions
   (3.79–3.83), as the check that the architecture holds.

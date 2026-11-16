@@ -51,6 +51,7 @@ mod dashboard;
 mod imports;
 mod page;
 mod queue;
+mod reloads;
 mod rules;
 mod sidebar;
 mod transfers;

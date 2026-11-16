@@ -1059,6 +1059,13 @@ impl ImportsPage {
                             &panel,
                             window,
                             |this, _, ev: &ImportEvent, _window, cx| {
+                                // 3.57: the full reload follows the import
+                                // only. Creating an account writes just
+                                // the account — it reports `Accounts`, so
+                                // only the pages that read accounts (the
+                                // filter checkboxes, the sidebar counts)
+                                // reload — and a cancel writes nothing at
+                                // all, so it reloads nothing.
                                 match ev {
                                     ImportEvent::Imported { message, is_error } => {
                                         cx.emit(PageEvent::Toast {
@@ -1066,11 +1073,13 @@ impl ImportsPage {
                                             error: *is_error,
                                         });
                                         this.import = None;
+                                        cx.emit(PageEvent::Refresh);
+                                    }
+                                    ImportEvent::AccountsChanged => {
+                                        cx.emit(PageEvent::Changed(Domains::ACCOUNTS))
                                     }
                                     ImportEvent::Cancelled => this.import = None,
-                                    ImportEvent::AccountsChanged => {}
                                 }
-                                cx.emit(PageEvent::Refresh);
                                 cx.notify();
                             },
                         );
