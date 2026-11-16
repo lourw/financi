@@ -36,6 +36,18 @@ pub(super) const RULE_CATEGORY_MENU_W: f32 = 320.;
 const RULE_SEL_W: f32 = 24.;
 const RULE_USES_W: f32 = 80.;
 
+/// 3.48: the height the editor row reserves in the virtualized lists —
+/// the Rules page's `item_sizes` and the Categories page's `rule_sizes`
+/// share these, so the two-line [`inline_form`] editor (labelled Pattern
+/// line + 32 px controls line, preview count under it) never paints over
+/// the row below it on either page. Measured at 1200 × 720: 148 px with
+/// the preview, and 174.5 px with an error line open (the preview stays
+/// under a refused save), so the slots reserve 148 / 176.
+/// `the_rule_editor_gives_the_pattern_room` and
+/// `the_editor_error_stays_inside_its_row` pin them down.
+pub(super) const RULE_EDITOR_H: f32 = 148.;
+pub(super) const RULE_EDITOR_ERROR_H: f32 = 176.;
+
 /// 3.28: one entry of the Rules page virtual list — a group header row or a
 /// rule row. Group headers are items too, so collapsing a group just drops
 /// its rows and the list stays virtualized over everything (D5).
@@ -569,6 +581,12 @@ impl RulesPage {
         // 3.53: no category picker — Edit changes pattern and kind only.
         self.preview_rule_match(cx);
         cx.notify();
+        // 3.48: focus lands in the pattern input with the caret at the
+        // end (`set_value` places a single-line caret at the end of the
+        // text); the focus waits for the end of the frame so the editor's
+        // `Input` element exists first, like the page's search focus.
+        let handle = self.rule_edit_pattern.focus_handle(cx);
+        window.defer(cx, move |window, cx| window.focus(&handle, cx));
     }
 
     /// 3.24: save the editor through [`update_rule`], which re-runs every
@@ -790,25 +808,33 @@ fn rule_row(rule: &Rule, muted: Hsla, page: &RulesPage, entity: &Entity<RulesPag
         .into_any_element()
 }
 
-/// 3.24: the in-place editor that replaces one rule's row — the add-rule
-/// row's shape (labelled Pattern input, regex switch, labelled Category
-/// picker, primary Save, Cancel) pre-filled from the rule, with the same
-/// live "matches N transactions" count. A validation error shows in
-/// `danger` under the editor and keeps it open — clamped to one ellipsized
-/// line, because the virtual list doesn't clip per item and a taller row
-/// would paint over the rows below. 3.23: inside the detail panel the row
-/// is too narrow for the count beside the fields, so it moves under them
-/// (like the add-rule row's) and the row reserves 80 px in `rule_sizes`
-/// instead of 24, 108 px while an error is open (measured: 75.5 px with
-/// the count, 102.5 with one error line).
+/// 3.24: the in-place editor that replaces one rule's row, pre-filled
+/// from the rule, with the same live "matches N transactions" count. A
+/// validation error shows in `danger` under the editor and keeps it open —
+/// clamped to one ellipsized line, because the virtual list doesn't clip
+/// per item and a taller row would paint over the rows below.
 ///
-/// 3.80: a free function over the page entity, like [`rule_row`].
+/// 3.48: the editor is 3.89's [`inline_form`] — a bordered form opened in
+/// place of the row, two lines tall so the Pattern input gets the editor's
+/// full width (the old single row shrank it past editing in the detail
+/// panel). Line 1 is the "Pattern" label over the input; line 2 is one
+/// `items_center` row of the 32 px controls: the regex switch, then Save
+/// and Cancel pushed right with `ml_auto`. Line 2 carries no labels, so
+/// the switch lines up on its own — no 3.42 `control_slot` here (the
+/// add-rule rows keep theirs). The preview count and error line stay
+/// under both lines; the row reserves [`RULE_EDITOR_H`]
+/// ([`RULE_EDITOR_ERROR_H`] with an error open).
+///
+/// 3.53: no Category picker — the editor changes pattern and kind only,
+/// and the rule keeps its category (moving is the Rules page Move bar's
+/// job). 3.80: a free function over the page entity, like [`rule_row`].
 fn rule_editor_row(
     rule: &Rule,
     muted: Hsla,
     danger: Hsla,
     page: &RulesPage,
     entity: &Entity<RulesPage>,
+    cx: &App,
 ) -> AnyElement {
     let preview = match page.rule_match_count {
         Some(n) => div()
@@ -823,72 +849,98 @@ fn rule_editor_row(
     let save_entity = entity.clone();
     let cancel_entity = entity.clone();
     v_flex()
+        .w_full()
         .gap_1()
+        .debug_selector(|| "rules:edit-form".into())
         .child(
-            h_flex()
-                .gap_2()
-                .items_end()
-                .child(
-                    // 3.23: the pattern field is the flex column, so
-                    // the editor fits the detail panel's width; the
-                    // other controls keep their size.
-                    v_flex()
-                        .flex_1()
-                        .min_w_0()
-                        .gap_1()
-                        .child(field_label(muted, "Pattern"))
-                        .child(
+            inline_form(cx).child(
+                v_flex()
+                    .w_full()
+                    .gap_2()
+                    // Line 1: the "Pattern" label over the input, at the
+                    // editor's full width (the user-reported bug: the
+                    // one-row editor squeezed the input to nothing).
+                    .child(
+                        v_flex().gap_1().child(field_label(muted, "Pattern")).child(
                             div()
                                 .w_full()
                                 .debug_selector(|| "rules:edit-pattern-input".into())
                                 .child(Input::new(&page.rule_edit_pattern)),
                         ),
-                )
-                .child(
-                    // 3.42: the unlabelled switch sits in a control-height
-                    // slot so its centre matches the input, picker and
-                    // buttons.
-                    control_slot(
-                        "rules:regex-slot:edit".into(),
-                        "rules:switch:edit".into(),
-                        Switch::new(SharedString::from(format!("rule-edit-regex-{}", rule.id)))
-                            .label("regex")
-                            .checked(page.rule_edit_regex)
-                            .on_click(move |checked: &bool, _, cx| {
-                                switch_entity.update(cx, |page, cx| {
-                                    page.rule_edit_regex = *checked;
-                                    page.preview_rule_match(cx);
-                                    cx.notify();
-                                });
-                            }),
+                    )
+                    // Line 2: the controls, no labels — the switch at the
+                    // left, Save and Cancel at the right end (`ml_auto`
+                    // on the first of them). `items_center` lines the
+                    // switch up with the buttons without a slot (3.48).
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .gap_2()
+                            .items_center()
+                            .debug_selector(|| "rules:edit-controls-row".into())
+                            .child(
+                                div()
+                                    .flex_shrink_0()
+                                    // 3.42's probe selector: the
+                                    // alignment test measures the switch
+                                    // itself, not the row around it.
+                                    .debug_selector(|| "rules:switch:edit".into())
+                                    .child(
+                                        Switch::new(SharedString::from(format!(
+                                            "rule-edit-regex-{}",
+                                            rule.id
+                                        )))
+                                        .label("regex")
+                                        .checked(page.rule_edit_regex)
+                                        .on_click(
+                                            move |checked: &bool, _, cx| {
+                                                switch_entity.update(cx, |page, cx| {
+                                                    page.rule_edit_regex = *checked;
+                                                    page.preview_rule_match(cx);
+                                                    cx.notify();
+                                                });
+                                            },
+                                        ),
+                                    ),
+                            )
+                            .child(
+                                Button::new(SharedString::from(format!(
+                                    "rule-edit-save-{}",
+                                    rule.id
+                                )))
+                                .label("Save")
+                                .primary()
+                                .ml_auto()
+                                .flex_shrink_0()
+                                // 3.42: the alignment test measures its centre.
+                                .debug_selector(|| "rules:edit-save-btn".into())
+                                // 3.40: loading + disabled while the save runs.
+                                .loading(page.rule_action_pending(PendingRuleAction::Save(rule.id)))
+                                .disabled(
+                                    page.rule_action_pending(PendingRuleAction::Save(rule.id)),
+                                )
+                                .on_click(
+                                    move |_, window, cx| {
+                                        save_entity
+                                            .update(cx, |page, cx| page.save_rule_edit(window, cx));
+                                    },
+                                ),
+                            )
+                            .child(
+                                Button::new(SharedString::from(format!(
+                                    "rule-edit-cancel-{}",
+                                    rule.id
+                                )))
+                                .label("Cancel")
+                                .ghost()
+                                .flex_shrink_0()
+                                .debug_selector(|| "rules:edit-cancel-btn".into())
+                                .on_click(move |_, _, cx| {
+                                    cancel_entity.update(cx, |page, cx| page.cancel_edit_rule(cx));
+                                }),
+                            ),
                     ),
-                )
-                // 3.53: no Category picker — the editor changes
-                // pattern and kind only, and the rule keeps its
-                // category (moving is the Rules page Move bar's job).
-                .child(
-                    Button::new(SharedString::from(format!("rule-edit-save-{}", rule.id)))
-                        .label("Save")
-                        .primary()
-                        .flex_shrink_0()
-                        // 3.42: the alignment test measures its centre.
-                        .debug_selector(|| "rules:edit-save-btn".into())
-                        // 3.40: loading + disabled while the save runs.
-                        .loading(page.rule_action_pending(PendingRuleAction::Save(rule.id)))
-                        .disabled(page.rule_action_pending(PendingRuleAction::Save(rule.id)))
-                        .on_click(move |_, window, cx| {
-                            save_entity.update(cx, |page, cx| page.save_rule_edit(window, cx));
-                        }),
-                )
-                .child(
-                    Button::new(SharedString::from(format!("rule-edit-cancel-{}", rule.id)))
-                        .label("Cancel")
-                        .ghost()
-                        .flex_shrink_0()
-                        .on_click(move |_, _, cx| {
-                            cancel_entity.update(cx, |page, cx| page.cancel_edit_rule(cx));
-                        }),
-                ),
+            ),
         )
         // 3.23: the count sits under the fields (as in the add-rule
         // row): the detail panel is too narrow to keep it inline.
@@ -1345,9 +1397,9 @@ impl Render for RulesPage {
         let items = Rc::new(self.rules_page_items(cx));
         let editing = self.editing_rule;
         let edit_error = self.rule_error.is_some();
-        // Rows are 24 px; the row the editor replaced reserves 80 px
-        // (108 px while a validation error is open), like the Categories
-        // rule list.
+        // Rows are 24 px; the row the editor replaced reserves
+        // `RULE_EDITOR_H` (`RULE_EDITOR_ERROR_H` while a validation error
+        // is open), like the Categories rule list.
         let item_sizes = Rc::new(
             items
                 .iter()
@@ -1356,7 +1408,11 @@ impl Render for RulesPage {
                     RulesItem::Rule { id } => size(
                         px(0.),
                         if editing == Some(*id) {
-                            if edit_error { px(108.) } else { px(80.) }
+                            if edit_error {
+                                px(RULE_EDITOR_ERROR_H)
+                            } else {
+                                px(RULE_EDITOR_H)
+                            }
                         } else {
                             px(24.)
                         },
@@ -1386,7 +1442,7 @@ impl Render for RulesPage {
                         RulesItem::Rule { id } => {
                             this.rules.iter().find(|r| r.id == *id).map(|r| {
                                 if this.editing_rule == Some(*id) {
-                                    rule_editor_row(r, muted, danger, this, &cx.entity())
+                                    rule_editor_row(r, muted, danger, this, &cx.entity(), cx)
                                 } else {
                                     let revealed = this.rules_reveal == Some(*id);
                                     this.rules_page_row(r, winner == Some(*id), revealed, muted, cx)
@@ -1730,7 +1786,7 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let entity = &self.rules_page;
-        rule_editor_row(rule, muted, danger, entity.read(cx), entity)
+        rule_editor_row(rule, muted, danger, entity.read(cx), entity, cx)
     }
 
     /// 3.53: Add rule on the Categories page. A selected subcategory is

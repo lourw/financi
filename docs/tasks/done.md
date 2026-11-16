@@ -1682,3 +1682,67 @@ the UI; tests cover 2.1–2.9.
   pages' Cancel chains end with `cx.propagate()` so Root still gets its
   turn for the category overlay. 3.82 replaces the Root binding with
   DashboardPage's own Cancel.
+
+### 3.83 — To categorize (QueuePage) view ✅
+- `QueuePage` implements `PageEntity` (`ui/queue.rs`) with
+  `DEPENDS = Transactions | Categories | Rules`; `watch_catalog` first
+  in `new`, entity built on `AppState` before the shell's own catalog
+  watcher so pages apply before `sync_category_choices`.
+- The page owns the queue list, the lazily built merchant pickers, and
+  the error banner; pickers are pruned to the rendered window ±24 rows
+  (one screenful) plus any picker with a pending selection, subs retire
+  in lockstep, and a scrolled-back picker rebuilds its category choices
+  lazily. Writes go out through `PageEvent::Toast` +
+  `PageEvent::Changed(RULES_TX)`; no `Shell` handle.
+- `escape → Cancel` in the `Queue` context: clears the banner, then
+  `cx.propagate()` so the Root `ClearCategorySelection` still fires.
+  Render body unchanged apart from `track_focus` + `key_context`.
+
+### 3.63 — App icon ✅
+- PNGs for 16–1024 rendered by `scripts/icons.sh` (`mise run icons`) and
+  committed; `WindowOptions.icon` (256 px, `include_bytes!` + `image`) and
+  `app_id` (`"financi"`) set on the main window; `packaging/linux/
+  financi.desktop` plus `mise run install-desktop`. macOS: `mise run
+  bundle` (`scripts/bundle-macos.sh`, `.icns` via `iconutil`) and a
+  cfg-gated `set_dock_icon()` through objc2-app-kit, type-checked
+  out-of-tree for x86_64-apple-darwin but not run (Linux machine).
+- Session-type note: this machine had no graphical session
+  (`XDG_SESSION_TYPE=tty`), so the by-hand taskbar check is still owed by
+  the user after `mise run install-desktop`.
+- Follow-up for the M5 packaging task: `scripts/bundle-macos.sh` line 18 —
+  add `|| true` to the `git describe` substitution so the Cargo.toml
+  version fallback is reachable when git is missing.
+- Not done on purpose: the startup-error window doesn't set the icon.
+
+### 3.48 — Rule editor gives the pattern room ✅
+- `rule_editor_row` is 3.89's `inline_form` now: "Pattern" label over a
+  full-width input, then a label-less control line (regex switch left,
+  `ml_auto` Save/Cancel); preview and error render under both. Shared
+  `RULE_EDITOR_H` / `RULE_EDITOR_ERROR_H` (measured 148/176 px) feed the
+  row reservations on both the Rules page and the categories detail
+  panel, so the virtual lists can't overlap the editor.
+- Focus lands in the pattern input with the caret at the end (deferred,
+  like the other pages); Enter saves, Escape cancels. Add-rule rows
+  measure ≥ 240 px at 1200 × 720, so they stay on one line.
+- Follow-up nit for the next task in `ui/rules.rs`: `start_edit_rule`'s
+  doc comment still describes the pre-3.48 single-line shape with a
+  Category picker.
+
+### 3.50 + 3.51 — Category detail panel forms ✅
+- 3.50: the always-visible **Organize** section dropped its heading and
+  field labels (placeholder is the label, `accessibility_label`s set);
+  one row per side, dividers kept (commit c117118).
+- 3.51: Organize/Delete are now title-row icon buttons (Add subcategory
+  on a parent, Move on a subcategory, Delete except system categories),
+  each opening a labelled-less `inline_form` under the title divider:
+  one at a time, `selected(true)` on the open button, closed by Cancel,
+  Escape (disarming any pending delete), a successful action, selecting
+  another category, or leaving the page. A successful Add subcategory
+  clears the name and keeps the form open and focused. Two-click delete
+  confirm unchanged. With no form open the panel is title row, divider,
+  then Rules at the remaining height.
+- Deviations accepted at review: `IconName::Trash` (no `trash-2` in the
+  pinned gpui-kit assets), and form order [control, Cancel, primary] per
+  `ui-conventions.md` → *Buttons*, which the spec sketch contradicted.
+  Someday: the *Buttons* example names `trash-2`, unattainable on this
+  dep version.

@@ -14,13 +14,6 @@ Steps 1–15 of `docs/tasks/gpui.md` → *GPUI best practices*, task by task.
   global `ClearCategorySelection` escape binding, which today also runs
   on other pages and clears hidden dashboard filters.
 
-- [ ] **3.83 To categorize becomes its own view.** (Architecture.) Same
-  pattern as 3.79, for `QueuePage`. Owns the queue and its lazily built
-  pickers; `DEPENDS = Transactions | Categories | Rules`. Prune pickers
-  for merchants outside the last rendered range plus a margin (today
-  `queue_pickers` keeps one `SelectState` per merchant ever scrolled
-  into view, each with a full copy of the category names).
-
 - [ ] **3.91 Every existing page uses the shared components.**
   (Architecture, 2026-11-11.) After 3.89 and the page extractions
   (3.79–3.83); one commit per page, so it can be reviewed in parts. Move

@@ -1,7 +1,58 @@
-//! Tests for `ui/queue.rs` (3.62 split from `ui_tests.rs`).
+//! Tests for `ui/queue.rs` (3.62 split from `ui_tests.rs`). 3.83: the page
+//! is a `QueuePage` entity on `Shell::queue_view`; waits that may run while
+//! the page is hidden read the `Catalog` snapshot instead.
 
-use super::dashboard::dash;
+use super::dashboard::{click_chart_legend, dash, seed_chart_rows, top_category_id};
 use super::*;
+
+/// Pick `child` in the merchant row's picker (the same get-or-create the
+/// row's render makes) and notify the page, as the `Confirm` event would.
+fn queue_pick(
+    cx: &mut TestAppContext,
+    handle: AnyWindowHandle,
+    shell: &Entity<Shell>,
+    merchant: &str,
+    child: i64,
+) {
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            let picker = s
+                .queue_view
+                .update(cx, |p, cx| p.queue_picker(merchant, window, cx));
+            let ix = s
+                .queue_view
+                .read(cx)
+                .child_choices
+                .iter()
+                .position(|(id, _)| *id == child)
+                .unwrap();
+            picker.update(cx, |sel, cx| {
+                sel.set_selected_index(Some(gpui_kit::component::IndexPath::new(ix)), window, cx);
+            });
+            // The popup's pick emits `Confirm`, which re-renders the rows;
+            // `set_selected_index` drives the state directly, so the test
+            // notifies on the subscription's behalf.
+            s.queue_view.update(cx, |_, cx| cx.notify());
+        });
+    });
+}
+
+/// Drive the same `categorize_merchant` call the row's button makes.
+fn queue_categorize(
+    cx: &mut TestAppContext,
+    handle: AnyWindowHandle,
+    shell: &Entity<Shell>,
+    merchant: String,
+) {
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.queue_view.update(cx, |p, cx| {
+                p.categorize_merchant(merchant.clone(), window, cx)
+            })
+        });
+    });
+}
+
 #[gpui::test]
 fn categorizing_a_queue_group_locks_in_a_rule(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, |c| {
@@ -25,33 +76,22 @@ fn categorizing_a_queue_group_locks_in_a_rule(cx: &mut TestAppContext) {
     add_child(cx, handle, &shell, "Online");
     let child = cx.update(|cx| find_child(&shell, cx, "Online").unwrap());
 
+    // 3.83: the page applies the queue when shown, so visit it first.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::ToCategorize, cx)));
     wait_until(cx, "queue populated", |cx| {
-        !shell.read(cx).queue.groups.is_empty()
+        !shell.read(cx).queue_view.read(cx).groups.is_empty()
     });
     let (merchant, before) = cx.update(|cx| top_group(&shell, cx));
 
-    with_window(cx, handle, |window, cx| {
-        shell.update(cx, |s, cx| {
-            // 3.19: pickers are built for visible rows; `queue_picker` is
-            // the same get-or-create the row's render makes.
-            let picker = s.queue_picker(&merchant, window, cx);
-            let ix = s
-                .child_choices
-                .iter()
-                .position(|(id, _)| *id == child)
-                .unwrap();
-            picker.update(cx, |sel, cx| {
-                sel.set_selected_index(Some(gpui_kit::component::IndexPath::new(ix)), window, cx);
-            });
-            s.categorize_merchant(merchant.clone(), window, cx);
-        });
-    });
+    queue_pick(cx, handle, &shell, &merchant, child);
+    queue_categorize(cx, handle, &shell, merchant.clone());
     let gone = merchant.clone();
     let shell_for_gone = shell.clone();
     wait_until(cx, "queue group gone", move |cx| {
         !shell_for_gone
             .read(cx)
-            .queue
+            .queue_view
+            .read(cx)
             .groups
             .iter()
             .any(|g| g.merchant == gone)
@@ -99,36 +139,40 @@ fn seed_queue_thousands(conn: &financi_db::rusqlite::Connection, groups: usize) 
     }
 }
 
+/// The queue snapshot length — current on any page, since a hidden page
+/// defers applying (3.83).
+fn queue_len(shell: &Entity<Shell>, cx: &App) -> usize {
+    shell.read(cx).catalog.read(cx).snap.queue.len()
+}
+
 /// 3.19: with thousands of merchant groups the To-categorize page must still
 /// render, building only the visible rows — and only pickers for those.
 #[gpui::test]
 fn the_queue_page_builds_only_the_visible_rows(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, |conn| seed_queue_thousands(conn, 2_000));
-    wait_until(cx, "2000 queue groups", |cx| {
-        shell.read(cx).queue.groups.len() == 2_000
-    });
+    wait_until(cx, "2000 queue groups", |cx| queue_len(&shell, cx) == 2_000);
     cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::ToCategorize, cx)));
     draw_frame(cx, handle);
     cx.update(|cx| {
-        let s = shell.read(cx);
+        let p = shell.read(cx).queue_view.read(cx);
         assert!(
-            s.queue.rows_built.get() > 0 && s.queue.rows_built.get() < 100,
+            p.rows_built.get() > 0 && p.rows_built.get() < 100,
             "the queue built {} rows of 2000 — it must render a window",
-            s.queue.rows_built.get()
+            p.rows_built.get()
         );
         // 3.19: pickers come with the rows that rendered, not one per group.
         assert!(
-            s.queue.pickers.len() < 100,
+            p.pickers.len() < 100,
             "{} pickers for a {}-row window — pickers must be built per visible row",
-            s.queue.pickers.len(),
-            s.queue.rows_built.get()
+            p.pickers.len(),
+            p.rows_built.get()
         );
         assert!(
-            s.queue.pickers.contains_key("QUEUE MERCHANT 0000"),
+            p.pickers.contains_key("QUEUE MERCHANT 0000"),
             "the first visible row has a picker"
         );
         assert!(
-            !s.queue.pickers.contains_key("QUEUE MERCHANT 1999"),
+            !p.pickers.contains_key("QUEUE MERCHANT 1999"),
             "the last group is off-screen, so it must not have a picker"
         );
     });
@@ -140,41 +184,27 @@ fn the_queue_page_builds_only_the_visible_rows(cx: &mut TestAppContext) {
 #[gpui::test]
 fn a_queue_group_at_the_very_bottom_can_still_be_categorized(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, |conn| seed_queue_thousands(conn, 2_000));
-    wait_until(cx, "2000 queue groups", |cx| {
-        shell.read(cx).queue.groups.len() == 2_000
-    });
+    wait_until(cx, "2000 queue groups", |cx| queue_len(&shell, cx) == 2_000);
     cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::ToCategorize, cx)));
     draw_frame(cx, handle);
     let last = cx.update(|cx| {
-        let s = shell.read(cx);
-        s.queue
-            .groups
+        let p = shell.read(cx).queue_view.read(cx);
+        p.groups
             .last()
             .expect("queue has a bottom")
             .merchant
             .clone()
     });
     let child = cx.update(|cx| find_child(&shell, cx, "Groceries").unwrap());
-    with_window(cx, handle, |window, cx| {
-        shell.update(cx, |s, cx| {
-            let picker = s.queue_picker(&last, window, cx);
-            let ix = s
-                .child_choices
-                .iter()
-                .position(|(id, _)| *id == child)
-                .unwrap();
-            picker.update(cx, |sel, cx| {
-                sel.set_selected_index(Some(gpui_kit::component::IndexPath::new(ix)), window, cx);
-            });
-            s.categorize_merchant(last.clone(), window, cx);
-        });
-    });
+    queue_pick(cx, handle, &shell, &last, child);
+    queue_categorize(cx, handle, &shell, last.clone());
     let gone = last.clone();
     let shell_for_gone = shell.clone();
     wait_until(cx, "bottom queue group gone", move |cx| {
         !shell_for_gone
             .read(cx)
-            .queue
+            .queue_view
+            .read(cx)
             .groups
             .iter()
             .any(|g| g.merchant == gone)
@@ -191,7 +221,7 @@ fn a_queue_group_at_the_very_bottom_can_still_be_categorized(cx: &mut TestAppCon
             "a rule was created for the bottom merchant"
         );
         assert!(
-            s.queue.rows_built.get() < 100,
+            s.queue_view.read(cx).rows_built.get() < 100,
             "still windowed after categorizing"
         );
     });
@@ -204,46 +234,52 @@ fn a_queue_group_at_the_very_bottom_can_still_be_categorized(cx: &mut TestAppCon
 #[gpui::test]
 fn the_queue_keeps_its_scroll_offset(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, |conn| seed_queue_thousands(conn, 2_000));
-    wait_until(cx, "2000 queue groups", |cx| {
-        shell.read(cx).queue.groups.len() == 2_000
-    });
+    wait_until(cx, "2000 queue groups", |cx| queue_len(&shell, cx) == 2_000);
     cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::ToCategorize, cx)));
     draw_frame(cx, handle);
     cx.update(|cx| {
-        let s = shell.read(cx);
-        assert_eq!(
-            s.queue.scroll.offset(),
-            Point::default(),
-            "starts unscrolled"
-        );
-        assert_eq!(s.queue.range.get().0, 0, "the first frame shows the top");
+        let p = shell.read(cx).queue_view.read(cx);
+        assert_eq!(p.scroll.offset(), Point::default(), "starts unscrolled");
+        assert_eq!(p.range.get().0, 0, "the first frame shows the top");
         // Jump straight to the bottom; layout clamps to the scroll max.
-        s.queue.scroll.set_offset(point(px(0.), px(-1_000_000.)));
+        p.scroll.set_offset(point(px(0.), px(-1_000_000.)));
     });
     draw_frame(cx, handle);
-    let scrolled = cx.update(|cx| shell.read(cx).queue.scroll.offset().y);
+    let scrolled = cx.update(|cx| shell.read(cx).queue_view.read(cx).scroll.offset().y);
     cx.update(|cx| {
         let s = shell.read(cx);
+        let p = s.queue_view.read(cx);
         assert!(scrolled < px(0.), "the queue is scrolled down");
-        let (start, end) = s.queue.range.get();
+        let (start, end) = p.range.get();
         assert!(
             start > 0,
             "the built window moved off the top (start {start})"
         );
         assert_eq!(
             end,
-            s.queue.groups.len(),
+            p.groups.len(),
             "the built window reached the last group"
         );
         // Pickers come with the rows that rendered: the bottom group's
         // picker is there, a middle group that was never on screen isn't.
         assert!(
-            s.queue.pickers.contains_key("QUEUE MERCHANT 1999"),
+            p.pickers.contains_key("QUEUE MERCHANT 1999"),
             "the bottom group is on screen, so it has a picker"
         );
         assert!(
-            !s.queue.pickers.contains_key("QUEUE MERCHANT 1000"),
+            !p.pickers.contains_key("QUEUE MERCHANT 1000"),
             "a middle group never scrolled into view, so it must not have a picker"
+        );
+        // 3.83: and pruning keeps the map the size of the window — the
+        // picker the top row left behind is gone.
+        assert!(
+            !p.pickers.contains_key("QUEUE MERCHANT 0000"),
+            "a picker scrolled a screenful past is pruned"
+        );
+        assert!(
+            p.pickers.len() < 100,
+            "{} pickers after scrolling — pruning must bound the map",
+            p.pickers.len()
         );
     });
     // A refresh that doesn't replace the queue must not move the offset.
@@ -251,12 +287,116 @@ fn the_queue_keeps_its_scroll_offset(cx: &mut TestAppContext) {
     draw_frame(cx, handle);
     cx.update(|cx| {
         let s = shell.read(cx);
+        let p = s.queue_view.read(cx);
         assert_eq!(
-            s.queue.scroll.offset().y,
+            p.scroll.offset().y,
             scrolled,
             "the offset survived an unrelated notify"
         );
-        assert_eq!(s.queue.range.get().1, s.queue.groups.len());
+        assert_eq!(p.range.get().1, p.groups.len());
+    });
+}
+
+/// 3.83: pickers track the rendered range. Scrolling a screenful past a row
+/// retires its picker (and its subscription); scrolling back rebuilds one,
+/// with the current category choices in it; and a picker holding a pick is
+/// never dropped, however far its row scrolls.
+#[gpui::test]
+fn the_queue_prunes_pickers_as_its_window_moves(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |conn| seed_queue_thousands(conn, 2_000));
+    wait_until(cx, "2000 queue groups", |cx| queue_len(&shell, cx) == 2_000);
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::ToCategorize, cx)));
+    draw_frame(cx, handle);
+    // Top of the list: the first row's picker exists and the map is small.
+    cx.update(|cx| {
+        let p = shell.read(cx).queue_view.read(cx);
+        assert!(p.pickers.contains_key("QUEUE MERCHANT 0000"));
+        assert!(p.pickers.len() < 100);
+    });
+    // Scroll to the bottom and back to the top.
+    cx.update(|cx| {
+        shell
+            .read(cx)
+            .queue_view
+            .read(cx)
+            .scroll
+            .set_offset(point(px(0.), px(-1_000_000.)));
+    });
+    draw_frame(cx, handle);
+    cx.update(|cx| {
+        let p = shell.read(cx).queue_view.read(cx);
+        assert!(
+            !p.pickers.contains_key("QUEUE MERCHANT 0000"),
+            "the top row's picker is pruned once its row stops being built"
+        );
+        assert!(
+            p.pickers.contains_key("QUEUE MERCHANT 1999"),
+            "the bottom row is on screen, so it has a picker"
+        );
+        assert!(
+            p.pickers.len() < 100,
+            "{} pickers at the bottom — retention must stay bounded",
+            p.pickers.len()
+        );
+        // 3.34: subscriptions retire with their pickers, one per survivor.
+        assert_eq!(p.picker_subs.len(), p.pickers.len());
+    });
+    cx.update(|cx| {
+        shell
+            .read(cx)
+            .queue_view
+            .read(cx)
+            .scroll
+            .set_offset(Point::default());
+    });
+    draw_frame(cx, handle);
+    cx.update(|cx| {
+        let p = shell.read(cx).queue_view.read(cx);
+        assert!(
+            p.pickers.contains_key("QUEUE MERCHANT 0000"),
+            "scrolling back rebuilds the row's picker lazily"
+        );
+    });
+    // The rebuilt picker offers the current categories: picking the queue's
+    // only child category lands on its "Food › Groceries" label.
+    let child = cx.update(|cx| find_child(&shell, cx, "Groceries").unwrap());
+    queue_pick(cx, handle, &shell, "QUEUE MERCHANT 0000", child);
+    cx.update(|cx| {
+        let p = shell.read(cx).queue_view.read(cx);
+        let picker = p.pickers.get("QUEUE MERCHANT 0000").expect("picker exists");
+        assert_eq!(
+            picker.read(cx).selected_value().map(|v| v.to_string()),
+            Some("Food › Groceries".to_string()),
+            "the rebuilt picker holds the current category choices"
+        );
+    });
+    // A pick is a pending action: far away as the row is, the picker with
+    // an active selection survives the prune.
+    cx.update(|cx| {
+        shell
+            .read(cx)
+            .queue_view
+            .read(cx)
+            .scroll
+            .set_offset(point(px(0.), px(-1_000_000.)));
+    });
+    draw_frame(cx, handle);
+    cx.update(|cx| {
+        let p = shell.read(cx).queue_view.read(cx);
+        assert!(
+            p.pickers.contains_key("QUEUE MERCHANT 0000"),
+            "a picker with an active selection is never pruned mid-interaction"
+        );
+        assert_eq!(
+            p.pickers
+                .get("QUEUE MERCHANT 0000")
+                .unwrap()
+                .read(cx)
+                .selected_value()
+                .map(|v| v.to_string()),
+            Some("Food › Groceries".to_string()),
+            "the pick itself survives the scroll"
+        );
     });
 }
 
@@ -266,36 +406,22 @@ fn the_queue_keeps_its_scroll_offset(cx: &mut TestAppContext) {
 #[gpui::test]
 fn categorizing_a_queue_group_toasts_without_moving_the_page(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, |conn| seed_queue_thousands(conn, 4));
-    wait_until(cx, "4 queue groups", |cx| {
-        shell.read(cx).queue.groups.len() == 4
-    });
+    wait_until(cx, "4 queue groups", |cx| queue_len(&shell, cx) == 4);
     cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::ToCategorize, cx)));
     draw_frame(cx, handle);
     let top = bounds(cx, handle, "queue:merchant-col:QUEUE MERCHANT 0000");
     let child = cx.update(|cx| find_child(&shell, cx, "Groceries").unwrap());
 
-    with_window(cx, handle, |window, cx| {
-        shell.update(cx, |s, cx| {
-            let merchant = "QUEUE MERCHANT 0001".to_string();
-            let picker = s.queue_picker(&merchant, window, cx);
-            let ix = s
-                .child_choices
-                .iter()
-                .position(|(id, _)| *id == child)
-                .unwrap();
-            picker.update(cx, |sel, cx| {
-                sel.set_selected_index(Some(gpui_kit::component::IndexPath::new(ix)), window, cx);
-            });
-            s.categorize_merchant(merchant, window, cx);
-        });
-    });
+    let merchant = "QUEUE MERCHANT 0001".to_string();
+    queue_pick(cx, handle, &shell, &merchant, child);
+    queue_categorize(cx, handle, &shell, merchant.clone());
     wait_until(cx, "toast up and queue shrinks", |cx| {
-        !shell.read(cx).toasts.is_empty() && shell.read(cx).queue.groups.len() == 3
+        !shell.read(cx).toasts.is_empty() && shell.read(cx).queue_view.read(cx).groups.len() == 3
     });
     cx.update(|cx| {
         assert_eq!(
             last_toast(&shell, cx),
-            Some(("Categorized QUEUE MERCHANT 0001".into(), false))
+            Some((format!("Categorized {merchant}"), false))
         );
     });
     draw_frame(cx, handle);
@@ -304,7 +430,7 @@ fn categorizing_a_queue_group_toasts_without_moving_the_page(cx: &mut TestAppCon
         after.origin, top.origin,
         "the page did not move while the toast shows"
     );
-    let card = bounds(cx, handle, "toast:Categorized QUEUE MERCHANT 0001");
+    let card = bounds(cx, handle, format!("toast:Categorized {merchant}"));
     assert!(
         card.center().x > px(550.) && card.center().y > px(360.),
         "the toast sits in the bottom-right of the 1200 × 720 window, at {card:?}"
@@ -435,9 +561,7 @@ fn seed_queue_fit(conn: &financi_db::rusqlite::Connection) {
 #[gpui::test]
 fn the_queue_fits_the_minimum_window(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, seed_queue_fit);
-    wait_until(cx, "3 queue groups", |cx| {
-        shell.read(cx).queue.groups.len() == 3
-    });
+    wait_until(cx, "3 queue groups", |cx| queue_len(&shell, cx) == 3);
     cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::ToCategorize, cx)));
     cx.run_until_parked();
     with_window(cx, handle, |window, cx| {
@@ -513,9 +637,7 @@ fn the_queue_fits_the_minimum_window(cx: &mut TestAppContext) {
 #[gpui::test]
 fn the_queue_list_paints_inside_one_panel(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, |conn| seed_queue_thousands(conn, 3));
-    wait_until(cx, "3 queue groups", |cx| {
-        shell.read(cx).queue.groups.len() == 3
-    });
+    wait_until(cx, "3 queue groups", |cx| queue_len(&shell, cx) == 3);
     cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::ToCategorize, cx)));
     let mut window = VisualTestContext::from_window(handle, cx);
     cx.run_until_parked();
@@ -557,20 +679,19 @@ fn the_queue_list_paints_inside_one_panel(cx: &mut TestAppContext) {
 #[gpui::test]
 fn the_queue_header_summarizes_transactions_and_merchants(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, |conn| seed_queue_thousands(conn, 3));
-    wait_until(cx, "3 queue groups", |cx| {
-        shell.read(cx).queue.groups.len() == 3
-    });
+    wait_until(cx, "3 queue groups", |cx| queue_len(&shell, cx) == 3);
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::ToCategorize, cx)));
     let txns = cx.update(|cx| {
         shell
             .read(cx)
-            .queue
+            .queue_view
+            .read(cx)
             .groups
             .iter()
             .map(|g| g.count)
             .sum::<i64>()
     });
     assert_eq!(txns, 6, "3 groups of 2 transactions each");
-    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::ToCategorize, cx)));
     cx.run_until_parked();
     draw_frame(cx, handle);
     assert!(
@@ -585,9 +706,7 @@ fn the_queue_header_summarizes_transactions_and_merchants(cx: &mut TestAppContex
 #[gpui::test]
 fn the_queue_categorize_button_waits_for_its_picker(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, |conn| seed_queue_thousands(conn, 3));
-    wait_until(cx, "3 queue groups", |cx| {
-        shell.read(cx).queue.groups.len() == 3
-    });
+    wait_until(cx, "3 queue groups", |cx| queue_len(&shell, cx) == 3);
     cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::ToCategorize, cx)));
     cx.run_until_parked();
     draw_frame(cx, handle);
@@ -601,23 +720,7 @@ fn the_queue_categorize_button_waits_for_its_picker(cx: &mut TestAppContext) {
         "with no pick the row's Categorize is disabled",
     );
     let child = cx.update(|cx| find_child(&shell, cx, "Groceries").unwrap());
-    with_window(cx, handle, |window, cx| {
-        shell.update(cx, |s, cx| {
-            let picker = s.queue_picker(&merchant, window, cx);
-            let ix = s
-                .child_choices
-                .iter()
-                .position(|(id, _)| *id == child)
-                .unwrap();
-            picker.update(cx, |sel, cx| {
-                sel.set_selected_index(Some(gpui_kit::component::IndexPath::new(ix)), window, cx);
-            });
-            // The popup's pick emits `Confirm`, which re-renders the rows;
-            // `set_selected_index` drives the state directly, so the test
-            // notifies on the subscription's behalf.
-            cx.notify();
-        });
-    });
+    queue_pick(cx, handle, &shell, &merchant, child);
     draw_frame(cx, handle);
     assert!(
         paints(
@@ -643,4 +746,95 @@ fn the_queue_categorize_button_waits_for_its_picker(cx: &mut TestAppContext) {
         ),
         "a row whose picker has no pick stays disabled",
     );
+}
+
+/// 3.83: Escape on the To-categorize page is the page's own `Cancel`, and
+/// the queue's one transient is its error banner: the first press clears
+/// it, and the consumed keystroke must not reach the dashboard drill.
+/// With nothing left the keystroke no longer means anything here — 3.82
+/// moved the drill-clearing Escape onto the Dashboard page itself, so the
+/// drill waits for an Escape *there*.
+#[gpui::test]
+fn escape_on_the_queue_page_clears_the_error_then_propagates(cx: &mut TestAppContext) {
+    // `seed_chart_rows` leaves one uncategorized row ("Mystery Vendor"),
+    // so the queue has a group to fail on, and the chart has rows to drill.
+    let (handle, shell) = open_shell(cx, seed_chart_rows);
+    wait_until(cx, "chart rows load", |cx| {
+        dash(cx, &shell).read(cx).chart_rows.len() == 3
+    });
+    // Drill the dashboard chart first: the drill lives on the dashboard
+    // page entity and survives the page switch, so it waits here for the
+    // last Escape.
+    let food = cx.update(|cx| top_category_id(&shell, cx, "Food"));
+    click_chart_legend(cx, handle, &shell, Some(food));
+    wait_until(cx, "drilled into Food", |cx| {
+        dash(cx, &shell).read(cx).filter.chart_parent == Some(food)
+    });
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::ToCategorize, cx)));
+    wait_until(cx, "queue populated", |cx| {
+        !shell.read(cx).queue_view.read(cx).groups.is_empty()
+    });
+    draw_frame(cx, handle);
+    // The banner's real trigger: Categorize with no pick in the row.
+    queue_categorize(cx, handle, &shell, "Mystery Vendor".to_string());
+    draw_frame(cx, handle);
+    assert!(
+        paints(
+            cx,
+            handle,
+            "queue:error:Choose a category for this merchant first."
+        ),
+        "the refused categorize raises the error banner"
+    );
+
+    // Actions dispatch along the focus path, so focus the page root —
+    // what showing the page does for a user (see the 3.80 Imports test).
+    let root = cx.update(|cx| shell.read(cx).queue_view.read(cx).focus.clone());
+    with_window(cx, handle, |window, cx| window.focus(&root, cx));
+
+    // 1. The first Escape closes the banner; the drill keeps its drill.
+    cx.simulate_keystrokes(handle, "escape");
+    cx.run_until_parked();
+    cx.update(|cx| {
+        assert!(
+            shell.read(cx).queue_view.read(cx).error.is_none(),
+            "Escape cleared the error banner"
+        );
+        assert_eq!(
+            dash(cx, &shell).read_with(cx, |d, _| d.filter.chart_parent),
+            Some(food),
+            "the consumed Escape did not clear the drill"
+        );
+    });
+    draw_frame(cx, handle);
+    assert!(
+        !paints(
+            cx,
+            handle,
+            "queue:error:Choose a category for this merchant first."
+        ),
+        "the banner is gone from the page"
+    );
+
+    // 2. With nothing open the keystroke means nothing here: the pages
+    // keep their own Escapes now (3.82), so the drill survives one
+    // pressed on the queue. Visit the dashboard and press it once —
+    // Escape still means *clear* on the page that owns the drill.
+    cx.simulate_keystrokes(handle, "escape");
+    cx.run_until_parked();
+    cx.update(|cx| {
+        assert_eq!(
+            dash(cx, &shell).read_with(cx, |d, _| d.filter.chart_parent),
+            Some(food),
+            "Escape on the queue page leaves the drill alone"
+        );
+    });
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
+    let dash_root = cx.update(|cx| dash(cx, &shell).read(cx).focus.clone());
+    with_window(cx, handle, |window, cx| window.focus(&dash_root, cx));
+    cx.simulate_keystrokes(handle, "escape");
+    wait_until(cx, "drill and legend selection cleared", |cx| {
+        dash(cx, &shell).read(cx).filter.chart_parent.is_none()
+            && dash(cx, &shell).read(cx).filter.legend_selection.is_none()
+    });
 }
