@@ -331,6 +331,13 @@ impl QueuePage {
         let Some((category_id, _)) = self.child_choices.get(ix.row).cloned() else {
             return;
         };
+        // 3.84: the paint — the group leaves the queue in the click's
+        // frame, the way its rows leave the list on the write's reload.
+        // A failed write puts it back at its index (unless a reload has
+        // meanwhile brought it back); the row's picker kept its pick
+        // through the removal, so a rolled-back row reads as it did.
+        let at = self.groups.iter().position(|g| g.merchant == merchant);
+        let undo = at.map(|index| (index, self.groups.remove(index)));
         let db = self.db.clone();
         let merchant_for_db = merchant.clone();
         // 3.64: detached — a later action must not cancel this write's
@@ -349,7 +356,15 @@ impl QueuePage {
                         });
                         this.error = None;
                     }
-                    Err(e) => this.error = Some(e),
+                    Err(e) => {
+                        if let Some((index, group)) = undo
+                            && !this.groups.iter().any(|g| g.merchant == group.merchant)
+                        {
+                            let at = index.min(this.groups.len());
+                            this.groups.insert(at, group);
+                        }
+                        this.error = Some(e);
+                    }
                 }
                 cx.emit(PageEvent::Changed(Domains::RULES_TX));
             });
