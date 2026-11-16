@@ -414,11 +414,9 @@ impl DashboardPage {
     /// (3.6) takes the right half later. `BarChart` takes no clicks, so all
     /// interactivity lives in the legend rows (ui-conventions, *Interaction*).
     pub(super) fn chart_panel(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let (border, background, muted, list_active, radius, colors) = {
+        let (muted, list_active, radius, colors) = {
             let theme = cx.theme();
             (
-                theme.border,
-                theme.background,
                 theme.muted_foreground,
                 theme.list_active,
                 theme.radius,
@@ -584,17 +582,15 @@ impl DashboardPage {
                 // height is explicit (3.25): the row's cross alignment does
                 // not stretch, so without it the panel keeps its content
                 // height and its title misses the summary's title line.
-                v_flex()
+                // 3.91: the shared `panel`, `flex_none` so its relative
+                // width is not overridden by the panel's own flex.
+                panel(cx, true)
                     .w(relative(CHART_PANEL_SHARE))
                     .h_full()
                     .min_w_0()
+                    .flex_none()
                     .debug_selector(|| "panel:chart".into())
                     .gap_2()
-                    .p_4()
-                    .rounded(radius)
-                    .border_1()
-                    .border_color(border)
-                    .bg(background)
                     .child(region_title("Spending by category"))
                     .child(
                         h_flex()
@@ -617,11 +613,10 @@ impl DashboardPage {
     /// *Interaction*). Amounts are positive spend; `Net` is the one signed
     /// row, `danger` when negative; `Income` reads as money in (`success`).
     fn summary_panel(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let (border, background, muted, list_active, danger, success, radius, colors) = {
+        let (border, muted, list_active, danger, success, radius, colors) = {
             let theme = cx.theme();
             (
                 theme.border,
-                theme.background,
                 theme.muted_foreground,
                 theme.list_active,
                 theme.danger,
@@ -635,17 +630,11 @@ impl DashboardPage {
         // zeros rather than an empty `months`. Treat an all-zero grid as
         // empty too (task 3.10): the panel says "No spending in this range".
         if !self.summary_has_data() {
-            return v_flex()
+            return panel(cx, true)
                 .h(px(340.))
-                .flex_1()
                 .min_w_0()
                 .debug_selector(|| "panel:summary".into())
                 .gap_2()
-                .p_4()
-                .rounded(radius)
-                .border_1()
-                .border_color(border)
-                .bg(background)
                 .child(region_title("Monthly summary"))
                 .child(
                     div()
@@ -901,18 +890,12 @@ impl DashboardPage {
                     .into_any_element()
             }));
 
-        v_flex()
+        panel(cx, true)
             .h(px(340.))
-            .flex_1()
             .min_w_0()
             .relative()
             .debug_selector(|| "panel:summary".into())
-            .p_4()
             .gap_2()
-            .rounded(radius)
-            .border_1()
-            .border_color(border)
-            .bg(background)
             .child(region_title("Monthly summary"))
             // Month header and rows keep their tighter `gap_1`.
             .child(
@@ -976,26 +959,12 @@ impl DashboardPage {
     /// table-narrowing filter. The header controls (date range, accounts,
     /// transfers) keep their own widgets, so they stay as the user set them.
     pub(super) fn no_matches_panel(&self, cx: &mut Context<Self>) -> AnyElement {
-        let (border, background, muted, radius) = {
-            let theme = cx.theme();
-            (
-                theme.border,
-                theme.background,
-                theme.muted_foreground,
-                theme.radius,
-            )
-        };
-        div()
+        let muted = cx.theme().muted_foreground;
+        panel(cx, false)
             .size_full()
-            .flex()
-            .flex_col()
             .items_center()
             .justify_center()
             .gap_2()
-            .rounded(radius)
-            .border_1()
-            .border_color(border)
-            .bg(background)
             .text_sm()
             .text_color(muted)
             .child("No transactions match these filters")

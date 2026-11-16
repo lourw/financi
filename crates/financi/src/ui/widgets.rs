@@ -748,8 +748,7 @@ pub(super) fn page_header(
 
 /// The filter strip (ui-conventions *Filtering*): one 32 px row of
 /// controls with the standard 8 px gap. (Built ahead of the pages that
-/// move onto it; 3.51 and 3.52 adopt it.)
-#[allow(dead_code)]
+/// move onto it; the dashboard adopted it in 3.91.)
 pub(super) fn filter_row() -> Div {
     h_flex().w_full().h(px(32.)).gap_2().items_center()
 }
