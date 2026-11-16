@@ -2,6 +2,16 @@
 
 use super::*;
 
+/// 3.85: a cached view row carries its cells twice — raw cents (what
+/// the sign-dependent colours read) and the drawn text. Tests that
+/// check amounts read `.cents`; this builds the matching drawn strings.
+fn money_cells(values: &[i64]) -> Vec<gpui_kit::SharedString> {
+    values
+        .iter()
+        .map(|&c| gpui_kit::SharedString::from(crate::flow::money(c)))
+        .collect()
+}
+
 /// Two fixed months (March and April 2026): Food (Groceries -1000 -600,
 /// Restaurants -500), Transport (Bus -300), one uncategorized -200, and a
 /// $2,105.00 salary each month. The tests switch to "All time", so the
@@ -202,11 +212,14 @@ fn summary_shows_months_total_and_the_three_total_rows(cx: &mut TestAppContext) 
             ]
         );
         let row = |name: &str| rows.iter().find(|r| r.name == name).unwrap();
-        assert_eq!(row("Food").cells, [1500, 600, 2100]);
-        assert_eq!(row("Uncategorized").cells, [200, 0, 200]);
-        assert_eq!(row("Income").cells, [210500, 210500, 421000]);
-        assert_eq!(row("Spend").cells, [1700, 900, 2600]);
-        assert_eq!(row("Net").cells, [208800, 209600, 418400]);
+        assert_eq!(row("Food").cents, [1500, 600, 2100]);
+        assert_eq!(row("Uncategorized").cents, [200, 0, 200]);
+        assert_eq!(row("Income").cents, [210500, 210500, 421000]);
+        assert_eq!(row("Spend").cents, [1700, 900, 2600]);
+        assert_eq!(row("Net").cents, [208800, 209600, 418400]);
+        // The drawn text is the cents through `flow::money`, formatted
+        // once when the view was built (3.85).
+        assert_eq!(row("Food").cells, money_cells(&[1500, 600, 2100]));
         assert_eq!(
             row("Food").kind,
             SummaryRowKind::Parent {
@@ -324,7 +337,7 @@ fn expanding_a_summary_parent_shows_its_child_rows(cx: &mut TestAppContext) {
             }
         );
         assert_eq!(rows[1].kind, SummaryRowKind::Child);
-        assert_eq!(rows[1].cells, [1000, 600, 1600]);
+        assert_eq!(rows[1].cents, [1000, 600, 1600]);
         assert_eq!(rows[2].kind, SummaryRowKind::Child);
     });
 
@@ -449,6 +462,6 @@ fn uncategorized_is_the_last_summary_category_row_whatever_its_amount(cx: &mut T
             ]
         );
         assert_eq!(rows[2].kind, SummaryRowKind::Uncategorized);
-        assert_eq!(rows[2].cells, [5200, 0, 5200]);
+        assert_eq!(rows[2].cents, [5200, 0, 5200]);
     });
 }

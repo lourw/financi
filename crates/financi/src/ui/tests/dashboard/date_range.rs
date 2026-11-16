@@ -122,7 +122,7 @@ fn dashboard_totals(
             .into_iter()
             .find(|r| r.name == name)
             .expect("a total row")
-            .cells
+            .cents
     };
     let food = d
         .chart_rows

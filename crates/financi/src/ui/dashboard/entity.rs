@@ -67,12 +67,25 @@ pub(crate) struct DashboardPage {
     pub(in crate::ui) chart_rows: Vec<CategorySpend>,
     /// The summary panel and the parents whose child rows are expanded.
     pub(in crate::ui) summary: MonthlySummary,
+    /// 3.85: the cached `summary_rows()` the grid renders from — built
+    /// once per summary load, parent toggle or category change, not per
+    /// frame.
+    pub(in crate::ui) summary_views: Rc<Vec<SummaryRowView>>,
+    pub(in crate::ui) summary_views_dirty: bool,
+    /// 3.85 test hook: how many times the cached views were (re)built.
+    #[cfg(test)]
+    pub(in crate::ui) summary_views_built: std::cell::Cell<usize>,
     pub(in crate::ui) expanded_parents: HashSet<i64>,
     /// One horizontal scroll handle for the whole month strip of the
     /// dashboard summary (3.30): the header's month row and every row's
     /// month cells track it, so they scroll together, while the name
     /// column and the `Total` column stay pinned.
     pub(in crate::ui) summary_scroll: ScrollHandle,
+    /// 3.85: the summary grid's virtualized body scrolls under this
+    /// page-owned handle (the rules page's pattern): `v_virtual_list`
+    /// builds a fresh internal handle per render, so without a persistent
+    /// one the wheel's offset would reset on every frame.
+    pub(in crate::ui) summary_rows_scroll: VirtualListScrollHandle,
     /// The [`ViewFilter`] the newest applied load ran with — the record
     /// of what produced the rows on screen (3.56). The pickers and the
     /// checkbox handlers keep it mirrored so it can be read directly.
@@ -331,8 +344,13 @@ impl DashboardPage {
                 months: Vec::new(),
                 rows: Vec::new(),
             },
+            summary_views: Rc::new(Vec::new()),
+            summary_views_dirty: true,
+            #[cfg(test)]
+            summary_views_built: std::cell::Cell::new(0),
             expanded_parents: HashSet::new(),
             summary_scroll: ScrollHandle::new(),
+            summary_rows_scroll: VirtualListScrollHandle::new(),
             view_filter: ViewFilter::default(),
             date_preset_select,
             date_from_picker,
@@ -432,6 +450,9 @@ impl PageEntity for DashboardPage {
         };
         self.accounts = snap.0;
         self.categories = snap.1;
+        // 3.85: row kinds (expandable parents, child grouping) derive
+        // from the tree, so the summary view cache follows it.
+        self.summary_views_dirty = true;
         self.total_visible = snap.2;
         self.sync_account_filter();
         let startup = std::mem::take(&mut self.startup_settings);

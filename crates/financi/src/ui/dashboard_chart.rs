@@ -281,6 +281,21 @@ impl DashboardPage {
         if !self.expanded_parents.insert(id) {
             self.expanded_parents.remove(&id);
         }
+        // 3.85: the expanded set picks which child rows are in the grid.
+        self.summary_views_dirty = true;
+    }
+    /// 3.85: the grid's rows from the cache, rebuilt on the first render
+    /// after a summary load, a parent toggle or a category change — the
+    /// only inputs `summary_rows` reads.
+    pub(super) fn summary_views_mut(&mut self) -> Rc<Vec<SummaryRowView>> {
+        if self.summary_views_dirty {
+            #[cfg(test)]
+            self.summary_views_built
+                .set(self.summary_views_built.get() + 1);
+            self.summary_views = Rc::new(self.summary_rows());
+            self.summary_views_dirty = false;
+        }
+        Rc::clone(&self.summary_views)
     }
     /// The summary rows prepared for drawing: the grid's rows with their
     /// kinds resolved (children of collapsed parents left out) and the
@@ -316,13 +331,33 @@ impl DashboardPage {
                     },
                 }
             };
-            let mut cells = row.months.clone();
-            cells.push(row.total);
+            let cents: Vec<i64> = row
+                .months
+                .iter()
+                .copied()
+                .chain(std::iter::once(row.total))
+                .collect();
+            let cells = cents
+                .iter()
+                .map(|&c| SharedString::from(flow::money(c)))
+                .collect();
+            let key: SharedString = match kind {
+                SummaryRowKind::Income => "income".into(),
+                SummaryRowKind::Spend => "spend".into(),
+                SummaryRowKind::Net => "net".into(),
+                SummaryRowKind::Uncategorized => "uncat".into(),
+                _ => row
+                    .id
+                    .map(|id| SharedString::from(id.to_string()))
+                    .unwrap_or_else(|| SharedString::from(format!("row-{ix}"))),
+            };
             views.push(SummaryRowView {
                 id: row.id,
                 name: row.name.clone().into(),
                 kind,
+                cents,
                 cells,
+                key,
             });
         }
         // Uncategorized is always the last category row, whatever its
@@ -673,7 +708,8 @@ impl DashboardPage {
         let selection = self.filter.legend_selection;
         let selected_month = self.filter.summary_month.clone();
         let month_values = self.summary.months.clone();
-        let rows = self.summary_rows();
+        // 3.85: the cached, pre-formatted rows (see `summary_views_mut`).
+        let views = self.summary_views_mut();
 
         // Pinned columns and scrolling months (3.30): the name column and
         // `Total` keep fixed widths at the row edges, and the month columns
@@ -685,9 +721,13 @@ impl DashboardPage {
         const MONTH_W: f32 = 88.;
         const TOTAL_W: f32 = 96.;
         let month_count = month_values.len();
-        let month_viewport = |selector: String, handle: &ScrollHandle| {
+        // 3.85: the viewport's element id is keyed by the row's category
+        // (or kind) key, never its index, so collapsing a sibling cannot
+        // hand one row's scroll state to another. The debug selector
+        // stays index-based for the tests.
+        let month_viewport = |id: String, selector: String, handle: &ScrollHandle| {
             div()
-                .id(SharedString::from(selector.clone()))
+                .id(SharedString::from(id))
                 .flex_1()
                 .min_w_0()
                 .overflow_x_scroll()
@@ -717,20 +757,23 @@ impl DashboardPage {
             .px_1()
             .child(div().w(px(NAME_W)).flex_none())
             .child(
-                month_viewport("summary:months-header".into(), &self.summary_scroll).child(
-                    months_strip().children(month_values.iter().enumerate().map(
-                        |(col_ix, month)| {
-                            div()
-                                .w(px(MONTH_W))
-                                .flex_none()
-                                .debug_selector(move || format!("summary:month-label-{col_ix}"))
-                                .text_right()
-                                .text_sm()
-                                .text_color(muted)
-                                .child(flow::month_label(month))
-                        },
-                    )),
-                ),
+                month_viewport(
+                    "summary:months-header".into(),
+                    "summary:months-header".into(),
+                    &self.summary_scroll,
+                )
+                .child(months_strip().children(
+                    month_values.iter().enumerate().map(|(col_ix, month)| {
+                        div()
+                            .w(px(MONTH_W))
+                            .flex_none()
+                            .debug_selector(move || format!("summary:month-label-{col_ix}"))
+                            .text_right()
+                            .text_sm()
+                            .text_color(muted)
+                            .child(flow::month_label(month))
+                    }),
+                )),
             )
             .child(
                 div()
@@ -742,177 +785,226 @@ impl DashboardPage {
                     .child("Total"),
             );
 
-        let body = v_flex()
-            .id("summary-rows")
-            .flex_1()
-            .min_h_0()
-            .overflow_y_scroll()
-            // Without this a horizontal wheel delta over the month zone is
-            // remapped onto this scroller's vertical axis too, so a swipe
-            // would scroll the months and jump the rows at once (3.30).
-            .restrict_scroll_to_axis()
-            .children(rows.into_iter().enumerate().map(|(ix, row)| {
-                let id = row.id;
-                let is_category = !matches!(
-                    row.kind,
-                    SummaryRowKind::Income | SummaryRowKind::Spend | SummaryRowKind::Net
-                );
-                let swatch = match row.kind {
-                    SummaryRowKind::Parent { .. } | SummaryRowKind::Child => Some(
-                        id.and_then(|id| colors.get(&id))
-                            .map(|ix| palette[*ix % 12])
-                            .unwrap_or(muted),
-                    ),
-                    SummaryRowKind::Uncategorized => Some(muted),
-                    _ => None,
-                };
-                let is_income = matches!(row.kind, SummaryRowKind::Income);
-
-                // Name cell: chevron + swatch + name. On a parent it also
-                // toggles the child rows.
-                let (chevron, expandable) = match row.kind {
-                    SummaryRowKind::Parent {
-                        expandable,
-                        expanded,
-                    } => (
-                        if expandable {
-                            if expanded { "▾" } else { "▸" }
-                        } else {
-                            ""
-                        },
-                        expandable,
-                    ),
-                    _ => ("", false),
-                };
-                let name_cell = h_flex()
-                    .id(SharedString::from(format!("summary-name-{ix}")))
-                    .w(px(NAME_W))
-                    .flex_none()
-                    .debug_selector(move || format!("summary:name-{ix}"))
-                    .gap_2()
-                    .items_center()
-                    .when(matches!(row.kind, SummaryRowKind::Child), |c| c.pl(px(14.)))
-                    .when(expandable, |c| {
-                        c.cursor_pointer().on_click(cx.listener(
-                            move |this, _: &ClickEvent, _, cx| {
-                                if let Some(id) = id {
-                                    this.toggle_summary_parent(id);
-                                    cx.notify();
-                                }
-                            },
-                        ))
-                    })
-                    .child(
-                        div()
-                            .w(px(12.))
-                            .flex_none()
-                            .text_xs()
-                            .text_color(muted)
-                            .child(chevron),
-                    )
-                    .when_some(swatch, |c, color| {
-                        c.child(div().size(px(10.)).flex_none().rounded(px(2.)).bg(color))
-                    })
-                    // The fixed name column truncates long names, so hover
-                    // shows the full one (3.30), same tooltip idiom as the
-                    // queue's merchants.
-                    .tooltip({
-                        let full = row.name.clone();
-                        move |window, cx| {
-                            let tip = full.clone();
-                            Tooltip::element(move |_, _| {
-                                div()
-                                    .debug_selector({
-                                        let n = tip.clone();
-                                        move || format!("summary:name-tooltip:{n}")
-                                    })
-                                    .child(tip.clone())
-                            })
-                            .build(window, cx)
-                        }
-                    })
-                    .child(
-                        div()
-                            .min_w_0()
-                            .overflow_hidden()
-                            .text_ellipsis()
-                            .text_sm()
-                            .when(matches!(row.kind, SummaryRowKind::Parent { .. }), |d| {
-                                d.font_weight(FontWeight::SEMIBOLD)
-                            })
-                            .when(matches!(row.kind, SummaryRowKind::Uncategorized), |d| {
-                                d.text_color(muted)
-                            })
-                            .child(row.name.clone()),
-                    );
-
-                // The month cells go into the scrolling viewport; the
-                // `Total` cell stays pinned right. Both keep their exact
-                // behaviour — click-to-filter, the selected highlight, the
-                // `Income`/`Net` colours (3.6).
-                let mut month_cells: Vec<AnyElement> = Vec::with_capacity(month_count);
-                let mut total_cell: AnyElement =
-                    div().w(px(TOTAL_W)).flex_none().into_any_element();
-                for (col_ix, &cents) in row.cells.iter().enumerate() {
-                    let is_total = col_ix >= month_count;
-                    let cell_month = month_values.get(col_ix).cloned();
-                    let selected = is_category
-                        && cell_month == selected_month
-                        && match (id, selection) {
-                            (None, Some(LegendSelection::Uncategorized)) => true,
-                            (Some(id), Some(LegendSelection::Category(c))) => c == id,
-                            _ => false,
-                        };
-                    let color = match row.kind {
-                        SummaryRowKind::Income => Some(success),
-                        SummaryRowKind::Net if cents < 0 => Some(danger),
-                        _ => None,
-                    };
-                    let cell = div()
-                        .id(SharedString::from(format!("summary-cell-{ix}-{col_ix}")))
-                        .w(if is_total { px(TOTAL_W) } else { px(MONTH_W) })
-                        .flex_none()
-                        .debug_selector(move || format!("summary:cell:{ix}:{col_ix}"))
-                        .text_right()
-                        .text_sm()
-                        .rounded(px(2.))
-                        .when_some(color, |c, color| c.text_color(color))
-                        .when(selected, |c| c.bg(list_active))
-                        .when(is_category, |c| {
-                            let month = cell_month.clone();
-                            c.cursor_pointer().on_click(cx.listener(
-                                move |this, _: &ClickEvent, window, cx| {
-                                    this.click_summary_cell(id, month.clone(), window, cx);
-                                },
-                            ))
-                        })
-                        .child(flow::money(cents))
-                        .into_any_element();
-                    if is_total {
-                        total_cell = cell;
+        // Pinned row height (3.85): the virtual list must know every row's
+        // height before drawing it, and the row markup pins the same
+        // height — `text_sm` (15 px, a 22.5 px line box) plus `py_1`
+        // (2 × 4 px); the `Income` row adds its 1 px top border.
+        const ROW_H: f32 = 30.5;
+        const INCOME_ROW_H: f32 = 31.5;
+        let item_sizes: Rc<Vec<Size<Pixels>>> = Rc::new(
+            views
+                .iter()
+                .map(|row| {
+                    let h = if matches!(row.kind, SummaryRowKind::Income) {
+                        INCOME_ROW_H
                     } else {
-                        month_cells.push(cell);
-                    }
-                }
+                        ROW_H
+                    };
+                    size(px(0.), px(h))
+                })
+                .collect(),
+        );
+        // 3.85: the grid body virtualizes (only visible rows build
+        // elements) and renders the cached, pre-formatted views, so no
+        // `flow::money` call runs per row per frame. `DataList` was
+        // considered and does not fit: it pins 40 px rows (this grid
+        // measures 30.5), paints its own row hover and heading, and keys
+        // rows by `EntityId`. The `VirtualList` base already locks the
+        // scroll axis, replacing the body's `restrict_scroll_to_axis`.
+        let strip_months = month_values.clone();
+        let scroll_handle = self.summary_scroll.clone();
+        let body = v_virtual_list(
+            cx.entity(),
+            "summary-rows",
+            item_sizes,
+            move |_this, range, _window, cx| {
+                (range.start..range.end)
+                    .map(|ix| {
+                        let row = &views[ix];
+                        let id = row.id;
+                        let key = row.key.clone();
+                        let is_category = !matches!(
+                            row.kind,
+                            SummaryRowKind::Income | SummaryRowKind::Spend | SummaryRowKind::Net
+                        );
+                        let swatch = match row.kind {
+                            SummaryRowKind::Parent { .. } | SummaryRowKind::Child => Some(
+                                id.and_then(|id| colors.get(&id))
+                                    .map(|ix| palette[*ix % 12])
+                                    .unwrap_or(muted),
+                            ),
+                            SummaryRowKind::Uncategorized => Some(muted),
+                            _ => None,
+                        };
+                        let is_income = matches!(row.kind, SummaryRowKind::Income);
 
-                h_flex()
-                    .id(SharedString::from(format!("summary-row-{ix}")))
-                    .gap_2()
-                    .items_center()
-                    .px_1()
-                    .py_1()
-                    .rounded(radius)
-                    // A hairline above `Income` separates the totals from
-                    // the category rows.
-                    .when(is_income, |r| r.border_t_1().border_color(border))
-                    .child(name_cell)
-                    .child(
-                        month_viewport(format!("summary:months-{ix}"), &self.summary_scroll)
-                            .child(months_strip().children(month_cells)),
-                    )
-                    .child(total_cell)
-                    .into_any_element()
-            }));
+                        // Name cell: chevron + swatch + name. On a parent it also
+                        // toggles the child rows.
+                        let (chevron, expandable) = match row.kind {
+                            SummaryRowKind::Parent {
+                                expandable,
+                                expanded,
+                            } => (
+                                if expandable {
+                                    if expanded { "▾" } else { "▸" }
+                                } else {
+                                    ""
+                                },
+                                expandable,
+                            ),
+                            _ => ("", false),
+                        };
+                        let name_cell = h_flex()
+                            .id(SharedString::from(format!("summary-name-{key}")))
+                            .w(px(NAME_W))
+                            .flex_none()
+                            .debug_selector(move || format!("summary:name-{ix}"))
+                            .gap_2()
+                            .items_center()
+                            .when(matches!(row.kind, SummaryRowKind::Child), |c| c.pl(px(14.)))
+                            .when(expandable, |c| {
+                                c.cursor_pointer().on_click(cx.listener(
+                                    move |this, _: &ClickEvent, _, cx| {
+                                        if let Some(id) = id {
+                                            this.toggle_summary_parent(id);
+                                            cx.notify();
+                                        }
+                                    },
+                                ))
+                            })
+                            .child(
+                                div()
+                                    .w(px(12.))
+                                    .flex_none()
+                                    .text_xs()
+                                    .text_color(muted)
+                                    .child(chevron),
+                            )
+                            .when_some(swatch, |c, color| {
+                                c.child(div().size(px(10.)).flex_none().rounded(px(2.)).bg(color))
+                            })
+                            // The fixed name column truncates long names, so hover
+                            // shows the full one (3.30), same tooltip idiom as the
+                            // queue's merchants.
+                            .tooltip({
+                                let full = row.name.clone();
+                                move |window, cx| {
+                                    let tip = full.clone();
+                                    Tooltip::element(move |_, _| {
+                                        div()
+                                            .debug_selector({
+                                                let n = tip.clone();
+                                                move || format!("summary:name-tooltip:{n}")
+                                            })
+                                            .child(tip.clone())
+                                    })
+                                    .build(window, cx)
+                                }
+                            })
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .text_sm()
+                                    .when(matches!(row.kind, SummaryRowKind::Parent { .. }), |d| {
+                                        d.font_weight(FontWeight::SEMIBOLD)
+                                    })
+                                    .when(matches!(row.kind, SummaryRowKind::Uncategorized), |d| {
+                                        d.text_color(muted)
+                                    })
+                                    .child(row.name.clone()),
+                            );
+
+                        // The month cells go into the scrolling viewport; the
+                        // `Total` cell stays pinned right. Both keep their exact
+                        // behaviour — click-to-filter, the selected highlight, the
+                        // `Income`/`Net` colours (3.6).
+                        let mut month_cells: Vec<AnyElement> = Vec::with_capacity(month_count);
+                        let mut total_cell: AnyElement =
+                            div().w(px(TOTAL_W)).flex_none().into_any_element();
+                        for (col_ix, &cents) in row.cents.iter().enumerate() {
+                            let is_total = col_ix >= month_count;
+                            let cell_month = strip_months.get(col_ix).cloned();
+                            let selected = is_category
+                                && cell_month == selected_month
+                                && match (id, selection) {
+                                    (None, Some(LegendSelection::Uncategorized)) => true,
+                                    (Some(id), Some(LegendSelection::Category(c))) => c == id,
+                                    _ => false,
+                                };
+                            let color = match row.kind {
+                                SummaryRowKind::Income => Some(success),
+                                SummaryRowKind::Net if cents < 0 => Some(danger),
+                                _ => None,
+                            };
+                            let cell = div()
+                                .id(SharedString::from(format!("summary-cell-{key}-{col_ix}")))
+                                .w(if is_total { px(TOTAL_W) } else { px(MONTH_W) })
+                                .flex_none()
+                                .debug_selector(move || format!("summary:cell:{ix}:{col_ix}"))
+                                .text_right()
+                                .text_sm()
+                                .rounded(px(2.))
+                                .when_some(color, |c, color| c.text_color(color))
+                                .when(selected, |c| c.bg(list_active))
+                                .when(is_category, |c| {
+                                    let month = cell_month.clone();
+                                    c.cursor_pointer().on_click(cx.listener(
+                                        move |this, _: &ClickEvent, window, cx| {
+                                            this.click_summary_cell(id, month.clone(), window, cx);
+                                        },
+                                    ))
+                                })
+                                .child(row.cells[col_ix].clone())
+                                .into_any_element();
+                            if is_total {
+                                total_cell = cell;
+                            } else {
+                                month_cells.push(cell);
+                            }
+                        }
+
+                        h_flex()
+                            .id(SharedString::from(format!("summary-row-{key}")))
+                            .w_full()
+                            .gap_2()
+                            .items_center()
+                            // 3.85: pinned to match the virtual list's
+                            // `item_sizes`, so measured height never drifts.
+                            .h(px(if is_income { INCOME_ROW_H } else { ROW_H }))
+                            .overflow_hidden()
+                            .px_1()
+                            .py_1()
+                            .rounded(radius)
+                            // A hairline above `Income` separates the totals from
+                            // the category rows.
+                            .when(is_income, |r| r.border_t_1().border_color(border))
+                            .child(name_cell)
+                            .child(
+                                month_viewport(
+                                    format!("summary:months-{key}"),
+                                    format!("summary:months-{ix}"),
+                                    &scroll_handle,
+                                )
+                                .child(months_strip().children(month_cells)),
+                            )
+                            .child(total_cell)
+                            .into_any_element()
+                    })
+                    .collect::<Vec<_>>()
+            },
+        )
+        // The panel gives the list its width; measuring a row at
+        // min-content would size the list's canvas to the whole month
+        // strip (24 fixed columns) and paint the rows wider than the
+        // panel, so take the width from layout instead (3.85).
+        .with_sizing_behavior(ListSizingBehavior::Auto)
+        // 3.85: page-owned handle (the rules page's pattern) — the
+        // wheel scrolls it and the offset survives re-renders.
+        .track_scroll(&self.summary_rows_scroll)
+        .flex_1()
+        .min_h_0();
 
         panel(cx, true)
             .h(px(340.))

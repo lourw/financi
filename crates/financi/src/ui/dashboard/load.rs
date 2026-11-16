@@ -358,6 +358,8 @@ impl DashboardPage {
                 .set_offset(point(px(-1_000_000.), px(0.)));
         }
         self.summary = data.summary;
+        // 3.85: the grid's cached views follow the summary.
+        self.summary_views_dirty = true;
         // Record the filter the applied rows were queried with (3.56).
         self.view_filter = data.view_filter;
         // The rule offer follows a row the user just edited; a load

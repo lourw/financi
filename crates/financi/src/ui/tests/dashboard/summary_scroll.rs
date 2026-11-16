@@ -207,10 +207,12 @@ fn summary_months_scroll_under_pinned_name_and_total(cx: &mut TestAppContext) {
 
     // Vertical scrolling of the body still works over the month zone,
     // and the name column moves with the rows (it is part of the body).
-    let y_before = bounds(cx, handle, "summary:name-0").origin.y;
+    // 3.85: the body is virtual, so the wheel is checked against the
+    // second row — a 40 px scroll carries the first row away entirely.
+    let y_before = bounds(cx, handle, "summary:name-1").origin.y;
     wheel(cx, handle, viewport_centre(zone), 0., -40.);
     draw_frame(cx, handle);
-    let y_after = bounds(cx, handle, "summary:name-0").origin.y;
+    let y_after = bounds(cx, handle, "summary:name-1").origin.y;
     assert!(
         y_after < y_before,
         "the rows scroll vertically under the month zone, names included"
@@ -231,10 +233,12 @@ fn a_horizontal_swipe_does_not_jump_the_summary_rows_vertically(cx: &mut TestApp
     let zone = bounds(cx, handle, "summary:months-0");
 
     // Wheel the body down first, so there is somewhere to jump back to.
-    let y_top = bounds(cx, handle, "summary:name-0").origin.y;
+    // 3.85: the body is virtual — the second row is tracked, because a
+    // 40 px scroll carries the first row away entirely.
+    let y_top = bounds(cx, handle, "summary:name-1").origin.y;
     wheel(cx, handle, viewport_centre(zone), 0., -40.);
     draw_frame(cx, handle);
-    let y_scrolled = bounds(cx, handle, "summary:name-0").origin.y;
+    let y_scrolled = bounds(cx, handle, "summary:name-1").origin.y;
     assert!(y_scrolled < y_top, "the body is scrolled down");
 
     // A horizontal swipe over the month zone moves the months…
@@ -245,7 +249,7 @@ fn a_horizontal_swipe_does_not_jump_the_summary_rows_vertically(cx: &mut TestApp
     assert_ne!(x1, x0, "the month strip scrolled sideways");
 
     // …and leaves the body exactly where it was.
-    let y_after = bounds(cx, handle, "summary:name-0").origin.y;
+    let y_after = bounds(cx, handle, "summary:name-1").origin.y;
     assert_eq!(
         y_after, y_scrolled,
         "the horizontal swipe left the rows' vertical position alone"
