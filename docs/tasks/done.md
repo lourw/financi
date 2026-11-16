@@ -1851,3 +1851,17 @@ click, all 37 categories + 13 queue tests kept, fit tests hold.
 **Follow-ups:** H4 (`note_painted`/`note_tree_painted` share the same
 pass-width edge case — fix both together); the rule list's two
 `.opacity(0.0)` heading spacers die with 3.58.
+
+### 3.57 Every page reloads only what it depends on ✅
+
+**Done 2026-11-16** — commit `c972947`, merged `a6a00f7` (v0.36.0).
+
+One combined writer/reader table in the `Domain` doc comment (● write
+rows per mutation report, ✓ page rows per `DEPENDS`) matches the consts
+and every emission site. Full reloads survive only behind import, undo
+and restore. The imports panel's stray unconditional refresh split into
+Refresh-on-commit / `Accounts`-on-create-account / nothing-on-cancel.
+Hidden pages dirty-then-reload; a clean page switch issues no query.
+8 tests in `ui/tests/reloads.rs` pin each table row through the
+query-count hook (exact sets, "no query", "exactly once"); review found
+no lost-update path in the dirty/generation logic.

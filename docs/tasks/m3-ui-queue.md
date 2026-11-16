@@ -6,21 +6,6 @@ Do these in the order listed (`docs/tasks.md` → *Picking the next task*). Each
 
 Steps 1–15 of `docs/tasks/gpui.md` → *GPUI best practices*, task by task.
 
-- [x] **3.57 Every page reloads only what it depends on.** Rewritten
-  2026-11-11: the old 3.57 is split into this task, 3.84 (feedback within
-  a frame) and 3.85 (render caches). Do it after the page extractions
-  (3.79–3.83), as the check that the architecture holds.
-  - Every page entity declares `const DEPENDS: Domains`; every mutation
-    reports its `Domains` through `Catalog` (3.78). Write both lists as
-    one table in the `Domain` doc comment and remove any remaining direct
-    `refresh` calls; the full reload is left only behind import, undo and
-    restore (all domains).
-  - Hidden pages mark themselves dirty and reload when shown; a page
-    switch with nothing dirty issues no query.
-  - Tests: one per row of the table (the action reloads exactly the pages
-    that depend on its domains, via the query-count hook); a page switch
-    issues no query; a dirty hidden page reloads once when shown.
-
 - [ ] **3.84 Every click answers within a frame.** (From the old 3.57,
   split 2026-11-11.) After 3.64 (per-action tasks), so a rollback can't
   be cancelled. Every button that starts DB work either updates the
