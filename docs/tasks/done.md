@@ -1746,3 +1746,27 @@ the UI; tests cover 2.1–2.9.
   `ui-conventions.md` → *Buttons*, which the spec sketch contradicted.
   Someday: the *Buttons* example names `trash-2`, unattainable on this
   dep version.
+
+### 3.82 — The Dashboard becomes its own view ✅
+- `DashboardPage` implements `PageEntity` (`ui/dashboard.rs`): the three
+  view-state fields, both load generations and the pending-load/applied
+  bookkeeping live in the entity; keyed `DbWorker` job "dashboard",
+  generation guard + `stamp_applied`, `widths_changed` on resize;
+  `DEPENDS = CATEGORIES_RULES_TX | ACCOUNTS` (ACCOUNTS added to the
+  catalog: the job reads account names/hidden flags) plus the old
+  IMPORTS|SETTINGS touches. Hidden pages drop in-flight loads and dirty
+  via `watch_catalog`; the next visit reloads. No load at startup —
+  launch seeds from persisted settings and the first `DataChanged`
+  paints.
+- The Root-scoped `ClearCategorySelection` escape binding is **gone**:
+  Escape is `("escape", Cancel, Some("Dashboard"))` on the page,
+  clearing chip then drill-down. Escape on another page can no longer
+  clear hidden dashboard filters (tests prove both directions; 3.83's
+  queue escape test was updated to the new semantics at merge).
+- Merge notes: the branch predates H2/3.83, so the imports-test rework
+  was replayed onto the `tests/imports/` split and `ui/mod.rs` kept both
+  pages' wiring; `Shell.db` became a `#[cfg(test)]` hook and
+  `writes_blocked` was deleted (no production readers left).
+- Follow-ups: a stale sentence in categories.rs (~1794) still mentions
+  the "context-less binding" behind Escape; `ui/dashboard.rs` hit ~2.0k
+  lines → housekeeping H3.
