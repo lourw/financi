@@ -495,6 +495,19 @@ pub(super) enum DetailForm {
     Delete,
 }
 
+/// Which category write the DB is still running (3.84), one at a time.
+/// The matching button renders `.loading(true)` and disabled while it is,
+/// so a slow write can't be double-submitted — the `PendingRuleAction`
+/// pattern from 3.40, applied to this page's five writes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PendingCatWrite {
+    AddParent,
+    AddChild,
+    Rename,
+    Move,
+    Delete,
+}
+
 /// The Categories page (3.74 state, 3.81 entity): the category tree, the
 /// detail pane for the selected category (rename, subcategory, move,
 /// delete), and the category's rule list — the rule rows themselves are
@@ -523,6 +536,10 @@ pub(super) struct CategoriesPage {
     visible: bool,
     dirty: bool,
     focus_pending: bool,
+    /// 3.84: the category write the DB is still running, if any. While
+    /// one is in flight its button renders loading and disabled, and a
+    /// double-submit can't start a second write (`begin_cat_write`).
+    pub(super) cat_pending: Option<PendingCatWrite>,
     /// The `Catalog` subscription (3.79); lives as long as the page.
     _catalog: Subscription,
     // -- Snapshot mirrors (3.81). `uses` (3.49) is the per-rule count the
@@ -663,6 +680,7 @@ impl CategoriesPage {
             move_target,
             delete_target,
             confirm_delete_category: None,
+            cat_pending: None,
             detail_form: None,
             cat_error: None,
             tree_scroll: VirtualListScrollHandle::new(),
@@ -850,6 +868,9 @@ impl CategoriesPage {
         }
         let db = self.db.clone();
         let submitted = name.clone();
+        // 3.84: the Add button shows loading, disabled, until the DB is
+        // done.
+        self.cat_pending = Some(PendingCatWrite::AddParent);
         // 3.64: the selection this add may claim — once the user selects
         // another row, that click owns the selection from then on.
         let prior_selection = self.selected_category;
@@ -858,6 +879,9 @@ impl CategoriesPage {
         cx.spawn_in(window, async move |this, cx| {
             let result = on_db(&db, move |c| create_parent(c, &name, kind)).await;
             let _ = this.update_in(cx, |this, window, cx| {
+                if this.cat_pending == Some(PendingCatWrite::AddParent) {
+                    this.cat_pending = None;
+                }
                 match result {
                     Ok(id) => {
                         // 3.64: the form still shows what was submitted —
@@ -910,6 +934,9 @@ impl CategoriesPage {
         }
         let db = self.db.clone();
         let submitted = name.clone();
+        // 3.84: the Add subcategory button shows loading, disabled,
+        // until the DB is done.
+        self.cat_pending = Some(PendingCatWrite::AddChild);
         // 3.64: the selection this add may claim (see `add_parent`).
         let prior_selection = self.selected_category;
         // 3.51: submitted from the Add subcategory form? Then a success
@@ -920,6 +947,9 @@ impl CategoriesPage {
         cx.spawn_in(window, async move |this, cx| {
             let result = on_db(&db, move |c| create_child(c, parent_id, &name)).await;
             let _ = this.update_in(cx, |this, window, cx| {
+                if this.cat_pending == Some(PendingCatWrite::AddChild) {
+                    this.cat_pending = None;
+                }
                 match result {
                     Ok(id) => {
                         // 3.64: don't wipe a newer draft (see `add_parent`).
@@ -971,7 +1001,7 @@ impl CategoriesPage {
         cx.notify();
     }
 
-    fn save_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn save_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // 5.3 review fix: refuse writes while an export/restore is in flight.
         if self.writes_blocked.get() {
             return;
@@ -986,10 +1016,16 @@ impl CategoriesPage {
             return;
         }
         let db = self.db.clone();
+        // 3.84: the Save button shows loading, disabled, until the DB is
+        // done.
+        self.cat_pending = Some(PendingCatWrite::Rename);
         // 3.64: detached — see `add_parent`.
         cx.spawn_in(window, async move |this, cx| {
             let result = on_db(&db, move |c| rename_category(c, id, &name)).await;
             let _ = this.update_in(cx, |this, _window, cx| {
+                if this.cat_pending == Some(PendingCatWrite::Rename) {
+                    this.cat_pending = None;
+                }
                 match result {
                     Ok(()) => {
                         // 3.64: the rename still belongs to this row's
@@ -1032,6 +1068,9 @@ impl CategoriesPage {
             return;
         };
         let db = self.db.clone();
+        // 3.84: the Move button shows loading, disabled, until the DB is
+        // done.
+        self.cat_pending = Some(PendingCatWrite::Move);
         // 3.51: a successful move closes the Move form it was submitted
         // from (a successful action closes its form).
         let from_form = self.detail_form == Some(DetailForm::Move);
@@ -1039,6 +1078,9 @@ impl CategoriesPage {
         cx.spawn_in(window, async move |this, cx| {
             let result = on_db(&db, move |c| move_child(c, child_id, new_parent_id)).await;
             let _ = this.update_in(cx, |this, _window, cx| {
+                if this.cat_pending == Some(PendingCatWrite::Move) {
+                    this.cat_pending = None;
+                }
                 match result {
                     Ok(()) => {
                         if from_form && this.detail_form == Some(DetailForm::Move) {
@@ -1092,10 +1134,16 @@ impl CategoriesPage {
         // 3.51: the second click ran the delete, so its form goes too.
         self.detail_form = None;
         let db = self.db.clone();
+        // 3.84: the Delete button shows loading, disabled, until the DB
+        // is done.
+        self.cat_pending = Some(PendingCatWrite::Delete);
         // 3.64: detached — see `add_parent`.
         cx.spawn_in(window, async move |this, cx| {
             let result = on_db(&db, move |c| delete_category(c, id, reassign_to)).await;
             let _ = this.update_in(cx, |this, _window, cx| {
+                if this.cat_pending == Some(PendingCatWrite::Delete) {
+                    this.cat_pending = None;
+                }
                 match result {
                     Ok(()) => {
                         // 3.64: the deleted row is gone; only drop the
@@ -1169,6 +1217,14 @@ impl Render for CategoriesPage {
             let theme = cx.theme();
             (theme.muted_foreground, theme.border, theme.danger)
         };
+        // 3.84: the button whose write the DB is running renders loading,
+        // disabled, until the answer arrives (the Rules page's 3.40
+        // pattern; `cat_pending` is this page's one write slot).
+        let add_parent_pending = self.cat_pending == Some(PendingCatWrite::AddParent);
+        let add_child_pending = self.cat_pending == Some(PendingCatWrite::AddChild);
+        let rename_pending = self.cat_pending == Some(PendingCatWrite::Rename);
+        let move_pending = self.cat_pending == Some(PendingCatWrite::Move);
+        let delete_pending = self.cat_pending == Some(PendingCatWrite::Delete);
         // 3.91: the tree is the shared list (ui-conventions *Lists*): a
         // 32 px heading over virtualized 40 px rows. Its lines are the
         // tree flattened parents-then-children, one level of `pl` indent
@@ -1442,9 +1498,18 @@ impl Render for CategoriesPage {
                                     .child(field_label(muted, "New name"))
                                     .child(div().w(px(260.)).child(Input::new(&self.rename_input))),
                             )
-                            .child(Button::new("save-rename").label("Save").primary().on_click(
-                                cx.listener(|this, _, window, cx| this.save_rename(window, cx)),
-                            ))
+                            .child(
+                                Button::new("save-rename")
+                                    .label("Save")
+                                    .primary()
+                                    .loading(rename_pending)
+                                    .disabled(rename_pending)
+                                    .on_click(
+                                        cx.listener(|this, _, window, cx| {
+                                            this.save_rename(window, cx)
+                                        }),
+                                    ),
+                            )
                             .child(Button::new("cancel-rename").label("Cancel").on_click(
                                 cx.listener(|this, _, _, cx| {
                                     this.renaming = false;
@@ -1585,6 +1650,8 @@ impl Render for CategoriesPage {
                                     Button::new("add-child")
                                         .label(ADD_SUBCATEGORY)
                                         .primary()
+                                        .loading(add_child_pending)
+                                        .disabled(add_child_pending)
                                         .debug_selector(move || {
                                             format!("label:{ADD_SUBCATEGORY}")
                                         })
@@ -1621,7 +1688,8 @@ impl Render for CategoriesPage {
                                     Button::new("move-child")
                                         .label("Move")
                                         .primary()
-                                        .disabled(is_system)
+                                        .loading(move_pending)
+                                        .disabled(is_system || move_pending)
                                         .debug_selector(|| "cat:form-move-go".into())
                                         .on_click(cx.listener(|this, _, window, cx| {
                                             this.move_child_to_selected_parent(window, cx)
@@ -1666,6 +1734,8 @@ impl Render for CategoriesPage {
                                     let b = Button::new("delete-category")
                                         .icon(IconName::Trash)
                                         .label(confirm_label)
+                                        .loading(delete_pending)
+                                        .disabled(delete_pending)
                                         .debug_selector(|| "cat:form-delete-go".into());
                                     let b = if armed { b.danger() } else { b };
                                     b.on_click(cx.listener(move |this, _, window, cx| {
@@ -2121,6 +2191,8 @@ impl Render for CategoriesPage {
                                 .label(ADD_CATEGORY)
                                 .debug_selector(move || format!("label:{ADD_CATEGORY}"))
                                 .primary()
+                                .loading(add_parent_pending)
+                                .disabled(add_parent_pending)
                                 .on_click(
                                     cx.listener(|this, _, window, cx| this.add_parent(window, cx)),
                                 ),

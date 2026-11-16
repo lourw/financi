@@ -6,7 +6,7 @@ Do these in the order listed (`docs/tasks.md` → *Picking the next task*). Each
 
 Steps 1–15 of `docs/tasks/gpui.md` → *GPUI best practices*, task by task.
 
-- [ ] **3.84 Every click answers within a frame.** (From the old 3.57,
+- [x] **3.84 Every click answers within a frame.** (From the old 3.57,
   split 2026-11-11.) After 3.64 (per-action tasks), so a rollback can't
   be cancelled. Every button that starts DB work either updates the
   screen optimistically with rollback on error (row category change,

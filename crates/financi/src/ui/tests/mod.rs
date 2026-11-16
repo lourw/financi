@@ -37,11 +37,11 @@ use super::dashboard_chart::{
 use super::{
     BUTTON_PAD_X, CELL_PAD_X, CHART_CHAR_PX, DashboardBody, ExportData, HISTORY_DATES_W,
     HISTORY_FLEX_MIN_W, HISTORY_ROWS_W, HISTORY_TIME_W, ImportCsv, ImportPanel, LEGEND_W,
-    LegendSelection, NEW_ACCOUNT, NEW_CATEGORY, NEW_RULE, PAGE_PAD, Page, PendingRuleAction,
-    PlanState, RestoreBackup, RowMenuItem, RowShowRule, SIDEBAR_W, SUBCATEGORY_PH, Shell,
-    SummaryRowKind, TABLE_BORDER_X, TEXT_SM_CHAR_PX, TX_FIXED_W, UNDO_ICON_W, UNDO_LABEL_MAX,
-    UndoLastImport, history_flex_widths, history_undo_col_w, row_menu_items, row_show_rule,
-    tx_flex_widths,
+    LegendSelection, NEW_ACCOUNT, NEW_CATEGORY, NEW_RULE, PAGE_PAD, Page, PendingCatWrite,
+    PendingRuleAction, PlanState, RestoreBackup, RowMenuItem, RowShowRule, SIDEBAR_W,
+    SUBCATEGORY_PH, Shell, SummaryRowKind, TABLE_BORDER_X, TEXT_SM_CHAR_PX, TX_FIXED_W,
+    UNDO_ICON_W, UNDO_LABEL_MAX, UndoLastImport, history_flex_widths, history_undo_col_w,
+    row_menu_items, row_show_rule, tx_flex_widths,
 };
 use crate::ui::sidebar::NAV_ROW_INSET;
 
