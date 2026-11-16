@@ -271,7 +271,7 @@ Start these only after both queues are done (`docs/tasks.md` → *Picking the ne
 
     Update the *Rules* row of `ui-conventions.md`.
 
-- [ ] **3.49 A Uses column instead of Category.** Since 3.23 the
+- [x] **3.49 A Uses column instead of Category.** Since 3.23 the
   Categories page's rule list only shows the selected category's rules, so
   on a subcategory every Category cell says the same thing. The user
   wants the count of transactions each rule matches there instead (user

@@ -32,9 +32,11 @@ pub(super) const RULE_CATEGORY_W: f32 = 200.;
 pub(super) const RULE_CATEGORY_MENU_W: f32 = 320.;
 /// 3.28: the Rules page list's fixed columns beside the flexed Pattern: a
 /// checkbox column, and Uses (right-aligned). Same sharing rule as
-/// [`RULE_TYPE_W`]: row and column headings use these.
+/// [`RULE_TYPE_W`]: row and column headings use these. 3.49: the
+/// Categories page's rule list swapped its Category column for the same
+/// Uses column, so the width is shared with it.
 const RULE_SEL_W: f32 = 24.;
-const RULE_USES_W: f32 = 80.;
+pub(super) const RULE_USES_W: f32 = 80.;
 
 /// 3.48: the height the editor row reserves in the virtualized lists —
 /// the Rules page's `item_sizes` and the Categories page's `rule_sizes`
@@ -709,19 +711,27 @@ impl RulesPage {
 /// every row carries Edit and Delete… at its right end — small ghost
 /// buttons, visible on every row, built only for the rows the list
 /// renders. 3.23: the columns line up with the list's headings
-/// (`RULE_TYPE_W`/`RULE_CATEGORY_W`); the pattern column is the flex one
-/// and truncates with a tooltip, like the queue's merchant column.
+/// (`RULE_TYPE_W`/`RULE_USES_W`); the pattern column is the flex one and
+/// truncates with a tooltip, like the queue's merchant column.
+///
+/// 3.49: the third column is the rule's Uses count — transactions this
+/// rule categorizes, the same number the Rules page shows — right-aligned
+/// through `flow::count`; 0 is muted, nonzero takes the row's own color.
+/// `subcat` is the tag the Categories page passes when its selection is a
+/// parent: the subcategory the rule targets, painted after the pattern
+/// inside the Pattern column (the pattern ellipsizes first).
 ///
 /// 3.80: a free function over the page entity — the Categories page paints
 /// these rows from the Rules page's state (the module docs). The handlers
 /// update the entity directly, so they work from either page.
-fn rule_row(rule: &Rule, muted: Hsla, page: &RulesPage, entity: &Entity<RulesPage>) -> AnyElement {
-    let target = page
-        .child_choices
-        .iter()
-        .find(|(id, _)| *id == rule.category_id)
-        .map(|(_, n)| n.clone())
-        .unwrap_or_else(|| format!("#{}", rule.category_id));
+fn rule_row(
+    rule: &Rule,
+    muted: Hsla,
+    uses: usize,
+    subcat: Option<SharedString>,
+    page: &RulesPage,
+    entity: &Entity<RulesPage>,
+) -> AnyElement {
     let id = rule.id;
     let armed = page.armed_delete_rule == Some(id);
     let delete_pending = page.rule_action_pending(PendingRuleAction::Delete(id));
@@ -734,29 +744,46 @@ fn rule_row(rule: &Rule, muted: Hsla, page: &RulesPage, entity: &Entity<RulesPag
         .items_center()
         .debug_selector(move || format!("cat:rule-row:{id}"))
         .child(
-            div()
+            h_flex()
                 .id(SharedString::from(format!("rule-pattern-{id}")))
                 .flex_1()
                 .min_w_0()
-                .overflow_hidden()
-                .text_ellipsis()
                 .debug_selector(move || format!("cat:rule-pattern-col:{id}"))
-                .tooltip({
-                    let full = rule.pattern.clone();
-                    move |window, cx| {
-                        let tip = full.clone();
-                        Tooltip::element(move |_, _| {
-                            div()
-                                .debug_selector({
-                                    let p = tip.clone();
-                                    move || format!("cat:rule-pattern-tooltip:{p}")
+                .child(
+                    div()
+                        .id(SharedString::from(format!("rule-pattern-text-{id}")))
+                        .flex_1()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .tooltip({
+                            let full = rule.pattern.clone();
+                            move |window, cx| {
+                                let tip = full.clone();
+                                Tooltip::element(move |_, _| {
+                                    div()
+                                        .debug_selector({
+                                            let p = tip.clone();
+                                            move || format!("cat:rule-pattern-tooltip:{p}")
+                                        })
+                                        .child(tip.clone())
                                 })
-                                .child(tip.clone())
+                                .build(window, cx)
+                            }
                         })
-                        .build(window, cx)
-                    }
-                })
-                .child(rule.pattern.clone()),
+                        .child(rule.pattern.clone()),
+                )
+                .when_some(subcat, |col, name| {
+                    let sel = format!("cat:rule-subcat:{id}:{name}");
+                    col.child(
+                        div()
+                            .flex_shrink_0()
+                            .text_xs()
+                            .text_color(muted)
+                            .debug_selector(move || sel.clone())
+                            .child(name),
+                    )
+                }),
         )
         .child(
             div()
@@ -769,14 +796,18 @@ fn rule_row(rule: &Rule, muted: Hsla, page: &RulesPage, entity: &Entity<RulesPag
         )
         .child(
             div()
-                .w(px(RULE_CATEGORY_W))
+                .w(px(RULE_USES_W))
                 .flex_shrink_0()
-                .min_w_0()
-                .overflow_hidden()
-                .text_ellipsis()
-                .text_color(muted)
-                .debug_selector(move || format!("cat:rule-category-col:{id}"))
-                .child(target),
+                .text_right()
+                .text_xs()
+                // 3.49: a rule nothing has categorized yet reads muted.
+                .when(uses == 0, |cell| cell.text_color(muted))
+                .debug_selector(move || format!("cat:rule-uses-col:{id}"))
+                .child(
+                    div()
+                        .debug_selector(move || format!("cat:rule-uses:{id}:{uses}"))
+                        .child(flow::count(uses as i64)),
+                ),
         )
         .child(
             Button::new(SharedString::from(format!("rule-edit-{id}")))
@@ -1772,10 +1803,18 @@ impl Render for RulesPage {
 impl Shell {
     /// 3.80: thin wrappers over the free row builders — the Categories
     /// page paints the shared rule rows from the Rules page's state (the
-    /// `rules` module docs). Signatures unchanged.
-    pub(super) fn rule_row(&self, rule: &Rule, muted: Hsla, cx: &mut Context<Self>) -> AnyElement {
+    /// `rules` module docs). 3.49: `uses` and `subcat` come from the
+    /// Categories page, which mirrors the catalog itself.
+    pub(super) fn rule_row(
+        &self,
+        rule: &Rule,
+        muted: Hsla,
+        uses: usize,
+        subcat: Option<SharedString>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let entity = &self.rules_page;
-        rule_row(rule, muted, entity.read(cx), entity)
+        rule_row(rule, muted, uses, subcat, entity.read(cx), entity)
     }
 
     pub(super) fn rule_editor_row(

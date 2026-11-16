@@ -524,10 +524,14 @@ pub(super) struct CategoriesPage {
     focus_pending: bool,
     /// The `Catalog` subscription (3.79); lives as long as the page.
     _catalog: Subscription,
-    // -- Snapshot mirrors (3.81).
+    // -- Snapshot mirrors (3.81). `uses` (3.49) is the per-rule count the
+    // rule list's Uses column shows — the same `rule_use_stats` mirror the
+    // Rules page reads, taken off the shared snapshot rather than the
+    // Rules page's own copy, which only refreshes when that page applies.
     tree: Vec<CategoryNode>,
     counts: HashMap<i64, i64>,
-    rules: Vec<Rule>,
+    pub(super) rules: Vec<Rule>,
+    pub(super) uses: HashMap<i64, usize>,
     // -- State (3.74).
     /// The category the detail pane shows; the shell keeps a mirror of
     /// this for the rule list (see the module docs).
@@ -539,6 +543,9 @@ pub(super) struct CategoriesPage {
     /// header button opens it, Cancel and a successful add close it, and
     /// `go_page` clears it like the page's other transient UI.
     pub(super) new_category_open: bool,
+    /// 3.49: the rule list sorts by Uses (descending) while this is on;
+    /// off is the default pattern order. The Rules page keeps its own copy.
+    pub(super) cat_rules_sort_by_uses: bool,
     pub(super) renaming: bool,
     pub(super) rename_input: Entity<InputState>,
     pub(super) move_target: Entity<SelectState<Names>>,
@@ -597,6 +604,7 @@ impl PageEntity for CategoriesPage {
         self.tree = cat.snap.tree.clone();
         self.counts = cat.snap.counts.clone();
         self.rules = cat.snap.rules.clone();
+        self.uses = cat.snap.uses.clone();
     }
 }
 
@@ -642,11 +650,13 @@ impl CategoriesPage {
             tree: Vec::new(),
             counts: HashMap::new(),
             rules: Vec::new(),
+            uses: HashMap::new(),
             selected_category: None,
             new_parent_name,
             new_parent_kind,
             new_child_name,
             new_category_open: false,
+            cat_rules_sort_by_uses: false,
             renaming: false,
             rename_input,
             move_target,
@@ -708,7 +718,9 @@ impl CategoriesPage {
     /// 3.23: the rules the Categories page lists — the ones targeting the
     /// selected category, which for a parent means its subcategories' too
     /// (rules always target a child, but count the parent's own id in case
-    /// one ever lands there). Nothing without a selection.
+    /// one ever lands there). Nothing without a selection. 3.49: default
+    /// order is pattern ascending; the Uses heading switches it to Uses
+    /// descending with pattern as the tie-break, like the Rules page.
     fn visible_rules(&self) -> Vec<Rule> {
         let Some(id) = self.selected_category else {
             return Vec::new();
@@ -717,11 +729,24 @@ impl CategoriesPage {
         if let Some(parent) = self.tree.iter().find(|p| p.id == id) {
             ids.extend(parent.children.iter().map(|c| c.id));
         }
-        self.rules
+        let uses = &self.uses;
+        let by_uses = self.cat_rules_sort_by_uses;
+        let mut rules: Vec<Rule> = self
+            .rules
             .iter()
             .filter(|r| ids.contains(&r.category_id))
             .cloned()
-            .collect()
+            .collect();
+        rules.sort_by(|a, b| {
+            if by_uses {
+                let ua = uses.get(&a.id).copied().unwrap_or(0);
+                let ub = uses.get(&b.id).copied().unwrap_or(0);
+                ub.cmp(&ua).then_with(|| a.pattern.cmp(&b.pattern))
+            } else {
+                a.pattern.cmp(&b.pattern)
+            }
+        });
+        rules
     }
 
     /// Point the detail pane at a category: the page's half (3.81), also
@@ -1311,6 +1336,21 @@ impl Render for CategoriesPage {
         // read once per frame like the other shared bits above.
         let child_choices = shell.read(cx).child_choices.clone();
         let visible = Rc::new(self.visible_rules());
+        // 3.49: when the selection is a parent, each rule from one of its
+        // subcategories carries that child's name as a tag inside its
+        // Pattern column; a subcategory selection paints no tags (the
+        // column already reads as that category's rules).
+        let subcat_tags: HashMap<i64, SharedString> = self
+            .selected_category
+            .and_then(|id| self.tree.iter().find(|p| p.id == id))
+            .map(|parent| {
+                parent
+                    .children
+                    .iter()
+                    .map(|c| (c.id, SharedString::from(c.name.as_str())))
+                    .collect()
+            })
+            .unwrap_or_default();
         let rule_sizes = Rc::new(
             visible
                 .iter()
@@ -1786,14 +1826,39 @@ impl Render for CategoriesPage {
                                 // the column the cluster's exact width, and
                                 // their box is clipped to 0 height so the
                                 // heading stays a single line.
+                                // 3.49: Pattern and Uses are the sort
+                                // headings — clicking Uses orders the list
+                                // by Uses descending, clicking Pattern
+                                // sorts back, like the Rules page's pair.
+                                // They stay single-line labels (the 3.23
+                                // fit test keeps the whole heading under
+                                // one 24 px row, so not the Rules page's
+                                // 32 px ghost buttons): the ↓ marks the
+                                // active sort and the cursor invites the
+                                // click.
                                 let heading = h_flex()
                                     .gap_2()
                                     .items_end()
                                     .debug_selector(|| "cat:rule-heading-row".into())
                                     .child(
                                         div().flex_1().min_w_0().child(
-                                            field_label(muted, "Pattern")
-                                                .debug_selector(|| "cat:rule-heading-pattern".into()),
+                                            div()
+                                                .id("cat-rules-sort-pattern")
+                                                .cursor_pointer()
+                                                .text_xs()
+                                                .text_color(muted)
+                                                .debug_selector(|| {
+                                                    "cat:rule-heading-pattern".into()
+                                                })
+                                                .child(if self.cat_rules_sort_by_uses {
+                                                    "Pattern"
+                                                } else {
+                                                    "Pattern ↓"
+                                                })
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.cat_rules_sort_by_uses = false;
+                                                    cx.notify();
+                                                })),
                                         ),
                                     )
                                     .child(
@@ -1803,9 +1868,35 @@ impl Render for CategoriesPage {
                                         ),
                                     )
                                     .child(
-                                        div().w(px(RULE_CATEGORY_W)).flex_shrink_0().child(
-                                            field_label(muted, "Category")
-                                                .debug_selector(|| "cat:rule-heading-category".into()),
+                                        div().w(px(RULE_USES_W)).flex_shrink_0().child(
+                                            div()
+                                                .id("cat-rules-sort-uses")
+                                                .cursor_pointer()
+                                                .text_right()
+                                                .text_xs()
+                                                .text_color(muted)
+                                                .debug_selector(|| "cat:rule-heading-uses".into())
+                                                .child(if self.cat_rules_sort_by_uses {
+                                                    "Uses ↓"
+                                                } else {
+                                                    "Uses"
+                                                })
+                                                .tooltip(|window, cx| {
+                                                    Tooltip::element(move |_, _| {
+                                                        div()
+                                                            .debug_selector(|| {
+                                                                "cat:rule-heading-uses-tip".into()
+                                                            })
+                                                            .child(
+                                                                "Transactions this rule categorizes",
+                                                            )
+                                                    })
+                                                    .build(window, cx)
+                                                })
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.cat_rules_sort_by_uses = true;
+                                                    cx.notify();
+                                                })),
                                         ),
                                     )
                                     .child(
@@ -1851,14 +1942,20 @@ impl Render for CategoriesPage {
                                         "rule-list",
                                         rule_sizes,
                                         move |this, range, _window, cx| {
-                                            // `this` is only read for the
-                                            // test counters below.
-                                            let _ = &this;
                                             let rows: Vec<AnyElement> = visible
                                                 .iter()
                                                 .skip(range.start)
                                                 .take(range.len())
                                                 .map(|r| {
+                                                    // 3.49: the Uses count
+                                                    // and the parent-view
+                                                    // subcategory tag come
+                                                    // from the page's own
+                                                    // snapshot mirrors.
+                                                    let uses =
+                                                        this.uses.get(&r.id).copied().unwrap_or(0);
+                                                    let subcat =
+                                                        subcat_tags.get(&r.category_id).cloned();
                                                     rule_shell.update(cx, |shell, cx| {
                                                         if shell
                                                             .rules_page
@@ -1870,7 +1967,9 @@ impl Render for CategoriesPage {
                                                                 r, muted, danger, cx,
                                                             )
                                                         } else {
-                                                            shell.rule_row(r, muted, cx)
+                                                            shell.rule_row(
+                                                                r, muted, uses, subcat, cx,
+                                                            )
                                                         }
                                                     })
                                                 })
