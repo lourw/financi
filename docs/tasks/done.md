@@ -1905,3 +1905,27 @@ degrade-safe.
   Keep the form fitting the header row at 1200 × 720. Tests: the form
   paints "Category type" and no "Kind" label. Tick the `plan.md` box and
   update the *Categories* row of `ui-conventions.md`.
+
+- [x] **3.96 Adding a subcategory keeps the parent selected.** On
+  Categories, adding a subcategory selects the new child
+  (`add_child` calls `select_category(id, …)`), so the detail panel
+  switches to it and the user has to go back to the parent to add the
+  next one (user request, 2026-11-15).
+  - After a successful add, the parent stays selected: drop the
+    `select_category` call in `add_child` (keep the 3.64 guards that
+    don't wipe a newer draft). Clear the name input (when unchanged) and
+    keep focus in it, so the user can type the next name and press Enter.
+    The new child appears in the tree under the parent (expand the parent
+    if it was collapsed) and in the parent's rule-target picker.
+  - If 3.51 has landed, the Add subcategory `InlineForm` stays open after
+    a successful add (it still closes on Cancel, Escape, selecting another
+    category or leaving the page). Adding a parent category (New
+    category) still selects the new category; only subcategories change.
+  - Tests: adding a subcategory leaves the parent selected and the
+    detail panel showing the parent; the input is empty and focused;
+    adding three in a row with Enter creates three children under the
+    parent, all visible in the tree; a failing add (duplicate name) keeps
+    the typed name and shows the error. Update the *Categories* paragraph
+    of `ui-conventions.md` if it says the new subcategory is selected.
+
+## Last in M3
