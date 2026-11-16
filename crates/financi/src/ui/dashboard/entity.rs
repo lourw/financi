@@ -111,9 +111,19 @@ pub(crate) struct DashboardPage {
     /// re-entrant `shell.update` there would panic.
     pub(super) refresh_started: Rc<Cell<u64>>,
     pub(super) refresh_applied: Rc<Cell<u64>>,
-    /// The window width `window_bounds_changed` last reported — the
-    /// chart's label plan reads it (3.15).
-    pub(in crate::ui) window_width: f32,
+    /// 3.86: the chart's plot-area width in px, measured by the
+    /// `chart:plot` bounds probe (0. until the first frame paints it). The
+    /// label plan reads this, never window-width arithmetic.
+    pub(in crate::ui) plot_w: f32,
+    /// 3.86: one 10 px chart label's advance width, measured once against
+    /// the real text system at construction — the old `CHART_CHAR_PX`
+    /// guess lives on only as the seed of that measurement's docs. The
+    /// label-plan math converts px budgets to character counts with this.
+    pub(in crate::ui) chart_char_px: f32,
+    /// 3.86: the transactions panel's (`panel:table`) measured width in px
+    /// (0. until the first frame paints it). The flex column plan is
+    /// derived from it through [`Self::set_table_width`].
+    pub(in crate::ui) tx_panel_w: f32,
     /// 3.82: `set_date_range` marks the pickers; `render` re-syncs them
     /// (a load landing has no window, see [`Self::sync_date_widgets`]).
     pub(super) date_widgets_stale: bool,
@@ -181,6 +191,13 @@ impl DashboardPage {
                 let _ = shell.update(cx, |this, cx| this.show_rule(rule, window, cx));
             }) as ShowRuleFn
         };
+        // 3.86: one 10 px chart label's advance width, measured against
+        // the real text system instead of the old `CHART_CHAR_PX` guess.
+        // Ten `M`s — the widest common capital — so the per-character
+        // average is a safe upper bound for band labels.
+        let chart_char_px =
+            gpui_kit::base::plot::label::measure_text_width(&"MMMMMMMMMM".into(), px(10.), window)
+                / 10.;
         let table = cx.new(|cx| {
             TableState::new(
                 TxTable {
@@ -196,10 +213,10 @@ impl DashboardPage {
                     on_unpair,
                     on_show_rule,
                     on_sort,
-                    // 3.25: start at the widths the current window allows.
-                    flex_widths: tx_flex_widths(
-                        (window.bounds().size.width.as_f32() - SIDEBAR_W - 2. * PAGE_PAD).max(0.),
-                    ),
+                    // 3.86: start collapsed; the `panel:table` bounds
+                    // probe feeds the real width through `set_table_width`
+                    // on the first frame.
+                    flex_widths: tx_flex_widths(0.),
                 },
                 window,
                 cx,
@@ -330,10 +347,12 @@ impl DashboardPage {
             total_visible: 0,
             refresh_started,
             refresh_applied,
-            // Seed the width mirror from the window the page is built on,
-            // like the shell does; later resizes arrive through
-            // `widths_changed` (3.82).
-            window_width: window.bounds().size.width.as_f32(),
+            // 3.86: the measured-width mirrors start at zero; the bounds
+            // probes fill them on the first painted frame (the flex plan
+            // is seeded collapsed to match).
+            plot_w: 0.,
+            chart_char_px,
+            tx_panel_w: 0.,
             date_widgets_stale: false,
             _subs: vec![date_preset_sub, date_from_sub, date_to_sub, search_sub],
         }

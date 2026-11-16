@@ -47,7 +47,7 @@ Steps 1–15 of `docs/tasks/gpui.md` → *GPUI best practices*, task by task.
     unrelated notify (counter hooks); a toast tick doesn't re-render the
     page.
 
-- [ ] **3.86 Layout from measured sizes.** (Code review, 2026-11-11.)
+- [x] **3.86 Layout from measured sizes.** (Code review, 2026-11-11.)
   Before 3.36 and 3.26. The chart's label budget and the table's flexible
   column widths are computed from the window width minus constants
   (`chart_plot_width = window_width − SIDEBAR_W − 2·PAGE_PAD …`,

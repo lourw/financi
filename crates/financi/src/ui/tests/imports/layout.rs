@@ -5,77 +5,61 @@ use super::*;
 
 // --------------------------------------------------- 3.20 history table width
 
-/// The width plan itself: the Undo column fits both button labels, and
-/// from the minimum window's page width up every column fits the page —
-/// File and Account shrink and grow with the window instead of the old
-/// fixed 240 px each.
+/// The width plan itself (3.86): the Undo column is exactly its measured
+/// label width plus the button's and cell's padding, and from the
+/// minimum container up every column fits the *measured* width — File
+/// and Account shrink and grow with it instead of the old fixed 240 px.
 #[test]
 fn history_table_columns_fit_every_page_width() {
-    // The Undo column budgets the longest label ("Click again to undo")
-    // at the generous per-character width, plus the xsmall button's icon
-    // and padding and the cell's, so neither it nor the icon-plus-"Undo"
-    // rest state (3.37) can clip.
-    assert!(
-        history_undo_col_w()
-            >= UNDO_LABEL_MAX.chars().count() as f32 * TEXT_SM_CHAR_PX
-                + BUTTON_PAD_X
-                + UNDO_ICON_W
-                + CELL_PAD_X
-    );
-    // 3.37: the idle label fits too, and the column is exactly as wide as
-    // the widest label needs — no wider, so it steals nothing from `File`
-    // and `Account`.
-    assert!(
-        history_undo_col_w()
-            >= "Undo".chars().count() as f32 * TEXT_SM_CHAR_PX
-                + BUTTON_PAD_X
-                + UNDO_ICON_W
-                + CELL_PAD_X
-    );
+    // The Undo column is its (measured) label plus the xsmall button's
+    // icon and padding and the cell's — no wider, so it steals nothing
+    // from `File` and `Account`. The +1 px absorbs the rounding between
+    // measurement and drawing.
+    let undo = history_undo_col_w(120.);
     assert_eq!(
-        history_undo_col_w(),
-        (UNDO_LABEL_MAX.chars().count() as f32 * TEXT_SM_CHAR_PX
-            + BUTTON_PAD_X
-            + UNDO_ICON_W
-            + CELL_PAD_X)
-            .ceil()
+        undo,
+        (120. + BUTTON_PAD_X + UNDO_ICON_W + CELL_PAD_X + 1.).ceil()
     );
-    for win in [1200., 1440., 1920., 2560., 4000.] {
-        let page_w = win - SIDEBAR_W - 2. * PAGE_PAD;
-        let (file, account) = history_flex_widths(page_w);
+    assert!(
+        history_undo_col_w(140.) > undo,
+        "a wider measured label needs a wider column"
+    );
+    for w in [1200., 1440., 1920., 2560., 4000.] {
+        let (file, account) = history_flex_widths(w, undo);
         let total = HISTORY_TIME_W
             + file
             + account
             + HISTORY_ROWS_W
             + HISTORY_DATES_W
-            + history_undo_col_w()
+            + undo
             + TABLE_BORDER_X;
         assert!(
-            total <= page_w + 0.01,
-            "window {win}: columns sum to {total}, page is {page_w}"
+            (total - w).abs() <= 0.01,
+            "container {w}: columns sum to {total}, exactly the width is expected"
         );
         assert!(
             file >= HISTORY_FLEX_MIN_W && account >= HISTORY_FLEX_MIN_W,
-            "window {win}"
+            "container {w}"
         );
     }
-    // File and Account grow with the window, and at the minimum size
-    // they are below the old fixed 240 px that overflowed the page.
-    let small = history_flex_widths(1200. - SIDEBAR_W - 2. * PAGE_PAD).0;
-    let big = history_flex_widths(2560. - SIDEBAR_W - 2. * PAGE_PAD).0;
-    assert!(small < 240., "{small} at the minimum window");
+    // File and Account grow with the measured container, and at the
+    // minimum window's container (~958 px beside the sidebar) they are
+    // below the old fixed 240 px that overflowed the page.
+    let small = history_flex_widths(958., undo).0;
+    let big = history_flex_widths(2318., undo).0;
+    assert!(small < 240., "{small} at the minimum container");
     assert!(big > small, "{big} vs {small}");
-    // Below the minimum window the flexible columns stop at their floor.
+    // Below any real container the flexible columns stop at their floor.
     assert_eq!(
-        history_flex_widths(100.),
+        history_flex_widths(100., undo),
         (HISTORY_FLEX_MIN_W, HISTORY_FLEX_MIN_W)
     );
 }
 
-/// 3.20: with long file and account names the history table draws at the
-/// minimum window size and at a large one, its columns — the widths the
-/// table actually renders at — never summing past the page beside the
-/// sidebar, so it never scrolls sideways.
+/// 3.20, 3.86: with long file and account names the history table draws
+/// at 1200 and at 1600 px, and the columns the table actually renders at
+/// sum to exactly the width its own container measured — the plan follows
+/// the measurement, not the window minus constants.
 #[gpui::test]
 fn the_imports_history_table_fits_the_available_width(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, seed_long_history);
@@ -89,8 +73,8 @@ fn the_imports_history_table_fits_the_available_width(cx: &mut TestAppContext) {
             window.resize(size(px(w), px(h)));
             window.bounds_changed(cx);
         });
-        cx.run_until_parked();
-        draw_frame(cx, handle);
+        // 3.86: settle so the `history:container` probe has fed the plan.
+        settle(cx, handle);
     };
     let widths = |cx: &App| -> Vec<f32> {
         let table = shell.read(cx).imports.read(cx).history_table.read(cx);
@@ -98,33 +82,43 @@ fn the_imports_history_table_fits_the_available_width(cx: &mut TestAppContext) {
             .map(|i| table.col_width(i).unwrap().as_f32())
             .collect()
     };
+    let container_w = |cx: &mut TestAppContext| -> f32 {
+        f32::from(bounds(cx, handle, "history:container").size.width)
+    };
 
-    // Minimum window: the drawn columns fit the page beside the sidebar.
+    // Minimum window: the columns (plus the table's 1 px borders) fill
+    // the measured container exactly.
     resize(cx, 1200., 720.);
     let small = cx.update(|cx| widths(cx));
-    let page_w = 1200. - SIDEBAR_W - 2. * PAGE_PAD;
+    let measured = container_w(cx);
     assert!(
-        small.iter().sum::<f32>() <= page_w + 0.01,
-        "columns sum to {}, page is {page_w}",
+        (small.iter().sum::<f32>() + TABLE_BORDER_X - measured).abs() <= 0.5,
+        "columns sum to {} but the container measured {measured}",
         small.iter().sum::<f32>()
     );
     // Undo is sized for both labels; File and Account shrank below the
     // old fixed 240 px and truncate their long names with an ellipsis.
+    let undo_w = cx.update(|cx| shell.read(cx).imports.read(cx).undo_col_w);
     assert!(
-        small[5] >= history_undo_col_w(),
+        small[5] >= undo_w,
         "Undo column {} cannot fit both labels",
         small[5]
     );
     assert!(small[1] < 240. && small[2] < 240., "{small:?}");
     assert!((small[1] - small[2]).abs() < 0.01, "{small:?}");
 
-    // A large window: still fitting, and the flexible columns grew.
-    resize(cx, 2560., 1440.);
+    // A wider window: the container measures more, the columns follow.
+    resize(cx, 1600., 900.);
     let big = cx.update(|cx| widths(cx));
+    let measured_big = container_w(cx);
     assert!(
-        big.iter().sum::<f32>() <= 2560. - SIDEBAR_W - 2. * PAGE_PAD + 0.01,
-        "columns sum to {}",
+        (big.iter().sum::<f32>() + TABLE_BORDER_X - measured_big).abs() <= 0.5,
+        "columns sum to {} but the container measured {measured_big}",
         big.iter().sum::<f32>()
+    );
+    assert!(
+        measured_big > measured,
+        "the container grew with the window"
     );
     assert!(big[1] > small[1], "File column grows with the window");
 }
