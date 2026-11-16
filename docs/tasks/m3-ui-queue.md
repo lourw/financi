@@ -6,7 +6,7 @@ Do these in the order listed (`docs/tasks.md` → *Picking the next task*). Each
 
 Steps 1–15 of `docs/tasks/gpui.md` → *GPUI best practices*, task by task.
 
-- [ ] **3.85 No per-frame work that grows with the data.** (From the old
+- [x] **3.85 No per-frame work that grows with the data.** (From the old
   3.57, split 2026-11-11; code review list.) Cache derived view data on
   the page that owns it, rebuilt only when its inputs change:
   - **Compiled rules:** "Test a description" and Show rule call
