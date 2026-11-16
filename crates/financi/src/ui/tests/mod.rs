@@ -514,6 +514,113 @@ fn selector_ok(sel: &str) -> bool {
     saw_segment
 }
 
+/// 3.43: no button label ends in "…" — a button names its action with an
+/// icon left of the label instead (ui-conventions, *Buttons*). The walk
+/// reads the view sources (`ui/*.rs`; test code is the tests' business)
+/// and fails on a string literal ending in "…" inside a `.label(…)` call,
+/// or on a `const NAME: &str = "…"` that is passed to `.label(NAME)`.
+/// Select placeholders (`.placeholder(…)`) and picker rows are not
+/// buttons, so the walk ignores them. The one exception is the empty
+/// dashboard's *Restore* **link**: a link, not a button.
+#[test]
+fn no_button_label_ends_in_an_ellipsis() {
+    const ALLOWED: &[&str] = &["Restore from export…"];
+    let ui_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src")
+        .join("ui");
+    let mut files: Vec<_> = std::fs::read_dir(&ui_dir)
+        .expect("the view directory")
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|x| x == "rs"))
+        .collect();
+    files.sort();
+    let texts: Vec<(String, String)> = files
+        .iter()
+        .map(|p| {
+            let text = std::fs::read_to_string(p).unwrap();
+            (p.file_name().unwrap().to_string_lossy().into_owned(), text)
+        })
+        .collect();
+    let mut bad: Vec<String> = Vec::new();
+    let mut checked = 0usize;
+    // Every `const NAME: &str = "…";`, checked against the uses below.
+    let mut ellipsis_consts: Vec<(String, String)> = Vec::new();
+    for (name, text) in &texts {
+        // Literal labels: every string literal inside a `.label(…)` call.
+        let mut at = 0usize;
+        while let Some(found) = text[at..].find(".label(") {
+            let open = at + found + ".label(".len();
+            for (lit, pos) in call_literals(text, open, 4) {
+                checked += 1;
+                if lit.ends_with('…') && !ALLOWED.contains(&lit.as_str()) {
+                    let line = text[..pos].matches('\n').count() + 1;
+                    bad.push(format!("{name}:{line}: .label({lit:?})"));
+                }
+            }
+            at = open;
+        }
+        // `const NAME: &str = "…";` definitions (any visibility).
+        let mut at = 0usize;
+        while let Some(found) = text[at..].find("const ") {
+            let start = at + found + "const ".len();
+            let rest = &text[start..];
+            let Some(q) = rest.find('"') else { break };
+            let Some((nm, ty)) = rest[..q].trim_end().split_once(':') else {
+                at = start;
+                continue;
+            };
+            let nm = nm.trim();
+            let named = !nm.is_empty()
+                && nm
+                    .chars()
+                    .all(|c| c.is_ascii_uppercase() || c == '_' || c.is_ascii_digit());
+            // Between the `:` and the string: ` &str =` / ` &'static str =`
+            // for a `const NAME: &str = "…";`; anything else (an `f32`, a
+            // prose "const " in a doc comment) is not a label const.
+            let ty = ty.trim().trim_end_matches('=').trim_end();
+            if !named || (ty != "&str" && ty != "&'static str") {
+                at = start;
+                continue;
+            }
+            let lit_start = start + q + 1;
+            let bytes = text.as_bytes();
+            let mut j = lit_start;
+            while j < bytes.len() && bytes[j] != b'"' {
+                if bytes[j] == b'\\' {
+                    j += 1;
+                }
+                j += 1;
+            }
+            if text[lit_start..j.min(text.len())].ends_with('…') {
+                ellipsis_consts.push((nm.to_string(), name.clone()));
+            }
+            at = start;
+        }
+    }
+    // A "…" const used as a label fails wherever it is used; the same
+    // const as a placeholder or a picker row is none of this guard's
+    // business.
+    for (nm, defined) in &ellipsis_consts {
+        for (name, text) in &texts {
+            if let Some(pos) = text.find(&format!(".label({nm})")) {
+                let line = text[..pos].matches('\n').count() + 1;
+                bad.push(format!(
+                    "{name}:{line}: .label({nm}) — {defined} defines it with a trailing \"…\""
+                ));
+            }
+        }
+    }
+    assert!(
+        bad.is_empty(),
+        "no button label may end in \"…\" (3.43: an icon replaces it), fix:\n{}",
+        bad.join("\n")
+    );
+    assert!(
+        checked > 40,
+        "the walk found only {checked} .label literals — did it parse the view at all?"
+    );
+}
+
 /// 3.75: the painted bounds of a debug selector, panicking with its name
 /// when the element did not paint at all. The one bounds helper — call
 /// this instead of reaching for `debug_bounds` per test.
@@ -793,6 +900,83 @@ fn paints(cx: &mut TestAppContext, handle: AnyWindowHandle, sel: impl Into<Strin
     let sel = sel.into();
     let mut window = VisualTestContext::from_window(handle, cx);
     window.debug_bounds(leaked(sel)).is_some()
+}
+
+// --------------------------------------------------- 3.43 button icon widths
+
+/// Horizontal space a medium `Button` draws around its label once it has
+/// an icon: the medium icon (`size_4`, 16 px) plus the `gap_2` (8 px)
+/// between icon and label, and the button's own `px_2p5` per side — the
+/// same values the 3.32 Imports tests pin.
+pub(crate) const MEDIUM_ICON_BLOCK_W: f32 = 24.;
+
+pub(crate) const MEDIUM_BUTTON_PAD_X: f32 = 20.;
+
+/// Slack for comparing a drawn button width against label + icon +
+/// padding: layout rounds to physical pixels. Tight enough that a
+/// dropped `.icon()` call — 24 px on these buttons — fails.
+pub(crate) const ICON_WIDTH_TOL: f32 = 3.;
+
+/// 3.43: a window of plain labels at the text size a medium button
+/// draws (`text_sm` — the button sets it on its own content, so a
+/// `.text_xs()` on the row buttons does not change it), so a test can
+/// pin that a button's drawn width is its label plus exactly the icon
+/// block and padding. A debug selector records how a button was built;
+/// only its width shows the icon actually paints.
+struct IconTextRefs {
+    labels: Vec<(&'static str, &'static str)>,
+}
+
+impl Render for IconTextRefs {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        v_flex().children(self.labels.iter().map(|(sel, text)| {
+            // `self_start` so the label's width is its text, not the
+            // full window (columns stretch their children by default).
+            div()
+                .self_start()
+                .text_sm()
+                .child(*text)
+                .debug_selector(move || (*sel).to_string())
+        }))
+    }
+}
+
+/// Open the reference-label window (after `open_shell`, so gpui-kit is
+/// initialized) and draw one frame; the returned context reads the
+/// labels' drawn widths.
+fn open_icon_text_refs(
+    cx: &mut TestAppContext,
+    labels: Vec<(&'static str, &'static str)>,
+) -> VisualTestContext {
+    let handle: AnyWindowHandle = cx.add_window(|_, _| IconTextRefs { labels }).into();
+    draw_frame(cx, handle);
+    VisualTestContext::from_window(handle, cx)
+}
+
+/// Assert a drawn button's width is its label's drawn width plus the
+/// icon block and horizontal padding (3.43) — the icon must paint.
+#[track_caller]
+fn assert_button_paints_icon(
+    refs: &mut VisualTestContext,
+    what: &str,
+    btn: Bounds<Pixels>,
+    text_sel: &'static str,
+    icon_block_w: f32,
+    pad_x: f32,
+) {
+    let text_w = refs
+        .debug_bounds(leaked(text_sel.into()))
+        .unwrap_or_else(|| panic!("the reference window draws {text_sel:?}"))
+        .size
+        .width
+        .as_f32();
+    let got = btn.size.width.as_f32();
+    let want = text_w + icon_block_w + pad_x;
+    assert!(
+        (got - want).abs() <= ICON_WIDTH_TOL,
+        "{what}: drawn width {got} is not its label {text_w} + icon block \
+         {icon_block_w} + padding {pad_x} (± {ICON_WIDTH_TOL}) — is the icon drawn?",
+    );
 }
 
 /// 3.11: after a page switch only the current page paints. Walks every page,

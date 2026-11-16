@@ -271,7 +271,7 @@ Start these only after both queues are done (`docs/tasks.md` → *Picking the ne
 
     Update the *Rules* row of `ui-conventions.md`.
 
-- [ ] **3.43 No buttons end in "…".** The user doesn't want "…" on
+- [x] **3.43 No buttons end in "…".** The user doesn't want "…" on
   buttons; use an icon instead, or just drop it (user request,
   2026-11-11). This applies 3.32's Imports-header rule to every button.
   All of them are on the Categories page today:

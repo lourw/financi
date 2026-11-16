@@ -173,8 +173,9 @@ const MOVE_TXNS_TO_PH: &str = "Move its transactions to…";
 /// control's wrapper.
 pub(super) const SUBCATEGORY_PH: &str = "Subcategory…";
 /// 3.23: the Categories page's header action; it opens the new-category
-/// form in place under the header (ui-conventions, *Pages*).
-pub(super) const NEW_CATEGORY: &str = "New category…";
+/// form in place under the header (ui-conventions, *Pages*). 3.43: no
+/// trailing "…" — the button carries a `plus` icon instead.
+pub(super) const NEW_CATEGORY: &str = "New category";
 pub(super) const KIND_LABELS: [(&str, CategoryKind); 3] = [
     ("Expense", CategoryKind::Expense),
     ("Income", CategoryKind::Income),
@@ -539,7 +540,7 @@ pub(super) struct CategoriesPage {
     pub(super) new_parent_name: Entity<InputState>,
     pub(super) new_parent_kind: Entity<SelectState<Names>>,
     pub(super) new_child_name: Entity<InputState>,
-    /// 3.23: the New category… form under the page header is open. The
+    /// 3.23: the New category form under the page header is open. The
     /// header button opens it, Cancel and a successful add close it, and
     /// `go_page` clears it like the page's other transient UI.
     pub(super) new_category_open: bool,
@@ -865,7 +866,7 @@ impl CategoriesPage {
                         if unchanged {
                             this.new_parent_name
                                 .update(cx, |i, cx| i.set_value("", window, cx));
-                            // 3.23: adding closes the New category… form.
+                            // 3.23: adding closes the New category form.
                             this.new_category_open = false;
                         }
                         // 3.64: and the new row takes the selection only
@@ -1464,7 +1465,7 @@ impl Render for CategoriesPage {
                     .rounded_lg()
                     .debug_selector(|| "cat:detail-panel".into())
                     // Title line (3.23): the name, its kind and transaction
-                    // count, Rename… at the right end; the rename editor
+                    // count, Rename at the right end; the rename editor
                     // (3.16) replaces this line in place.
                     .child(if renaming {
                         h_flex()
@@ -1566,9 +1567,18 @@ impl Render for CategoriesPage {
                                                 })),
                                         )
                                     })
+                                    // 3.43: Rename carries a `pencil` icon
+                                    // and no "…"; the selector names the
+                                    // icon so a test can pin both (the
+                                    // path is interpolated so the 3.75
+                                    // selector guard sees `cat:title-rename`).
                                     .child(
                                         Button::new("rename-category")
-                                            .label("Rename…")
+                                            .icon(IconName::Pencil)
+                                            .label("Rename")
+                                            .debug_selector(|| {
+                                                format!("cat:title-rename:{}", "icons/pencil.svg")
+                                            })
                                             .disabled(is_system)
                                             .flex_shrink_0()
                                             .on_click(cx.listener(|this, _, window, cx| {
@@ -1682,10 +1692,14 @@ impl Render for CategoriesPage {
                                 )
                                 .child({
                                     // 3.51: the armed second click is the
-                                    // destructive one — `danger`.
+                                    // destructive one — `danger`. 3.43: the
+                                    // confirm button carries a `trash` icon;
+                                    // armed it still reads "Click again to
+                                    // delete" (no "…").
                                     let armed =
                                         self.confirm_delete_category == Some(node.id);
                                     let b = Button::new("delete-category")
+                                        .icon(IconName::Trash)
                                         .label(confirm_label)
                                         .debug_selector(|| "cat:form-delete-go".into());
                                     let b = if armed { b.danger() } else { b };
@@ -1822,7 +1836,7 @@ impl Render for CategoriesPage {
                                 // (the queue's pattern, 3.16). Actions sits
                                 // on the same line as the other labels,
                                 // right-aligned over the buttons: invisible
-                                // copies of the row's Edit and Delete… give
+                                // copies of the row's Edit and Delete give
                                 // the column the cluster's exact width, and
                                 // their box is clipped to 0 height so the
                                 // heading stays a single line.
@@ -1916,14 +1930,21 @@ impl Render for CategoriesPage {
                                                     .overflow_hidden()
                                                     .child(
                                                         Button::new("rule-heading-edit-spacer")
+                                                            .icon(IconName::Pencil)
                                                             .label("Edit")
                                                             .ghost()
                                                             .text_xs()
                                                             .opacity(0.0),
                                                     )
                                                     .child(
+                                                        // 3.43: matches the row's
+                                                        // Delete button (trash
+                                                        // icon, no "…") so the
+                                                        // Actions heading stays
+                                                        // over the buttons.
                                                         Button::new("rule-heading-delete-spacer")
-                                                            .label("Delete…")
+                                                            .icon(IconName::Trash)
+                                                            .label("Delete")
                                                             .ghost()
                                                             .text_xs()
                                                             .opacity(0.0),
@@ -2030,8 +2051,9 @@ impl Render for CategoriesPage {
                 // disarms with the form), then the new-category form,
                 // then the armed category delete, then an armed rule
                 // delete on a row; with nothing open Escape means nothing
-                // here and propagates (the dashboard's context-less
-                // binding stays behind it).
+                // here and propagates (3.82 gave every page its own key
+                // context, so there is no Root binding behind it — Escape
+                // does nothing while focus sits on Shell).
                 if this.rules_page.read(cx).editing_rule.is_some() {
                     this.rules_page.update(cx, |p, cx| p.cancel_edit_rule(cx));
                     return;
@@ -2092,6 +2114,7 @@ impl Render for CategoriesPage {
                     )
                     .child(
                         Button::new("new-category")
+                            .icon(IconName::Plus)
                             .label(NEW_CATEGORY)
                             .debug_selector(move || format!("label:{NEW_CATEGORY}"))
                             .primary()
