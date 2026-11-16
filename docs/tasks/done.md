@@ -1795,3 +1795,18 @@ heading row < 24px).
 **Follow-up:** `categories_heading_shows_uses_tip` proves the tip PAINTS
 on hover but not its wording — fold an exact-text assertion into the next
 categories task.
+### H3 — split `ui/dashboard.rs` by feature ✅
+
+**Done 2026-11-15** — commit `9e3ea68`, merged `eab5c31` (v0.34.2).
+
+Pure move: `ui/dashboard.rs` (2000 lines) → `ui/dashboard/{mod,entity,
+load,table,view,actions,render}.rs` with `pub use` re-exports keeping
+`ui::dashboard::…` paths stable (`ui/mod.rs` untouched). Review proved
+parity: test list identical (235), normalized body diff empty apart from
+two re-wrapped signatures, visibility changes semantically neutral.
+Behaviour, look and public paths unchanged.
+
+**Follow-up:** `ui/dashboard/mod.rs:27`'s `#[allow(unused_imports)]`
+comment says the `load` re-exports are "used by tests via ui::…" — only
+lines 29/33 are test-consumed; `DashboardData`/`load_dashboard` are
+path-stability only. Fix the comment on the next dashboard touch.

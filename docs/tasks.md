@@ -79,10 +79,7 @@ worktree from the current `main`.
    - Backend tasks left over from step 1 fill any idle slot.
 - **Housekeeping (AGENTS.md → *File size*), run when a slot is free and
   nothing in flight touches the file** (pure moves, own `refactor:` commit,
-  no behaviour change, no other change):
-  - **H3** after 3.82 merges: split `ui/dashboard.rs` (~2.0k lines) into
-    `ui/dashboard/` sub-modules (entity, query/load, chart, summary,
-    table, render) with `pub use` keeping paths stable. Pure move.
+  no behaviour change, no other change): none open.
 3. **Last in M3: 3.26** (scrollbars, in `docs/tasks/m3-features.md`), once
    the lanes are empty.
 4. **Then M5** (`docs/tasks/m5.md`: 5.3, 5.4 and whatever of 5.1 / 5.2 is left), **then the
