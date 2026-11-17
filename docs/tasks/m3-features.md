@@ -4,7 +4,7 @@ Start these only after both queues are done (`docs/tasks.md` → *Picking the ne
 
 ## Lane A — dashboard (after both queues)
 
-- [ ] **3.36 Chart legend under the chart.** The legend column beside the
+- [x] **3.36 Chart legend under the chart.** The legend column beside the
   bars (`LEGEND_W`, 140 px) still takes width the plot needs. Move it
   below the chart and condense it (user request, 2026-11-11; changes
   decision D1 from "beside" to "below"):

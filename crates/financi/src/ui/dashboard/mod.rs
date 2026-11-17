@@ -31,6 +31,6 @@ pub use self::table::{RowMenuItem, RowShowRule, TxTable, row_menu_items, row_sho
 pub(super) use self::table::{ShowRuleFn, UnpairFn};
 #[allow(unused_imports)] // used by tests via `ui::…`
 pub(super) use self::view::{
-    ChartRow, DashboardBody, LEGEND_W, LegendSelection, SummaryRowKind, SummaryRowView, TX_FIXED_W,
+    ChartRow, DashboardBody, LegendSelection, SummaryRowKind, SummaryRowView, TX_FIXED_W,
     tx_flex_widths,
 };

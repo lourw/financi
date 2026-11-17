@@ -59,7 +59,8 @@ title-row actions `small`; buttons inside a list or table row `xsmall`
 ### Typography
 
 - The theme's system UI font. Base 16 px, but **data regions use
-  `text_sm`** (14 px): lists, tables, summary, legend.
+  `text_sm`** (14 px): lists, tables, summary. The chart's legend chips
+  are smaller: `text_xs` (12 px, 3.36).
 - Page title `text_lg` `font_semibold`. Region and panel titles
   `text_sm` `font_semibold` `foreground`; no larger headings inside a
   page. The sidebar's app name is `font_semibold`.
@@ -300,13 +301,18 @@ transfers, Uncategorized only, Show hidden), then the transaction count.
 It must fit 1200 × 720 with Custom open. Below: the chart `Panel`
 (*Spending by category*: `BarChart`, share labels over bars, band labels
 shortened and thinned to fit the live width, full names in legend and
-tooltips) beside the *Monthly summary* `Panel` (~45/55, both 340 px; the
-summary's name column and Total are pinned while only month columns
-scroll sideways on one shared handle, landing on the latest month). Then
-filter chips and the transactions `DataTable`, where every column sorts
-(text A→Z first, Date and Amount newest/biggest first; the sort survives
-filter changes). The legend moves under the chart (3.36); chart, summary
-and table stack in a scrolling page under a pinned filter row (3.45);
+tooltips; the plot takes the panel's full inner width, with the legend a
+wrapping chip row under it — 10 px swatch + name `text_xs` ellipsized at
+120 px, click drills, tooltip `amount · share`, `list_active` selected,
+"← All categories" first while drilled, at most two lines with a muted
+"+N more" chip whose tooltip lists the hidden names) beside the *Monthly
+summary* `Panel` (~45/55, both 340 px; the summary's name column and
+Total are pinned while only month columns scroll sideways on one shared
+handle, landing on the latest month). Then filter chips and the
+transactions `DataTable`, where every column sorts (text A→Z first, Date
+and Amount newest/biggest first; the sort survives filter changes).
+Chart, summary and table stack in a scrolling page under a pinned filter
+row (3.45);
 every filter applies to all three views, with Clear all (3.46); filter
 changes apply at once (3.56).
 
@@ -399,7 +405,7 @@ Confirmed with the user. Don't reopen without asking.
 
 | # | Date | Question | Decision |
 |---|---|---|---|
-| D1 | 2026-11-07 | Category chart | gpui-kit `BarChart` with a clickable legend, beside the summary; bars aren't drawn into the legend. 3.36 moves the legend under the chart and 3.45 puts chart and summary on their own rows. |
+| D1 | 2026-11-07 | Category chart | gpui-kit `BarChart` with a clickable legend, beside the summary; bars aren't drawn into the legend. 3.36 moved the legend under the chart as a wrapping chip row (≤ 2 lines, "+N more" overflow), and 3.45 puts chart and summary on their own rows. |
 | D2 | 2026-11-07 | Category label in tables | `Category › Subcategory`, the category muted. |
 | D3 | 2026-11-07 | Money going out | Plain `foreground`; only money in is colored. |
 | D4 | 2026-11-07 | Undo last import | Imports page (header and newest row) and File → Undo last import. |
