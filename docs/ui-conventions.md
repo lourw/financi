@@ -363,8 +363,8 @@ the same `rule_use_stats` mirror the Rules page shows, right-aligned
 `text_xs` through `flow::count` with 0 muted. The Pattern and Uses
 headings toggle the sort (Uses descending with pattern as tie-break, or
 pattern ascending; the active one carries a ↓ marker) and the Uses
-heading's tooltip reads "Transactions this rule categorizes". Planned: a
-focused rule's transactions under the list (3.52).
+heading's tooltip reads "Transactions this rule categorizes". A focused
+rule's transactions show under the list (see **Rules**, 3.52).
 
 **Rules.** `PageHeader` ("N rules · M unused", **New rule** opening the
 add-rule row in place). `FilterRow`: Search ("Search rules or
@@ -378,7 +378,21 @@ matching rules in matcher order, the winner first and marked "wins".
 Checked rows replace the heading row with a Move bar ("N selected", a
 subcategory picker, Move, Clear). Show rule lands here: filters cleared,
 Search set to the pattern, the row scrolled into view in `list_active`
-until the user searches or leaves.
+until the user searches or leaves. Clicking a rule row focuses it (3.52;
+the checkbox and the row buttons don't): the list shrinks to its area
+(~55%, `min_h` 120 px) and a matches panel takes the rest below a
+`border_t_1` (`min_h` 160 px) — header "Transactions matching `PATTERN`"
+(the pattern mono, ellipsized with a tooltip) plus a muted "N · M decided
+by this rule", then rows with Date (110 px, `YYYY-MM-DD`), Description
+(ellipsized with a tooltip), Account (140 px, muted, "Institution ·
+Account") and Amount (right, 110 px): deciding rows first, newest first,
+non-deciding rows muted with a trailing tag after the amount — "won by
+`PATTERN`" or "locked" (hidden and card-payment rows never appear). The
+empty state reads "This rule matches no transactions" ("…" while
+loading). A second click, Escape, picking a category or leaving the page
+clears the focus; the editor keeps it, and saving or any refresh reloads
+the panel while focused; deleting a focused rule closes it. Escape
+unwinds one level at a time: editor → armed Delete → focus → ticked rows.
 
 **Transfers.** Open transfer reviews, each row with its candidates and
 "Not a transfer".

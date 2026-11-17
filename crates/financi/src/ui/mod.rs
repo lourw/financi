@@ -49,8 +49,10 @@ use financi_db::import::{
     undo_last_import,
 };
 use financi_db::queue::{UncategorizedGroup, categorize_group, uncategorized_by_merchant};
+use financi_db::rules::{RuleMatchRow, RuleMatchStatus};
 use financi_db::rules::{
-    add_rule, count_rule_matches, delete_rule, list_rules, move_rules, rule_use_stats, update_rule,
+    add_rule, count_rule_matches, delete_rule, list_rules, move_rules, rule_matches,
+    rule_use_stats, update_rule,
 };
 use financi_db::settings::{self, DateRange};
 use financi_db::{

@@ -129,7 +129,7 @@ Start these only after both queues are done (`docs/tasks.md` → *Picking the ne
 
 ## Lane B — Categories and Rules pages (after both queues)
 
-- [ ] **3.52 A rule's transactions under the rule list.** Nice-to-have
+- [x] **3.52 A rule's transactions under the rule list.** Nice-to-have
   (user request, 2026-11-11): clicking a rule shows, in its own scrollable
   area, the transactions that rule matches. Do it after 3.51 (which frees
   the vertical space) and after 3.28 (whose row checkboxes are the

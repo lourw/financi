@@ -265,6 +265,113 @@ pub fn count_rule_matches(
     Ok(count)
 }
 
+/// How one transaction relates to one rule in the 3.52 matches list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuleMatchStatus {
+    /// This rule is the winning rule for the row — it decides the category.
+    Decides,
+    /// The row matches this rule's pattern but another rule wins; the
+    /// payload is the winner's id, for the "won by `OTHER`" tag.
+    WonBy(i64),
+    /// A human locked the row to its category; rules never touch it.
+    Locked,
+}
+
+/// One row of the matches panel under the Rules page list (3.52).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuleMatchRow {
+    pub transaction_id: i64,
+    /// The stored description, raw (3.49: never re-format stored text).
+    pub description: String,
+    /// The account's display label (`"Institution · name"`, same as
+    /// [`crate::Account::display_name`]), resolved in SQL so the panel
+    /// works without the UI's account catalog.
+    pub account: String,
+    pub amount_cents: i64,
+    /// The stored posted date, `YYYY-MM-DD`.
+    pub posted_date: String,
+    pub status: RuleMatchStatus,
+}
+
+/// Every transaction the rule `rule_id` matches, for the panel under the
+/// Rules page list (3.52). Hidden rows are excluded like every other
+/// listing, and card-payment rows like [`rule_use_stats`], so the rows
+/// with [`RuleMatchStatus::Decides`] are exactly the rows that rule's
+/// Uses count. Locked rows are kept and reported
+/// [`RuleMatchStatus::Locked`] — they match the pattern but rules never
+/// categorize them. The winner is computed with one
+/// [`CompiledRules`] pass, the same logic [`reapply_rules`] applies.
+/// Rows the rule decides come first, then newest posted date first.
+pub fn rule_matches(conn: &Connection, rule_id: i64) -> Result<Vec<RuleMatchRow>> {
+    // `fetch_rule` refuses an unknown id; an invalid stored pattern (only
+    // possible from a pre-validation row) compiles to match-nothing.
+    let rule = fetch_rule(conn, rule_id)?;
+    let pattern = CompiledPattern::new(&rule.pattern, rule.is_regex);
+    let rules = CompiledRules::new(&list_rules(conn)?);
+    let mut stmt = conn.prepare(
+        "SELECT t.id, t.description_raw, i.name || ' · ' || a.name,
+                t.amount_cents, t.posted_date, t.category_locked
+           FROM transactions t
+           JOIN accounts a ON a.id = t.account_id
+           JOIN institutions i ON i.id = a.institution_id
+          WHERE t.hidden = 0
+            AND (
+              t.category_id IS NULL
+              OR t.category_id NOT IN (
+                SELECT c.id
+                  FROM categories c
+                  JOIN categories p ON p.id = c.parent_id
+                 WHERE c.name = 'Card Payment' AND p.name = 'Transfers'
+                   AND p.parent_id IS NULL
+              )
+            )",
+    )?;
+    let mut rows: Vec<RuleMatchRow> = Vec::new();
+    let found = stmt.query_map([], |r| {
+        Ok((
+            r.get::<_, i64>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, String>(2)?,
+            r.get::<_, i64>(3)?,
+            r.get::<_, String>(4)?,
+            r.get::<_, i64>(5)? != 0,
+        ))
+    })?;
+    for row in found {
+        let (transaction_id, description, account, amount_cents, posted_date, locked) = row?;
+        if !pattern.is_match(&description) {
+            continue;
+        }
+        let status = if locked {
+            RuleMatchStatus::Locked
+        } else {
+            // The rule's own pattern matches, so `winning` returns at
+            // least this rule; anything else is the row's real owner.
+            match rules.winning(&description) {
+                Some(winner) if winner == rule_id => RuleMatchStatus::Decides,
+                Some(winner) => RuleMatchStatus::WonBy(winner),
+                None => RuleMatchStatus::Decides,
+            }
+        };
+        rows.push(RuleMatchRow {
+            transaction_id,
+            description,
+            account,
+            amount_cents,
+            posted_date,
+            status,
+        });
+    }
+    rows.sort_by(|a, b| {
+        let decides = |r: &RuleMatchRow| matches!(r.status, RuleMatchStatus::Decides);
+        decides(b)
+            .cmp(&decides(a))
+            .then_with(|| b.posted_date.cmp(&a.posted_date))
+            .then_with(|| b.transaction_id.cmp(&a.transaction_id))
+    });
+    Ok(rows)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -333,6 +440,15 @@ mod tests {
         conn.execute(
             "UPDATE transactions SET amount_cents = ?1 WHERE id = ?2",
             (amount_cents, id),
+        )
+        .unwrap();
+    }
+
+    /// Give a stored row a specific posted date, for order checks.
+    fn set_date(conn: &Connection, id: i64, date: &str) {
+        conn.execute(
+            "UPDATE transactions SET posted_date = ?1 WHERE id = ?2",
+            (date, id),
         )
         .unwrap();
     }
@@ -857,6 +973,122 @@ mod tests {
             }),
             "and un-hiding brings it back"
         );
+    }
+
+    /// 3.52: the matches list reports each status, decides-first, and the
+    /// account label matches [`crate::Account::display_name`].
+    #[test]
+    fn rule_matches_reports_decides_won_by_and_locked() {
+        let conn = open_in_memory().unwrap();
+        let cat = child_category(&conn);
+        let home = create_parent(&conn, "Home", CategoryKind::Expense).unwrap();
+        let dining = create_child(&conn, home, "Dining").unwrap();
+        let r1 = add_rule(&conn, "COFFEE", false, cat).unwrap();
+        let r2 = add_rule(&conn, "COFFEE SHOP", false, dining).unwrap();
+
+        let decided = add_transaction(&conn, "COFFEE VANCOUVER", false, None);
+        // Newer than every other row, but only *won by* r2: still listed
+        // after the row r1 decides.
+        let won = add_transaction(&conn, "COFFEE SHOP MALL", false, None);
+        set_date(&conn, won, "2026-12-31");
+        let locked = add_transaction(&conn, "COFFEE LOCKED", true, Some(cat));
+
+        let rows = rule_matches(&conn, r1).unwrap();
+        assert_eq!(
+            rows.iter()
+                .map(|r| (r.description.as_str(), r.status))
+                .collect::<Vec<_>>(),
+            vec![
+                ("COFFEE VANCOUVER", RuleMatchStatus::Decides),
+                ("COFFEE SHOP MALL", RuleMatchStatus::WonBy(r2)),
+                ("COFFEE LOCKED", RuleMatchStatus::Locked),
+            ],
+            "decides first, then newest date first"
+        );
+        assert_eq!(rows[0].transaction_id, decided);
+        assert_eq!(rows[1].transaction_id, won);
+        assert_eq!(rows[2].transaction_id, locked);
+        // `"Institution · name"`, like every other account label.
+        assert!(
+            rows[0].account.starts_with("American Express · "),
+            "got {:?}",
+            rows[0].account
+        );
+        assert_eq!(rows[0].posted_date, "2026-10-31");
+    }
+
+    /// 3.52: a rule's `Decides` rows are exactly its Uses count in 3.87's
+    /// `rule_use_stats`; hidden and card-payment rows never appear, and a
+    /// locked row is listed as locked, not decided.
+    #[test]
+    fn rule_matches_decides_agree_with_rule_use_stats() {
+        let conn = open_in_memory().unwrap();
+        let cat = child_category(&conn);
+        let card = crate::categories::card_payment_category(&conn).unwrap();
+        let used = add_rule(&conn, "COFFEE", false, cat).unwrap();
+        let unused = add_rule(&conn, "CAFE", false, cat).unwrap();
+
+        add_transaction(&conn, "COFFEE VANCOUVER", false, None);
+        add_transaction(&conn, "COFFEE MARKET", false, None);
+        add_transaction(&conn, "COFFEE LOCKED", true, Some(cat));
+        let card_row = add_transaction(&conn, "COFFEE PAYMENT RECEIVED", false, None);
+        conn.execute(
+            "UPDATE transactions SET category_id = ?1 WHERE id = ?2",
+            (card, card_row),
+        )
+        .unwrap();
+        let hidden = add_transaction(&conn, "COFFEE HIDDEN", false, None);
+        set_hidden(&conn, hidden, true).unwrap();
+
+        let stats = rule_use_stats(&conn).unwrap();
+        for rule_id in [used, unused] {
+            let rows = rule_matches(&conn, rule_id).unwrap();
+            let decided = rows
+                .iter()
+                .filter(|r| r.status == RuleMatchStatus::Decides)
+                .count();
+            assert_eq!(
+                decided,
+                stats.get(&rule_id).map_or(0, |u| u.count),
+                "rule {rule_id}: the Decides rows must equal the Uses count"
+            );
+        }
+
+        let rows = rule_matches(&conn, used).unwrap();
+        assert!(
+            rows.iter()
+                .any(|r| r.status == RuleMatchStatus::Locked && r.description == "COFFEE LOCKED"),
+            "the locked row is listed as locked"
+        );
+        assert!(
+            !rows.iter().any(|r| r.description.contains("HIDDEN")),
+            "hidden rows never appear"
+        );
+        assert!(
+            !rows.iter().any(|r| r.description.contains("PAYMENT")),
+            "card-payment rows never appear"
+        );
+    }
+
+    /// 3.52: an invalid stored regex matches nothing (no panic), and an
+    /// unknown rule id is refused.
+    #[test]
+    fn rule_matches_invalid_regex_is_empty() {
+        let conn = open_in_memory().unwrap();
+        let cat = child_category(&conn);
+        add_transaction(&conn, "COFFEE VANCOUVER", false, None);
+        // A pre-validation row: an invalid regex stored directly.
+        conn.execute(
+            "INSERT INTO category_rules (pattern, is_regex, category_id) VALUES ('(', 1, ?1)",
+            [cat],
+        )
+        .unwrap();
+        let id = conn.last_insert_rowid();
+        assert!(rule_matches(&conn, id).unwrap().is_empty());
+        assert!(matches!(
+            rule_matches(&conn, 4242).unwrap_err(),
+            DbError::UnknownRule(4242)
+        ));
     }
 
     #[test]

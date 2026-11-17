@@ -432,6 +432,10 @@ impl Shell {
         self.rules_page.update(cx, |p, _| {
             p.close_rule_editor();
             p.armed_delete_rule = None;
+            // 3.52: the focused rule belongs to the Rules page as a
+            // whole, but a category selection closes its matches panel
+            // too — same "transient UI" rule as the editor above.
+            p.clear_rule_focus();
         });
         // 3.53: the add-rule picker belongs to the selection: a
         // subcategory needs none, a parent picks among its own
