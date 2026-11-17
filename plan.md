@@ -11,10 +11,11 @@ This file holds requirements and settled decisions. `docs/tasks.md` is the task 
 | M0: Skeleton + GPUI spike | Done |
 | M1: Amex import, end to end | Done |
 | M2: Master CSVs + categorize | Done |
-| M3: Core views | In progress: the architecture and scalability refactor first, then the remaining features. Order: `docs/tasks.md` → *Picking the next task* |
+| M3: Core views | Architecture refactor done; last feature lanes in progress (dashboard dock and pie chart, Categories add-rule rework, To categorize fixes), then scrollbars (3.26). Order: `docs/tasks.md` → *Picking the next task* |
 | M4: Simplii Visa, transfer pairing, near-match | Done |
-| M5: Export / restore | Not started (its backend tasks may fill an idle slot during M3) |
+| M5: Export / restore | 5.1–5.3 done; acceptance tests (5.4) after M3 |
 | Final: performance at scale (task 3.55) | Last, after M5 |
+| After v1: M6–M10 (v1.1–v1.5) | Planned in `docs/tasks/post-v1.md`; starts when the user says so |
 
 The prototype fixes under **Roadmap** are tasks inside M3. Done tasks are archived in `docs/tasks/done.md`.
 
@@ -214,7 +215,8 @@ Sidebar of pages: Dashboard, To categorize, Categories, Rules, Transfers, Import
 **Dashboard**, linked through one shared filter state:
 
 - **Filters.** Date range presets (This month, Last month, Last 3 / 6 / 12 months, Year to date, All time) plus custom dates; default Last 3 months as whole calendar months, remembered between launches. Accounts filter: a dropdown of checkboxes built from gpui-kit parts, one per account, default all. "Include transfers", default off.
-- **Category chart.** gpui-kit `BarChart` with a clickable legend (the chart takes no clicks; task 3.36 moves the legend under the chart). Clicking a parent filters the table and drills into its children; clicking a child again or pressing Esc clears.
+- **Layout.** The dashboard panels sit in a dock under the filter row: resizable splits, panels you can drag to another split or into a tab group, each scrolling inside itself, with the layout remembered and a Reset layout command (tasks 3.97, 3.100, 3.101).
+- **Category chart.** A donut chart of the largest 8 categories plus Other (gpui-kit `PieChart`, task 3.99; a `BarChart` until then) with a clickable legend (the chart takes no clicks). Clicking a parent filters the table and drills into its children; clicking a child again or pressing Esc clears.
 - **Monthly summary.** Parent rows, expandable to children, then Income, Spend and Net, one column per month plus Total. Clicking a cell filters the table to that category and month.
 - **Transaction table.** Date, account, merchant, category, amount. Search, sort by any column, "Uncategorized only" and "Show hidden" toggles. Virtualized. Right-click: Change category, Hide, Unhide.
 
@@ -243,7 +245,9 @@ Decisions recorded in the sections above are not repeated. These are the remaini
 
 ## Roadmap
 
-**v1:** the rest of M3 (architecture and scalability refactor first, then features), then M5, then task 3.55, in the order `docs/tasks.md` → *Picking the next task* gives.
+**v1:** the rest of M3 (the feature lanes, then 3.26), then 5.4, then task 3.55, in the order `docs/tasks.md` → *Picking the next task* gives.
+
+**After v1 (re-planned 2026-11-17):** M6 / v1.1 spending over time and top merchants, M7 / v1.2 flags, M8 / v1.3 recurring, M9 / v1.4 first-run defaults and CSV export, M10 / v1.5 more institutions. Tasks are in `docs/tasks/post-v1.md`.
 
 **Code review (2026-11-11):** four reviewers (database, backend, UI, design) audited the code. Their findings are tasks 3.64–3.91: correctness fixes, cheap scale fixes, the move to page entities and a shared data model, shared UI components, and a restructured `docs/ui-conventions.md`.
 
@@ -251,17 +255,23 @@ Decisions recorded in the sections above are not repeated. These are the remaini
 
 Open:
 
-- [ ] **Make every action feel instant.** *(Added 2026-11-11; tasks 3.56, 3.57, then 3.47 + 3.54; timed budgets in 3.55, last.)* Filters, buttons and edits lag because every action reloads every page's data on one database thread, in order, with no way to skip stale work, and search reloads on every keystroke. Each action reloads only what it changes, newer requests replace queued ones, search waits for a pause in typing, edits show on screen before the database confirms them, and test-enforced time limits keep it fast as the data grows.
+- [ ] **Make every action feel instant.** *(Added 2026-11-11; 3.56 and 3.57 done; left: 3.47 + 3.54, then the timed budgets in 3.55, last.)* Filters, buttons and edits lag because every action reloads every page's data on one database thread, in order, with no way to skip stale work, and search reloads on every keystroke. Each action reloads only what it changes, newer requests replace queued ones, search waits for a pause in typing, edits show on screen before the database confirms them, and test-enforced time limits keep it fast as the data grows.
 - [ ] **Show a scrollbar on everything that scrolls.** *(Task 3.26, last in M3.)* Every scrollable region shows a scrollbar whenever its content overflows, visible without having to scroll first, and none when the content fits.
 - [x] **Make category dropdowns usable with thousands of categories.** *(Task 3.59.)* Every dropdown that picks a category becomes searchable: type to filter, match on both category and subcategory names, and show each result with its category so same-named subcategories can be told apart. Works from the keyboard and renders only the visible options.
 - [x] **Label the category type dropdown** with a visible "Category type" label. *(Task 3.60.)*
 - [x] **Make account selection on import clearer.** *(Task 3.61.)* Show the detected institution prominently next to the account selection. Account names exclude the institution, so the picker shows "Amex · Cobalt" from institution and name.
-- [ ] **An app icon** instead of the default one. *(Added 2026-11-11; task 3.63.)*
+- [x] **An app icon** instead of the default one. *(Task 3.63.)*
+- [ ] **Rearrange and resize the dashboard panels.** *(User request 2026-11-17; tasks 3.97, 3.100, 3.101.)* The panels form a dock of resizable splits you can drag into a new arrangement, with 12 px gaps between them and a scrollbar inside each panel; the layout is remembered.
+- [ ] **Spending by category as a pie chart.** *(User request 2026-11-17; task 3.99.)*
+- [ ] **Monthly bars' month labels aren't cut off.** *(User report 2026-11-17; task 3.98.)*
+- [ ] **A tidier add-rule form on the Categories page, with a match preview.** *(User request 2026-11-17; tasks 3.102, 3.103.)*
+- [ ] **Write the rule on To categorize.** *(User request 2026-11-15, repeated 2026-11-17; task 3.95.)*
+- [ ] **To categorize works after scrolling, and Rename matches the other buttons.** *(User reports 2026-11-17; tasks 3.105, 3.104.)*
 - The user's 2026-11-11 layout and polish requests (dashboard layout, Categories and Rules page clean-ups, button icons) are tasks 3.34–3.58 under `docs/tasks/`.
 
-Done (details in `docs/tasks/done.md`): edit and delete rules (3.24), dashboard alignment (3.25), toasts (3.27), Rules page (3.28), show a row's rule (3.29), summary scrolls sideways (3.30), slimmer legend (3.31), Imports buttons (3.32), category / subcategory wording (3.33), Categories page sections (3.21, 3.23), responsive charts (3.15), aligned To categorize columns (3.21, 3.22), long lists render only visible rows (3.12, 3.19, 3.21; 3.55 checks it at scale), "Spend" renamed "Expense", semver tags on every commit, version in the sidebar (3.39).
+Done (details in `docs/tasks/done.md`): app icon (3.63), monthly stacked bars (3.93), global filters (3.46), scrolling dashboard (3.45), Rules page redesign (3.58), rule matches panel (3.52), edit and delete rules (3.24), dashboard alignment (3.25), toasts (3.27), Rules page (3.28), show a row's rule (3.29), summary scrolls sideways (3.30), slimmer legend (3.31), Imports buttons (3.32), category / subcategory wording (3.33), Categories page sections (3.21, 3.23), responsive charts (3.15), aligned To categorize columns (3.21, 3.22), long lists render only visible rows (3.12, 3.19, 3.21; 3.55 checks it at scale), "Spend" renamed "Expense", semver tags on every commit, version in the sidebar (3.39).
 
-**After v1**
+**After v1** (tasks in `docs/tasks/post-v1.md`)
 
 - v1.1: spend-over-time line (total or selected category, with income and net as optional series) and top merchants (total, count, average; click filters the table).
 - v1.2: flags with a review list; a dismissed flag never returns. Thresholds live in settings. Unusually large: above 3x the median for the merchant, or for the category if the merchant has fewer than 3 past charges. New merchant: first appearance of the cleaned name. FX / fees: foreign currency, or a description matching FX fee, interest, NSF, late fee or annual fee.

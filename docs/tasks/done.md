@@ -2320,10 +2320,3 @@ body at a 20-year month range (~240 columns x all rows).
     segments; an empty range shows "No spending in this range". Add the
     panel to the *Dashboard* row of `ui-conventions.md` and add a
     `StackedBarChart` entry under *Components*.
-
-## Lane B — Categories and Rules pages (after both queues)
-
-Follow-ups (3.93 review, 2026-11-17, nits only): `2.` and
-`8.` gap literals inside `STACKED_BAR_INSET_H` / `STACKED_LEGEND_EXTRA_W`
-are commented but not derived from the gap helpers; bars test still uses a
-literal `18.` for its `full` height.

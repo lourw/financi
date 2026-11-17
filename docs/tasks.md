@@ -8,12 +8,11 @@ the task you're doing.
 | File | What | Read it |
 |---|---|---|
 | `docs/tasks.md` | this index: how to work, the order, where things are | always |
-| `docs/tasks/gpui.md` | GPUI target architecture (step by step), coding practices, pitfalls | before any UI task |
-| `docs/tasks/m3-ui-queue.md` | the architecture refactor, in order | when doing one of them |
-| `docs/tasks/m3-backend-queue.md` | backend scale and correctness fixes, in order | when doing one of them |
-| `docs/tasks/m3-features.md` | feature lanes A / B / C, then 3.26 | when doing one of them |
-| `docs/tasks/m5.md` | export / restore | when doing one of them |
-| `docs/tasks/final.md` | 3.55, performance at scale (last) | when doing it |
+| `docs/tasks/gpui.md` | GPUI target architecture, coding practices, pitfalls | before any UI task |
+| `docs/tasks/m3-features.md` | the rest of M3: lanes A / B / C, housekeeping, then 3.26 | when doing one of them |
+| `docs/tasks/m5.md` | 5.4, the v1 acceptance tests | when doing it |
+| `docs/tasks/final.md` | 3.55, performance at scale (last of v1) | when doing it |
+| `docs/tasks/post-v1.md` | the roadmap after v1: M6–M10 (v1.1–v1.5) | only once v1 is done |
 | `docs/tasks/done.md` | archive of finished tasks | only grep it for a task number an open task refers to |
 
 To find a task: `grep -rn '\*\*3.64 ' docs/tasks/`.
@@ -49,41 +48,31 @@ To find a task: `grep -rn '\*\*3.64 ' docs/tasks/`.
 
 ## Picking the next task
 
-Task numbers record when a task was written, not when to do it. Each step names the file its tasks live in. **The
-architecture and scalability work comes first** (user decision,
-2026-11-11): feature tasks wait until it has landed. Two queues run side by
-side, one task from each, so both slots stay busy. Start every task's
-worktree from the current `main`.
+Task numbers record when a task was written, not when to do it. The
+architecture and backend queues and M4 are done, and so are 5.1–5.3; what's
+left of v1 is below (re-planned 2026-11-17 from the user's latest
+reports). Start every task's worktree from the current `main`.
 
-1. **Two queues, in order:**
-   - **UI queue** (`docs/tasks/m3-ui-queue.md`; architecture and GPUI best
-     practices): 3.62 → 3.74 →
-     3.75 → 3.64 → 3.92 → 3.65 → 3.76 → 3.78 → 3.56 → 3.89 → 3.79 → 3.80 → 3.81
-     → 3.82 → 3.83 → 3.91 → 3.57 → 3.84 → 3.85 → 3.86. One at a time, except that
-     once 3.79 has merged, two of 3.80–3.83 may run together (they live in
-     different modules).
-   - **Backend queue** (`docs/tasks/m3-backend-queue.md`; scale, then
-     correctness): 3.77 → 3.73 → 3.88 →
-     3.87 → 3.66 → 3.67 → 3.68 → 3.69 → 3.70 → 3.72 → 3.71 → 3.94 → 3.90 → 5.1
-     → 5.2. These don't touch the UI (except 3.94, see below), so one always runs beside the UI
-     queue (or a second one when the UI queue is waiting).
-   - **Dependencies:** 3.78 needs 3.77 merged; 3.94 edits `ui/imports.rs`, so it doesn't run beside 3.79; 3.56 needs 3.77, 3.78 and
-     3.88; 3.84 needs 3.64. If the next UI task is blocked, the slot takes
-     the next backend task.
-2. **Then the feature lanes** (`docs/tasks/m3-features.md`), one task from each of two lanes at a time:
-   - **Lane A, dashboard:** 3.36 → 3.45 → 3.46 → 3.93.
-   - **Lane B, Categories and Rules:** 3.58 → 3.48 → 3.50 + 3.51 (one
-     branch) → 3.49 → 3.43 → 3.60 → 3.52 → 3.47 + 3.54 (one branch).
-   - **Lane C, small tasks:** 3.63 → 3.37 → 3.61 → 3.59 (after 3.51 and
-     3.58) → 3.95 → 3.96 (added 2026-11-15; 3.96 after 3.51).
-   - Backend tasks left over from step 1 fill any idle slot.
-- **Housekeeping (AGENTS.md → *File size*), run when a slot is free and
-  nothing in flight touches the file** (pure moves, own `refactor:` commit,
-  no behaviour change, no other change): none open.
-3. **Last in M3: 3.26** (scrollbars, in `docs/tasks/m3-features.md`), once
-   the lanes are empty.
-4. **Then M5** (`docs/tasks/m5.md`: 5.3, 5.4 and whatever of 5.1 / 5.2 is left), **then the
-   Final task** (`docs/tasks/final.md`: 3.55, performance at scale).
+1. **The M3 lanes** (`docs/tasks/m3-features.md`), one task from each
+   of two lanes at a time, in this order within each lane:
+   - **Lane A, dashboard:** 3.98 → 3.97 → 3.100 → 3.101 → 3.99.
+     (Labels fix, panels as entities, dock layout, saved layout, pie
+     chart.)
+   - **Lane B, Categories and Rules:** 3.102 → 3.103 → 3.47 + 3.54 (one
+     branch).
+   - **Lane C, small tasks:** 3.105 → 3.95 → 3.104. Start lane C first:
+     3.105 is a broken page, and 3.95 is a repeat user request.
+   - **Housekeeping:** H5 fills an idle slot when nothing in flight
+     touches its files (pure clean-up, own commit).
+   - **Dependencies:** 3.103 needs 3.102; 3.100 needs 3.97; 3.101 and
+     3.99 need 3.100. 3.105 and 3.95 both edit `ui/queue.rs`, so they
+     never run together.
+2. **Last in M3: 3.26** (scrollbars), once the lanes and H5 are done.
+3. **Then M5: 5.4** (`docs/tasks/m5.md`), **then the Final task**
+   (`docs/tasks/final.md`: 3.55, performance at scale). v1 is complete
+   when 3.55 merges: stop and report to the user.
+4. **After v1** (`docs/tasks/post-v1.md`): M6 → M10, only once the user
+   says to start.
 
 ## Where things are
 
@@ -91,7 +80,7 @@ worktree from the current `main`.
 |---|---|
 | `crates/financi-core` | `raw` (`RawFile`/`RawRecord`, `read_raw_file`), `parse` (cents, dates, merchant), `dates`, `rules` (`CompiledRules`, `pick_category`, `winning_rule`), `StatementParser` trait, `row_hash` |
 | `crates/financi-parsers` | `amex`, `simplii` (old id `simplii-chequing` still resolves); `all()`, `detect()`, `by_id()` |
-| `crates/financi-db` | `migrations/0001`–`0004` (0001 frozen), `accounts`, `import`, `master_csv`, `categories`, `rules`, `overrides`, `queue`, `views`, `transfers`, `settings`, `worker::DbWorker`, `seed` (feature `dev-seed`) |
+| `crates/financi-db` | `migrations/0001`–`0006` (0001 frozen), `accounts`, `import`, `master_csv`, `categories`, `rules`, `overrides`, `queue`, `views`, `transfers`, `settings`, `export` (5.1 / 5.2), `worker::DbWorker`, `seed` (feature `dev-seed`) |
 | `crates/financi/src/flow.rs` | GPUI-free helpers (formatting, import flow), unit-tested |
 | `crates/financi/src/ui/` | every view: `mod.rs` holds `Shell`, one module per page plus `widgets.rs` (shared components after 3.89); a page that outgrows one file becomes a `ui/<page>/` directory (`AGENTS.md` → *File size*) |
 | `crates/financi/src/ui/tests/` | headless UI tests, one module per page (or a `tests/<page>/` directory split by feature) plus shared helpers in `mod.rs` |
@@ -103,11 +92,8 @@ worktree from the current `main`.
 
 ## After v1 (not now)
 
-v1.1 spend-over-time line + top merchants · v1.2 flags (large, new merchant,
-FX/fees) · v1.3 recurring/subscriptions · default categories and merchant
-rules on first run (`plan.md` → *Categorization*; moved out of v1
-2026-11-11) · more institutions (first widen the parser trait: `detect`
-sees the file, not just the header row; the parser controls header /
-preamble rows; it supplies its institution's display name, replacing the
-match in `flow::format_label`) · CSV export of filtered rows. Real Simplii
-Visa sample → revisit 4.1.
+The roadmap and its tasks are in `docs/tasks/post-v1.md`: v1.1 spending
+over time and top merchants, v1.2 flags, v1.3 recurring and
+subscriptions, v1.4 first-run defaults and CSV export of filtered rows,
+v1.5 more institutions (widen the parser trait first; revisit 4.1 if a
+real Simplii Visa sample turns up).
