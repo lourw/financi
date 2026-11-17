@@ -2219,3 +2219,42 @@ body at a 20-year month range (~240 columns x all rows).
 
     Update the *Dashboard* row and *Interaction* section of
     `ui-conventions.md` (filters are global; Clear all).
+
+- [x] **3.59 Searchable category pickers.** From `plan.md` → *Make
+  category dropdowns usable with thousands of categories* (never made a
+  task; user confirmed 2026-11-11). A flat scrolling list doesn't work at
+  that size, and same-named subcategories under different categories
+  can't be told apart.
+  - **Review update (2026-11-11):** `Catalog` (3.78) builds the grouped `SelectGroup` items once per category change; every picker shares them. 3.83 already prunes the queue's pickers.
+  - gpui-component's `SelectState` has `.searchable(true)`
+    (`gpui-component-0.9.0/src/select.rs`, ~line 305: a search input at
+    the top of the menu), `SearchableVec` and `SelectGroup` for grouped
+    items, and `Select::menu_width`. Use them; don't hand-roll a picker.
+  - **Which pickers:** every `Select` that picks a category or
+    subcategory: the To categorize row pickers, the Rules page Move bar,
+    the Categories page's Move form (categories) and Delete form
+    (subcategories), the parent-scoped add-rule picker (3.53; searchable
+    once it has more than 10 items), and any others a grep for
+    `child_choices` / `SelectState::new` finds. The table's right-click
+    *Change category…* submenu is a menu, not a `Select`; leave it.
+  - **Items:** subcategories grouped under their category (`SelectGroup`,
+    the category as the group title), so each result is seen with its
+    category. Typing matches category **and** subcategory names, case-
+    insensitive: "food" shows every subcategory of Food. If grouped search
+    can't match group titles, use flat items labelled `Category ›
+    Subcategory` with the category part muted, and say which you chose in
+    the handoff.
+  - Keyboard: the search input has focus when the menu opens; arrows move,
+    Enter picks, Escape closes. The menu is wide enough for the longest
+    label up to 320 px; longer labels ellipsize.
+  - Renders only the visible options (check the gpui-component list is
+    virtual; if it isn't, stop and report).
+  - Tests: with 2 000 subcategories across 200 categories, typing a
+    subcategory name shows it with its category and Enter picks it;
+    typing a category name lists its subcategories; two same-named
+    subcategories under different categories are both shown, each under
+    its category; opening the menu builds only the visible items; the
+    existing categorize / move / delete tests pass. Add a rule to
+    `docs/ui-conventions.md` (*Interaction*): every category picker is
+    searchable and shows the category with each subcategory. Tick the
+    `plan.md` box.
