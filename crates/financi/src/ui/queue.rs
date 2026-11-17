@@ -55,10 +55,11 @@ pub(super) struct QueuePage {
     /// `DataList` paints rows through `Fn(&V, …)`, so the map lives behind
     /// a `RefCell` — the cells callback gets or creates pickers through it
     /// with only `&self`.
-    pub(super) pickers: RefCell<HashMap<String, Entity<SelectState<Names>>>>,
-    /// The category list the pickers above currently hold; `apply` re-sets
-    /// items only when it changes, not on every refresh.
-    pub(super) picker_items: Option<Names>,
+    pub(super) pickers: RefCell<HashMap<String, Entity<SelectState<SubChoices>>>>,
+    /// The grouped category items the pickers above currently hold (the
+    /// `Catalog` Rc pushed into them); `apply` re-sets items only when
+    /// that pointer changes, not on every refresh.
+    pub(super) picker_items: Option<Rc<Vec<SelectGroup<SubChoice>>>>,
     /// 3.34: one per live picker — a `Confirm` re-renders the rows so the
     /// row's Categorize button flips from disabled to enabled the frame a
     /// category is picked. Retired with its picker in `apply` and in
@@ -88,8 +89,9 @@ pub(super) struct QueuePage {
     #[cfg(test)]
     pub(super) rows_built: std::cell::Cell<usize>,
     /// "Parent › Child" labels of the child categories, in picker order —
-    /// what the pickers offer and what a row's Categorize resolves its
-    /// pick against.
+    /// the flat mirror of the tree the tests read; the pickers offer the
+    /// same children grouped by category (3.59) and resolve a pick by the
+    /// item's id value.
     pub(super) child_choices: Vec<(i64, String)>,
 }
 
@@ -121,9 +123,13 @@ impl PageEntity for QueuePage {
     }
 
     fn apply(&mut self, cx: &mut Context<Self>) {
-        let (groups, tree) = {
+        let (groups, tree, choices) = {
             let cat = self.catalog.read(cx);
-            (cat.snap.queue.clone(), cat.snap.tree.clone())
+            (
+                cat.snap.queue.clone(),
+                cat.snap.tree.clone(),
+                cat.cat_choices(),
+            )
         };
         self.groups = groups;
         self.child_choices = tree
@@ -146,13 +152,15 @@ impl PageEntity for QueuePage {
         // 3.19: re-set the survivors' items only when the category list
         // changed, not on every refresh — and 3.83: `set_items` needs a
         // window, so flag it and let `render` push the new items.
-        let names: Names = self
-            .child_choices
-            .iter()
-            .map(|(_, n)| SharedString::from(n.clone()))
-            .collect();
-        if self.picker_items.as_ref() != Some(&names) {
-            self.picker_items = Some(names);
+        // 3.59: the items are the shared grouped list; a rebuild in
+        // `Catalog` hands out a fresh `Rc`, so a pointer compare is the
+        // change test.
+        if self
+            .picker_items
+            .as_ref()
+            .is_none_or(|held| !Rc::ptr_eq(held, &choices))
+        {
+            self.picker_items = Some(choices);
             self.pickers_need_items = true;
         }
     }
@@ -216,22 +224,25 @@ impl QueuePage {
         merchant: &str,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> Entity<SelectState<Names>> {
+    ) -> Entity<SelectState<SubChoices>> {
         let existing = self.pickers.borrow().get(merchant).cloned();
         if let Some(picker) = existing {
             return picker;
         }
-        let items: Names = self.picker_items.clone().unwrap_or_else(|| {
-            self.child_choices
-                .iter()
-                .map(|(_, n)| SharedString::from(n.clone()))
-                .collect()
+        // 3.59: the shared grouped items — every row's picker offers the
+        // same list, searchable, and each owns its own filter state.
+        let items = self
+            .picker_items
+            .clone()
+            .unwrap_or_else(|| self.catalog.read(cx).cat_choices());
+        let picker = cx.new(|cx| {
+            SelectState::new(SearchableVec::new((*items).clone()), None, window, cx)
+                .searchable(true)
         });
-        let picker = cx.new(|cx| SelectState::new(items, None, window, cx));
         // 3.34: the row's Categorize button mirrors the picker — disabled
         // with no pick, enabled with one — so a confirmed pick re-renders
         // the rows. The subscription lives exactly as long as the picker.
-        let sub = cx.subscribe(&picker, |_, _, ev: &SelectEvent<Names>, cx| {
+        let sub = cx.subscribe(&picker, |_, _, ev: &SelectEvent<SubChoices>, cx| {
             if matches!(ev, SelectEvent::Confirm(_)) {
                 cx.notify();
             }
@@ -255,7 +266,7 @@ impl QueuePage {
         merchant: &str,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> Entity<SelectState<Names>> {
+    ) -> Entity<SelectState<SubChoices>> {
         self.picker_for_row(merchant, window, cx)
     }
 
@@ -323,12 +334,11 @@ impl QueuePage {
         let Some(picker) = self.pickers.borrow().get(&merchant).cloned() else {
             return;
         };
-        let Some(ix) = picker.read(cx).selected_index(cx) else {
+        // 3.59: the grouped items carry the sub-category id as their
+        // value, so the pick resolves directly — no positional lookup.
+        let Some(category_id) = picker.read(cx).selected_value().copied() else {
             self.error = Some("Choose a category for this merchant first.".into());
             cx.notify();
-            return;
-        };
-        let Some((category_id, _)) = self.child_choices.get(ix.row).cloned() else {
             return;
         };
         // 3.84: the paint — the group leaves the queue in the click's
@@ -381,7 +391,7 @@ impl QueuePage {
     }
 
     #[cfg(test)]
-    pub(super) fn picker(&self, merchant: &str) -> Option<Entity<SelectState<Names>>> {
+    pub(super) fn picker(&self, merchant: &str) -> Option<Entity<SelectState<SubChoices>>> {
         self.pickers.borrow().get(merchant).cloned()
     }
 
@@ -416,10 +426,15 @@ impl Render for QueuePage {
             if let Some(items) = self.picker_items.clone() {
                 let pickers: Vec<_> = self.pickers.borrow().values().cloned().collect();
                 for picker in pickers {
-                    picker.update(cx, |s, cx| s.set_items(items.clone(), window, cx));
+                    picker.update(cx, |s, cx| {
+                        s.set_items(SearchableVec::new((*items).clone()), window, cx)
+                    });
                 }
             }
         }
+        // 3.59: menu width for the row pickers — the longest grouped
+        // label up to 320 px, computed once for the frame.
+        let picker_menu_w = sub_choices_menu_width(&self.catalog.read(cx).cat_choices());
         let (muted, danger) = {
             let theme = cx.theme();
             (theme.muted_foreground, theme.danger)
@@ -579,7 +594,11 @@ impl Render for QueuePage {
                                     let m = merchant.clone();
                                     move || format!("queue:picker-col:{m}")
                                 })
-                                .child(Select::new(&picker).placeholder("Category…"));
+                                .child(
+                                    Select::new(&picker)
+                                        .menu_width(picker_menu_w)
+                                        .placeholder("Category…"),
+                                );
                             // 3.34: quiet and disabled until the row's
                             // picker holds a category; `small` and outline
                             // once one is picked — row-level buttons are

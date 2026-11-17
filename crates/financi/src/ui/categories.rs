@@ -142,7 +142,7 @@ fn subcategory_select(
 /// plus the chevron — generous so the width estimates below err towards
 /// controls that are too wide rather than names that clip (same spirit
 /// as [`TEXT_SM_CHAR_PX`]).
-const SELECT_CHROME_W: f32 = 40.;
+pub(super) const SELECT_CHROME_W: f32 = 40.;
 /// 3.53: floor for the parent-scoped picker: its placeholder
 /// ("Subcategory…") must fit whatever the child names are.
 const SUBCATEGORY_MIN_W: f32 = 130.;
@@ -319,27 +319,13 @@ impl Shell {
                     .map(move |c| (c.id, format!("{} › {}", p.name, c.name)))
             })
             .collect();
-        let names: Names = self
-            .child_choices
-            .iter()
-            .map(|(_, n)| SharedString::from(n.clone()))
-            .collect();
-        // 3.81: the page owns the delete picker; the shell feeds it.
-        self.categories_view.update(cx, |page, cx| {
-            page.delete_target
-                .update(cx, |s, cx| s.set_items(names.clone(), window, cx));
-        });
         // 3.80: the Rules page owns its pickers, its checked rows and its
-        // editor; fold in any refresh it missed first, then refill the two
-        // pickers with the new child list. Pruning stale checks, collapsed
-        // groups and a vanished editor lives in its `apply`.
-        self.rules_page.update(cx, |p, cx| {
-            p.apply_if_dirty(cx);
-            p.rule_target
-                .update(cx, |s, cx| s.set_items(names.clone(), window, cx));
-            p.move_rules_target
-                .update(cx, |s, cx| s.set_items(names, window, cx));
-        });
+        // editor; fold in any refresh it missed first — pruning stale
+        // checks, collapsed groups and a vanished editor lives in its
+        // `apply`, and hidden pages only fold on demand. 3.59: the picker
+        // feeds moved to `Shell::data_changed` (shared grouped items,
+        // which needs the window this path has).
+        self.rules_page.update(cx, |p, cx| p.apply_if_dirty(cx));
         // 3.53: the Categories add-rule picker follows the selection and
         // the (possibly renamed) child list; the pick survives while its
         // id is one of the parent's children.
@@ -480,12 +466,10 @@ impl Shell {
 
     #[cfg(test)]
     pub(super) fn arm_delete_category(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        // Read the reassign list before entering the page: the page must
-        // not read the shell while this update is in flight (3.81).
-        let choices = self.child_choices.clone();
-        self.categories_view.update(cx, move |page, cx| {
-            page.arm_delete_category(&choices, window, cx)
-        });
+        // 3.59: the reassign target resolves from the picker's item value,
+        // so the page needs no mirror of the shell's list here.
+        self.categories_view
+            .update(cx, move |page, cx| page.arm_delete_category(window, cx));
     }
 }
 /// Which of the detail panel's inline forms (3.51) is open, one at a
@@ -574,7 +558,10 @@ pub(super) struct CategoriesPage {
     pub(super) renaming: bool,
     pub(super) rename_input: Entity<InputState>,
     pub(super) move_target: Entity<SelectState<Names>>,
-    pub(super) delete_target: Entity<SelectState<Names>>,
+    /// 3.59: the Delete form's reassign picker — the sub-categories
+    /// grouped by parent and searchable, sharing `Catalog`'s items (fed
+    /// by `Shell::data_changed`, where the old flat list was).
+    pub(super) delete_target: Entity<SelectState<SubChoices>>,
     pub(super) confirm_delete_category: Option<i64>,
     /// 3.51: the detail panel's open inline form, one at a time; the
     /// title-row button of the open form shows it as selected.
@@ -675,8 +662,10 @@ impl CategoriesPage {
             },
         );
         let rename_input = cx.new(|cx| InputState::new(window, cx).placeholder("New name"));
-        let move_target = cx.new(|cx| SelectState::new(Names::new(), None, window, cx));
-        let delete_target = cx.new(|cx| SelectState::new(Names::new(), None, window, cx));
+        let move_target =
+            cx.new(|cx| SelectState::new(Names::new(), None, window, cx).searchable(true));
+        let delete_target = cx
+            .new(|cx| SelectState::new(SubChoices::new(vec![]), None, window, cx).searchable(true));
         Self {
             db,
             writes_blocked,
@@ -1129,16 +1118,11 @@ impl CategoriesPage {
     }
 
     /// First click arms the delete, the second runs it (ui-conventions,
-    /// *Interaction*). `child_choices` is the shell's reassign list, read
-    /// by the caller (render, or the `Shell` test forwarder) so this never
-    /// reads the shell through the handle — a forwarder runs inside
-    /// `Shell::update`, where that read would panic (3.81).
-    pub(super) fn arm_delete_category(
-        &mut self,
-        child_choices: &[(i64, String)],
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    /// *Interaction*). 3.59: the reassign target is the Delete picker's
+    /// item value — the grouped `SubChoice` carries the sub-category id,
+    /// so the shell's positional reassign list is no longer needed here
+    /// (the 3.81 forwarder constraint it worked around is moot).
+    pub(super) fn arm_delete_category(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // 5.3 review fix: refuse writes while an export/restore is in flight.
         if self.writes_blocked.get() {
             return;
@@ -1153,12 +1137,11 @@ impl CategoriesPage {
             cx.notify();
             return;
         }
-        let Some(ix) = self.delete_target.read(cx).selected_index(cx) else {
+        // 3.59: the grouped items carry the sub-category id as their
+        // value, so the pick resolves directly.
+        let Some(reassign_to) = self.delete_target.read(cx).selected_value().copied() else {
             self.cat_error = Some("Choose where its transactions should go.".into());
             cx.notify();
-            return;
-        };
-        let Some((reassign_to, _)) = child_choices.get(ix.row).cloned() else {
             return;
         };
         self.confirm_delete_category = None;
@@ -1248,6 +1231,10 @@ impl Render for CategoriesPage {
             let theme = cx.theme();
             (theme.muted_foreground, theme.border, theme.danger)
         };
+        // 3.59: the Delete picker's menu width: the longest "Category ›
+        // Subcategory" label up to 320 px (items fed by
+        // `Shell::data_changed`).
+        let delete_menu_w = sub_choices_menu_width(&self.catalog.read(cx).cat_choices());
         // 3.84: the button whose write the DB is running renders loading,
         // disabled, until the answer arrives (the Rules page's 3.40
         // pattern; `cat_pending` is this page's one write slot).
@@ -1390,9 +1377,6 @@ impl Render for CategoriesPage {
         // 3.53: the parent-scoped add-rule picker is the scaffold's entity
         // (`sync_cat_rule_picker` feeds it); the page only renders it.
         let cat_rule_target = shell.read(cx).categories_page.cat_rule_target.clone();
-        // The reassign list for the Delete section (3.81): the shell's,
-        // read once per frame like the other shared bits above.
-        let child_choices = shell.read(cx).child_choices.clone();
         let visible = Rc::new(self.visible_rules());
         // 3.49: when the selection is a parent, each rule from one of its
         // subcategories carries that child's name as a tag inside its
@@ -1508,8 +1492,6 @@ impl Render for CategoriesPage {
                 } else {
                     "Delete"
                 };
-                // The reassign list, cloned for the Delete form's listener.
-                let choices = child_choices.clone();
                 v_flex()
                     .flex_1()
                     .min_w_0()
@@ -1707,6 +1689,11 @@ impl Render for CategoriesPage {
                                         })
                                         .child(
                                             Select::new(&self.move_target)
+                                                .menu_width(names_menu_width(
+                                                    self.move_parent_choices()
+                                                        .iter()
+                                                        .map(|(_, n)| n.as_str()),
+                                                ))
                                                 .placeholder(MOVE_TO_CATEGORY_PH)
                                                 .accessibility_label("Move to category"),
                                         ),
@@ -1743,6 +1730,7 @@ impl Render for CategoriesPage {
                                         })
                                         .child(
                                             Select::new(&self.delete_target)
+                                                .menu_width(delete_menu_w)
                                                 .placeholder(MOVE_TXNS_TO_PH)
                                                 .accessibility_label("Move its transactions to"),
                                         ),
@@ -1775,7 +1763,7 @@ impl Render for CategoriesPage {
                                         .debug_selector(|| "cat:form-delete-go".into());
                                     let b = if armed { b.danger() } else { b };
                                     b.on_click(cx.listener(move |this, _, window, cx| {
-                                        this.arm_delete_category(&choices, window, cx)
+                                        this.arm_delete_category(window, cx)
                                     }))
                                 })
                         ),

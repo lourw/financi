@@ -150,9 +150,9 @@ pub(super) struct RulesPage {
     pub(super) rules_sort: Option<(&'static str, SortState)>,
     /// 3.28: rules whose row checkbox is ticked; the Move bar acts on these.
     pub(super) selected_rules: HashSet<i64>,
-    /// 3.28: the Move bar's target picker (child categories only, like the
-    /// rule target pickers).
-    pub(super) move_rules_target: Entity<SelectState<Names>>,
+    /// 3.28: the Move bar's target picker — the sub-categories grouped
+    /// by parent and searchable (3.59); the pick carries the id value.
+    pub(super) move_rules_target: Entity<SelectState<SubChoices>>,
     /// 3.28: the Move bar's error line (a move the DB refused).
     pub(super) rules_move_error: Option<SharedString>,
     /// 3.28: whether the add-rule row is open on the Rules page.
@@ -219,14 +219,17 @@ pub(super) struct RulesPage {
     /// 3.58: the signed sum, in cents, of the rows each rule decides
     /// (the Total column); rules deciding nothing are absent.
     pub(super) rule_totals: HashMap<i64, i64>,
-    /// "Parent › Child" labels of the child categories, the target the
-    /// rows and group headers show and what the pickers offer.
+    /// 3.28: the child categories — the target the rows and group
+    /// headers show. 3.59: the pickers no longer resolve against this
+    /// flat list (their items carry ids), but the labels and the tests do.
     pub(super) child_choices: Vec<(i64, String)>,
     // -- The add-rule row and its in-place editor (3.24, 3.28): rendered
     // by both the Categories page and the Rules page.
     pub(super) rule_pattern: Entity<InputState>,
     pub(super) rule_regex: bool,
-    pub(super) rule_target: Entity<SelectState<Names>>,
+    /// 3.59: the add-rule target picker — grouped and searchable like
+    /// the Move bar's.
+    pub(super) rule_target: Entity<SelectState<SubChoices>>,
     /// The add row's and the editor's shared "matches N transactions"
     /// preview (the editor owns it while open; see
     /// [`RulesPage::preview_rule_match`]).
@@ -435,9 +438,10 @@ impl RulesPage {
                 }
             },
         );
-        // 3.58: the Move picker is searchable (a long category list).
-        let move_rules_target =
-            cx.new(|cx| SelectState::new(Names::new(), None, window, cx).searchable(true));
+        // 3.58: the Move picker is searchable (a long category list);
+        // 3.59: its items are the shared grouped sub-categories.
+        let move_rules_target = cx
+            .new(|cx| SelectState::new(SubChoices::new(vec![]), None, window, cx).searchable(true));
         // The add-rule row and its editor (3.24, 3.28): rendered by both
         // the Categories page and the Rules page.
         let rule_pattern = cx.new(|cx| {
@@ -514,7 +518,9 @@ impl RulesPage {
             child_choices: Vec::new(),
             rule_pattern,
             rule_regex: false,
-            rule_target: cx.new(|cx| SelectState::new(Names::new(), None, window, cx)),
+            rule_target: cx.new(|cx| {
+                SelectState::new(SubChoices::new(vec![]), None, window, cx).searchable(true)
+            }),
             rule_match_count: None,
             rule_task: None,
             rule_error: None,
@@ -594,12 +600,11 @@ impl RulesPage {
     }
 
     pub(super) fn add_rule(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(ix) = self.rule_target.read(cx).selected_index(cx) else {
+        // 3.59: the grouped items carry the sub-category id as their
+        // value, so the pick resolves directly.
+        let Some(category_id) = self.rule_target.read(cx).selected_value().copied() else {
             self.rule_error = Some("Choose the category the rule assigns.".into());
             cx.notify();
-            return;
-        };
-        let Some((category_id, _)) = self.child_choices.get(ix.row).cloned() else {
             return;
         };
         self.commit_new_rule(category_id, window, cx);
@@ -1353,12 +1358,10 @@ impl RulesPage {
         if self.writes_blocked.get() {
             return;
         }
-        let Some(ix) = self.move_rules_target.read(cx).selected_index(cx) else {
+        // 3.59: the pick carries the sub-category id value directly.
+        let Some(category_id) = self.move_rules_target.read(cx).selected_value().copied() else {
             self.rules_move_error = Some("Choose the category to move to.".into());
             cx.notify();
-            return;
-        };
-        let Some((category_id, _)) = self.child_choices.get(ix.row).cloned() else {
             return;
         };
         let mut ids: Vec<i64> = self.selected_rules.iter().copied().collect();
@@ -1765,6 +1768,11 @@ impl Render for RulesPage {
                 window.focus(&handle, cx);
             });
         }
+        // 3.59: the menu width both category pickers share: the longest
+        // "Category › Subcategory" label up to 320 px. The items
+        // themselves are fed by `Shell::data_changed` (a window is
+        // needed, and hidden pages never render).
+        let cat_menu_w = sub_choices_menu_width(&self.catalog.read(cx).cat_choices());
         let (muted, fg, danger, border, success, primary) = {
             let theme = cx.theme();
             (
@@ -2129,7 +2137,11 @@ impl Render for RulesPage {
                     .w(px(240.))
                     .flex_shrink_0()
                     .debug_selector(|| "rules:move-target".into())
-                    .child(Select::new(&self.move_rules_target).placeholder(MOVE_RULES_TO_PH)),
+                    .child(
+                        Select::new(&self.move_rules_target)
+                            .menu_width(cat_menu_w)
+                            .placeholder(MOVE_RULES_TO_PH),
+                    ),
             )
             .child(
                 Button::new("rules-move")
@@ -2382,9 +2394,13 @@ impl Render for RulesPage {
                                         .flex_shrink_0()
                                         .gap_1()
                                         .child(field_label(muted, "Category"))
-                                        .child(div().w(px(160.)).child(
-                                            Select::new(&self.rule_target).placeholder("Category…"),
-                                        )),
+                                        .child(
+                                            div().w(px(160.)).child(
+                                                Select::new(&self.rule_target)
+                                                    .menu_width(cat_menu_w)
+                                                    .placeholder("Category…"),
+                                            ),
+                                        ),
                                 )
                                 .child(
                                     Button::new("add-rule")
