@@ -152,8 +152,9 @@ fn categorize_removes_the_group_in_the_click_frame_and_rolls_back(cx: &mut TestA
     // Hide the page, then let the write fail.
     cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
     drop(done);
+    // 3.95: a failed write reports through the error toast, not the page.
     wait_until(cx, "the failed write reports", |cx| {
-        shell.read(cx).queue_view.read(cx).error.is_some()
+        last_toast(&shell, cx).is_some_and(|(_, error)| error)
     });
     cx.update(|cx| {
         let p = shell.read(cx).queue_view.read(cx);
@@ -167,6 +168,276 @@ fn categorize_removes_the_group_in_the_click_frame_and_rolls_back(cx: &mut TestA
             "the row's picker survived the round trip"
         );
     });
+}
+
+// -- 3.95: editing the rule while categorizing.
+
+/// Type into the merchant row's rule-pattern input (the same `set_value`
+/// a user's keystrokes end up as). Builds the row's input if the paint
+/// has not yet, exactly as the row's render does.
+fn queue_set_pattern(
+    cx: &mut TestAppContext,
+    handle: AnyWindowHandle,
+    shell: &Entity<Shell>,
+    merchant: &str,
+    value: &str,
+) {
+    let value = value.to_string();
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.queue_view.update(cx, |p, cx| {
+                let input = p.queue_input(merchant, window, cx);
+                input.update(cx, |i, cx| i.set_value(value, window, cx));
+            });
+        });
+    });
+}
+
+/// The pattern text the merchant row's input holds.
+fn queue_pattern(cx: &mut TestAppContext, shell: &Entity<Shell>, merchant: &str) -> String {
+    cx.update(|cx| {
+        shell
+            .read(cx)
+            .queue_view
+            .read(cx)
+            .row_input(merchant)
+            .map(|i| i.read(cx).value().to_string())
+            .unwrap_or_default()
+    })
+}
+
+/// Click the merchant row's regex switch.
+fn queue_toggle_regex(cx: &mut TestAppContext, handle: AnyWindowHandle, merchant: &str) {
+    click(cx, handle, format!("queue:regex-switch:{merchant}"));
+}
+
+/// 3.95: the row's pattern input is blank and its placeholder is the
+/// merchant — blank visibly means "use the merchant".
+#[gpui::test]
+fn the_row_rule_input_carries_the_merchant_as_placeholder(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |conn| seed_queue_thousands(conn, 3));
+    wait_until(cx, "3 queue groups", |cx| queue_len(&shell, cx) == 3);
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::ToCategorize, cx)));
+    cx.run_until_parked();
+    draw_frame(cx, handle);
+    let merchant = cx.update(|cx| {
+        shell.read(cx).queue_view.read(cx).groups[0]
+            .merchant
+            .clone()
+    });
+    cx.update(|cx| {
+        let input = shell
+            .read(cx)
+            .queue_view
+            .read(cx)
+            .row_input(&merchant)
+            .expect("the visible row built its pattern input");
+        let state = input.read(cx);
+        assert_eq!(
+            state.presentation().placeholder().to_string(),
+            merchant,
+            "the placeholder is the merchant name"
+        );
+        assert!(state.value().is_empty(), "the input starts blank");
+    });
+}
+
+/// 3.95: type a pattern, pick a category, click Categorize — the rule is
+/// the typed pattern, not the merchant, and it is there on the Rules
+/// page.
+#[gpui::test]
+fn a_written_pattern_categorizes_the_group_through_a_rule(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |conn| {
+        create_account(conn, "amex", "Cobalt", AccountKind::CreditCard).unwrap();
+    });
+    import_and_top_merchant(cx, handle, &shell);
+    add_parent(cx, handle, &shell, "Shopping");
+    add_child(cx, handle, &shell, "Online");
+    let child = cx.update(|cx| find_child(&shell, cx, "Online").unwrap());
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::ToCategorize, cx)));
+    wait_until(cx, "queue applied", |cx| {
+        !shell.read(cx).queue_view.read(cx).groups.is_empty()
+    });
+    let (merchant, before) = cx.update(|cx| top_group(&shell, cx));
+
+    queue_set_pattern(cx, handle, &shell, &merchant, "BEAN");
+    queue_pick(cx, handle, &shell, &merchant, child);
+    queue_categorize(cx, handle, &shell, merchant.clone());
+    wait_until(cx, "the BEAN rule exists", |cx| {
+        shell.read(cx).rules.iter().any(|r| r.pattern == "BEAN")
+    });
+    let gone = merchant.clone();
+    let shell_for_gone = shell.clone();
+    wait_until(cx, "queue group gone", move |cx| {
+        shell_for_gone
+            .read(cx)
+            .queue_view
+            .read(cx)
+            .groups
+            .iter()
+            .all(|g| g.merchant != gone)
+    });
+    cx.update(|cx| {
+        let rule = shell
+            .read(cx)
+            .rules
+            .iter()
+            .find(|r| r.pattern == "BEAN")
+            .expect("the rule holds the typed pattern, not the merchant");
+        assert!(!rule.is_regex, "a substring rule while the switch is off");
+        let online = *shell.read(cx).cat_counts.get(&child).unwrap();
+        assert!(online >= before, "{online} >= {before} categorized");
+    });
+    // The success toast names the rule it added.
+    assert_eq!(
+        cx.update(|cx| last_toast(&shell, cx)),
+        Some((format!("Categorized {merchant} · rule: BEAN"), false)),
+        "the toast names the pattern the user wrote"
+    );
+    // And it is on the Rules page, listed under its pattern.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Rules, cx)));
+    cx.run_until_parked();
+    draw_frame(cx, handle);
+    cx.update(|cx| {
+        assert!(
+            shell
+                .read(cx)
+                .rules
+                .iter()
+                .any(|r| r.pattern == "BEAN" && !r.is_regex),
+            "the Rules page lists the BEAN rule"
+        );
+    });
+}
+
+/// 3.95: with the regex switch on the written pattern becomes a regex
+/// rule, and the Rules page shows it as regex.
+#[gpui::test]
+fn the_regex_switch_makes_the_written_pattern_a_regex_rule(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |conn| {
+        create_account(conn, "amex", "Cobalt", AccountKind::CreditCard).unwrap();
+    });
+    import_and_top_merchant(cx, handle, &shell);
+    add_parent(cx, handle, &shell, "Shopping");
+    add_child(cx, handle, &shell, "Online");
+    let child = cx.update(|cx| find_child(&shell, cx, "Online").unwrap());
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::ToCategorize, cx)));
+    wait_until(cx, "queue applied", |cx| {
+        !shell.read(cx).queue_view.read(cx).groups.is_empty()
+    });
+    let (merchant, _) = cx.update(|cx| top_group(&shell, cx));
+
+    queue_set_pattern(cx, handle, &shell, &merchant, r"^BEANERY");
+    queue_toggle_regex(cx, handle, &merchant);
+    queue_pick(cx, handle, &shell, &merchant, child);
+    queue_categorize(cx, handle, &shell, merchant.clone());
+    wait_until(cx, "the regex rule exists", |cx| {
+        shell
+            .read(cx)
+            .rules
+            .iter()
+            .any(|r| r.pattern == "^BEANERY" && r.is_regex)
+    });
+    cx.update(|cx| {
+        let rule = shell
+            .read(cx)
+            .rules
+            .iter()
+            .find(|r| r.pattern == "^BEANERY")
+            .expect("the regex pattern was added as written");
+        assert!(rule.is_regex, "the switch on means a regex rule");
+    });
+}
+
+/// 3.95: Enter in the pattern input is the row's Categorize button.
+#[gpui::test]
+fn enter_in_the_rule_input_categorizes_the_group(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |conn| {
+        create_account(conn, "amex", "Cobalt", AccountKind::CreditCard).unwrap();
+    });
+    import_and_top_merchant(cx, handle, &shell);
+    add_parent(cx, handle, &shell, "Shopping");
+    add_child(cx, handle, &shell, "Online");
+    let child = cx.update(|cx| find_child(&shell, cx, "Online").unwrap());
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::ToCategorize, cx)));
+    wait_until(cx, "queue applied", |cx| {
+        !shell.read(cx).queue_view.read(cx).groups.is_empty()
+    });
+    let (merchant, _) = cx.update(|cx| top_group(&shell, cx));
+
+    queue_set_pattern(cx, handle, &shell, &merchant, "BEAN");
+    queue_pick(cx, handle, &shell, &merchant, child);
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.queue_view.update(cx, |p, cx| {
+                let input = p.row_input(&merchant).expect("the row built its input");
+                window.focus(&input.read(cx).focus_handle(cx), cx);
+            });
+        });
+    });
+    cx.simulate_keystrokes(handle, "enter");
+    wait_until(cx, "the BEAN rule exists", |cx| {
+        shell.read(cx).rules.iter().any(|r| r.pattern == "BEAN")
+    });
+    assert!(
+        cx.update(|cx| shell
+            .read(cx)
+            .rules
+            .iter()
+            .any(|r| r.pattern == "BEAN" && !r.is_regex)),
+        "Enter added the typed pattern's rule"
+    );
+}
+
+/// 3.95: a pattern that matches none of the group's rows is refused with
+/// the error toast, adds no rule, and leaves the row — and its typed
+/// text — for another try.
+#[gpui::test]
+fn a_pattern_matching_nothing_is_refused_and_keeps_the_row(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |conn| {
+        create_account(conn, "amex", "Cobalt", AccountKind::CreditCard).unwrap();
+    });
+    import_and_top_merchant(cx, handle, &shell);
+    add_parent(cx, handle, &shell, "Shopping");
+    add_child(cx, handle, &shell, "Online");
+    let child = cx.update(|cx| find_child(&shell, cx, "Online").unwrap());
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::ToCategorize, cx)));
+    wait_until(cx, "queue applied", |cx| {
+        !shell.read(cx).queue_view.read(cx).groups.is_empty()
+    });
+    let (merchant, _) = cx.update(|cx| top_group(&shell, cx));
+
+    queue_set_pattern(cx, handle, &shell, &merchant, "NOTTHISTORE");
+    queue_pick(cx, handle, &shell, &merchant, child);
+    queue_categorize(cx, handle, &shell, merchant.clone());
+    wait_until(cx, "the refusal toast", |cx| {
+        last_toast(&shell, cx) == Some((format!("That rule doesn't match {merchant}"), true))
+    });
+    cx.update(|cx| {
+        assert!(
+            shell
+                .read(cx)
+                .queue_view
+                .read(cx)
+                .groups
+                .iter()
+                .any(|g| g.merchant == merchant),
+            "the row stays in the queue"
+        );
+        assert!(
+            !shell
+                .read(cx)
+                .rules
+                .iter()
+                .any(|r| r.pattern == "NOTTHISTORE"),
+            "the refused write adds no rule"
+        );
+    });
+    assert_eq!(
+        queue_pattern(cx, &shell, &merchant),
+        "NOTTHISTORE",
+        "the input keeps its text"
+    );
 }
 
 /// 3.19: synthetic queue data — `groups` merchant groups of two uncategorized
@@ -625,6 +896,7 @@ fn the_queue_page_labels_its_columns(cx: &mut TestAppContext) {
         "queue:heading:Transactions",
         "queue:heading:Total",
         "queue:heading:Dates",
+        "queue:heading:Rule",
         "queue:heading:Category",
         "queue:heading:Categorize",
     ] {
@@ -659,6 +931,8 @@ fn the_queue_category_heading_sits_over_the_picker_column(cx: &mut TestAppContex
         ("Transactions", format!("queue:txns-col:{merchant}")),
         ("Total", format!("queue:total-col:{merchant}")),
         ("Dates", format!("queue:dates-col:{merchant}")),
+        // 3.95: the Rule column, input and switch together.
+        ("Rule", format!("queue:rule-col:{merchant}")),
         ("Category", format!("queue:picker-col:{merchant}")),
     ] {
         let heading = bounds(cx, handle, format!("queue:heading:{label}"));
@@ -682,6 +956,31 @@ fn the_queue_category_heading_sits_over_the_picker_column(cx: &mut TestAppContex
         heading.size.width,
         picker.size.width
     );
+    // 3.95: the Rule heading spans the rule column too, and the row's
+    // pattern input and regex switch sit inside that column, not spilling
+    // into the picker's.
+    let heading = window
+        .debug_bounds("queue:heading:Rule")
+        .expect("the queue paints a Rule heading");
+    let column = bounds(cx, handle, format!("queue:rule-col:{merchant}"));
+    assert!(
+        (heading.size.width - column.size.width).abs() < px(1.),
+        "the Rule heading is as wide as the rule column: \
+         heading w {}, column w {}",
+        heading.size.width,
+        column.size.width,
+    );
+    for (what, sel) in [
+        ("pattern input", format!("queue:rule-input:{merchant}")),
+        ("regex switch", format!("queue:regex-slot:{merchant}")),
+    ] {
+        let b = bounds(cx, handle, sel);
+        assert!(
+            b.origin.x >= column.origin.x - px(1.)
+                && b.origin.x + b.size.width <= column.origin.x + column.size.width + px(1.),
+            "the row's {what} sits inside the Rule column: {b:?} in {column:?}",
+        );
+    }
     assert!(
         heading.origin.y < picker.origin.y,
         "the heading is above the rows: heading y {}, picker y {}",
@@ -749,6 +1048,8 @@ fn the_queue_fits_the_minimum_window(cx: &mut TestAppContext) {
     let page_right = px(1200. - PAGE_PAD);
     for m in QUEUE_FIT_MERCHANTS {
         for (what, sel) in [
+            // 3.95: the row's rule controls ride along in the row too.
+            ("regex switch", format!("queue:regex-slot:{m}")),
             ("category picker", format!("queue:picker-col:{m}")),
             ("Categorize button", format!("queue:categorize-col:{m}")),
         ] {

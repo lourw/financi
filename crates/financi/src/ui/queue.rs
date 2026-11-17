@@ -12,9 +12,15 @@ use crate::ui::widgets::*;
 /// column — absorbs a narrow window instead of pushing the picker and the
 /// Categorize button past the app's minimum width.
 const QUEUE_TXNS_W: f32 = 96.;
-const QUEUE_TOTAL_W: f32 = 110.;
-const QUEUE_DATES_W: f32 = 190.;
-const QUEUE_PICKER_W: f32 = 220.;
+const QUEUE_TOTAL_W: f32 = 100.;
+const QUEUE_DATES_W: f32 = 150.;
+const QUEUE_PICKER_W: f32 = 200.;
+/// 3.95: the Rule column — the row's pattern input and its regex switch
+/// (icon-only there with a "Regex" tooltip, the task's allowance for a
+/// tight row). At the minimum window the dates and Rule columns share
+/// what the flex Merchant column leaves: Merchant ellipsizes first and
+/// the input still fits a short pattern.
+const QUEUE_RULE_W: f32 = 150.;
 /// The `small` Categorize button's column, wide enough for the button so
 /// the flex Merchant column is what gives at the minimum window (3.16's
 /// heading-over-column rule now holds by construction: the heading and the
@@ -65,6 +71,17 @@ pub(super) struct QueuePage {
     /// category is picked. Retired with its picker in `apply` and in
     /// [`Self::prune_visible`].
     pub(super) picker_subs: RefCell<HashMap<String, Subscription>>,
+    /// 3.95: the row's rule-pattern input, created lazily with its picker
+    /// and pruned with it. Blank (or whitespace) means the merchant name —
+    /// the placeholder shows it — and the regex switch is ignored then.
+    pub(super) inputs: RefCell<HashMap<String, Entity<InputState>>>,
+    /// 3.95: the regex switch per row, off by default (the Rules page's
+    /// add-rule row is the reference for the control).
+    pub(super) regexes: RefCell<HashMap<String, bool>>,
+    /// 3.95: one per live input — Enter in the pattern input acts like the
+    /// row's Categorize button. Retired with its input like `picker_subs`
+    /// with its picker.
+    input_subs: RefCell<HashMap<String, Subscription>>,
     /// 3.83: `apply` has no window, and `SelectState::set_items` needs one,
     /// so a category-list change is flagged here and the pickers catch up
     /// at the top of `render`.
@@ -132,6 +149,17 @@ impl PageEntity for QueuePage {
         self.picker_subs
             .borrow_mut()
             .retain(|merchant, _| self.pickers.borrow().contains_key(merchant.as_str()));
+        // 3.95: the row's rule pattern retires with its picker — the same
+        // rule a refresh that dropped the group applies to both maps.
+        self.inputs
+            .borrow_mut()
+            .retain(|merchant, _| current.contains(merchant.as_str()));
+        self.regexes
+            .borrow_mut()
+            .retain(|merchant, _| current.contains(merchant.as_str()));
+        self.input_subs
+            .borrow_mut()
+            .retain(|merchant, _| self.inputs.borrow().contains_key(merchant.as_str()));
         // 3.19: re-set the survivors' items only when the category list
         // changed, not on every refresh — and 3.83: `set_items` needs a
         // window, so flag it and let `render` push the new items.
@@ -172,6 +200,9 @@ impl QueuePage {
             pickers: RefCell::new(HashMap::new()),
             picker_items: None,
             picker_subs: RefCell::new(HashMap::new()),
+            inputs: RefCell::new(HashMap::new()),
+            regexes: RefCell::new(HashMap::new()),
+            input_subs: RefCell::new(HashMap::new()),
             pickers_need_items: false,
             error: None,
             scroll: VirtualListScrollHandle::new(),
@@ -189,6 +220,9 @@ impl QueuePage {
     pub(super) fn reset_after_restore(&mut self, cx: &mut Context<Self>) {
         self.pickers.borrow_mut().clear();
         self.picker_subs.borrow_mut().clear();
+        self.inputs.borrow_mut().clear();
+        self.regexes.borrow_mut().clear();
+        self.input_subs.borrow_mut().clear();
         self.picker_items = None;
         self.pickers_need_items = false;
         self.error = None;
@@ -252,6 +286,68 @@ impl QueuePage {
         self.picker_for_row(merchant, window, cx)
     }
 
+    /// 3.95: the test entry point to [`Self::input_for_row`], mirroring
+    /// `queue_picker`.
+    #[cfg(test)]
+    pub(super) fn queue_input(
+        &mut self,
+        merchant: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<InputState> {
+        self.input_for_row(merchant, window, cx)
+    }
+
+    /// 3.95: the row's rule-pattern input, built on first use with its
+    /// picker (the cells callback builds both). The placeholder is the
+    /// merchant — blank means "the merchant name as a substring rule" —
+    /// and Enter acts as the row's Categorize button when the row's picker
+    /// holds a pick.
+    fn input_for_row(
+        &self,
+        merchant: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<InputState> {
+        let existing = self.inputs.borrow().get(merchant).cloned();
+        if let Some(input) = existing {
+            return input;
+        }
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder(merchant.to_string()));
+        // Enter in the pattern input is the row's Categorize button — but
+        // only with a pick, exactly like the disabled button. The
+        // subscription lives exactly as long as the input.
+        let sub = cx.subscribe_in(
+            &input,
+            window,
+            |this, input, ev: &InputEvent, window, cx| {
+                if !matches!(ev, InputEvent::PressEnter { .. }) {
+                    return;
+                }
+                let picked = this
+                    .inputs
+                    .borrow()
+                    .iter()
+                    .find(|(_, held)| **held == *input)
+                    .and_then(|(merchant, _)| {
+                        this.pickers.borrow().get(merchant).map(|picker| {
+                            (merchant.clone(), picker.read(cx).selected_value().is_some())
+                        })
+                    });
+                if let Some((merchant, true)) = picked {
+                    this.categorize_merchant(merchant, window, cx);
+                }
+            },
+        );
+        self.inputs
+            .borrow_mut()
+            .insert(merchant.to_string(), input.clone());
+        self.input_subs
+            .borrow_mut()
+            .insert(merchant.to_string(), sub);
+        input
+    }
+
     /// 3.91: record the lines one `DataList` paint pass builds. H4:
     /// `DataList::on_pass` hands over the exact range — the range
     /// argument the old `v_virtual_list` closure got — so the window is
@@ -282,7 +378,7 @@ impl QueuePage {
     /// pass range, set before any row builds, so the survivors match the
     /// old once-per-frame prune. `pub(super)` for the same tests.
     pub(super) fn prune_visible(&self, cx: &App) {
-        if self.pickers.borrow().is_empty() {
+        if self.pickers.borrow().is_empty() && self.inputs.borrow().is_empty() {
             return;
         }
         let lo = self.painted_lo.get().saturating_sub(QUEUE_PICKER_MARGIN);
@@ -298,10 +394,22 @@ impl QueuePage {
         self.picker_subs
             .borrow_mut()
             .retain(|merchant, _| self.pickers.borrow().contains_key(merchant.as_str()));
+        // 3.95: the row's rule pattern retires with its picker, with one
+        // extra survival of its own — typed text a scroll must not eat.
+        self.inputs.borrow_mut().retain(|merchant, input| {
+            keep.contains(merchant.as_str()) || !input.read(cx).value().trim().is_empty()
+        });
+        self.regexes
+            .borrow_mut()
+            .retain(|merchant, _| self.inputs.borrow().contains_key(merchant.as_str()));
+        self.input_subs
+            .borrow_mut()
+            .retain(|merchant, _| self.inputs.borrow().contains_key(merchant.as_str()));
     }
 
-    /// Categorize a whole merchant group: creates the substring rule and
-    /// re-runs the rules (2.7's `categorize_group`).
+    /// Categorize a whole merchant group: creates the rule the row's
+    /// pattern input holds (blank: the merchant-name substring rule) and
+    /// re-runs the rules (3.95's `categorize_group`).
     pub(super) fn categorize_merchant(
         &mut self,
         merchant: String,
@@ -323,6 +431,22 @@ impl QueuePage {
             cx.notify();
             return;
         };
+        // 3.95: the row's rule pattern — trimmed, and `None` when blank
+        // (the placeholder's merchant name then, whatever the switch
+        // says). Read once here, like the pick.
+        let pattern = self
+            .inputs
+            .borrow()
+            .get(&merchant)
+            .map(|input| input.read(cx).value().trim().to_string())
+            .filter(|p| !p.is_empty());
+        let is_regex = pattern.is_some()
+            && self
+                .regexes
+                .borrow()
+                .get(&merchant)
+                .copied()
+                .unwrap_or(false);
         // 3.84: the paint — the group leaves the queue in the click's
         // frame, the way its rows leave the list on the write's reload.
         // A failed write puts it back at its index (unless a reload has
@@ -332,18 +456,30 @@ impl QueuePage {
         let undo = at.map(|index| (index, self.groups.remove(index)));
         let db = self.db.clone();
         let merchant_for_db = merchant.clone();
+        // 3.95: the toast names the rule only when the user wrote one —
+        // "Categorized BEANERY · rule: BEAN CAFFE".
+        let toast = match &pattern {
+            Some(p) if p != &merchant => format!("Categorized {merchant} · rule: {p}"),
+            _ => format!("Categorized {merchant}"),
+        };
         // 3.64: detached — a later action must not cancel this write's
         // continuation and swallow its refresh.
         cx.spawn_in(window, async move |this, cx| {
             let result = on_db(&db, move |c| {
-                categorize_group(c, &merchant_for_db, None, false, category_id)
+                categorize_group(
+                    c,
+                    &merchant_for_db,
+                    pattern.as_deref(),
+                    is_regex,
+                    category_id,
+                )
             })
             .await;
             let _ = this.update_in(cx, |this, _window, cx| {
                 match result {
                     Ok(_rule_id) => {
                         cx.emit(PageEvent::Toast {
-                            message: format!("Categorized {merchant}"),
+                            message: toast,
                             error: false,
                         });
                         this.error = None;
@@ -355,7 +491,15 @@ impl QueuePage {
                             let at = index.min(this.groups.len());
                             this.groups.insert(at, group);
                         }
-                        this.error = Some(e);
+                        // 3.95: the refusal ("That rule doesn't match
+                        // BEANERY") is about this click, not a page-wide
+                        // fault — the error toast, and the row keeps its
+                        // pattern text for the next try.
+                        this.error = None;
+                        cx.emit(PageEvent::Toast {
+                            message: e,
+                            error: true,
+                        });
                     }
                 }
                 cx.emit(PageEvent::Changed(Domains::RULES_TX));
@@ -385,6 +529,13 @@ impl QueuePage {
     #[cfg(test)]
     pub(super) fn picker_sub_count(&self) -> usize {
         self.picker_subs.borrow().len()
+    }
+
+    /// 3.95: the row's pattern input, for the tests that type a pattern
+    /// the way the real widget would (`set_value` on the state).
+    #[cfg(test)]
+    pub(super) fn row_input(&self, merchant: &str) -> Option<Entity<InputState>> {
+        self.inputs.borrow().get(merchant).cloned()
     }
 }
 
@@ -472,6 +623,10 @@ impl Render for QueuePage {
                 DataCol::new("Transactions", Col::Fixed(QUEUE_TXNS_W), ColAlign::Right),
                 DataCol::new("Total", Col::Fixed(QUEUE_TOTAL_W), ColAlign::Right),
                 DataCol::new("Dates", Col::Fixed(QUEUE_DATES_W), ColAlign::Left),
+                // 3.95: the row's rule pattern — input and regex switch —
+                // at a fixed width so Merchant stays the one column that
+                // gives at the minimum window.
+                DataCol::new("Rule", Col::Fixed(QUEUE_RULE_W), ColAlign::Left),
                 DataCol::new("Category", Col::Fixed(QUEUE_PICKER_W), ColAlign::Left),
                 DataCol::new("Categorize", Col::Fixed(QUEUE_CATEGORIZE_W), ColAlign::Left),
             ];
@@ -494,6 +649,9 @@ impl Render for QueuePage {
                             let g = &this.groups[*id];
                             let merchant = g.merchant.clone();
                             let picker = this.picker_for_row(&merchant, window, cx);
+                            // 3.95: the row's rule pattern, built lazily
+                            // with the picker (and pruned with it below).
+                            let input = this.input_for_row(&merchant, window, cx);
                             this.prune_visible(cx);
                             // 3.34: `list_hover`, dividers and the 40 px
                             // `text_sm` row come from the list; the cells
@@ -570,6 +728,61 @@ impl Render for QueuePage {
                                     move || format!("queue:dates-col:{m}")
                                 })
                                 .child(flow::date_range(&g.first_date, &g.last_date));
+                            // 3.95: the row's rule — a pattern input whose
+                            // placeholder is the merchant (blank means the
+                            // merchant-name substring rule) and the regex
+                            // switch: the Rules page add-rule row's
+                            // control, off by default, here icon-only in
+                            // its `control_slot` with a "Regex" tooltip
+                            // (the task's allowance for the tight row).
+                            let is_regex = this
+                                .regexes
+                                .borrow()
+                                .get(&merchant)
+                                .copied()
+                                .unwrap_or(false);
+                            let rule_cell = div()
+                                .w_full()
+                                .debug_selector({
+                                    let m = merchant.clone();
+                                    move || format!("queue:rule-col:{m}")
+                                })
+                                .child(
+                                    h_flex()
+                                        .gap_1()
+                                        .items_center()
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .min_w_0()
+                                                .debug_selector({
+                                                    let m = merchant.clone();
+                                                    move || format!("queue:rule-input:{m}")
+                                                })
+                                                .child(
+                                                    Input::new(&input).aria_label("Rule pattern"),
+                                                ),
+                                        )
+                                        .child(control_slot(
+                                            format!("queue:regex-slot:{merchant}"),
+                                            format!("queue:regex-switch:{merchant}"),
+                                            Switch::new(SharedString::from(format!(
+                                                "queue-regex-{merchant}"
+                                            )))
+                                            .accessibility_label("Regex")
+                                            .tooltip("Regex")
+                                            .checked(is_regex)
+                                            .on_click(cx.listener({
+                                                let m = merchant.clone();
+                                                move |this, checked: &bool, _, cx| {
+                                                    this.regexes
+                                                        .borrow_mut()
+                                                        .insert(m.clone(), *checked);
+                                                    cx.notify();
+                                                }
+                                            })),
+                                        )),
+                                );
                             let picker_cell = div()
                                 .w_full()
                                 .debug_selector({
@@ -619,6 +832,7 @@ impl Render for QueuePage {
                                 ListCell::from(txns_cell.into_any_element()),
                                 ListCell::from(total_cell.into_any_element()),
                                 ListCell::from(dates_cell.into_any_element()),
+                                ListCell::from(rule_cell.into_any_element()),
                                 ListCell::from(picker_cell.into_any_element()),
                                 ListCell::from(categorize_cell.into_any_element()),
                             ]

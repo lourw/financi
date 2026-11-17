@@ -157,7 +157,7 @@ Start these only after both queues are done (`docs/tasks.md` → *Picking the ne
 
 ## Lane C — small tasks (after both queues)
 
-- [ ] **3.95 Edit the rule while categorizing.** On To categorize, the
+- [x] **3.95 Edit the rule while categorizing.** On To categorize, the
   Categorize button always adds a substring rule equal to the merchant
   name (`QueuePage::categorize_merchant` → `queue::categorize_group` →
   `add_rule(merchant, false, …)`). The user wants to write the rule
