@@ -4,47 +4,6 @@ Start these only after both queues are done (`docs/tasks.md` → *Picking the ne
 
 ## Lane A — dashboard (after both queues)
 
-- [x] **3.45 Chart and summary on their own rows.** The middle row puts
-  the chart panel (`CHART_PANEL_SHARE`, 45 %) and the monthly summary side
-  by side at 340 px tall; both are cramped (user request, 2026-11-11;
-  changes D1's "chart beside the summary"). The user chose **a scrolling
-  dashboard** over tabs or shorter panels:
-  - **Review update (2026-11-11):** On `DashboardPage` (3.82), after 3.86 (measured layout): widths come from measured bounds, not window-width arithmetic.
-  - **Review update (2026-11-11):** Avoid nested vertical scrollers: the summary panel takes its content height (it keeps only its horizontal month scroll) so the page scroll owns vertical movement, and the table's height is the viewport minus the pinned filter row, not a fixed 480 px. These replace the 340 px summary and ~480 px table bullets below.
-  - **Layout, top to bottom:** the filter row (3.35) stays **pinned**
-    above the scroll area. Below it, one vertical scroll container
-    (`id` + `overflow_y_scroll` + a `ScrollHandle` kept on the shell)
-    holds the **chart panel, full width, 340 px**; then the **summary
-    panel, full width, 340 px**; then the **transactions table, full
-    width, fixed ~480 px**, scrolling inside itself. `gap_3` between
-    them, page padding as now. Nothing in the scroll area is `flex_1`
-    in height; a scroll container gives children no height to fill (see
-    `docs/tasks/gpui.md` → *GPUI pitfalls*), so every panel has an explicit height.
-  - **Chart:** `chart_plot_width` uses the full page width (drop
-    `CHART_PANEL_SHARE`; after 3.36 there's no legend column either).
-    The band-label plan (3.15) gets the wider budget for free.
-  - **Summary:** the wider panel shows more month columns before its
-    horizontal scroll kicks in; `NAME_W` / `MONTH_W` / `TOTAL_W` are
-    unchanged. A vertical wheel over its month viewport must scroll the
-    page (today it forwards vertical wheel to the rows; check it reaches
-    the page scroll when the summary has no vertical overflow).
-  - **Table:** wheel over the table scrolls the table. The no-matches
-    state fills the same 480 px box.
-  - **Scroll position** survives refreshes and filter changes (the handle
-    lives on the shell); it resets to the top only on entering the
-    dashboard from another page. The empty-window state (no data) is
-    unchanged and doesn't scroll.
-  - Do it right after 3.36 (both change the chart's width); 3.36's test
-    "plot is ~150 px wider" gets updated to the full-width numbers here.
-  - Tests: at 1200 × 720 the chart and summary panels both span the page
-    width and the summary's top is below the chart's bottom; the table
-    is ~480 px tall; scrolling the page moves the panels while the
-    filter row stays put; the scroll offset survives a filter change;
-    the summary shows more month columns than before with a 12-month
-    range. The 3.25 title-alignment test (chart and summary titles on
-    one line) is replaced, not deleted. Update the *Dashboard* row of
-    `ui-conventions.md` and D1.
-
 - [ ] **3.46 Global dashboard filters, and Clear all.** Every dashboard
   filter should apply to all three views at once: a category picked on
   the chart should show in the summary and the table too. Add a button
