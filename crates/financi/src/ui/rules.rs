@@ -163,6 +163,23 @@ pub(super) struct RulesPage {
     pub(super) rules_reveal: Option<i64>,
     /// 3.28: the Rules page list's scroll handle (headers and rows together).
     pub(super) rules_scroll: VirtualListScrollHandle,
+    /// 3.52: the rule whose matches show in the panel under the list. A
+    /// row click sets it (the row takes the `list_active` background);
+    /// clicking the same row again, Escape, selecting another category,
+    /// leaving the page or deleting the rule clears it; editing keeps it.
+    pub(super) focused_rule: Option<i64>,
+    /// 3.52: the focused rule's matches, loaded by the keyed read job
+    /// (empty while the load runs or with no focus).
+    pub(super) rule_matches: Rc<Vec<RuleMatchRow>>,
+    /// 3.52: the in-flight `rule_matches:<id>` job; a result for a rule
+    /// the focus has moved on from is dropped when it arrives.
+    rule_matches_task: Option<Task<()>>,
+    /// 3.52: a load is in flight (the panel shows `…` instead of the
+    /// empty message while it is).
+    pub(super) rule_matches_loading: bool,
+    /// 3.52: the matches panel's own scroll handle (the list and the
+    /// matches scroll independently).
+    matches_scroll: VirtualListScrollHandle,
     /// 3.58: the search text the list filters by — applied 150 ms after
     /// typing stops (or on Enter), so a burst of keystrokes rebuilds the
     /// list once. The input's own value may run ahead of it.
@@ -313,6 +330,17 @@ impl PageEntity for RulesPage {
         {
             self.armed_delete_rule = None;
         }
+        // 3.52: a refresh that dropped the focused rule (a delete, say)
+        // closes its matches panel; while a rule stays focused, every
+        // refresh reloads the matches — a Save, a categorisation, any
+        // write that moved the data.
+        if let Some(id) = self.focused_rule {
+            if self.rules.iter().any(|r| r.id == id) {
+                self.load_rule_matches(cx);
+            } else {
+                self.clear_rule_focus();
+            }
+        }
     }
 
     fn set_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
@@ -331,6 +359,9 @@ impl PageEntity for RulesPage {
             self.selected_rules.clear();
             self.rules_move_error = None;
             self.rules_reveal = None;
+            // 3.52: the focused rule and its matches panel are transient
+            // too — leaving the page closes them.
+            self.clear_rule_focus();
         }
     }
 }
@@ -460,6 +491,11 @@ impl RulesPage {
             new_rule_open: false,
             rules_reveal: None,
             rules_scroll: VirtualListScrollHandle::new(),
+            focused_rule: None,
+            rule_matches: Rc::new(Vec::new()),
+            rule_matches_task: None,
+            rule_matches_loading: false,
+            matches_scroll: VirtualListScrollHandle::new(),
             rules_query: String::new(),
             rules_search_task: None,
             rules_items_cache: None,
@@ -1413,7 +1449,300 @@ impl RulesPage {
         self.collapsed_rule_groups.clear();
         self.rules_move_error = None;
         self.rules_reveal = None;
+        self.clear_rule_focus();
         cx.notify();
+    }
+
+    /// Clears the focused rule and its matches panel (3.52).
+    pub(super) fn clear_rule_focus(&mut self) {
+        self.focused_rule = None;
+        self.rule_matches = Rc::new(Vec::new());
+        self.rule_matches_task = None;
+        self.rule_matches_loading = false;
+    }
+
+    /// A rule-row click focuses the rule and opens its matches panel
+    /// under the list; clicking the focused row again closes it (3.52).
+    /// Clicks are ignored while an editor is open (the row click would
+    /// fight the in-place form); the checkbox and the Edit / Delete
+    /// buttons stop their clicks, so they never reach this.
+    pub(super) fn toggle_rule_focus(&mut self, rule_id: i64, cx: &mut Context<Self>) {
+        if self.editing_rule.is_some() {
+            return;
+        }
+        if self.focused_rule == Some(rule_id) {
+            self.clear_rule_focus();
+        } else {
+            self.focused_rule = Some(rule_id);
+            self.matches_scroll = VirtualListScrollHandle::new();
+            self.load_rule_matches(cx);
+        }
+        cx.notify();
+    }
+
+    /// Loads the focused rule's matches through the worker, keyed per
+    /// rule id so switching rules supersedes the earlier job (the reader
+    /// even interrupts the pending query). A result that arrives after
+    /// the focus moved on is dropped; `Superseded` needs no message.
+    fn load_rule_matches(&mut self, cx: &mut Context<Self>) {
+        let Some(rule_id) = self.focused_rule else {
+            return;
+        };
+        self.rule_matches_loading = true;
+        let db = self.db.clone();
+        self.rule_matches_task = Some(cx.spawn(async move |this, cx| {
+            let rows = db
+                .call_keyed(&format!("rule_matches:{rule_id}"), move |conn| {
+                    rule_matches(conn, rule_id)
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if this.focused_rule != Some(rule_id) {
+                    return;
+                }
+                match rows {
+                    Ok(rows) => {
+                        this.rule_matches = Rc::new(rows);
+                        this.rule_matches_loading = false;
+                        cx.notify();
+                    }
+                    Err(DbError::Superseded) => {}
+                    Err(_) => {
+                        this.rule_matches_loading = false;
+                    }
+                }
+            });
+        }));
+    }
+
+    /// The matches panel's columns: Date, the one flex Description,
+    /// Account and a right-aligned Amount (3.52, ui-conventions *Rules*).
+    fn matches_columns() -> Vec<DataCol> {
+        vec![
+            DataCol::new("Date", Col::Fixed(110.), ColAlign::Left),
+            DataCol::new("Description", Col::Flex, ColAlign::Left),
+            DataCol::new("Account", Col::Fixed(140.), ColAlign::Left),
+            DataCol::new("Amount", Col::Fixed(110.), ColAlign::Right),
+        ]
+    }
+
+    /// The panel under the list: a "Transactions matching `PATTERN`"
+    /// header, the muted `N · M decided by this rule` summary, and the
+    /// matches as a heading-less [`DataList`] — deciding rows plain, the
+    /// rest muted with a trailing "won by …" / "locked" tag (3.52).
+    fn matches_panel(&self, cx: &Context<Self>) -> AnyElement {
+        let (fg, muted) = {
+            let theme = cx.theme();
+            (theme.foreground, theme.muted_foreground)
+        };
+        let mono = cx.theme().mono_font_family.clone();
+        let rows = self.rule_matches.clone();
+        let pattern = self.focused_rule.and_then(|id| {
+            self.rules
+                .iter()
+                .find(|r| r.id == id)
+                .map(|r| r.pattern.clone())
+        });
+        let decided = rows
+            .iter()
+            .filter(|r| r.status == RuleMatchStatus::Decides)
+            .count();
+        let n = rows.len();
+        let body = if rows.is_empty() {
+            div()
+                .id("rules:matches-empty")
+                .debug_selector(|| "rules:matches-empty".into())
+                .px_3()
+                .py_2()
+                .text_sm()
+                .text_color(muted)
+                .child(if self.rule_matches_loading {
+                    "…"
+                } else {
+                    "This rule matches no transactions"
+                })
+                .into_any_element()
+        } else {
+            let pattern_by_id: Rc<HashMap<i64, String>> = Rc::new(
+                self.rules
+                    .iter()
+                    .map(|r| (r.id, r.pattern.clone()))
+                    .collect(),
+            );
+            let items: Vec<DataItem> = rows
+                .iter()
+                .map(|row| DataItem::Row {
+                    id: row.transaction_id as usize,
+                    selected: false,
+                    selector: format!("rules:match-{}", row.transaction_id),
+                })
+                .collect();
+            DataList::new(cx.entity(), Self::matches_columns(), items)
+                .hide_heading()
+                .scroll(self.matches_scroll.clone())
+                .selector("rules:matches-list")
+                .cells(move |_this, item, _window, _cx| {
+                    let DataItem::Row { id, .. } = item else {
+                        return Vec::new();
+                    };
+                    let Some(row) = rows.iter().find(|r| r.transaction_id == *id as i64) else {
+                        return Vec::new();
+                    };
+                    let strong = row.status == RuleMatchStatus::Decides;
+                    let c = if strong { fg } else { muted };
+                    let desc = div()
+                        .id(SharedString::from(format!(
+                            "rules-match-desc-{}",
+                            row.transaction_id
+                        )))
+                        .w_full()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .text_color(c)
+                        .tooltip({
+                            let text = row.description.clone();
+                            move |window, cx| {
+                                let text = text.clone();
+                                Tooltip::element(move |_, _| {
+                                    let text = text.clone();
+                                    let tip = format!("rules:match-tooltip:{text}");
+                                    div().debug_selector(move || tip.clone()).child(text)
+                                })
+                                .build(window, cx)
+                            }
+                        })
+                        .child(row.description.clone())
+                        .into_any_element();
+                    let tag = match &row.status {
+                        RuleMatchStatus::WonBy(winner) => Some(format!(
+                            "won by {}",
+                            pattern_by_id
+                                .get(winner)
+                                .cloned()
+                                .unwrap_or_else(|| format!("#{winner}"))
+                        )),
+                        RuleMatchStatus::Locked => Some("locked".into()),
+                        RuleMatchStatus::Decides => None,
+                    };
+                    let amount = h_flex()
+                        .justify_end()
+                        .gap_1()
+                        .text_color(c)
+                        .child(flow::money(row.amount_cents))
+                        .when_some(tag, |d, t| {
+                            d.child(
+                                div()
+                                    .id(SharedString::from(format!(
+                                        "rules-match-tag-{}",
+                                        row.transaction_id
+                                    )))
+                                    .flex_shrink_0()
+                                    .text_xs()
+                                    .text_color(muted)
+                                    .debug_selector({
+                                        let sel = format!("rules:match-tag:{t}");
+                                        move || sel.clone()
+                                    })
+                                    .child(t),
+                            )
+                        });
+                    vec![
+                        ListCell::from(
+                            div()
+                                .text_color(c)
+                                .child(row.posted_date.clone())
+                                .into_any_element(),
+                        ),
+                        ListCell::from(desc),
+                        ListCell::from(
+                            div()
+                                .w_full()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .text_sm()
+                                .text_color(muted)
+                                .child(row.account.clone())
+                                .into_any_element(),
+                        ),
+                        ListCell::from(amount.into_any_element()),
+                    ]
+                })
+                .into_any_element()
+        };
+        v_flex()
+            .id("rules:matches-panel")
+            .debug_selector(|| "rules:matches-panel".into())
+            .flex_1()
+            .min_h_0()
+            .w_full()
+            .child(
+                v_flex()
+                    .px_3()
+                    .pt_2()
+                    .pb_1()
+                    .gap_0p5()
+                    .flex_shrink_0()
+                    .child(
+                        h_flex()
+                            .gap_1()
+                            .min_w_0()
+                            .child(
+                                div()
+                                    .flex_shrink_0()
+                                    .text_sm()
+                                    .text_color(fg)
+                                    .child("Transactions matching"),
+                            )
+                            .when_some(pattern, |el, pattern| {
+                                el.child(
+                                    div()
+                                        .id(SharedString::from(format!(
+                                            "rules-matches-pattern-{pattern}"
+                                        )))
+                                        .min_w_0()
+                                        .overflow_hidden()
+                                        .text_ellipsis()
+                                        .font_family(mono.clone())
+                                        .text_color(fg)
+                                        .debug_selector({
+                                            let sel = format!("rules:matches-pattern:{pattern}");
+                                            move || sel.clone()
+                                        })
+                                        .tooltip({
+                                            let full = pattern.clone();
+                                            move |window, cx| {
+                                                let text = full.clone();
+                                                Tooltip::element(move |_, _| {
+                                                    let text = text.clone();
+                                                    let sel =
+                                                        format!("rules:matches-pattern-tip:{text}");
+                                                    div()
+                                                        .debug_selector(move || sel.clone())
+                                                        .child(text)
+                                                })
+                                                .build(window, cx)
+                                            }
+                                        })
+                                        .child(pattern),
+                                )
+                            }),
+                    )
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(muted)
+                            .debug_selector(move || format!("rules:matches-summary:{n}:{decided}"))
+                            .child(format!(
+                                "{} · {} decided by this rule",
+                                flow::count(n as i64),
+                                flow::count(decided as i64)
+                            )),
+                    ),
+            )
+            .child(body)
+            .into_any_element()
     }
 }
 
@@ -1496,15 +1825,24 @@ impl Render for RulesPage {
                     count: Some(format!("{count} rules").into()),
                     selector: format!("rules:group:{id}"),
                 },
-                RulesItem::Rule { id } => DataItem::Row {
-                    id: *id as usize,
-                    selected: self.rules_reveal == Some(*id),
-                    selector: if self.rules_reveal == Some(*id) {
-                        format!("rules:row-{id}:active")
-                    } else {
-                        format!("rules:row-{id}")
-                    },
-                },
+                RulesItem::Rule { id } => {
+                    // 3.52: the focused rule takes the same `list_active`
+                    // background as the *Show rule* reveal; its selector
+                    // says which is which.
+                    let reveal = self.rules_reveal == Some(*id);
+                    let focused = self.focused_rule == Some(*id);
+                    DataItem::Row {
+                        id: *id as usize,
+                        selected: reveal || focused,
+                        selector: if reveal {
+                            format!("rules:row-{id}:active")
+                        } else if focused {
+                            format!("rules:row-{id}:focused")
+                        } else {
+                            format!("rules:row-{id}")
+                        },
+                    }
+                }
             })
             .collect();
         // 3.58: the list's columns (ui-conventions *Rules*): checkbox,
@@ -1565,6 +1903,10 @@ impl Render for RulesPage {
                     let pattern = rule.pattern.clone();
                     vec![
                         div()
+                            .id(SharedString::from(format!("rules-selwrap-{id}")))
+                            // 3.52: the checkbox takes its click — it must
+                            // not also toggle the row's matches focus.
+                            .on_click(|_, _, cx| cx.stop_propagation())
                             .child(
                                 checkbox(SharedString::from(format!("rule-sel-{id}")))
                                     .checked(selected)
@@ -1689,41 +2031,56 @@ impl Render for RulesPage {
                 }
                 let armed = this.armed_delete_rule == Some(id);
                 let pending = this.rule_action_pending(PendingRuleAction::Delete(id));
+                // 3.52: each button swallows its click so Edit / Delete
+                // never reach the row's focus handler.
                 vec![
-                    row_action_button(
-                        SharedString::from(format!("rule-edit-{id}")),
-                        IconName::Pencil,
-                        "Edit rule",
-                    )
-                    .debug_selector(move || format!("rules:row-edit:{id}:{}", "icons/pencil.svg"))
-                    .on_click(
-                        cx.listener(move |this, _, window, cx| {
-                            this.start_edit_rule(id, window, cx)
-                        }),
-                    )
-                    .into_any_element(),
-                    row_action_button(
-                        SharedString::from(format!("rule-delete-{id}")),
-                        IconName::Trash,
-                        if armed {
-                            "Click again to delete"
-                        } else {
-                            "Delete rule"
-                        },
-                    )
-                    .debug_selector(move || format!("rules:row-delete:{id}:{}", "icons/trash.svg"))
-                    // 3.40: loading + disabled while the delete runs.
-                    .loading(pending)
-                    .disabled(pending)
-                    .on_click(
-                        cx.listener(move |this, _, window, cx| {
-                            this.arm_delete_rule(id, window, cx)
-                        }),
-                    )
-                    .into_any_element(),
+                    div()
+                        .id(SharedString::from(format!("rules-editwrap-{id}")))
+                        .on_click(|_, _, cx| cx.stop_propagation())
+                        .child(
+                            row_action_button(
+                                SharedString::from(format!("rule-edit-{id}")),
+                                IconName::Pencil,
+                                "Edit rule",
+                            )
+                            .debug_selector(move || {
+                                format!("rules:row-edit:{id}:{}", "icons/pencil.svg")
+                            })
+                            .on_click(cx.listener(
+                                move |this, _, window, cx| this.start_edit_rule(id, window, cx),
+                            )),
+                        )
+                        .into_any_element(),
+                    div()
+                        .id(SharedString::from(format!("rules-delwrap-{id}")))
+                        .on_click(|_, _, cx| cx.stop_propagation())
+                        .child(
+                            row_action_button(
+                                SharedString::from(format!("rule-delete-{id}")),
+                                IconName::Trash,
+                                if armed {
+                                    "Click again to delete"
+                                } else {
+                                    "Delete rule"
+                                },
+                            )
+                            .debug_selector(move || {
+                                format!("rules:row-delete:{id}:{}", "icons/trash.svg")
+                            })
+                            // 3.40: loading + disabled while the delete runs.
+                            .loading(pending)
+                            .disabled(pending)
+                            .on_click(cx.listener(
+                                move |this, _, window, cx| this.arm_delete_rule(id, window, cx),
+                            )),
+                        )
+                        .into_any_element(),
                 ]
             })
             .toggle(move |this, id, _window, cx| this.toggle_rule_group(id, cx))
+            // 3.52: a row click focuses the rule and opens its matches
+            // panel under the list; the same row again closes it.
+            .row_click(move |this, ix, _window, cx| this.toggle_rule_focus(ix as i64, cx))
             .sort(move |this, title, next, _window, cx| {
                 // 3.58: a heading click picks the column and direction.
                 // A repeat click flips (the `next` the list computed); a
@@ -1795,6 +2152,10 @@ impl Render for RulesPage {
                         cx.notify();
                     })),
             );
+        // 3.52: with a rule focused the panel splits — the list on top
+        // (~55%), the matches panel below it (~45%), divided by a border.
+        // Both areas keep a minimum height and scroll independently.
+        let matches_el = self.focused_rule.is_some().then(|| self.matches_panel(cx));
         let panel = panel(cx, false)
             .debug_selector(|| "rules:panel".into())
             .when(moving, |page| page.child(move_bar))
@@ -1824,7 +2185,30 @@ impl Render for RulesPage {
                         }),
                 )
             })
-            .when(!items.is_empty(), |page| page.child(list));
+            .when(!items.is_empty(), move |page| match matches_el {
+                None => page.child(list),
+                Some(el) => page
+                    .child(
+                        v_flex()
+                            .flex_grow(55.)
+                            .flex_basis(px(0.))
+                            .min_h(px(120.))
+                            .overflow_hidden()
+                            .debug_selector(|| "rules:list-area".into())
+                            .child(list),
+                    )
+                    .child(
+                        v_flex()
+                            .flex_grow(45.)
+                            .flex_basis(px(0.))
+                            .min_h(px(160.))
+                            .border_t_1()
+                            .border_color(border)
+                            .overflow_hidden()
+                            .debug_selector(|| "rules:matches-area".into())
+                            .child(el),
+                    ),
+            });
         let add_preview = match self
             .rule_match_count
             .filter(|_| self.editing_rule.is_none())
@@ -1926,6 +2310,12 @@ impl Render for RulesPage {
                     return;
                 }
                 if this.armed_delete_rule.take().is_some() {
+                    cx.notify();
+                    return;
+                }
+                // 3.52: then the focused rule's matches panel.
+                if this.focused_rule.is_some() {
+                    this.clear_rule_focus();
                     cx.notify();
                     return;
                 }

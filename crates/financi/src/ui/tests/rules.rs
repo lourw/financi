@@ -2196,3 +2196,286 @@ fn show_rule_from_a_row_lands_on_the_deciding_rule(cx: &mut TestAppContext) {
 }
 
 // -- page switching (3.11) ---------------------------------------------------
+
+// -- a rule's transactions under the rule list (3.52) ------------------------
+
+/// 3.52: clicking a rule row focuses it — the row takes the active
+/// background and the panel under the list shows the rule's matches: the
+/// "Transactions matching" header, the `4 · 2 decided by this rule`
+/// summary, and the non-deciding rows tagged "won by …" / "locked".
+#[gpui::test]
+fn clicking_a_rule_row_opens_its_matches_panel(cx: &mut TestAppContext) {
+    let (handle, shell, _coffee, _snacks, _games, rules) = open_rules_page(cx);
+    let r1 = rules[0];
+    draw_frame(cx, handle);
+    assert!(
+        !paints(cx, handle, "rules:matches-panel"),
+        "no focus, no panel"
+    );
+
+    click(cx, handle, format!("rules:row-{r1}"));
+    wait_until(cx, "r1's matches loaded", |cx| {
+        let p = shell.read(cx).rules_page.read(cx);
+        !p.rule_matches_loading && !p.rule_matches.is_empty()
+    });
+    draw_frame(cx, handle);
+
+    assert_eq!(
+        cx.update(|cx| shell.read(cx).rules_page.read(cx).focused_rule),
+        Some(r1)
+    );
+    assert!(
+        paints(cx, handle, format!("rules:row-{r1}:focused")),
+        "the focused row is marked"
+    );
+    assert!(paints(cx, handle, "rules:matches-panel"));
+    assert!(paints(cx, handle, "rules:matches-pattern:COFFEE"));
+    assert!(
+        paints(cx, handle, "rules:matches-summary:4:2"),
+        "4 matches, 2 decided by r1"
+    );
+    assert!(paints(cx, handle, "rules:match-tag:won by COFFEE SHOP"));
+    assert!(paints(cx, handle, "rules:match-tag:locked"));
+    assert!(
+        centre_y(cx, handle, "rules:list") < centre_y(cx, handle, "rules:matches-panel"),
+        "the matches panel sits below the rule list"
+    );
+}
+
+/// 3.52: a rule nothing matches keeps the panel open with the empty
+/// message — focus is about the rule, not about there being rows.
+#[gpui::test]
+fn a_rule_with_no_matches_shows_the_empty_state(cx: &mut TestAppContext) {
+    let (handle, shell, _coffee, _snacks, _games, rules) = open_rules_page(cx);
+    let r3 = rules[2];
+    click(cx, handle, format!("rules:row-{r3}"));
+    wait_until(cx, "r3's load finished", |cx| {
+        !shell.read(cx).rules_page.read(cx).rule_matches_loading
+    });
+    draw_frame(cx, handle);
+    assert!(paints(cx, handle, "rules:matches-panel"));
+    assert!(paints(cx, handle, "rules:matches-summary:0:0"));
+    assert!(paints(cx, handle, "rules:matches-empty"));
+}
+
+/// 3.52: a result that arrives after the focus moved on is dropped — the
+/// panel never paints the previous rule's rows.
+#[gpui::test]
+fn a_late_matches_result_is_dropped(cx: &mut TestAppContext) {
+    let (handle, shell, _coffee, _snacks, _games, rules) = open_rules_page(cx);
+    let (r1, r3) = (rules[0], rules[2]);
+    // Focus r1 and move the focus to r3 before r1's job can resolve: both
+    // keyed jobs are queued in one update, r1's lands after the move.
+    with_window(cx, handle, |_window, cx| {
+        shell.update(cx, |s, cx| {
+            s.rules_page.update(cx, |p, cx| {
+                p.toggle_rule_focus(r1, cx);
+                p.toggle_rule_focus(r3, cx);
+            });
+        });
+    });
+    wait_until(cx, "r3's load finished", |cx| {
+        !shell.read(cx).rules_page.read(cx).rule_matches_loading
+    });
+    cx.run_until_parked();
+    draw_frame(cx, handle);
+    assert_eq!(
+        cx.update(|cx| shell.read(cx).rules_page.read(cx).rule_matches.len()),
+        0,
+        "r1's rows must not land under r3"
+    );
+    assert!(paints(cx, handle, "rules:matches-empty"));
+    assert!(
+        !paints(cx, handle, "rules:match-tag:won by COFFEE SHOP"),
+        "r1's rows never painted"
+    );
+}
+
+/// 3.52: Escape unwinds the editor first and the matches panel second;
+/// clicking the focused row again closes the panel like Escape's second
+/// press.
+#[gpui::test]
+fn escape_and_a_second_click_clear_the_focus(cx: &mut TestAppContext) {
+    let (handle, shell, _coffee, _snacks, _games, rules) = open_rules_page(cx);
+    let r1 = rules[0];
+    click(cx, handle, format!("rules:row-{r1}"));
+    wait_until(cx, "r1's matches loaded", |cx| {
+        !shell.read(cx).rules_page.read(cx).rule_matches_loading
+    });
+    draw_frame(cx, handle);
+    assert!(paints(cx, handle, "rules:matches-panel"));
+
+    // Editing the rule keeps the focus: the panel stays while the editor
+    // is open.
+    let mut window = VisualTestContext::from_window(handle, cx);
+    let row = bounds(cx, handle, format!("rules:row-{r1}:focused"));
+    window.simulate_mouse_move(row.center(), None, Modifiers::default());
+    cx.run_until_parked();
+    draw_frame(cx, handle);
+    click(cx, handle, format!("rules:row-edit:{r1}:icons/pencil.svg"));
+    draw_frame(cx, handle);
+    let st = cx.update(|cx| {
+        let p = shell.read(cx).rules_page.read(cx);
+        (p.focused_rule, p.editing_rule)
+    });
+    assert_eq!(st, (Some(r1), Some(r1)), "the editor keeps the focus");
+    assert!(paints(cx, handle, "rules:matches-panel"));
+
+    // Escape #1 closes the editor and keeps the panel; Escape #2 closes
+    // the panel.
+    cx.simulate_keystrokes(handle, "escape");
+    cx.run_until_parked();
+    draw_frame(cx, handle);
+    assert_eq!(
+        cx.update(|cx| shell.read(cx).rules_page.read(cx).editing_rule),
+        None
+    );
+    assert!(
+        paints(cx, handle, "rules:matches-panel"),
+        "Escape 1 kept the focus"
+    );
+    // The editor held the key focus; put it back inside the page (the
+    // search box) so Escape #2 reaches the page's `Rules` context.
+    with_window(cx, handle, |window, cx| {
+        let input = shell
+            .read(cx)
+            .rules_page
+            .read(cx)
+            .rules_search
+            .read(cx)
+            .focus_handle(cx);
+        window.focus(&input, cx);
+    });
+    draw_frame(cx, handle);
+    cx.simulate_keystrokes(handle, "escape");
+    cx.run_until_parked();
+    draw_frame(cx, handle);
+    assert_eq!(
+        cx.update(|cx| shell.read(cx).rules_page.read(cx).focused_rule),
+        None
+    );
+    assert!(
+        !paints(cx, handle, "rules:matches-panel"),
+        "Escape 2 closed it"
+    );
+
+    // Re-click focuses again; clicking the focused row closes it.
+    click(cx, handle, format!("rules:row-{r1}"));
+    wait_until(cx, "r1 loaded again", |cx| {
+        !shell.read(cx).rules_page.read(cx).rule_matches_loading
+    });
+    draw_frame(cx, handle);
+    assert!(paints(cx, handle, "rules:matches-panel"));
+    click(cx, handle, format!("rules:row-{r1}:focused"));
+    draw_frame(cx, handle);
+    assert_eq!(
+        cx.update(|cx| shell.read(cx).rules_page.read(cx).focused_rule),
+        None,
+        "the second click closed the panel"
+    );
+    assert!(!paints(cx, handle, "rules:matches-panel"));
+}
+
+/// 3.52: the row's checkbox and its Edit / Delete buttons take their
+/// clicks — they never move or close the focus.
+#[gpui::test]
+fn checkboxes_and_row_buttons_do_not_move_the_focus(cx: &mut TestAppContext) {
+    let (handle, shell, _coffee, _snacks, _games, rules) = open_rules_page(cx);
+    let (r1, r2) = (rules[0], rules[1]);
+    click(cx, handle, format!("rules:row-{r1}"));
+    wait_until(cx, "r1's matches loaded", |cx| {
+        !shell.read(cx).rules_page.read(cx).rule_matches_loading
+    });
+    draw_frame(cx, handle);
+
+    // Tick r2's checkbox: it selects, but the focus stays on r1.
+    click(cx, handle, format!("checkbox:rule-sel-{r2}"));
+    draw_frame(cx, handle);
+    assert_eq!(
+        cx.update(|cx| shell.read(cx).rules_page.read(cx).focused_rule),
+        Some(r1),
+        "the checkbox must not move the focus"
+    );
+    assert!(paints(cx, handle, "rules:matches-panel"));
+    assert!(paints(cx, handle, format!("rules:row-{r1}:focused")));
+
+    // r2's Edit button (revealed by hover) opens r2's editor — again
+    // without moving the focus.
+    let mut window = VisualTestContext::from_window(handle, cx);
+    let row = bounds(cx, handle, format!("rules:row-{r2}"));
+    window.simulate_mouse_move(row.center(), None, Modifiers::default());
+    cx.run_until_parked();
+    draw_frame(cx, handle);
+    click(cx, handle, format!("rules:row-edit:{r2}:icons/pencil.svg"));
+    draw_frame(cx, handle);
+    let st = cx.update(|cx| {
+        let p = shell.read(cx).rules_page.read(cx);
+        (p.focused_rule, p.editing_rule)
+    });
+    assert_eq!(st, (Some(r1), Some(r2)));
+    assert!(paints(cx, handle, "rules:matches-panel"));
+}
+
+/// 3.52: at 1200 × 720 the split keeps both areas usable — the list at
+/// least 120 px, the matches panel at least 160 px, the list the larger
+/// share.
+#[gpui::test]
+fn both_areas_keep_their_minimum_heights(cx: &mut TestAppContext) {
+    let (handle, shell, _coffee, _snacks, _games, rules) = open_rules_page(cx);
+    let r1 = rules[0];
+    click(cx, handle, format!("rules:row-{r1}"));
+    wait_until(cx, "r1's matches loaded", |cx| {
+        !shell.read(cx).rules_page.read(cx).rule_matches_loading
+    });
+    resize_and_draw(cx, handle, 1200., 720.);
+    let list = bounds(cx, handle, "rules:list-area");
+    let panel = bounds(cx, handle, "rules:matches-area");
+    let (lh, ph) = (f32::from(list.size.height), f32::from(panel.size.height));
+    assert!(lh >= 120., "the list area is only {lh} px tall");
+    assert!(ph >= 160., "the matches area is only {ph} px tall");
+    assert!(lh > ph, "the list keeps the larger share ({lh} vs {ph})");
+}
+
+/// 3.52: selecting another category (Categories page) or leaving the page
+/// clears the focus; coming back shows no panel.
+#[gpui::test]
+fn leaving_the_page_or_picking_a_category_clears_the_focus(cx: &mut TestAppContext) {
+    let (handle, shell, coffee, _snacks, _games, rules) = open_rules_page(cx);
+    let r1 = rules[0];
+    click(cx, handle, format!("rules:row-{r1}"));
+    wait_until(cx, "r1's matches loaded", |cx| {
+        !shell.read(cx).rules_page.read(cx).rule_matches_loading
+    });
+    assert_eq!(
+        cx.update(|cx| shell.read(cx).rules_page.read(cx).focused_rule),
+        Some(r1)
+    );
+
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| s.select_category(coffee, window, cx))
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        cx.update(|cx| shell.read(cx).rules_page.read(cx).focused_rule),
+        None,
+        "a category selection closes the matches panel"
+    );
+
+    // Re-focus, then leave the page: the focus is transient like the rest.
+    click(cx, handle, format!("rules:row-{r1}"));
+    wait_until(cx, "r1 loaded again", |cx| {
+        !shell.read(cx).rules_page.read(cx).rule_matches_loading
+    });
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
+    cx.run_until_parked();
+    assert_eq!(
+        cx.update(|cx| shell.read(cx).rules_page.read(cx).focused_rule),
+        None
+    );
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Rules, cx)));
+    draw_frame(cx, handle);
+    assert!(
+        !paints(cx, handle, "rules:matches-panel"),
+        "no panel on return"
+    );
+}
