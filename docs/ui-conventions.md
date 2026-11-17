@@ -360,9 +360,17 @@ changes apply at once (3.56).
 bordered `Panel` filling the rest of the page, holding the Uncategorized
 queue as a `DataList` (32 px heading row, 40 px rows with dividers and
 `list_hover`): merchant (`Flex`, normal weight), transactions and total
-(right), dates (`text_sm` muted), a category picker and a `small` outline
+(right), dates (`text_sm` muted), a Rule cell — a pattern `Input`
+(`flex_1 min_w_0`, placeholder the merchant; blank means "use the
+merchant") and an icon-only regex `Switch` in a `control_slot` (tooltip
+"Regex"), off by default (3.95) — a category picker and a `small` outline
 Categorize button, disabled until that row's picker has a category.
-Choosing a category adds a rule. Pickers become searchable (3.59).
+Choosing a category adds a rule: the pattern is what the row's input
+holds, regex when its switch is on; Enter in the input is the row's
+Categorize, and a pattern matching none of the group's rows is refused
+with an error toast, the typed text kept for another try. The success
+toast names a rule that differs from the merchant ("Categorized
+<merchant> · rule: <pattern>"). Pickers become searchable (3.59).
 
 **Categories.** `PageHeader` ("N categories · M subcategories", **New
 category** opening an `InlineForm`: name, "Category type", Cancel, Add

@@ -138,6 +138,8 @@ pub enum DbError {
     EmptyRulePattern,
     #[error("invalid regex pattern {pattern:?}: {message}")]
     InvalidRulePattern { pattern: String, message: String },
+    #[error("That rule doesn't match {0}")]
+    RuleDoesNotMatchMerchant(String),
     #[error("transaction {0} is not paired with anything")]
     NotPaired(i64),
     #[error("transaction {0} has no open transfer review")]

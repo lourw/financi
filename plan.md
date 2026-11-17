@@ -166,7 +166,7 @@ financi-export-2026-11-07.zip
 - **Timing.** Rules apply at import and re-run over all unlocked rows whenever a rule is created, edited or deleted.
 - **Card payments** are detected by a built-in per-parser check that beats user rules.
 - **Manual edit** locks the row against rules and offers "Apply to all matching MERCHANT", which creates a rule.
-- **To categorize queue** groups Uncategorized rows by merchant with count and total. Choosing a category creates a rule for the group.
+- **To categorize queue** groups Uncategorized rows by merchant with count and total. Choosing a category creates a rule for the group; each row can edit the rule's pattern and mark it regex while categorizing.
 - **Deleting a category** requires choosing where its transactions and rules go.
 - **Refunds.** Positive amounts in an expense category net against it. Uncategorized rows count as spend.
 - **Currency.** CAD only, the amount the card charged. Original currency and amount are kept when the CSV has them.

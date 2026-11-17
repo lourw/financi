@@ -374,7 +374,7 @@ Order: 3.105 → 3.95 → 3.104 (3.105 and 3.95 both change `ui/queue.rs`).
     `DataList` unit test: `on_pass` sees only the visible range, once
     per frame.
 
-- [ ] **3.95 Edit the rule while categorizing.** On To categorize, the
+- [x] **3.95 Edit the rule while categorizing.** On To categorize, the
   Categorize button always adds a substring rule equal to the merchant
   name (`QueuePage::categorize_merchant` → `queue::categorize_group` →
   `add_rule(merchant, false, …)`). The user wants to write the rule
