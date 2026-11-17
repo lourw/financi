@@ -2320,3 +2320,54 @@ body at a 20-year month range (~240 columns x all rows).
     segments; an empty range shows "No spending in this range". Add the
     panel to the *Dashboard* row of `ui-conventions.md` and add a
     `StackedBarChart` entry under *Components*.
+
+- [x] **3.95 Edit the rule while categorizing.** On To categorize, the
+  Categorize button always adds a substring rule equal to the merchant
+  name (`QueuePage::categorize_merchant` → `queue::categorize_group` →
+  `add_rule(merchant, false, …)`). The user wants to write the rule
+  there, e.g. a shorter pattern that also catches the merchant's other
+  spellings (user request, 2026-11-15).
+  - **Backend:** `categorize_group(conn, merchant, pattern: Option<&str>,
+    is_regex: bool, category_id)`. A blank or whitespace-only pattern
+    means the merchant name as a substring rule (today's behaviour),
+    whatever `is_regex` says. Otherwise trim it and add it through
+    `add_rule(pattern, is_regex, …)`: substring rules match the
+    description case-insensitively, regex rules the way the Rules page's
+    do, and an invalid regex fails with `add_rule`'s existing error
+    (user follow-up, 2026-11-15: regex allowed here too). Refuse a pattern
+    that matches none of the group's transactions (`CompiledPattern` over
+    their `description_raw`) with "That rule doesn't match <merchant>"
+    and add nothing, so a typo can't leave the row stuck in the queue
+    while adding a rule.
+  - **UI:** each row gets a small `Input` before the category picker,
+    placeholder = the row's merchant name (so blank visibly means "use
+    the merchant"), `accessibility_label` "Rule pattern", followed by a
+    small regex `Switch` (same control and label as the Rules page's
+    add-rule row; off by default). Both are created lazily with the
+    row's picker and pruned with it (3.83). Enter in the input
+    acts like the row's Categorize button when its picker has a category.
+    The button stays disabled until a category is picked; the pattern
+    never disables it. An error shows as the error toast; the input keeps
+    its text. On success the toast says "Categorized <merchant>"
+    (unchanged), plus "· rule: <pattern>" when it differs from the
+    merchant.
+  - **Layout:** the row must still fit 1200 × 720 with long merchant
+    names: the merchant column ellipsizes first; give the input and
+    switch a fixed column width shared with the heading row (the
+    `QUEUE_*` column constants), heading "Rule". If space is short, the
+    switch may be icon-only with a "Regex" tooltip. If it can't fit beside the picker and
+    button at the minimum width, stop and ask rather than wrapping.
+  - Tests: DB — blank and whitespace patterns add the merchant-name rule;
+    a shorter pattern adds that pattern and categorizes every queue row it
+    matches (including other merchants' rows); a non-matching pattern
+    errors and adds no rule; a regex pattern adds a regex rule and
+    categorizes the rows it matches; an invalid regex errors and adds
+    nothing; a blank pattern with the switch on still adds the
+    merchant-name substring rule. UI — the input's placeholder is the merchant
+    name; typing a pattern, picking a category and clicking Categorize
+    adds a rule with that pattern (visible on the Rules page); the same
+    with the switch on adds a regex rule (shown as regex there); Enter in
+    the input does the same; a non-matching pattern shows the error and
+    the row stays; the row's columns line up with the heading (bounds).
+    Update the *To categorize* paragraph of `ui-conventions.md` and the
+    *To categorize queue* line of `plan.md`.
