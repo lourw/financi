@@ -286,8 +286,21 @@ impl DashboardPage {
                 self.filter.chart_parent = Some(id);
                 Some(LegendSelection::Category(id))
             }
-            Some(id) => (self.filter.legend_selection != Some(LegendSelection::Category(id)))
-                .then_some(LegendSelection::Category(id)),
+            Some(id) => {
+                let selected = (self.filter.legend_selection
+                    != Some(LegendSelection::Category(id)))
+                .then_some(LegendSelection::Category(id));
+                if selected.is_some() {
+                    // 3.46: selecting a child here must expand its parent's
+                    // summary row too, or the selected row never paints
+                    // (`click_summary_cell` does the same through
+                    // `sync_chart_to_selection`).
+                    if let Some(parent) = self.parent_of(id) {
+                        self.expand_parent_row(parent);
+                    }
+                }
+                selected
+            }
         };
         if matches!(
             self.filter.legend_selection,
@@ -362,14 +375,21 @@ impl DashboardPage {
                     // 3.46: selecting a child from the grid reveals its
                     // row — the parent expands so the selected child is
                     // visible with its own highlighted cell.
-                    if !self.expanded_parents.contains(&parent) {
-                        self.expanded_parents.insert(parent);
-                        self.summary_views_dirty = true;
-                    }
+                    self.expand_parent_row(parent);
                 } else if self.filter.chart_parent != Some(id) {
                     self.filter.chart_parent = None;
                 }
             }
+        }
+    }
+    /// Expand `parent`'s children in the summary grid (3.46): a selected
+    /// child's `list_active` row only exists while its parent is expanded,
+    /// so both selection paths (legend chip and summary cell) go through
+    /// here.
+    fn expand_parent_row(&mut self, parent: i64) {
+        if !self.expanded_parents.contains(&parent) {
+            self.expanded_parents.insert(parent);
+            self.summary_views_dirty = true;
         }
     }
     /// Click a summary month heading (3.46): that month alone is selected
@@ -1212,12 +1232,18 @@ impl DashboardPage {
                     (Some(id), Some(LegendSelection::Category(c))) => c == id,
                     _ => false,
                 };
+            // 3.46: the selector records the highlight, so a test can see
+            // the selected row paint (same rule as the legend rows).
+            let row_selector = format!(
+                "summary:row:{ix}{}",
+                if row_selected { ":active" } else { "" }
+            );
             h_flex()
                 .id(SharedString::from(format!("summary-row-{key}")))
                 .w_full()
                 .gap_2()
                 .items_center()
-                .debug_selector(move || format!("summary:row:{ix}"))
+                .debug_selector(move || row_selector.clone())
                 // 3.85: the row markup pins its height so the measured
                 // height never drifts (3.45 moved the vertical scroll to
                 // the page, so there is no item cache to match).

@@ -114,6 +114,74 @@ fn a_selection_dims_the_other_bars_and_filters_the_table(cx: &mut TestAppContext
     });
 }
 
+/// 3.46 review round 1: a child selected from the drilled-in legend must
+/// expand its parent's summary rows too — otherwise the selected child's
+/// `list_active` row never paints (the summary-cell path expanded, the
+/// legend path did not).
+#[gpui::test]
+fn selecting_a_child_on_the_legend_reveals_and_highlights_its_row(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_summary_rows);
+    set_all_time(cx, handle, &shell);
+    wait_until(cx, "table loaded", |cx| {
+        dash(cx, &shell).read(cx).row_count == 7
+    });
+    let food = cx.update(|cx| summary_parent_id(&shell, cx, "Food"));
+    let groceries = cx.update(|cx| {
+        dash(cx, &shell)
+            .read(cx)
+            .categories
+            .iter()
+            .find(|p| p.name == "Food")
+            .unwrap()
+            .children
+            .iter()
+            .find(|c| c.name == "Groceries")
+            .unwrap()
+            .id
+    });
+    // Food starts collapsed: the Groceries row paints nowhere.
+    cx.update(|cx| {
+        assert!(
+            !dash(cx, &shell)
+                .read(cx)
+                .summary_rows()
+                .iter()
+                .any(|r| r.name == "Groceries"),
+            "the grid starts with Food collapsed"
+        );
+    });
+
+    // Drill into Food on the legend, then select Groceries from the
+    // drilled-in rows.
+    click_chart_legend(cx, handle, &shell, Some(food));
+    wait_until(cx, "drilled into Food", |cx| {
+        let d = dash(cx, &shell).read(cx);
+        d.filter.chart_parent == Some(food) && d.chart_rows.iter().any(|r| r.id == Some(groceries))
+    });
+    click_chart_legend(cx, handle, &shell, Some(groceries));
+    wait_until(cx, "the child's summary row is revealed", |cx| {
+        let d = dash(cx, &shell).read(cx);
+        d.filter.legend_selection == Some(LegendSelection::Category(groceries))
+            && d.summary_rows().iter().any(|r| r.name == "Groceries")
+    });
+    let ix = cx.update(|cx| {
+        dash(cx, &shell)
+            .read(cx)
+            .summary_rows()
+            .iter()
+            .position(|r| r.name == "Groceries")
+            .unwrap()
+    });
+    draw_frame(cx, handle);
+    let mut window = VisualTestContext::from_window(handle, cx);
+    assert!(
+        window
+            .debug_bounds(leaked(format!("summary:row:{ix}:active")))
+            .is_some(),
+        "the selected child's row paints list_active"
+    );
+}
+
 /// 3.46: a summary cell's month narrows the chart to that month and
 /// retitles it, filters the table, and leaves the summary grid itself
 /// whole (its column tint shows the month).
