@@ -2,6 +2,8 @@
 
 use gpui_kit::component::input::InputEvent;
 
+use crate::ui::widgets::SortState;
+
 use super::dashboard::dash;
 use super::*;
 #[gpui::test]
@@ -1346,15 +1348,36 @@ fn rules_page_group_headers_sum_uses_and_total(cx: &mut TestAppContext) {
     }
 }
 
+/// The direction the heading arrow paints for `col`
+/// (`rules:heading:{col}:arrow:{asc|desc}`), if it paints at all.
+fn rules_arrow(
+    cx: &mut TestAppContext,
+    handle: AnyWindowHandle,
+    col: &str,
+) -> Option<&'static str> {
+    ["asc", "desc"]
+        .into_iter()
+        .find(|d| paints(cx, handle, format!("rules:heading:{col}:arrow:{d}")))
+}
+
 /// 3.58: clicking the Total heading sorts each group by the Total's
 /// absolute amount — first click descending (biggest flow first, like
 /// the table's Amount), the repeat ascending; the Pattern heading
-/// restores the default.
+/// restores the default. The arrow paints only on the sorted column,
+/// pointing the sorted way.
 #[gpui::test]
 fn rules_page_sort_by_total_orders_by_magnitude(cx: &mut TestAppContext) {
     let (handle, _shell, _coffee, _snacks, _games, rules) = open_rules_page(cx);
     let (r1, r2) = (rules[0], rules[1]);
     draw_frame(cx, handle);
+    // At rest no sortable heading paints an arrow.
+    for col in ["Pattern", "Uses", "Total"] {
+        assert_eq!(
+            rules_arrow(cx, handle, col),
+            None,
+            "{col} shows no arrow at rest"
+        );
+    }
     // Default: Pattern ascending, "COFFEE" above "COFFEE SHOP".
     assert!(
         centre_y(cx, handle, format!("rules:row-{r1}"))
@@ -1369,6 +1392,9 @@ fn rules_page_sort_by_total_orders_by_magnitude(cx: &mut TestAppContext) {
             < centre_y(cx, handle, format!("rules:row-{r2}")),
         "Total's first click is descending, biggest flow first"
     );
+    assert_eq!(rules_arrow(cx, handle, "Total"), Some("desc"));
+    assert_eq!(rules_arrow(cx, handle, "Pattern"), None);
+    assert_eq!(rules_arrow(cx, handle, "Uses"), None);
 
     click(cx, handle, "rules:heading:Total");
     draw_frame(cx, handle);
@@ -1377,6 +1403,7 @@ fn rules_page_sort_by_total_orders_by_magnitude(cx: &mut TestAppContext) {
             < centre_y(cx, handle, format!("rules:row-{r1}")),
         "the repeat click flips to ascending"
     );
+    assert_eq!(rules_arrow(cx, handle, "Total"), Some("asc"));
 
     // The Pattern heading sorts by pattern again.
     click(cx, handle, "rules:heading:Pattern");
@@ -1386,31 +1413,36 @@ fn rules_page_sort_by_total_orders_by_magnitude(cx: &mut TestAppContext) {
             < centre_y(cx, handle, format!("rules:row-{r2}")),
         "Pattern ascending is the default order"
     );
+    assert_eq!(rules_arrow(cx, handle, "Pattern"), Some("asc"));
+    assert_eq!(rules_arrow(cx, handle, "Total"), None);
 }
 
 /// 3.58: only Pattern, Uses and Total sort (ui-conventions *Rules*), so
 /// the Type and checkbox headings are plain labels — a click there
-/// leaves the sort alone.
+/// leaves the sort state alone.
 #[gpui::test]
 fn rules_page_only_the_sortable_headings_sort(cx: &mut TestAppContext) {
-    let (handle, _shell, _coffee, _snacks, _games, rules) = open_rules_page(cx);
-    let (r1, r2) = (rules[0], rules[1]);
+    let (handle, shell, _coffee, _snacks, _games, _rules) = open_rules_page(cx);
+    let sorted =
+        |cx: &mut TestAppContext| shell.read_with(cx, |s, app| s.rules_page.read(app).rules_sort);
     draw_frame(cx, handle);
     click(cx, handle, "rules:heading:Total");
     draw_frame(cx, handle);
-    let y1 = centre_y(cx, handle, format!("rules:row-{r1}"));
-    let y2 = centre_y(cx, handle, format!("rules:row-{r2}"));
-    assert!(y1 < y2, "Total's first click sorts descending");
+    assert_eq!(
+        sorted(cx),
+        Some(("Total", SortState::Descending)),
+        "Total's first click sorts descending"
+    );
 
-    click(cx, handle, "rules:heading:Type");
-    draw_frame(cx, handle);
-    assert_eq!(centre_y(cx, handle, format!("rules:row-{r1}")), y1);
-    assert_eq!(centre_y(cx, handle, format!("rules:row-{r2}")), y2);
-
-    click(cx, handle, "rules:heading:");
-    draw_frame(cx, handle);
-    assert_eq!(centre_y(cx, handle, format!("rules:row-{r1}")), y1);
-    assert_eq!(centre_y(cx, handle, format!("rules:row-{r2}")), y2);
+    for col in ["Type", ""] {
+        click(cx, handle, format!("rules:heading:{col}"));
+        draw_frame(cx, handle);
+        assert_eq!(
+            sorted(cx),
+            Some(("Total", SortState::Descending)),
+            "clicking the {col:?} heading must not change the sort"
+        );
+    }
 }
 
 /// 3.28: Search filters live over the pattern and the target category's

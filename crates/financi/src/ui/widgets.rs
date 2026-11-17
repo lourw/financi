@@ -535,7 +535,7 @@ impl<V: Render> DataList<V> {
                 let f = self.sort.clone().unwrap();
                 let host = self.host.clone();
                 let title = col.title;
-                inner
+                let btn = inner
                     .id(SharedString::from(format!(
                         "financi-heading-{}",
                         col.title.replace(' ', "-")
@@ -544,17 +544,30 @@ impl<V: Render> DataList<V> {
                     .hover(|s| s.underline())
                     .on_click(move |_, window, cx| {
                         host.update(cx, |v, cx| f(v, title, next, window, cx));
-                    })
-                    .child(
-                        div().flex_none().child(
-                            Icon::new(match state {
-                                Some((_, SortState::Descending)) => IconName::SortDescending,
-                                _ => IconName::SortAscending,
-                            })
-                            .xsmall(),
-                        ),
-                    )
-                    .into_any_element()
+                    });
+                // The arrow marks the sorted column — and only that
+                // one: an unsorted sortable heading is text alone. The
+                // test selector carries the direction, so a test can
+                // pin which way the arrow paints.
+                let inner = match state {
+                    Some((_, dir)) => {
+                        let (name, icon) = match dir {
+                            SortState::Ascending => ("asc", IconName::SortAscending),
+                            SortState::Descending => ("desc", IconName::SortDescending),
+                        };
+                        let arrow = div().flex_none().child(Icon::new(icon).xsmall());
+                        let arrow = match self.heading_selectors.as_ref() {
+                            Some(prefix) => {
+                                let sel = format!("{prefix}:heading:{}:arrow:{name}", col.title);
+                                arrow.debug_selector(move || sel.clone())
+                            }
+                            None => arrow,
+                        };
+                        btn.child(arrow)
+                    }
+                    None => btn,
+                };
+                inner.into_any_element()
             }
         };
         let cell = col_cell(col, div()).child(inner);
