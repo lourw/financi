@@ -12,6 +12,7 @@
 //! [`crate::ui::dashboard_filters`].
 
 use super::*;
+use crate::ui::dashboard_chart::MonthStack;
 
 mod actions;
 mod entity;

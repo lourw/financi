@@ -3,8 +3,8 @@
 
 use super::*;
 use crate::ui::dashboard_chart::{MonthStack, StackSegment, axis_amount, monthly_stacks};
-use financi_db::{MonthlySummary, MonthlySummaryRow};
 use financi_db::categories::CategoryNode;
+use financi_db::{MonthlySummary, MonthlySummaryRow};
 
 // -- monthly_stacks unit tests -----------------------------------------
 

@@ -814,13 +814,17 @@ fn the_queue_list_paints_inside_one_panel(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, |conn| seed_queue_thousands(conn, 3));
     wait_until(cx, "3 queue groups", |cx| queue_len(&shell, cx) == 3);
     cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::ToCategorize, cx)));
+    with_window(cx, handle, |window, cx| {
+        window.resize(size(px(1200.), px(720.)));
+        window.bounds_changed(cx);
+    });
     let mut window = VisualTestContext::from_window(handle, cx);
     cx.run_until_parked();
     draw_frame(cx, handle);
     let panel = window
         .debug_bounds("queue:panel")
         .expect("the queue page paints one bordered panel");
-    // The panel fits the default 1200 × 720 window.
+    // The panel fits a 1200 × 720 window (the size just set above).
     assert!(
         panel.origin.x >= px(0.)
             && panel.origin.y >= px(0.)

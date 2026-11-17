@@ -378,10 +378,16 @@ impl DashboardPage {
         if self.summary.months != data.summary.months {
             self.summary_scroll
                 .set_offset(point(px(-1_000_000.), px(0.)));
+            // 3.93: the stacked bars' month strip parks at the latest
+            // month the same way.
+            self.stacks_scroll
+                .set_offset(point(px(-1_000_000.), px(0.)));
         }
         self.summary = data.summary;
         // 3.85: the grid's cached views follow the summary.
         self.summary_views_dirty = true;
+        // 3.93: and so do the stacked bars' shaped months.
+        self.stacks_dirty = true;
         // Record the filter the applied rows were queried with (3.56).
         self.view_filter = data.view_filter;
         // The rule offer follows a row the user just edited; a load

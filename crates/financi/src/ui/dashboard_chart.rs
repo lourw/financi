@@ -406,6 +406,36 @@ pub(crate) fn axis_amount(cents: i64) -> String {
     }
 }
 
+/// Smallest width a month's bar may shrink to before the stacked bars'
+/// strip scrolls sideways (3.93, ui-conventions *Dashboard*).
+pub(super) const STACKED_MIN_BAR_W: f32 = 12.;
+
+/// One painted segment of the stacked bars (3.93): the shaping's cents,
+/// the resolved colour (dimmed when the selection says so), and the two
+/// tooltip lines — `Shopping · Oct 2026` over `$412.30 · 22.4%`.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct StackSegPaint {
+    pub(super) id: Option<i64>,
+    pub(super) name: SharedString,
+    pub(super) cents: i64,
+    pub(super) color: Hsla,
+    pub(super) tooltip_title: SharedString,
+    pub(super) tooltip_value: SharedString,
+}
+
+/// One painted month column (3.93): the display label (`Oct 2026`),
+/// the bar's total, whether the month is the selected one (the
+/// `list_hover` column tint), whether its label survives the thinning
+/// plan, and its segments bottom-up.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct StackColPaint {
+    pub(super) month: SharedString,
+    pub(super) total: i64,
+    pub(super) month_selected: bool,
+    pub(super) show_label: bool,
+    pub(super) segments: Vec<StackSegPaint>,
+}
+
 impl DashboardPage {
     /// Click a legend row (3.5). A parent at the top level drills the chart
     /// and legend into its children and filters the table to that parent;
@@ -1053,6 +1083,449 @@ impl DashboardPage {
             .child(region_title(title))
             .child(chart)
             .child(legend)
+            .into_any_element()
+    }
+    /// Store the stacked bars' measured plot viewport width (3.93, from
+    /// the probe on `stacked:plot`); it only drives month-label thinning.
+    /// Notify-on-change only, like [`Self::set_plot_width`].
+    pub(in crate::ui) fn set_stacks_plot_width(&mut self, w: f32, cx: &mut Context<Self>) {
+        if (self.stacks_plot_w - w).abs() < 0.5 {
+            return;
+        }
+        self.stacks_plot_w = w;
+        cx.notify();
+    }
+    /// The stacked bars' shaped months (3.93), from the cached summary —
+    /// rebuilt when the summary, the tree or the chart's drill level
+    /// moved, not per frame (the 3.85 cache pattern).
+    pub(super) fn stacks_mut(&mut self) -> Rc<Vec<MonthStack>> {
+        if self.stacks_dirty || self.stacks_drill != self.filter.chart_parent {
+            self.stacks = Rc::new(monthly_stacks(
+                &self.summary,
+                self.filter.chart_parent,
+                &self.categories,
+            ));
+            self.stacks_dirty = false;
+            self.stacks_drill = self.filter.chart_parent;
+        }
+        self.stacks.clone()
+    }
+    /// How many `Oct 2026` month labels fit across the stacked bars'
+    /// measured plot (3.93). The drawn ones spread evenly first-to-last
+    /// through [`bar_label_slots`], so they never collide; below one the
+    /// plan still paints the first month.
+    pub(super) fn month_label_plan(&self) -> usize {
+        let char_xs = self.chart_char_px * 12. / 10.;
+        let label_w = 8. * char_xs + CHART_LABEL_GAP;
+        (self.stacks_plot_w / label_w).floor().max(1.) as usize
+    }
+    /// The stacked columns prepared for drawing (3.93): palette colours
+    /// per segment, dimmed to a third when another category holds the
+    /// selection — the chart's 3.46 rule, including "drilled into the
+    /// selection dims nothing" — the month tint flag, the label plan and
+    /// both tooltip lines. Kept free of widgets so the tests can read
+    /// the alpha without pixels.
+    pub(super) fn stacked_paint(
+        &self,
+        stacks: &[MonthStack],
+        colors: &HashMap<i64, usize>,
+        palette: [Hsla; 12],
+        muted: Hsla,
+    ) -> Vec<StackColPaint> {
+        let selected = match &self.filter.legend_selection {
+            Some(LegendSelection::Category(id)) => Some(*id),
+            _ => None,
+        };
+        let drilled_into_selection = selected.is_some() && self.filter.chart_parent == selected;
+        let unc_active = matches!(
+            self.filter.legend_selection,
+            Some(LegendSelection::Uncategorized)
+        ) || self.filter.uncategorized_only;
+        let slots = bar_label_slots(stacks.len(), self.month_label_plan());
+        stacks
+            .iter()
+            .zip(slots)
+            .map(|(s, show_label)| {
+                StackColPaint {
+                    month: flow::month_label(&s.month).into(),
+                    total: s.total,
+                    month_selected: self.filter.summary_month.as_deref() == Some(s.month.as_str()),
+                    show_label,
+                    segments: s
+                        .segments
+                        .iter()
+                        .map(|seg| {
+                            let color = seg.id.map_or(muted, |id| {
+                                colors.get(&id).map(|ix| palette[ix % 12]).unwrap_or(muted)
+                            });
+                            // Same rule as `chart_bars`: the
+                            // `Uncategorized` pseudo-segment dims for any
+                            // real-category selection unless the
+                            // "Uncategorized only" filter is on.
+                            let dimmed = match seg.id {
+                                Some(id) => {
+                                    (selected.is_some() || unc_active)
+                                        && !drilled_into_selection
+                                        && selected != Some(id)
+                                }
+                                None => selected.is_some() && !unc_active,
+                            };
+                            let share = if s.total > 0 {
+                                seg.cents as f64 / s.total as f64
+                            } else {
+                                0.
+                            };
+                            StackSegPaint {
+                                id: seg.id,
+                                name: seg.name.clone(),
+                                cents: seg.cents,
+                                color: if dimmed { color.opacity(0.35) } else { color },
+                                tooltip_title: format!(
+                                    "{} · {}",
+                                    seg.name,
+                                    flow::month_label(&s.month)
+                                )
+                                .into(),
+                                tooltip_value: chart_tooltip_value(seg.cents, share, "").into(),
+                            }
+                        })
+                        .collect(),
+                }
+            })
+            .collect()
+    }
+    /// The 3.93 panel: *Monthly spending by category* — the summary's
+    /// monthly figures as stacked bars, one segment per top-level parent
+    /// (the drilled-in parent's children when drilled), full width and
+    /// 340 px tall between the chart and the summary. A segment click is
+    /// a summary-cell click (category + month); the month label under a
+    /// bar selects the month alone; the 3.36-style chip legend under the
+    /// plot selects categories. Past a 12 px bar floor the month strip
+    /// scrolls sideways, parked at the latest month.
+    pub(super) fn stacked_panel(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let (muted, list_active, radius, border, colors, palette) = {
+            let theme = cx.theme();
+            (
+                theme.muted_foreground,
+                theme.list_active,
+                theme.radius,
+                theme.border,
+                self.catalog.read(cx).cat_colors(),
+                category_palette(theme),
+            )
+        };
+        let stacks = self.stacks_mut();
+        let paint = self.stacked_paint(&stacks, &colors, palette, muted);
+        let panel_shell = |title: SharedString| {
+            panel(cx, true)
+                .w_full()
+                .h(px(340.))
+                .flex_none()
+                .min_w_0()
+                .gap_2()
+                .debug_selector(|| "panel:stacked".into())
+                .child(region_title(title))
+        };
+        let title: SharedString = "Monthly spending by category".into();
+        // *States*: no spend in the range is the empty state, whatever
+        // the shape says (income-only months stack no bars either).
+        if !self.summary_has_data() || !stacks.iter().any(|s| s.total > 0) {
+            return panel_shell(title)
+                .child(
+                    div()
+                        .flex_1()
+                        .min_h_0()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_sm()
+                        .text_color(muted)
+                        .debug_selector(|| "stacked:empty".into())
+                        .child("No spending in this range"),
+                )
+                .into_any_element();
+        }
+        // The view model with its click handlers: a segment is a summary
+        // cell (its category, its month), a month label is the month
+        // alone — the same shared selection state the grid uses.
+        let columns: Vec<StackColView> = paint
+            .iter()
+            .zip(stacks.iter())
+            .map(|(col, stack)| {
+                let segments = col
+                    .segments
+                    .iter()
+                    .map(|seg| {
+                        let id = seg.id;
+                        let month = stack.month.to_string();
+                        StackSegView {
+                            cents: seg.cents,
+                            color: seg.color,
+                            tooltip_title: seg.tooltip_title.clone(),
+                            tooltip_value: seg.tooltip_value.clone(),
+                            on_click: Rc::new(cx.listener(
+                                move |this, _: &ClickEvent, window, cx| {
+                                    this.click_summary_cell(id, Some(month.clone()), window, cx);
+                                },
+                            ))
+                                as Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>,
+                        }
+                    })
+                    .collect();
+                let month = stack.month.to_string();
+                StackColView {
+                    month: col.month.clone(),
+                    total: col.total,
+                    month_selected: col.month_selected,
+                    show_label: col.show_label,
+                    segments,
+                    on_label_click: Rc::new(cx.listener(
+                        move |this, _: &ClickEvent, _window, cx| {
+                            this.click_summary_month(&month, cx);
+                        },
+                    ))
+                        as Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>,
+                }
+            })
+            .collect();
+        // Axis gutter: the top gridline names the tallest bar, the
+        // middle its half, and the baseline is zero — compact amounts
+        // (`$1.2k`) so the gutter stays narrow.
+        let max_total = stacks.iter().map(|s| s.total).max().unwrap_or(0).max(1);
+        let gutter = div()
+            .flex_none()
+            .w(px(48.))
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .justify_between()
+            .text_xs()
+            .text_right()
+            .text_color(muted)
+            .debug_selector(|| "stacked:axis".into())
+            .child(div().child(SharedString::from(axis_amount(max_total))))
+            .child(div().child(SharedString::from(axis_amount(max_total / 2))))
+            .child(div().child("$0"));
+        // Gridlines behind the bars: three hairlines spread
+        // top-to-bottom, aligned with the gutter's three amounts.
+        let grid_line = || {
+            div()
+                .w_full()
+                .flex_none()
+                .h(px(1.))
+                .bg(border)
+                .into_any_element()
+        };
+        let grid = div()
+            .absolute()
+            .inset_0()
+            .flex()
+            .flex_col()
+            .justify_between()
+            .debug_selector(|| "stacked:grid".into())
+            .child(grid_line())
+            .child(grid_line())
+            .child(grid_line());
+        let plot = div()
+            .flex_1()
+            .min_w_0()
+            .min_h_0()
+            .relative()
+            .debug_selector(|| "stacked:plot".into())
+            .child(bounds_probe(cx.entity().downgrade(), |this, w, cx| {
+                this.set_stacks_plot_width(w, cx)
+            }))
+            .child(grid)
+            .child(
+                div()
+                    .id("stacked-scroll")
+                    .absolute()
+                    .inset_0()
+                    .overflow_x_scroll()
+                    .restrict_scroll_to_axis()
+                    .track_scroll(&self.stacks_scroll)
+                    .debug_selector(|| "stacked:scroll".into())
+                    .child(StackedBarChart {
+                        columns: Rc::new(columns),
+                        min_bar_w: STACKED_MIN_BAR_W,
+                    }),
+            );
+        // The chip legend (3.36): one chip per segment, first-seen order
+        // across the months, the chip's amount its total over the range.
+        // Selecting a chip selects the category alone (a summary cell
+        // with no month) — this chart is not the drill's front door.
+        let selection = self.filter.legend_selection;
+        let uncategorized_active = matches!(selection, Some(LegendSelection::Uncategorized))
+            || self.filter.uncategorized_only;
+        let mut legend: Vec<(Option<i64>, SharedString, Hsla, i64)> = Vec::new();
+        let mut grand: i64 = 0;
+        for col in &paint {
+            for seg in &col.segments {
+                grand += seg.cents;
+                match legend.iter_mut().find(|(id, _, _, _)| *id == seg.id) {
+                    Some(entry) => entry.3 += seg.cents,
+                    None => legend.push((seg.id, seg.name.clone(), seg.color, seg.cents)),
+                }
+            }
+        }
+        let char_xs = self.chart_char_px * 12. / 10.;
+        let widths: Vec<f32> = legend
+            .iter()
+            .map(|(_, name, _, _)| legend_chip_w(name.chars().count(), char_xs))
+            .collect();
+        let shown = legend_visible(
+            &widths,
+            self.stacks_plot_w,
+            LEGEND_GAP_X,
+            LEGEND_LINES,
+            char_xs,
+        )
+        .unwrap_or(widths.len());
+        let hidden = widths.len() - shown;
+        let hidden_names: String = legend
+            .iter()
+            .enumerate()
+            .filter(|(ix, _)| *ix >= shown)
+            .map(|(_, (_, name, _, _))| name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let legend_list = div()
+            .id("stacked-legend-list")
+            .debug_selector(|| "stacked:legend".into())
+            .w_full()
+            .flex_none()
+            .flex()
+            .flex_wrap()
+            .gap_x(px(LEGEND_GAP_X))
+            .gap_y(px(LEGEND_GAP_Y))
+            .max_h(px(LEGEND_MAX_H))
+            .overflow_hidden()
+            .children(
+                legend
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(ix, (id, name, color, total))| {
+                        if ix >= shown {
+                            return None;
+                        }
+                        let id = *id;
+                        let selected = match (id, selection) {
+                            (None, _) => uncategorized_active,
+                            (Some(id), Some(LegendSelection::Category(c))) => c == id,
+                            _ => false,
+                        };
+                        let share = if grand > 0 {
+                            *total as f64 / grand as f64
+                        } else {
+                            0.
+                        };
+                        let value = chart_tooltip_value(*total, share, "");
+                        let row_selector = format!(
+                            "stacked:legend-row:{ix}{}",
+                            if selected { ":active" } else { "" }
+                        );
+                        Some(
+                            div()
+                                .id(SharedString::from(format!("stacked-legend-{ix}")))
+                                .debug_selector(move || row_selector.clone())
+                                .flex()
+                                .flex_none()
+                                .items_center()
+                                .gap_1()
+                                .px_1()
+                                .rounded(radius)
+                                .cursor_pointer()
+                                .when(selected, |row| row.bg(list_active))
+                                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                                    this.click_summary_cell(id, None, window, cx);
+                                }))
+                                .child(div().size(px(10.)).flex_none().rounded(px(2.)).bg(*color))
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .max_w(px(LEGEND_CHIP_NAME_MAX_W))
+                                        .min_w_0()
+                                        .overflow_hidden()
+                                        .text_ellipsis()
+                                        .debug_selector({
+                                            let name = name.clone();
+                                            move || format!("stacked:legend-text:{ix}:{name}")
+                                        })
+                                        .when(id.is_none(), |name| name.text_color(muted))
+                                        .child(name.clone()),
+                                )
+                                .tooltip({
+                                    let (name, value) = (name.clone(), value);
+                                    move |window, cx| {
+                                        let (name, value) = (name.clone(), value.clone());
+                                        Tooltip::element(move |_, _| {
+                                            v_flex()
+                                                .gap_0p5()
+                                                .debug_selector({
+                                                    let name = name.clone();
+                                                    move || {
+                                                        format!(
+                                                            "stacked:legend-tooltip:{ix}:{name}"
+                                                        )
+                                                    }
+                                                })
+                                                .child(
+                                                    div()
+                                                        .font_weight(FontWeight::SEMIBOLD)
+                                                        .child(name.clone()),
+                                                )
+                                                .child(value.clone())
+                                        })
+                                        .build(window, cx)
+                                    }
+                                }),
+                        )
+                    }),
+            )
+            .when(hidden > 0, |list| {
+                list.child(
+                    div()
+                        .id("stacked-legend-more")
+                        .debug_selector(move || format!("stacked:legend-more:{hidden}"))
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .px_1()
+                        .rounded(radius)
+                        .text_xs()
+                        .text_color(muted)
+                        .child(legend_more_label(hidden))
+                        .tooltip(move |window, cx| {
+                            let names = hidden_names.clone();
+                            Tooltip::element(move |_, _| {
+                                let names = names.clone();
+                                v_flex()
+                                    .gap_0p5()
+                                    .debug_selector({
+                                        let names = names.clone();
+                                        move || {
+                                            format!("stacked:legend-more-tooltip:{hidden}:{names}")
+                                        }
+                                    })
+                                    .child(div().font_weight(FontWeight::SEMIBOLD).child(names))
+                            })
+                            .build(window, cx)
+                        }),
+                )
+            });
+        panel_shell(title)
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .min_w_0()
+                    .flex()
+                    .flex_row()
+                    .gap_2()
+                    .child(gutter)
+                    .child(plot),
+            )
+            .child(legend_list)
             .into_any_element()
     }
     /// The monthly summary panel (3.6, 3.45): its own full-width row under

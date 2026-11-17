@@ -131,7 +131,11 @@ fn open_shell_with_conn(
     cx.update(|cx| {
         let bounds = Bounds {
             origin: Point::default(),
-            size: size(px(1200.), px(720.)),
+            // Tall enough that every dashboard panel — chart, the 3.93
+            // stacked bars, and the summary table — paints above the fold,
+            // so a `click()` on any of their ids hits. The page still
+            // scrolls: the table panel is viewport-high by design.
+            size: size(px(1200.), px(1440.)),
         };
         let (window, shell) = gpui_kit::open_window(
             WindowOptions {
@@ -432,6 +436,7 @@ const PAGE_NAMESPACES: &[&str] = &[
     "queue",
     "rules",
     "sidebar",
+    "stacked",
     "summary",
     "toast",
     "transfers",

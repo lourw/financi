@@ -2073,6 +2073,11 @@ fn show_rule_from_a_row_lands_on_the_deciding_rule(cx: &mut TestAppContext) {
     });
     let (coffee, _snacks, _games, rules) = ids;
     let (r1, r3) = (rules[0], rules[2]);
+    // The assertion below tracks the row inside a 1200 × 720 viewport.
+    with_window(cx, handle, |window, cx| {
+        window.resize(size(px(1200.), px(720.)));
+        window.bounds_changed(cx);
+    });
     wait_until(cx, "the rules and dashboard rows loaded", |cx| {
         let s = shell.read(cx);
         s.rules.len() == 34
