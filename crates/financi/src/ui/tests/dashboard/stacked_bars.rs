@@ -322,7 +322,10 @@ fn three_months_paint_three_bars_and_the_tallest_fills_the_plot(cx: &mut TestApp
     });
     draw_frame(cx, handle);
     let plot = bounds(cx, handle, "stacked:plot");
-    let full = f32::from(plot.size.height) - 18.; // label row + gap
+    // 3.98: the bar area is the plot minus the *measured* label row and
+    // its 2 px gap — the same inset the grid and gutter use.
+    let inset = cx.update(|cx| dash(cx, &shell).read(cx).stacked_bar_inset_h());
+    let full = f32::from(plot.size.height) - inset;
     let grid = bounds(cx, handle, "stacked:grid");
     let tallest = bounds(cx, handle, "stacked:bar:1");
     let mut bar = |ix: usize| bounds(cx, handle, format!("stacked:bar:{ix}")).size.height;
@@ -432,6 +435,206 @@ fn clicking_a_month_label_selects_the_month_alone(cx: &mut TestAppContext) {
         d.row_count == 4
             && d.filter.summary_month.as_deref() == Some("2026-03")
             && d.filter.legend_selection.is_none()
+    });
+}
+
+// -- 3.98: month labels are never cut off --------------------------------
+
+/// One spend per month for `months` consecutive months ending March
+/// 2026, all in one parent, amounts growing with the month.
+fn seed_n_months(conn: &financi_db::rusqlite::Connection, months: usize) {
+    let acct = create_account(conn, "amex", "Cobalt", AccountKind::CreditCard).unwrap();
+    conn.execute(
+        "INSERT INTO imports (account_id, parser_id, file_name, imported_at, header_raw,
+                              encoding, has_bom, line_ending, trailing_newline, row_count)
+         VALUES (?1, 'amex', 'seed.csv', '2026-01-01', X'00', 'utf-8', 0, 'lf', 0, 0)",
+        [acct],
+    )
+    .unwrap();
+    let import = conn.last_insert_rowid();
+    let parent =
+        financi_db::categories::create_parent(conn, "Alpha", CategoryKind::Expense).unwrap();
+    let mut dates: Vec<String> = Vec::with_capacity(months);
+    let (mut year, mut month) = (2026usize, 3usize);
+    for _ in 0..months {
+        dates.push(format!("{year:04}-{month:02}-10"));
+        if month == 1 {
+            year -= 1;
+            month = 12;
+        } else {
+            month -= 1;
+        }
+    }
+    dates.reverse();
+    for (ix, date) in dates.iter().enumerate() {
+        conn.execute(
+            "INSERT INTO transactions (account_id, import_id, source_line, raw_bytes,
+                                       row_hash, posted_date, amount_cents,
+                                       description_raw, category_id)
+             VALUES (?1, ?2, ?3, X'00', ?4, ?5, ?6, ?7, ?8)",
+            (
+                acct,
+                import,
+                ix as i64,
+                format!("labels-hash-{ix}"),
+                date,
+                -1000 - ix as i64,
+                "MONTHLY ALPHA",
+                parent,
+            ),
+        )
+        .unwrap();
+    }
+}
+
+/// Switch to "All time" and wait for exactly `months` months.
+fn set_all_time_n(
+    cx: &mut TestAppContext,
+    handle: AnyWindowHandle,
+    shell: &Entity<Shell>,
+    months: usize,
+) {
+    with_window(cx, handle, |window, cx| {
+        dash(cx, shell).update(cx, |d, cx| {
+            d.change_date_preset(DatePreset::AllTime, window, cx);
+        });
+    });
+    wait_until(cx, "summary covers all the seeded months", |cx| {
+        dash(cx, shell).read(cx).summary.months.len() == months
+    });
+}
+
+/// 3.98 at `w × h`: every painted month label's box is at least as wide
+/// as its text's shaped width (so nothing ellipsized), no two boxes
+/// overlap, and every box sits inside the plot. Returns the shown
+/// columns' indices.
+fn check_labels_fit(
+    cx: &mut TestAppContext,
+    handle: AnyWindowHandle,
+    shell: &Entity<Shell>,
+    w: f32,
+    h: f32,
+) -> Vec<usize> {
+    resize_and_draw(cx, handle, w, h);
+    let plot = bounds(cx, handle, "stacked:plot");
+    let months: Vec<String> = cx.update(|cx| dash(cx, shell).read(cx).summary.months.clone());
+    let shaped = |cx: &mut TestAppContext, text: String| {
+        with_window(cx, handle, |window, _cx| {
+            gpui_kit::base::plot::label::measure_text_width(&text.into(), px(12.), window)
+        })
+    };
+    let mut shown: Vec<usize> = Vec::new();
+    let mut prev_right: Option<f32> = None;
+    for (ix, m) in months.iter().enumerate() {
+        let sel = format!("stacked:month-label:{ix}");
+        if !paints(cx, handle, &sel) {
+            continue;
+        }
+        shown.push(ix);
+        let b = bounds(cx, handle, sel);
+        let text = crate::flow::month_label(m);
+        let text_w = shaped(cx, text.clone());
+        assert!(
+            f32::from(b.size.width) >= text_w - 0.01,
+            "month {ix} ({text}) paints {text_w} px of text in a {} px box",
+            f32::from(b.size.width),
+        );
+        if let Some(right) = prev_right {
+            assert!(
+                f32::from(b.origin.x) >= right - 0.01,
+                "month {ix} ({text}) overlaps the previous label: {} < {right}",
+                f32::from(b.origin.x),
+            );
+        }
+        prev_right = Some(f32::from(b.origin.x) + f32::from(b.size.width));
+        assert!(
+            f32::from(b.origin.x) >= f32::from(plot.origin.x) - 0.01
+                && f32::from(b.right()) <= f32::from(plot.right()) + 0.01
+                && f32::from(b.origin.y) >= f32::from(plot.origin.y) - 0.01
+                && f32::from(b.bottom()) <= f32::from(plot.bottom()) + 0.01,
+            "month {ix} ({text}) box {b:?} lies outside the plot {plot:?}",
+        );
+    }
+    assert!(!shown.is_empty(), "at least one month label paints");
+    shown
+}
+
+/// 3.98: three months at the minimum window — every label fits its own
+/// third of the plot, and clicking one still selects its month.
+#[gpui::test]
+fn three_month_labels_fit_and_stay_clickable_at_1200x720(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |conn| seed_n_months(conn, 3));
+    set_all_time_n(cx, handle, &shell, 3);
+    wait_until(cx, "table loaded", |cx| {
+        dash(cx, &shell).read(cx).row_count == 3
+    });
+    let shown = check_labels_fit(cx, handle, &shell, 1200., 720.);
+    assert_eq!(shown, [0, 1, 2], "three months all keep their labels");
+    // The panel may sit partly below the fold at 720 px tall: ride the
+    // page scroller until the label is on screen, then click it. The
+    // strip parks at the latest month, so March (index 2) is on screen.
+    let sel = "stacked:month-label:2";
+    for _ in 0..10 {
+        let b = bounds(cx, handle, sel);
+        if f32::from(b.center().y) < 700. {
+            break;
+        }
+        let mid = bounds(cx, handle, "panel:stacked");
+        wheel(cx, handle, viewport_centre(mid), 0., -200.);
+        draw_frame(cx, handle);
+    }
+    click(cx, handle, sel);
+    wait_until(cx, "only March's rows", |cx| {
+        let d = dash(cx, &shell).read(cx);
+        d.filter.summary_month.as_deref() == Some("2026-03") && d.filter.legend_selection.is_none()
+    });
+}
+
+/// 3.98: twelve months at the minimum window — the labels stay whole,
+/// disjoint and inside the plot.
+#[gpui::test]
+fn twelve_month_labels_are_never_cut_off_at_1200x720(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |conn| seed_n_months(conn, 12));
+    set_all_time_n(cx, handle, &shell, 12);
+    wait_until(cx, "table loaded", |cx| {
+        dash(cx, &shell).read(cx).row_count == 12
+    });
+    check_labels_fit(cx, handle, &shell, 1200., 720.);
+}
+
+/// 3.98: a three-year range at the minimum window — the thinning plan
+/// leaves gaps, and every label that does paint is whole, disjoint from
+/// its neighbours (including the first and last, clamped inside the
+/// plot) and clickable.
+#[gpui::test]
+fn thirty_six_month_labels_are_never_cut_off_at_1200x720(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |conn| seed_n_months(conn, 36));
+    set_all_time_n(cx, handle, &shell, 36);
+    wait_until(cx, "table loaded", |cx| {
+        dash(cx, &shell).read(cx).row_count == 36
+    });
+    let shown = check_labels_fit(cx, handle, &shell, 1200., 720.);
+    assert!(shown.len() < 36, "a 36-month range thins its labels");
+    assert!(
+        shown.contains(&0) && shown.contains(&35),
+        "the plan still shows the first and last months: {shown:?}"
+    );
+    // The strip is parked at the latest month; the last label is on
+    // screen and still selects its month.
+    let sel = "stacked:month-label:35";
+    for _ in 0..10 {
+        let b = bounds(cx, handle, sel);
+        if f32::from(b.center().y) < 700. {
+            break;
+        }
+        let mid = bounds(cx, handle, "panel:stacked");
+        wheel(cx, handle, viewport_centre(mid), 0., -200.);
+        draw_frame(cx, handle);
+    }
+    click(cx, handle, sel);
+    wait_until(cx, "only March 2026's rows", |cx| {
+        let d = dash(cx, &shell).read(cx);
+        d.filter.summary_month.as_deref() == Some("2026-03") && d.filter.legend_selection.is_none()
     });
 }
 

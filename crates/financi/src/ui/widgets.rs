@@ -1354,14 +1354,18 @@ pub(super) struct StackSegView {
 }
 
 /// One column of a [`StackedBarChart`] (3.93): one month's bar and its
-/// clickable month label. `show_label` marks the columns whose label
-/// fits the plan's thinning; the widget always reserves the label row.
+/// clickable month label. `label_left` carries the strip-coordinate x of
+/// the label's absolutely positioned box (3.98) — `None` on the columns
+/// the plan thinned out. The page computes it from its measured plot so
+/// the box is centred on its column, as wide as the plan's label budget,
+/// and clamped inside the strip; the widget always reserves the label
+/// row (`label_h`), shown or not.
 #[derive(Clone)]
 pub(super) struct StackColView {
     pub(super) month: SharedString,
     pub(super) total: i64,
     pub(super) month_selected: bool,
-    pub(super) show_label: bool,
+    pub(super) label_left: Option<f32>,
     pub(super) segments: Vec<StackSegView>,
     pub(super) on_label_click: StackClick,
 }
@@ -1380,17 +1384,44 @@ pub(super) struct StackedBarChart {
     /// Smallest width a month's column may shrink to before the strip
     /// starts scrolling (ui-conventions, *Dashboard*).
     pub(super) min_bar_w: f32,
+    /// Width of a month label's box (3.98): what `month_label_plan`
+    /// budgets per shown label, so the text never clips.
+    pub(super) label_w: f32,
+    /// Height of the month-label row (3.98): the measured `text_xs`
+    /// line height ([`text_xs_line_h`]), never a literal.
+    pub(super) label_h: f32,
 }
 
 /// Horizontal gap between two neighbouring bars; also the pad the
 /// strip's `min_w` estimate gives each column.
-const STACKED_BAR_GAP: f32 = 4.;
-/// Height of the month-label row under the bars.
-const STACKED_LABEL_H: f32 = 16.;
-/// What the value axis (gridlines and gutter) must inset at its bottom so
-/// its baseline lands on the bars' baseline: the bars live in the plot
-/// minus the label row and the `gap_0p5` above it (16 + 2 px).
-pub(super) const STACKED_BAR_INSET_H: f32 = STACKED_LABEL_H + 2.;
+pub(super) const STACKED_BAR_GAP: f32 = 4.;
+/// The gap between a bar and its label row (`gap_0p5`); the label row
+/// itself is `label_h` tall.
+pub(super) const STACKED_LABEL_GAP: f32 = 2.;
+/// Tailwind's `text-xs` (`0.75 rem` at the app's 16 px root), the size
+/// the stacked chart's month labels draw at (3.98).
+pub(super) const TEXT_XS_PX: f32 = 12.;
+
+/// 3.98: the height one line of `text_xs` text takes, measured from the
+/// real font (the same `shape_line` metrics behind `chart_char_px`,
+/// 3.86): ascent plus descent of a probe line with an ascender and a
+/// descender. The stacked chart's label row and the axis/grid inset
+/// derive from this, so the row can never be shorter than its text.
+pub(super) fn text_xs_line_h(window: &mut Window) -> f32 {
+    let text: SharedString = "Mg".into();
+    let run = TextRun {
+        len: text.len(),
+        font: window.text_style().font(),
+        color: gpui_kit::black(),
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    let line = window
+        .text_system()
+        .shape_line(text, px(TEXT_XS_PX), &[run], None);
+    f32::from(line.ascent + line.descent).max(1.)
+}
 
 impl RenderOnce for StackedBarChart {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
@@ -1409,6 +1440,7 @@ impl RenderOnce for StackedBarChart {
             .max(1) as f32;
         div()
             .size_full()
+            .relative()
             .flex()
             .flex_row()
             .gap_x(px(STACKED_BAR_GAP))
@@ -1475,39 +1507,6 @@ impl RenderOnce for StackedBarChart {
                                     })
                             })),
                     );
-                // Only the columns whose label survives the thinning
-                // plan paint it (and answer clicks).
-                let label_base = || {
-                    div()
-                        .flex_none()
-                        .h(px(STACKED_LABEL_H))
-                        .w_full()
-                        .flex()
-                        .justify_center()
-                        .overflow_hidden()
-                };
-                let label: AnyElement = if col.show_label {
-                    let click = col.on_label_click.clone();
-                    label_base()
-                        .id(SharedString::from(format!("stacked-label-{ix}")))
-                        .cursor_pointer()
-                        .debug_selector(move || format!("stacked:month-label:{ix}"))
-                        .on_click(move |ev, window, cx| click(ev, window, cx))
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_ellipsis()
-                                .text_color(if col.month_selected {
-                                    foreground
-                                } else {
-                                    muted
-                                })
-                                .child(col.month.clone()),
-                        )
-                        .into_any_element()
-                } else {
-                    label_base().into_any_element()
-                };
                 div()
                     .flex_1()
                     .min_w(px(self.min_bar_w))
@@ -1520,7 +1519,44 @@ impl RenderOnce for StackedBarChart {
                     // month column.
                     .when(col.month_selected, |c| c.bg(list_hover))
                     .child(bar_area)
-                    .child(label)
+                    // Every column reserves the label row (3.98); the
+                    // labels themselves are one absolutely positioned
+                    // overlay on the strip, so a shown label can be
+                    // wider than its column without clipping.
+                    .child(div().flex_none().w_full().h(px(self.label_h)))
+            }))
+            // 3.98: each shown label paints in an unclipped box centred
+            // on its column (the page computed `label_left` from its
+            // measured plot, clamped inside the strip). The box is as
+            // wide as the plan's budget, so the text never ellipsizes;
+            // it may overlap neighbouring columns, which the plan keeps
+            // empty. Clicking it still selects the month.
+            .children(self.columns.iter().enumerate().filter_map(|(ix, col)| {
+                let x = col.label_left?;
+                let click = col.on_label_click.clone();
+                Some(
+                    div()
+                        .id(SharedString::from(format!("stacked-label-{ix}")))
+                        .absolute()
+                        .bottom(px(0.))
+                        .left(px(x))
+                        .w(px(self.label_w))
+                        .flex()
+                        .justify_center()
+                        .cursor_pointer()
+                        .debug_selector(move || format!("stacked:month-label:{ix}"))
+                        .on_click(move |ev, window, cx| click(ev, window, cx))
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(if col.month_selected {
+                                    foreground
+                                } else {
+                                    muted
+                                })
+                                .child(col.month.clone()),
+                        ),
+                )
             }))
     }
 }
