@@ -129,54 +129,6 @@ Start these only after both queues are done (`docs/tasks.md` → *Picking the ne
 
 ## Lane B — Categories and Rules pages (after both queues)
 
-- [x] **3.52 A rule's transactions under the rule list.** Nice-to-have
-  (user request, 2026-11-11): clicking a rule shows, in its own scrollable
-  area, the transactions that rule matches. Do it after 3.51 (which frees
-  the vertical space) and after 3.28 (whose row checkboxes are the
-  multi-select; this is a separate single **focus**).
-  - **Review update (2026-11-11):** The matches panel is a 3.89 `DataList`; its loader is a keyed read job (`rule_matches:<id>`, 3.77) instead of a hand-kept `Task`; the decides set agrees with 3.87's `rule_use_stats`.
-  - **Focus:** clicking a rule row (not its checkbox, Edit or Delete)
-    makes it the `focused_rule` (`list_active` row background); clicking
-    it again, Escape, selecting another category or leaving the page
-    clears it. Deleting the focused rule clears it; editing keeps it.
-  - **Layout:** with a rule focused, the Rules section splits vertically.
-    The rule list stays on top (`flex_1`, `min_h(120)`), then a
-    `border_t_1` divider. Below it is the **matches panel** (~45 % of the
-    section, `min_h(160)`): a header "Transactions matching `PATTERN`"
-    (pattern ellipsized, tooltip) with a muted "N · M decided by this
-    rule" summary, then a virtual list (`v_virtual_list`, scrollbar per
-    3.26) of rows. With nothing focused the list takes the whole section,
-    as now.
-  - **Rows:** Date (110 px), Description (`flex_1`, ellipsized with
-    tooltip), Account (`text_sm` muted, ~140 px), Amount (right-aligned,
-    `flow::money`). Rows the rule matches but doesn't decide carry a
-    muted trailing tag and `muted_foreground` text:
-    - "won by `OTHER`" when another rule wins (`winning_rule`);
-    - "locked" when the row's category is locked.
-    Rows the rule decides sort first, then by date descending.
-  - **DB:** `rule_matches(conn, rule_id) -> Vec<RuleMatchRow>` in
-    `financi-db/src/rules.rs`: every transaction (locked or not) whose
-    description the rule's pattern matches (`CompiledPattern`, compiled
-    once), with a `status` of `Decides`, `WonBy(rule_id)` or `Locked`.
-    Use one `CompiledRules` per call, as `rule_use_stats` (3.58) does, so the
-    "decides" set agrees with Uses (3.28). Loaded through `DbWorker` when
-    focus changes and after every refresh while focused; a stale result
-    for a previous focus is dropped (keep the `Task`, drop on refocus).
-  - **While editing** the focused rule, the panel keeps showing the
-    saved rule's matches (the live count under the editor is the
-    preview); it reloads after Save.
-  - Empty state inside the panel: "This rule matches no transactions".
-  - Tests:
-    - DB: statuses for decides / won-by / locked rows, consistent with
-      `rule_use_stats`; an invalid regex returns empty.
-    - UI: clicking a row focuses it and the panel paints below the list
-      inside the section; the summary counts are right; a won-by row shows
-      its tag; Escape and re-click clear focus; focus changes drop a late
-      result; at 1200 × 720 both the list and the panel are at least their
-      minimum heights with 3.51's forms closed.
-
-    Update the *Categories* row of `ui-conventions.md`.
-
 - [ ] **3.47 A deleted rule leaves the list at once.** After the second
   click on a rule's Delete, the row stays in the list for a noticeable
   moment before it disappears (user report, 2026-11-11, after 3.40
