@@ -229,6 +229,7 @@ impl Render for DashboardPage {
                                         .track_scroll(&self.page_scroll)
                                         .gap_3()
                                         .child(self.chart_panel(cx))
+                                        .child(self.stacked_panel(cx))
                                         .child(self.summary_panel(cx))
                                         // 3.45: the table fills the whole
                                         // viewport height (the measured

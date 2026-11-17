@@ -576,6 +576,12 @@ fn categorizing_a_queue_group_toasts_without_moving_the_page(cx: &mut TestAppCon
     let (handle, shell) = open_shell(cx, |conn| seed_queue_thousands(conn, 4));
     wait_until(cx, "4 queue groups", |cx| queue_len(&shell, cx) == 4);
     cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::ToCategorize, cx)));
+    // The toast-corner assertion below is in 1200 × 720 coordinates; pin
+    // the window so the taller default can't make it pass vacuously.
+    with_window(cx, handle, |window, cx| {
+        window.resize(size(px(1200.), px(720.)));
+        window.bounds_changed(cx);
+    });
     draw_frame(cx, handle);
     let top = bounds(cx, handle, "queue:merchant-col:QUEUE MERCHANT 0000");
     let child = cx.update(|cx| find_child(&shell, cx, "Groceries").unwrap());
@@ -811,13 +817,17 @@ fn the_queue_list_paints_inside_one_panel(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, |conn| seed_queue_thousands(conn, 3));
     wait_until(cx, "3 queue groups", |cx| queue_len(&shell, cx) == 3);
     cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::ToCategorize, cx)));
+    with_window(cx, handle, |window, cx| {
+        window.resize(size(px(1200.), px(720.)));
+        window.bounds_changed(cx);
+    });
     let mut window = VisualTestContext::from_window(handle, cx);
     cx.run_until_parked();
     draw_frame(cx, handle);
     let panel = window
         .debug_bounds("queue:panel")
         .expect("the queue page paints one bordered panel");
-    // The panel fits the default 1200 × 720 window.
+    // The panel fits a 1200 × 720 window (the size just set above).
     assert!(
         panel.origin.x >= px(0.)
             && panel.origin.y >= px(0.)

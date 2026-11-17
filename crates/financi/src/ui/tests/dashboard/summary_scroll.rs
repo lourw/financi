@@ -103,14 +103,15 @@ fn set_all_time_covering(
     });
 }
 
-/// 3.30, measured at 1200 × 720: the pinned name column and `Total` paint
-/// inside the panel, every visible month cell lies between them, and the
-/// header and body months scroll by the same amount while the pinned
-/// columns stay put.
+/// 3.30, measured at 1200 × 1080 (720 before 3.93's stacked panel, which
+/// is content the summary tests need above the fold): the pinned name
+/// column and `Total` paint inside the panel, every visible month cell
+/// lies between them, and the header and body months scroll by the same
+/// amount while the pinned columns stay put.
 #[gpui::test]
 fn summary_months_scroll_under_pinned_name_and_total(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, |conn| seed_summary_months(conn, 24));
-    resize_and_draw(cx, handle, 1200., 720.);
+    resize_and_draw(cx, handle, 1200., 1080.);
     set_all_time_covering(cx, handle, &shell, 24);
     wait_until(cx, "24 months in the grid", |cx| {
         dash(cx, &shell).read(cx).summary.months.len() == 24
@@ -225,7 +226,7 @@ fn summary_months_scroll_under_pinned_name_and_total(cx: &mut TestAppContext) {
 #[gpui::test]
 fn a_full_width_summary_shows_most_of_a_twelve_month_range(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, |conn| seed_summary_months(conn, 12));
-    resize_and_draw(cx, handle, 1600., 900.);
+    resize_and_draw(cx, handle, 1600., 1260.);
     set_all_time_covering(cx, handle, &shell, 12);
     wait_until(cx, "12 months in the grid", |cx| {
         dash(cx, &shell).read(cx).summary.months.len() == 12
@@ -254,7 +255,7 @@ fn a_full_width_summary_shows_most_of_a_twelve_month_range(cx: &mut TestAppConte
 #[gpui::test]
 fn a_horizontal_swipe_does_not_jump_the_summary_rows_vertically(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, |conn| seed_summary_months(conn, 24));
-    resize_and_draw(cx, handle, 1200., 720.);
+    resize_and_draw(cx, handle, 1200., 1080.);
     set_all_time_covering(cx, handle, &shell, 24);
     wait_idle(cx, &shell);
     draw_frame(cx, handle);
@@ -290,7 +291,7 @@ fn a_horizontal_swipe_does_not_jump_the_summary_rows_vertically(cx: &mut TestApp
 #[gpui::test]
 fn changing_the_summary_range_lands_on_the_latest_month(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, |conn| seed_summary_months(conn, 24));
-    resize_and_draw(cx, handle, 1200., 720.);
+    resize_and_draw(cx, handle, 1200., 1080.);
     with_window(cx, handle, |window, cx| {
         dash(cx, &shell).update(cx, |d, cx| {
             d.change_date_preset(DatePreset::Last12Months, window, cx)
@@ -343,16 +344,17 @@ fn changing_the_summary_range_lands_on_the_latest_month(cx: &mut TestAppContext)
 /// 3.30: when every month fits there is nothing to scroll and the
 /// horizontal scrollbar does not show.
 ///
-/// This runs at 1600 × 900 rather than 1200 × 720 so the month zone is
+/// This runs at 1600 × 1260 rather than 1200 × 720 so the month zone is
 /// comfortably wider than three 88 px columns even before 3.45 widened
-/// the summary to the full page; the point stays that a range that fits
-/// has nothing to scroll.
+/// the summary to the full page, and tall enough that 3.93's stacked
+/// panel leaves the grid above the fold; the point stays that a range
+/// that fits has nothing to scroll.
 /// "Everything fits" needs a window wide enough for three months plus the
 /// two pinned columns.
 #[gpui::test]
 fn a_short_summary_range_shows_no_horizontal_scrollbar(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, |conn| seed_summary_months(conn, 3));
-    resize_and_draw(cx, handle, 1600., 900.);
+    resize_and_draw(cx, handle, 1600., 1260.);
     set_all_time_covering(cx, handle, &shell, 3);
     // 3.75: let every in-flight refresh land before the clamp frames — a
     // late summary result would re-stamp the stick-to-end sentinel and the

@@ -1332,3 +1332,195 @@ where
         Err(e) => Err(e.to_string()),
     }
 }
+
+// ------------------------------------------------- 3.93 stacked bar chart
+
+/// A click callback for the [`StackedBarChart`] parts: the page builds
+/// these from its own `cx.listener` closures, so the widget stays dumb
+/// about what a click means.
+type StackClick = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
+
+/// One segment of a [`StackedBarChart`] column (3.93): its cents (the
+/// only number the widget scales by), the fill colour — already dimmed
+/// by the page when another category is selected, the widget keeps no
+/// state of its own — the two tooltip lines and the click.
+#[derive(Clone)]
+pub(super) struct StackSegView {
+    pub(super) cents: i64,
+    pub(super) color: Hsla,
+    pub(super) tooltip_title: SharedString,
+    pub(super) tooltip_value: SharedString,
+    pub(super) on_click: StackClick,
+}
+
+/// One column of a [`StackedBarChart`] (3.93): one month's bar and its
+/// clickable month label. `show_label` marks the columns whose label
+/// fits the plan's thinning; the widget always reserves the label row.
+#[derive(Clone)]
+pub(super) struct StackColView {
+    pub(super) month: SharedString,
+    pub(super) total: i64,
+    pub(super) month_selected: bool,
+    pub(super) show_label: bool,
+    pub(super) segments: Vec<StackSegView>,
+    pub(super) on_label_click: StackClick,
+}
+
+/// 3.93: the *Monthly spending by category* bars — one stacked bar per
+/// month, built from plain divs (`BarChart` draws one value per bar and
+/// cannot stack). Heights are flex grow factors, not pixels: the tallest
+/// bar fills the plot and every other bar keeps its share of it, so the
+/// chart needs no height measurement and repaints for free on resize.
+/// The strip owns a `min_w` floor per bar, so past that it grows past
+/// its viewport and the page's scroll handle (parked at the latest
+/// month) scrolls it.
+#[derive(Clone, IntoElement)]
+pub(super) struct StackedBarChart {
+    pub(super) columns: Rc<Vec<StackColView>>,
+    /// Smallest width a month's column may shrink to before the strip
+    /// starts scrolling (ui-conventions, *Dashboard*).
+    pub(super) min_bar_w: f32,
+}
+
+/// Horizontal gap between two neighbouring bars; also the pad the
+/// strip's `min_w` estimate gives each column.
+const STACKED_BAR_GAP: f32 = 4.;
+/// Height of the month-label row under the bars.
+const STACKED_LABEL_H: f32 = 16.;
+/// What the value axis (gridlines and gutter) must inset at its bottom so
+/// its baseline lands on the bars' baseline: the bars live in the plot
+/// minus the label row and the `gap_0p5` above it (16 + 2 px).
+pub(super) const STACKED_BAR_INSET_H: f32 = STACKED_LABEL_H + 2.;
+
+impl RenderOnce for StackedBarChart {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let (muted, foreground, list_hover) = {
+            let theme = cx.theme();
+            (theme.muted_foreground, theme.foreground, theme.list_hover)
+        };
+        // The bar heights are shares of the tallest month, in cents;
+        // `max(1)` keeps a zero-only chart from dividing by zero.
+        let max = self
+            .columns
+            .iter()
+            .map(|c| c.total.max(0))
+            .max()
+            .unwrap_or(0)
+            .max(1) as f32;
+        div()
+            .size_full()
+            .flex()
+            .flex_row()
+            .gap_x(px(STACKED_BAR_GAP))
+            // The 12 px floor: while every month fits, `w_full` sizing
+            // rules; once they don't, this minimum takes over and the
+            // strip scrolls sideways.
+            .min_w(px(
+                self.columns.len() as f32 * (self.min_bar_w + STACKED_BAR_GAP)
+            ))
+            .children(self.columns.iter().enumerate().map(|(ix, col)| {
+                let grow = col.total.max(0) as f32 / max;
+                let bar_area = div()
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    // The spacer above the bar takes the share the month
+                    // is *not* — together they fill the plot exactly.
+                    .child(div().w_full().flex_grow(1. - grow).flex_basis(px(0.)))
+                    .child(
+                        div()
+                            .w_full()
+                            .flex_basis(px(0.))
+                            .flex_grow(grow)
+                            .flex()
+                            .flex_col()
+                            .overflow_hidden()
+                            .debug_selector(move || format!("stacked:bar:{ix}"))
+                            // Segments stack bottom-up, so the first one
+                            // (the biggest over the range) sits at the
+                            // bottom: render them reversed.
+                            .children(col.segments.iter().rev().enumerate().map(|(si, seg)| {
+                                let click = seg.on_click.clone();
+                                div()
+                                    .id(SharedString::from(format!("stacked-seg-{ix}-{si}")))
+                                    .w_full()
+                                    .flex_basis(px(0.))
+                                    .flex_grow(seg.cents.max(0) as f32)
+                                    .cursor_pointer()
+                                    .bg(seg.color)
+                                    .debug_selector(move || format!("stacked:seg:{ix}:{si}"))
+                                    .on_click(move |ev, window, cx| click(ev, window, cx))
+                                    .tooltip({
+                                        let (title, value) =
+                                            (seg.tooltip_title.clone(), seg.tooltip_value.clone());
+                                        move |window, cx| {
+                                            let (title, value) = (title.clone(), value.clone());
+                                            Tooltip::element(move |_, _| {
+                                                v_flex()
+                                                    .gap_0p5()
+                                                    .debug_selector(move || {
+                                                        format!("stacked:seg-tooltip:{ix}:{si}")
+                                                    })
+                                                    .child(
+                                                        div()
+                                                            .font_weight(FontWeight::SEMIBOLD)
+                                                            .child(title.clone()),
+                                                    )
+                                                    .child(value.clone())
+                                            })
+                                            .build(window, cx)
+                                        }
+                                    })
+                            })),
+                    );
+                // Only the columns whose label survives the thinning
+                // plan paint it (and answer clicks).
+                let label_base = || {
+                    div()
+                        .flex_none()
+                        .h(px(STACKED_LABEL_H))
+                        .w_full()
+                        .flex()
+                        .justify_center()
+                        .overflow_hidden()
+                };
+                let label: AnyElement = if col.show_label {
+                    let click = col.on_label_click.clone();
+                    label_base()
+                        .id(SharedString::from(format!("stacked-label-{ix}")))
+                        .cursor_pointer()
+                        .debug_selector(move || format!("stacked:month-label:{ix}"))
+                        .on_click(move |ev, window, cx| click(ev, window, cx))
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_ellipsis()
+                                .text_color(if col.month_selected {
+                                    foreground
+                                } else {
+                                    muted
+                                })
+                                .child(col.month.clone()),
+                        )
+                        .into_any_element()
+                } else {
+                    label_base().into_any_element()
+                };
+                div()
+                    .flex_1()
+                    .min_w(px(self.min_bar_w))
+                    .min_h_0()
+                    .flex()
+                    .flex_col()
+                    .gap_0p5()
+                    // The selected month's column gets the grid's
+                    // `list_hover` tint (3.46), like the summary's
+                    // month column.
+                    .when(col.month_selected, |c| c.bg(list_hover))
+                    .child(bar_area)
+                    .child(label)
+            }))
+    }
+}

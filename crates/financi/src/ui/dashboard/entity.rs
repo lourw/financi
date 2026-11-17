@@ -81,6 +81,20 @@ pub(crate) struct DashboardPage {
     /// month cells track it, so they scroll together, while the name
     /// column and the `Total` column stay pinned.
     pub(in crate::ui) summary_scroll: ScrollHandle,
+    /// 3.93: the cached [`monthly_stacks`](crate::ui::dashboard_chart::monthly_stacks)
+    /// for the stacked bar chart — rebuilt when the summary or the chart's
+    /// drill changes, not per frame (the 3.85 pattern).
+    pub(in crate::ui) stacks: Rc<Vec<MonthStack>>,
+    pub(in crate::ui) stacks_dirty: bool,
+    /// The drill level the cache was built for; a change rebuilds.
+    pub(in crate::ui) stacks_drill: Option<i64>,
+    /// 3.93: one horizontal scroll handle for the stacked bars' month
+    /// strip, parked at the latest month when the range changes (the
+    /// summary strip's 3.30 behaviour).
+    pub(in crate::ui) stacks_scroll: ScrollHandle,
+    /// 3.93: the stacked chart's measured plot viewport width, used only
+    /// to thin the month labels (see [`Self::set_stacks_plot_width`]).
+    pub(in crate::ui) stacks_plot_w: f32,
     /// 3.45: the page-level vertical scroller's handle. The scroll
     /// position survives refreshes and filter changes (the handle lives
     /// as long as the page); `set_visible` resets it to the top on page
@@ -358,6 +372,11 @@ impl DashboardPage {
             summary_views_built: std::cell::Cell::new(0),
             expanded_parents: HashSet::new(),
             summary_scroll: ScrollHandle::new(),
+            stacks: Rc::new(Vec::new()),
+            stacks_dirty: true,
+            stacks_drill: None,
+            stacks_scroll: ScrollHandle::new(),
+            stacks_plot_w: 0.,
             page_scroll: ScrollHandle::new(),
             tx_panel_h: 0.,
             view_filter: ViewFilter::default(),
@@ -466,6 +485,9 @@ impl PageEntity for DashboardPage {
         // 3.85: row kinds (expandable parents, child grouping) derive
         // from the tree, so the summary view cache follows it.
         self.summary_views_dirty = true;
+        // 3.93: so does the stacked bars' shape — its segments are read
+        // off the tree too.
+        self.stacks_dirty = true;
         self.total_visible = snap.2;
         self.sync_account_filter();
         let startup = std::mem::take(&mut self.startup_settings);
