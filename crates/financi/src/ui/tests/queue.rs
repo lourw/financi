@@ -579,6 +579,12 @@ fn categorizing_a_queue_group_toasts_without_moving_the_page(cx: &mut TestAppCon
     let (handle, shell) = open_shell(cx, |conn| seed_queue_thousands(conn, 4));
     wait_until(cx, "4 queue groups", |cx| queue_len(&shell, cx) == 4);
     cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::ToCategorize, cx)));
+    // The toast-corner assertion below is in 1200 × 720 coordinates; pin
+    // the window so the taller default can't make it pass vacuously.
+    with_window(cx, handle, |window, cx| {
+        window.resize(size(px(1200.), px(720.)));
+        window.bounds_changed(cx);
+    });
     draw_frame(cx, handle);
     let top = bounds(cx, handle, "queue:merchant-col:QUEUE MERCHANT 0000");
     let child = cx.update(|cx| find_child(&shell, cx, "Groceries").unwrap());

@@ -311,7 +311,8 @@ fn the_stacked_panel_paints_between_the_chart_and_the_summary(cx: &mut TestAppCo
 
 /// Three seeded months paint three bars; the tallest fills the plot
 /// (bar area = plot minus the 16 px label row and the 2 px gap) and the
-/// others are proportional shares of it.
+/// others are proportional shares of it. The `$0` gridline sits on the
+/// bars' baseline, not on the panel's bottom edge (3.93 review).
 #[gpui::test]
 fn three_months_paint_three_bars_and_the_tallest_fills_the_plot(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, seed_three_months);
@@ -322,7 +323,13 @@ fn three_months_paint_three_bars_and_the_tallest_fills_the_plot(cx: &mut TestApp
     draw_frame(cx, handle);
     let plot = bounds(cx, handle, "stacked:plot");
     let full = f32::from(plot.size.height) - 18.; // label row + gap
+    let grid = bounds(cx, handle, "stacked:grid");
+    let tallest = bounds(cx, handle, "stacked:bar:1");
     let mut bar = |ix: usize| bounds(cx, handle, format!("stacked:bar:{ix}")).size.height;
+    assert!(
+        (f32::from(grid.bottom()) - f32::from(tallest.bottom())).abs() < 2.,
+        "the $0 gridline shares the tallest bar's bottom edge: grid {grid:?}, bar {tallest:?}"
+    );
     assert!(
         (f32::from(bar(1)) - full).abs() < 2.,
         "April's bar fills the plot height: {} vs {full}",

@@ -409,6 +409,13 @@ pub(crate) fn axis_amount(cents: i64) -> String {
 /// Smallest width a month's bar may shrink to before the stacked bars'
 /// strip scrolls sideways (3.93, ui-conventions *Dashboard*).
 pub(super) const STACKED_MIN_BAR_W: f32 = 12.;
+/// Width of the stacked chart's axis gutter (3.93). The chip legend spans
+/// the panel's inner width — gutter + row gap + plot — so its fit plan
+/// measures `plot + STACKED_LEGEND_EXTRA_W`, not the plot alone.
+const STACKED_GUTTER_W: f32 = 48.;
+/// The legend's extra width over the plot: the gutter plus the row's
+/// `gap_2` (8 px) between gutter and plot (3.93).
+const STACKED_LEGEND_EXTRA_W: f32 = STACKED_GUTTER_W + 8.;
 
 /// One painted segment of the stacked bars (3.93): the shaping's cents,
 /// the resolved colour (dimmed when the selection says so), and the two
@@ -1290,15 +1297,18 @@ impl DashboardPage {
             .collect();
         // Axis gutter: the top gridline names the tallest bar, the
         // middle its half, and the baseline is zero — compact amounts
-        // (`$1.2k`) so the gutter stays narrow.
+        // (`$1.2k`) so the gutter stays narrow. The bottom padding keeps
+        // `$0` on the bars' baseline, not the panel's (the bars stop
+        // above the month-label row).
         let max_total = stacks.iter().map(|s| s.total).max().unwrap_or(0).max(1);
         let gutter = div()
             .flex_none()
-            .w(px(48.))
+            .w(px(STACKED_GUTTER_W))
             .min_h_0()
             .flex()
             .flex_col()
             .justify_between()
+            .pb(px(STACKED_BAR_INSET_H))
             .text_xs()
             .text_right()
             .text_color(muted)
@@ -1307,7 +1317,9 @@ impl DashboardPage {
             .child(div().child(SharedString::from(axis_amount(max_total / 2))))
             .child(div().child("$0"));
         // Gridlines behind the bars: three hairlines spread
-        // top-to-bottom, aligned with the gutter's three amounts.
+        // top-to-bottom, aligned with the gutter's three amounts. The
+        // bottom inset matches the bars' area, so the `$0` hairline is
+        // their baseline (3.93 review).
         let grid_line = || {
             div()
                 .w_full()
@@ -1319,6 +1331,7 @@ impl DashboardPage {
         let grid = div()
             .absolute()
             .inset_0()
+            .bottom(px(STACKED_BAR_INSET_H))
             .flex()
             .flex_col()
             .justify_between()
@@ -1375,7 +1388,7 @@ impl DashboardPage {
             .collect();
         let shown = legend_visible(
             &widths,
-            self.stacks_plot_w,
+            self.stacks_plot_w + STACKED_LEGEND_EXTRA_W,
             LEGEND_GAP_X,
             LEGEND_LINES,
             char_xs,

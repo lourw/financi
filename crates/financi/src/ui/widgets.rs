@@ -1387,6 +1387,10 @@ pub(super) struct StackedBarChart {
 const STACKED_BAR_GAP: f32 = 4.;
 /// Height of the month-label row under the bars.
 const STACKED_LABEL_H: f32 = 16.;
+/// What the value axis (gridlines and gutter) must inset at its bottom so
+/// its baseline lands on the bars' baseline: the bars live in the plot
+/// minus the label row and the `gap_0p5` above it (16 + 2 px).
+pub(super) const STACKED_BAR_INSET_H: f32 = STACKED_LABEL_H + 2.;
 
 impl RenderOnce for StackedBarChart {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
