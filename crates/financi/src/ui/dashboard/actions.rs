@@ -549,24 +549,59 @@ impl DashboardPage {
     // -- render (3.82) --------------------------------------------------------
 }
 impl DashboardPage {
-    /// "Clear filters": drop every filter that narrows the table — search,
-    /// "Uncategorized only", and the category/month selection with its
-    /// chart drill-down. `set_value` doesn't emit `InputEvent::Change`, so
-    /// `self.filter.search` is cleared here too before the single re-query.
-    pub(in crate::ui) fn clear_filters(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// 3.46: "Clear all" (and the no-matches link) returns the dashboard
+    /// to its defaults — every filter, the sort included, goes back to
+    /// [`DashboardFilter::default()`], and the two persisted settings
+    /// (date range, include-transfers) follow so the next launch matches.
+    pub(in crate::ui) fn clear_all_filters(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // A keystroke within the last 200 ms left a debounced search pending
         // that would re-apply the dead query right after this reset, so drop
         // it with the text.
         self.search_task = None;
         self.search_input
             .update(cx, |input, cx| input.set_value("", window, cx));
-        self.filter.search.clear();
-        self.filter.uncategorized_only = false;
-        self.filter.chart_parent = None;
-        self.filter.legend_selection = None;
-        self.filter.summary_month = None;
+        self.filter = DashboardFilter::default();
+        self.filter_touched = true;
+        // The widgets and the mirrored view filter follow the reset: the
+        // preset picker shows the default range, the account checkboxes
+        // read all-checked, and a stale transfers flag never reloads.
+        self.set_date_range(DateRange::default(), cx);
+        self.view_filter.include_transfers = false;
+        self.sync_account_filter();
+        // Persist the defaults the same way the individual controls do, so
+        // "Clear all" survives a restart.
+        self.persist_date_range(cx);
+        if !self.writes_blocked.get() {
+            let db = self.db.clone();
+            self.include_transfers_task = Some(cx.spawn(async move |_, _| {
+                let _ = on_db(&db, move |c| settings::set_include_transfers(c, false)).await;
+            }));
+        }
         // 3.65: the cleared box, legend highlight and summary-cell highlight
         // repaint with this click, not with the answer.
+        cx.notify();
+        self.reload(cx);
+    }
+
+    /// A filter chip's × (3.46) on the category chip: drop the selection,
+    /// leaving the month and the drill-down (the legend's own toggle
+    /// rule). The chart repaints from the selection on the next frame.
+    pub(in crate::ui) fn clear_category_chip(&mut self, cx: &mut Context<Self>) {
+        self.filter.legend_selection = None;
+        cx.notify();
+        self.reload(cx);
+    }
+
+    /// A filter chip's × (3.46) on the search chip: empty the box and the
+    /// term together.
+    pub(in crate::ui) fn clear_search_chip(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.search_task = None;
+        self.search_input
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        if self.filter.search.is_empty() {
+            return;
+        }
+        self.filter.search.clear();
         cx.notify();
         self.reload(cx);
     }

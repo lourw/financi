@@ -20,6 +20,8 @@ impl Render for DashboardPage {
         // re-sync them now that one is here.
         self.sync_date_widgets(window, cx);
         let muted = cx.theme().muted_foreground;
+        // 3.46: "Clear all" shows while any filter differs from the default.
+        let filtered = self.filter != DashboardFilter::default();
         let body = self.dashboard_body();
         v_flex()
             .w_full()
@@ -54,10 +56,17 @@ impl Render for DashboardPage {
                             "Date range",
                             div()
                                 .debug_selector(|| "filters:date-range".into())
-                                .w(FILTER_DATE_RANGE_W)
+                                .w_full()
+                                .min_w_0()
                                 .child(Select::new(&self.date_preset_select)),
                         )
-                        .flex_none(),
+                        // 3.46: with Clear all shown and the custom range
+                        // open the row runs out of room at 1200 px, so the
+                        // preset select shrinks with the pickers (floor
+                        // 120 px) instead of pushing the count off-page.
+                        .flex_shrink(1.)
+                        .w(FILTER_DATE_RANGE_W)
+                        .min_w(px(120.)),
                     )
                     // The From/To pickers want 140 px but shrink first
                     // (floor 110 px) when the row runs out of room, so the
@@ -119,12 +128,30 @@ impl Render for DashboardPage {
                         )
                         .flex_none(),
                     )
-                    // The count ends the row at the page's right edge.
+                    // 3.46: "Clear all" sits at the right of the filter
+                    // row, just before the count, and appears only when
+                    // some filter differs from the default. It resets
+                    // everything — the persisted settings included.
+                    .when(filtered, |g| {
+                        g.child(
+                            Button::new("clear-all")
+                                .xsmall()
+                                .ghost()
+                                .icon(IconName::X)
+                                .label("Clear all")
+                                .debug_selector(|| "filters:clear-all".into())
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.clear_all_filters(window, cx);
+                                })),
+                        )
+                    })
+                    // The count ends the row at the page's right edge;
+                    // the Clear all button takes the slack when it shows.
                     .child(
                         div()
                             .debug_selector(|| "filters:count".into())
                             .flex_none()
-                            .ml_auto()
+                            .when(!filtered, |d| d.ml_auto())
                             .whitespace_nowrap()
                             .text_sm()
                             .text_color(muted)
@@ -134,6 +161,10 @@ impl Render for DashboardPage {
                             )),
                     ),
             )
+            // 3.46: the filter chips row — each active narrowing the row
+            // itself doesn't show — pinned under the filter row, above
+            // the scroller. Empty (no space) when nothing is active.
+            .child(self.filter_chips_row(cx))
             .child(match body {
                 // 5.3: an empty database is also where a restore begins,
                 // so the empty state offers it beside the import hint.

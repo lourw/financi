@@ -14,11 +14,49 @@ fn options_label(on: usize) -> String {
         format!("Options · {on}")
     }
 }
+/// One filter chip (3.46): the label of an active narrowing filter with a
+/// × that clears it. The whole chip is the click target; `id` is the last
+/// selector segment (`chip-month`), the chip painting `filters:{id}` and
+/// its × `filters:{id}-x`.
+fn filter_chip(
+    id: &'static str,
+    label: String,
+    muted: gpui::Hsla,
+    hover: gpui::Hsla,
+    on_close: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> AnyElement {
+    div()
+        .id(SharedString::from(id))
+        .debug_selector(move || format!("filters:{id}"))
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap_1()
+        .pl_2()
+        .pr_1()
+        .py_0p5()
+        .rounded_full()
+        .cursor_pointer()
+        .hover(|c| c.bg(hover))
+        .on_click(on_close)
+        .child(div().text_xs().child(label))
+        .child(
+            div()
+                .flex_none()
+                .debug_selector(move || format!("filters:{id}-x"))
+                .child(Icon::new(IconName::X).xsmall().text_color(muted)),
+        )
+        .into_any_element()
+}
+
 // Filter row (3.35): the date-range select's width (fits "Last 12 months"
 // on one line), and the search box's floor. The row itself and the shared
 // control height moved to `widgets::filter_row` in 3.91.
 pub(super) const FILTER_DATE_RANGE_W: Pixels = px(170.);
-pub(super) const FILTER_SEARCH_MIN_W: Pixels = px(140.);
+// 3.46: floor lowered from 140 px — with Clear all shown and the custom
+// range open, the row must still fit 1200 × 720 (the search box stays the
+// item that takes the slack).
+pub(super) const FILTER_SEARCH_MIN_W: Pixels = px(100.);
 /// The custom range's From/To pickers: 140 px when there is room, shrinking
 /// first, down to [`FILTER_DATE_MIN_W`], when the window is at its minimum
 /// and the rest of the row must still fit on the page (3.25, 3.35).
@@ -42,6 +80,95 @@ fn account_labels(accounts: &[Account]) -> Vec<String> {
 }
 
 impl DashboardPage {
+    /// 3.46: the filter chips row (ui-conventions *Interaction*): each
+    /// narrowing filter the row itself doesn't show — the category and
+    /// month selections, the search term and "Uncategorized only" — is a
+    /// chip with a × that clears just that filter. Dates, accounts,
+    /// transfers and "Show hidden" aren't chips (the row and the Options
+    /// button show them). Pinned between the filter row and the scroller;
+    /// an empty row takes no space.
+    pub(super) fn filter_chips_row(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let (muted, hover) = {
+            let theme = cx.theme();
+            (theme.muted_foreground, theme.list_hover)
+        };
+        let mut chips: Vec<AnyElement> = Vec::new();
+        if let Some(name) = self.selected_category_name() {
+            chips.push(filter_chip(
+                "chip-category",
+                name,
+                muted,
+                hover,
+                cx.listener(|this, _: &ClickEvent, _, cx| this.clear_category_chip(cx)),
+            ));
+        }
+        if let Some(month) = self.filter.summary_month.clone() {
+            chips.push(filter_chip(
+                "chip-month",
+                flow::month_label(&month).to_string(),
+                muted,
+                hover,
+                cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    this.click_summary_month(&month, cx);
+                }),
+            ));
+        }
+        if !self.filter.search.is_empty() {
+            let term = self.filter.search.clone();
+            chips.push(filter_chip(
+                "chip-search",
+                format!("“{term}”"),
+                muted,
+                hover,
+                cx.listener(|this, _: &ClickEvent, window, cx| {
+                    this.clear_search_chip(window, cx);
+                }),
+            ));
+        }
+        if self.filter.uncategorized_only {
+            chips.push(filter_chip(
+                "chip-uncategorized",
+                "Uncategorized only".to_string(),
+                muted,
+                hover,
+                cx.listener(|this, _: &ClickEvent, window, cx| {
+                    this.set_uncategorized_only(false, window, cx);
+                }),
+            ));
+        }
+        if chips.is_empty() {
+            return div().into_any_element();
+        }
+        div()
+            .w_full()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap_1()
+            .debug_selector(|| "filters:chips".into())
+            .children(chips)
+            .into_any_element()
+    }
+
+    /// The name behind `legend_selection`, from the loaded category tree,
+    /// for the category chip (3.46).
+    fn selected_category_name(&self) -> Option<String> {
+        let id = match self.filter.legend_selection {
+            Some(LegendSelection::Category(id)) => id,
+            _ => return None,
+        };
+        self.categories.iter().find_map(|p| {
+            if p.id == id {
+                Some(p.name.clone())
+            } else {
+                p.children
+                    .iter()
+                    .find(|c| c.id == id)
+                    .map(|c| c.name.clone())
+            }
+        })
+    }
+
     /// Trigger label of the accounts dropdown: "All accounts" while
     /// nothing is unchecked, otherwise how many of the accounts remain.
     pub(super) fn account_filter_label(&self) -> String {

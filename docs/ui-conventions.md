@@ -236,16 +236,23 @@ or changing the selection disarms it. No modals, no native alerts.
 ### Filtering and hints
 
 - **Click to filter.** Legend items, summary cells and summary row
-  headers set the shared filter; the selected item is `list_active`.
-  Clicking it again, or Escape, clears it.
+  headers set the shared category filter, summary month cells and month
+  headings set the month; every dashboard filter (dates, accounts,
+  search, options, category, month) narrows chart, summary and table
+  together. The selected item is `list_active`, bars of other categories
+  dim to 35% (a drilled-into selection's own bars never dim), and
+  clicking again, Escape or Clear all clears it.
 - **Hints go in hover tooltips, never captions** (`.tooltip(...)`, needs an
   `id`). Summary cell: `Shopping · Oct 2026 · 14 transactions` over "Click
   to show them in the table". Chart bar and legend item: the full name over
   `amount · share` (`Restaurants · $642.15 · 31.4% of Food`).
 - **Filter chips:** each active narrowing filter (category, month,
-  search, Uncategorized only) is a chip with a ×, above the table. Filters
-  the filter row already shows (dates, accounts, transfers) aren't chips.
-  Once 3.46 lands, chips sit under the pinned filter row next to Clear all.
+  search, Uncategorized only) is a chip with a × in a row under the
+  pinned filter row, beside **Clear all** — a ghost button with an X icon
+  before the transaction count. Both appear only while some filter is
+  set; Clear all resets every dashboard filter, the drill-down included.
+  Filters the filter row already shows (dates, accounts, transfers,
+  Show hidden) aren't chips.
 
 ### Scrolling and overflow
 
@@ -309,13 +316,14 @@ wrapping chip row under it — 10 px swatch + name `text_xs` ellipsized at
 it the *Monthly summary* `Panel` (3.45: its own full-width row at content
 height; the summary's name column and
 Total are pinned while only month columns scroll sideways on one shared
-handle, landing on the latest month). Then filter chips and the
-transactions `DataTable`, where every column sorts (text A→Z first, Date
+handle, landing on the latest month). Then the transactions
+`DataTable`, where every column sorts (text A→Z first, Date
 and Amount newest/biggest first; the sort survives filter changes).
 Chart, summary and table stack in a scrolling page under a pinned filter
 row (3.45: the table fills the viewport below the filter row and scrolls
-inside itself; the page scrolls back to the top on entry);
-every filter applies to all three views, with Clear all (3.46); filter
+inside itself; the page scrolls back to the top on entry), with the
+filter chip row and Clear all directly under that row (3.46);
+every filter applies to all three views, and filter
 changes apply at once (3.56).
 
 **To categorize.** `PageHeader` ("N transactions · M merchants") and one

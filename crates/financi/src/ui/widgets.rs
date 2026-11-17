@@ -93,11 +93,13 @@ pub(super) fn control_slot(selector: String, probe: String, control: impl IntoEl
 /// Names a group of related controls or a data panel (3.16: the filter bar,
 /// the chart, the monthly summary, the category tree). Same debug selector
 /// as [`field_label`].
-pub(super) fn region_title(text: &'static str) -> Div {
+pub(super) fn region_title(text: impl Into<SharedString>) -> Div {
+    let text: SharedString = text.into();
+    let selector = text.clone();
     div()
         .text_sm()
         .font_weight(FontWeight::SEMIBOLD)
-        .debug_selector(move || format!("label:{text}"))
+        .debug_selector(move || format!("label:{selector}"))
         .child(text)
 }
 

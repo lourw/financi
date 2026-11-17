@@ -4,7 +4,7 @@ Start these only after both queues are done (`docs/tasks.md` → *Picking the ne
 
 ## Lane A — dashboard (after both queues)
 
-- [ ] **3.46 Global dashboard filters, and Clear all.** Every dashboard
+- [x] **3.46 Global dashboard filters, and Clear all.** Every dashboard
   filter should apply to all three views at once: a category picked on
   the chart should show in the summary and the table too. Add a button
   that clears every filter (user request, 2026-11-11). Today the state

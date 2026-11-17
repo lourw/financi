@@ -239,7 +239,7 @@ fn clearing_filters_cancels_the_pending_search(cx: &mut TestAppContext) {
         "the debounce has not expired yet"
     );
     with_window(cx, handle, |window, cx| {
-        dash(cx, &shell).update(cx, |d, cx| d.clear_filters(window, cx));
+        dash(cx, &shell).update(cx, |d, cx| d.clear_all_filters(window, cx));
     });
     // Past the window: the dropped task fires nothing, and only Clear's
     // own re-query runs.
@@ -257,9 +257,16 @@ fn clearing_filters_cancels_the_pending_search(cx: &mut TestAppContext) {
     cx.update(|cx| {
         let s = shell.read(cx);
         let d = dash(cx, &shell).read(cx);
+        // 3.46: "Clear all" also persists the reset date range and
+        // transfers flag, so count the chart/summary loads, not raw jobs.
+        let dash_runs =
+            s.db.query_log()
+                .names()
+                .iter()
+                .filter(|n| *n == "dashboard")
+                .count();
         assert_eq!(
-            s.db.job_count(),
-            jobs_before + 1,
+            dash_runs, 1,
             "Clear runs its own one re-query; the cancelled debounce must add none"
         );
         assert!(
