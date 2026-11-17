@@ -194,6 +194,11 @@ pub(super) struct Snapshot {
     pub counts: HashMap<i64, i64>,
     pub rules: Vec<Rule>,
     pub uses: HashMap<i64, usize>,
+    /// 3.58: rule id → signed sum, in cents, of the transactions the rule
+    /// decided (3.87's `rule_use_stats` total). Rules that decided nothing
+    /// are absent. The Rules page renders it as the Total column and sums
+    /// it per group.
+    pub rule_totals: HashMap<i64, i64>,
     pub total: i64,
     pub uncategorized: i64,
     pub queue: Vec<UncategorizedGroup>,
@@ -481,6 +486,7 @@ impl Catalog {
         if fresh_rules {
             self.snap.rules = s.rules;
             self.snap.uses = s.uses;
+            self.snap.rule_totals = s.rule_totals;
             // 3.85: patterns and the winner table are pure functions of
             // the rule list; compile them once here, not per frame.
             self.compiled = Rc::new(CompiledRules::new(&self.snap.rules));
@@ -569,13 +575,18 @@ fn load_sections(c: &mut Connection, log: &QueryLog, sections: u16) -> Result<Sn
     if sections & S_RULES != 0 {
         log.record("list_rules");
         snap.rules = list_rules(c)?;
-        // 3.28: the Rules page Uses column. 3.87 adds per-rule totals;
-        // the page still shows counts only, so keep just those.
+        // 3.28: the Rules page Uses column. 3.87 added the per-rule
+        // totals; 3.58 renders them as the Total column, so both halves
+        // of the stat ride along now.
         log.record("rule_use_stats");
-        snap.uses = rule_use_stats(c)?
-            .into_iter()
-            .map(|(id, stats)| (id, stats.count))
-            .collect();
+        let mut counts = HashMap::new();
+        let mut totals = HashMap::new();
+        for (id, stats) in rule_use_stats(c)? {
+            counts.insert(id, stats.count);
+            totals.insert(id, stats.total_cents);
+        }
+        snap.uses = counts;
+        snap.rule_totals = totals;
     }
     if sections & S_SIDEBAR != 0 {
         log.record("sidebar_counts");

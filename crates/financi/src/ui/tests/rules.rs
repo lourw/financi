@@ -1,5 +1,7 @@
 //! Tests for `ui/rules.rs` (3.62 split from `ui_tests.rs`).
 
+use gpui_kit::component::input::InputEvent;
+
 use super::dashboard::dash;
 use super::*;
 #[gpui::test]
@@ -1230,11 +1232,19 @@ fn set_rules_search(
     with_window(cx, handle, |window, cx| {
         shell.update(cx, |s, cx| {
             s.rules_page.update(cx, |p, cx| {
-                p.rules_search
-                    .update(cx, |i, cx| i.set_value(value, window, cx))
+                p.rules_search.update(cx, |i, cx| {
+                    // 3.58: `set_value` alone does not emit (like paste);
+                    // the emit stands for the keystroke's Change event the
+                    // debounce rides on, as the dashboard's search tests.
+                    i.set_value(value.clone(), window, cx);
+                    cx.emit(InputEvent::Change);
+                })
             });
         });
     });
+    // 3.58: filtering is debounced by 150 ms — run the fake clock past
+    // the pending timer so the query applies like it would for a user.
+    cx.executor().advance_clock(Duration::from_millis(160));
     cx.run_until_parked();
 }
 
@@ -1247,7 +1257,7 @@ fn rules_page_groups_rows_by_target_category(cx: &mut TestAppContext) {
     draw_frame(cx, handle);
 
     assert!(
-        paints(cx, handle, "label:4 rules"),
+        paints(cx, handle, "rules:summary:4 rules · 2 unused"),
         "the header counts the rules"
     );
     for id in [coffee, snacks, games] {
@@ -1284,6 +1294,96 @@ fn rules_page_groups_rows_by_target_category(cx: &mut TestAppContext) {
             centre_y(cx, handle, format!("rules:row-{}", rules[1]))
         },
         "rows sort by Pattern within their group"
+    );
+}
+
+/// 3.58: each row's Total column is the signed sum of the transactions
+/// the rule decided — the same source as Uses, so the fixture's two
+/// −10.00 roasts give r1 −2000 cents, the shop row gives r2 −1000, and
+/// the unused rules read 0. (The value is baked into the selector, so
+/// this pins the rendered number to the SQL sums `rule_use_stats`
+/// produces over the same seed.)
+#[gpui::test]
+fn rules_page_shows_each_rules_total(cx: &mut TestAppContext) {
+    let (handle, _shell, _coffee, _snacks, _games, rules) = open_rules_page(cx);
+    draw_frame(cx, handle);
+    let [r1, r2, r3, r4] = rules;
+    for (id, cents) in [(r1, -2000), (r2, -1000), (r3, 0), (r4, 0)] {
+        assert!(
+            paints(cx, handle, format!("rules:total:{id}:{cents}")),
+            "rule {id}'s Total shows {cents} cents"
+        );
+        assert!(
+            paints(cx, handle, format!("rules:total-col:{id}")),
+            "rule {id} has a Total cell"
+        );
+    }
+}
+
+/// 3.58: the group header sums its rules' Uses and Total — Food › Coffee
+/// (r1 + r2) reads 3 uses and −3000 cents; the unused groups read 0.
+#[gpui::test]
+fn rules_page_group_headers_sum_uses_and_total(cx: &mut TestAppContext) {
+    let (handle, _shell, coffee, snacks, games, _rules) = open_rules_page(cx);
+    draw_frame(cx, handle);
+    assert!(
+        paints(cx, handle, format!("rules:group-uses:{coffee}:3")),
+        "the Coffee group sums 3 uses"
+    );
+    assert!(
+        paints(cx, handle, format!("rules:group-total:{coffee}:-3000")),
+        "the Coffee group sums its decided cents"
+    );
+    for id in [snacks, games] {
+        assert!(
+            paints(cx, handle, format!("rules:group-uses:{id}:0")),
+            "the unused group {id} sums 0 uses"
+        );
+        assert!(
+            paints(cx, handle, format!("rules:group-total:{id}:0")),
+            "the unused group {id} sums 0 cents"
+        );
+    }
+}
+
+/// 3.58: clicking the Total heading sorts each group by the Total's
+/// absolute amount — first click ascending (smallest flow first), the
+/// repeat descending; the Pattern heading restores the default.
+#[gpui::test]
+fn rules_page_sort_by_total_orders_by_magnitude(cx: &mut TestAppContext) {
+    let (handle, _shell, _coffee, _snacks, _games, rules) = open_rules_page(cx);
+    let (r1, r2) = (rules[0], rules[1]);
+    draw_frame(cx, handle);
+    // Default: Pattern ascending, "COFFEE" above "COFFEE SHOP".
+    assert!(
+        centre_y(cx, handle, format!("rules:row-{r1}"))
+            < centre_y(cx, handle, format!("rules:row-{r2}"))
+    );
+
+    click(cx, handle, "rules:heading:Total");
+    draw_frame(cx, handle);
+    // Ascending by magnitude: r2 (−10.00) above r1 (−20.00).
+    assert!(
+        centre_y(cx, handle, format!("rules:row-{r2}"))
+            < centre_y(cx, handle, format!("rules:row-{r1}")),
+        "Total ascending puts the smaller flow first"
+    );
+
+    click(cx, handle, "rules:heading:Total");
+    draw_frame(cx, handle);
+    assert!(
+        centre_y(cx, handle, format!("rules:row-{r1}"))
+            < centre_y(cx, handle, format!("rules:row-{r2}")),
+        "the repeat click flips to descending"
+    );
+
+    // The Pattern heading sorts by pattern again.
+    click(cx, handle, "rules:heading:Pattern");
+    draw_frame(cx, handle);
+    assert!(
+        centre_y(cx, handle, format!("rules:row-{r1}"))
+            < centre_y(cx, handle, format!("rules:row-{r2}")),
+        "Pattern ascending is the default order"
     );
 }
 
@@ -1334,6 +1434,59 @@ fn rules_page_search_covers_patterns_and_category_names(cx: &mut TestAppContext)
     assert!(!paints(cx, handle, "rules:empty"));
     for id in rules {
         assert!(paints(cx, handle, format!("rules:row-{id}")));
+    }
+}
+
+/// 3.58: typing debounces by 150 ms — the list only re-filters after the
+/// timer settles — while Enter applies the current text at once.
+#[gpui::test]
+fn rules_page_search_debounces_and_enter_applies_at_once(cx: &mut TestAppContext) {
+    let (handle, shell, _coffee, _snacks, _games, rules) = open_rules_page(cx);
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.rules_page.update(cx, |p, cx| {
+                p.rules_search.update(cx, |i, cx| {
+                    i.set_value("shop", window, cx);
+                    cx.emit(InputEvent::Change);
+                })
+            });
+        });
+    });
+    cx.run_until_parked();
+    draw_frame(cx, handle);
+    assert!(
+        paints(cx, handle, format!("rules:row-{}", rules[0])),
+        "the list is still whole while the debounce runs"
+    );
+    cx.executor().advance_clock(Duration::from_millis(160));
+    cx.run_until_parked();
+    draw_frame(cx, handle);
+    assert!(
+        !paints(cx, handle, format!("rules:row-{}", rules[0])),
+        "the filter applies once the debounce settles"
+    );
+
+    // Enter means now: clear the box and press Enter — no clock needed.
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.rules_page.update(cx, |p, cx| {
+                p.rules_search.update(cx, |i, cx| {
+                    i.set_value("", window, cx);
+                    cx.emit(InputEvent::PressEnter {
+                        secondary: false,
+                        shift: false,
+                    });
+                })
+            });
+        });
+    });
+    cx.run_until_parked();
+    draw_frame(cx, handle);
+    for id in rules {
+        assert!(
+            paints(cx, handle, format!("rules:row-{id}")),
+            "Enter applied the cleared search at once"
+        );
     }
 }
 
@@ -1458,16 +1611,17 @@ fn rules_page_type_picker_filters_by_kind(cx: &mut TestAppContext) {
     }
 }
 
-/// 3.28: clicking a group header collapses the group — its rows are gone,
-/// the header stays — and clicking it again expands.
+/// 3.28: clicking a group header's chevron collapses the group — its rows
+/// are gone, the header stays — and clicking it again expands. (3.58: the
+/// shared list binds the toggle to the chevron alone.)
 #[gpui::test]
 fn rules_page_collapse_hides_a_groups_rows(cx: &mut TestAppContext) {
     let (handle, _shell, coffee, _snacks, _games, rules) = open_rules_page(cx);
     let mut window = VisualTestContext::from_window(handle, cx);
     draw_frame(cx, handle);
 
-    let header = bounds(cx, handle, format!("rules:group:{coffee}"));
-    window.simulate_click(header.center(), Modifiers::default());
+    let chevron = bounds(cx, handle, format!("rules:group:{coffee}:toggle"));
+    window.simulate_click(chevron.center(), Modifiers::default());
     cx.run_until_parked();
     draw_frame(cx, handle);
     assert!(
@@ -1485,8 +1639,8 @@ fn rules_page_collapse_hides_a_groups_rows(cx: &mut TestAppContext) {
         "other groups stay open"
     );
 
-    let header = bounds(cx, handle, format!("rules:group:{coffee}"));
-    window.simulate_click(header.center(), Modifiers::default());
+    let chevron = bounds(cx, handle, format!("rules:group:{coffee}:toggle"));
+    window.simulate_click(chevron.center(), Modifiers::default());
     cx.run_until_parked();
     draw_frame(cx, handle);
     assert!(paints(cx, handle, format!("rules:row-{}", rules[0])));
@@ -1571,6 +1725,78 @@ fn rules_page_move_recategorizes_rows_and_clears_selection(cx: &mut TestAppConte
     );
 }
 
+/// 3.58: the list lives in one bordered panel that fills the rest of the
+/// page, with the sortable heading row at its top — like the queue's
+/// panel (3.34): the heading cells and the first rows sit inside the
+/// panel's bounds.
+#[gpui::test]
+fn the_rules_list_paints_inside_one_panel(cx: &mut TestAppContext) {
+    let (handle, _shell, _coffee, _snacks, _games, rules) = open_rules_page(cx);
+    resize_and_draw(cx, handle, 1200., 720.);
+    let panel = bounds(cx, handle, "rules:panel");
+    assert!(
+        panel.origin.x >= px(0.)
+            && panel.origin.y >= px(0.)
+            && panel.origin.x + panel.size.width <= px(1200.) + px(1.)
+            && panel.origin.y + panel.size.height <= px(720.) + px(1.),
+        "the panel fits the window: {panel:?}",
+    );
+    for col in ["Pattern", "Type", "Uses", "Total"] {
+        let head = bounds(cx, handle, format!("rules:heading:{col}"));
+        assert!(
+            head.origin.y >= panel.origin.y && head.origin.y < panel.origin.y + panel.size.height,
+            "the {col} heading sits inside the panel"
+        );
+    }
+    let first = bounds(cx, handle, format!("rules:row-{}", rules[0]));
+    let heading = bounds(cx, handle, "rules:heading:Pattern");
+    assert!(
+        first.origin.y > heading.origin.y + heading.size.height,
+        "the rows start under the heading"
+    );
+    assert!(
+        first.origin.y + first.size.height <= panel.origin.y + panel.size.height + px(1.),
+        "the first row sits inside the panel"
+    );
+}
+
+/// 3.58: with rows checked the Move bar replaces the heading row inside
+/// the panel — the heading is gone, the bar is there, and the list's
+/// first row does not move down by a pixel.
+#[gpui::test]
+fn the_move_bar_replaces_the_heading_row(cx: &mut TestAppContext) {
+    let (handle, shell, _coffee, _snacks, _games, rules) = open_rules_page(cx);
+    let (r1, _r2) = (rules[0], rules[1]);
+    draw_frame(cx, handle);
+    let before = bounds(cx, handle, format!("rules:row-{r1}"));
+    assert!(paints(cx, handle, "rules:heading:Pattern"));
+
+    with_window(cx, handle, |_, cx| {
+        shell.update(cx, |s, cx| {
+            s.rules_page
+                .update(cx, |p, cx| p.set_rule_selected(r1, true, cx));
+        });
+    });
+    draw_frame(cx, handle);
+    assert!(paints(cx, handle, "rules:move-bar"), "the Move bar shows");
+    assert!(
+        !paints(cx, handle, "rules:heading:Pattern"),
+        "the heading row is replaced, not pushed down"
+    );
+    let after = bounds(cx, handle, format!("rules:row-{r1}"));
+    assert!(
+        (f32::from(after.origin.y) - f32::from(before.origin.y)).abs() <= 1.,
+        "the list's top does not move: {} -> {}",
+        f32::from(before.origin.y),
+        f32::from(after.origin.y),
+    );
+    // Clearing the selection brings the heading back.
+    click(cx, handle, "rules:clear-btn");
+    draw_frame(cx, handle);
+    assert!(!paints(cx, handle, "rules:move-bar"));
+    assert!(paints(cx, handle, "rules:heading:Pattern"));
+}
+
 /// 3.28: thousands of rules — the virtualized list builds only the rows
 /// that can be on screen, headers included.
 #[gpui::test]
@@ -1630,6 +1856,8 @@ fn rules_page_rebuilds_its_items_only_when_inputs_change(cx: &mut TestAppContext
 /// and each rule row's Edit (pencil) and Delete (trash). The buttons'
 /// selectors name the icon assets they draw, the old "…" labels draw
 /// nothing, and the drawn widths show the icons actually paint.
+/// 3.58: the row actions are icon-only `row_action_button`s revealed on
+/// row hover, so only New rule needs the label-width check.
 #[gpui::test]
 fn the_rules_buttons_paint_icons_instead_of_ellipses(cx: &mut TestAppContext) {
     let mut ids = (0i64, 0i64);
@@ -1642,39 +1870,46 @@ fn the_rules_buttons_paint_icons_instead_of_ellipses(cx: &mut TestAppContext) {
         assert!(!paints(cx, handle, old), "{old} no longer paints");
     }
     let new_btn = bounds(cx, handle, format!("label:{NEW_RULE}"));
-    let edit = bounds(
-        cx,
-        handle,
-        format!("rules:row-edit:{rule}:icons/pencil.svg"),
-    );
-    let delete = bounds(
-        cx,
-        handle,
-        format!("rules:row-delete:{rule}:icons/trash.svg"),
-    );
 
-    let mut refs = open_icon_text_refs(
-        cx,
-        vec![
-            ("ref:rules-new", NEW_RULE),
-            ("ref:rules-delete", "Delete"),
-            ("ref:rules-edit", "Edit"),
-        ],
+    // 3.58: nothing hovers the row, so its actions stay invisible.
+    let edit_sel = format!("rules:row-edit:{rule}:icons/pencil.svg");
+    let delete_sel = format!("rules:row-delete:{rule}:icons/trash.svg");
+    assert!(
+        !paints(cx, handle, edit_sel.clone()),
+        "Edit reveals on row hover only"
     );
-    for (what, btn, text_sel) in [
-        ("the New rule button", new_btn, "ref:rules-new"),
-        ("the rule row's Edit", edit, "ref:rules-edit"),
-        ("the rule row's Delete", delete, "ref:rules-delete"),
-    ] {
-        assert_button_paints_icon(
-            &mut refs,
-            what,
-            btn,
-            text_sel,
-            MEDIUM_ICON_BLOCK_W,
-            MEDIUM_BUTTON_PAD_X,
+    assert!(
+        !paints(cx, handle, delete_sel.clone()),
+        "Delete reveals on row hover only"
+    );
+    let mut window = VisualTestContext::from_window(handle, cx);
+    let row = bounds(cx, handle, format!("rules:row-{rule}"));
+    window.simulate_mouse_move(row.center(), None, Modifiers::default());
+    cx.run_until_parked();
+    draw_frame(cx, handle);
+    let edit = bounds(cx, handle, edit_sel);
+    let delete = bounds(cx, handle, delete_sel);
+    // Icon-only: no "Edit"/"Delete" text anywhere, and the buttons stay
+    // well under the width a labelled ghost button had.
+    for old in ["label:Edit", "label:Delete"] {
+        assert!(!paints(cx, handle, old), "{old} no longer paints");
+    }
+    for (what, btn) in [("Edit", edit), ("Delete", delete)] {
+        assert!(
+            btn.size.width.as_f32() < 48.,
+            "{what} is icon-only, not a labelled button: {btn:?}"
         );
     }
+
+    let mut refs = open_icon_text_refs(cx, vec![("ref:rules-new", NEW_RULE)]);
+    assert_button_paints_icon(
+        &mut refs,
+        "the New rule button",
+        new_btn,
+        "ref:rules-new",
+        MEDIUM_ICON_BLOCK_W,
+        MEDIUM_BUTTON_PAD_X,
+    );
 }
 
 /// 3.28: at the 1200 × 720 minimum window the Rules page fits: header,

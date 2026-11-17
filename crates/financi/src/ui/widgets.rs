@@ -339,6 +339,9 @@ pub(super) struct DataList<V: Render> {
     heading_selectors: Option<SharedString>,
     selector: Option<SharedString>,
     scroll: VirtualListScrollHandle,
+    /// 3.58: draw without the 32 px heading row, so the page can put
+    /// something else in the heading slot (the Rules page's Move bar).
+    hide_heading: bool,
 }
 
 impl<V: Render> DataList<V> {
@@ -374,7 +377,28 @@ impl<V: Render> DataList<V> {
             heading_selectors: None,
             selector: None,
             scroll: VirtualListScrollHandle::new(),
+            hide_heading: false,
         }
+    }
+
+    /// Override the per-line heights: `f` returns a line's height in px
+    /// (3.58: the Rules page's in-row editor is taller than a plain row).
+    /// Default lines are [`LIST_ROW_HEIGHT`] / [`LIST_GROUP_HEIGHT`].
+    pub fn sizes(mut self, f: impl Fn(&DataItem) -> f32) -> Self {
+        self.sizes = Rc::new(
+            self.items
+                .iter()
+                .map(|item| size(px(0.), px(f(item))))
+                .collect(),
+        );
+        self
+    }
+
+    /// Skip the built-in heading row (3.58). The page is then responsible
+    /// for whatever occupies the top of the panel.
+    pub fn hide_heading(mut self) -> Self {
+        self.hide_heading = true;
+        self
     }
 
     /// Paint every line through `f`. For a [`DataItem::Row`] return one
@@ -443,9 +467,8 @@ impl<V: Render> DataList<V> {
     }
 
     /// Make the headings clickable: clicking the heading for column
-    /// `title` calls `f` with the direction to sort by next. (No page
-    /// sorts through the shared list yet; 3.58 wires the history.)
-    #[allow(dead_code)]
+    /// `title` calls `f` with the direction to sort by next. (3.58: the
+    /// Rules page is the first user.)
     pub fn sort(
         mut self,
         f: impl Fn(&mut V, &'static str, SortState, &mut Window, &mut Context<V>) + 'static,
@@ -456,7 +479,6 @@ impl<V: Render> DataList<V> {
 
     /// Mark the column the list is sorted by; its heading shows an
     /// arrow and a repeat click flips the direction.
-    #[allow(dead_code)]
     pub fn sorted_by(mut self, title: &'static str, state: SortState) -> Self {
         self.sorted_by = Some((title, state));
         self
@@ -569,6 +591,7 @@ impl<V: Render> RenderOnce for DataList<V> {
 
         let columns = self.columns.clone();
         let items = self.items.clone();
+        let sizes = self.sizes.clone();
         let cells = self.cells.clone();
         let on_pass = self.on_pass.clone();
         let actions = self.actions.clone();
@@ -591,6 +614,10 @@ impl<V: Render> RenderOnce for DataList<V> {
                 let mut lines = Vec::with_capacity(range.len());
                 for (i, item) in items[range].iter().enumerate() {
                     let is_last = start + i + 1 == total;
+                    // The line's own height from the sizes table (40 px
+                    // rows and 36 px groups unless [`DataList::sizes`]
+                    // overrode them), so taller in-line content fits.
+                    let line_h = sizes[start + i].height;
                     let painted = cells(view, item, window, cx);
                     let line = match item {
                         DataItem::Row {
@@ -600,9 +627,13 @@ impl<V: Render> RenderOnce for DataList<V> {
                         } => {
                             let group = format!("financi-list-row-{selector}");
                             let selected = *selected;
+                            // 3.58: a line that paints exactly one cell
+                            // spans the full row (a page's in-line editor);
+                            // ordinary rows return one cell per column.
+                            let single = painted.len() == 1 && columns.len() > 1;
                             let mut row = div()
                                 .w_full()
-                                .h(px(LIST_ROW_HEIGHT))
+                                .h(line_h)
                                 .px_3()
                                 .gap_4()
                                 .flex()
@@ -616,10 +647,33 @@ impl<V: Render> RenderOnce for DataList<V> {
                                     let s = selector.clone();
                                     move || s.clone()
                                 })
-                                .children(painted.into_iter().enumerate().map(|(j, cell)| {
-                                    list_cell(&columns[j.min(columns.len() - 1)], cell, selector, j)
-                                }));
-                            if let (Some(f), Some(w)) = (&actions, actions_width) {
+                                .children(if single {
+                                    vec![
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .min_h_0()
+                                            .overflow_hidden()
+                                            .child(painted.into_iter().next().unwrap().el)
+                                            .into_any_element(),
+                                    ]
+                                } else {
+                                    painted
+                                        .into_iter()
+                                        .enumerate()
+                                        .map(|(j, cell)| {
+                                            list_cell(
+                                                &columns[j.min(columns.len() - 1)],
+                                                cell,
+                                                selector,
+                                                j,
+                                            )
+                                        })
+                                        .collect()
+                                });
+                            if let (Some(f), Some(w)) = (&actions, actions_width)
+                                && !single
+                            {
                                 let painted = f(view, item, window, cx);
                                 row = row.child(
                                     div()
@@ -658,7 +712,7 @@ impl<V: Render> RenderOnce for DataList<V> {
                             let group = format!("financi-list-group-{selector}");
                             let mut head = div()
                                 .w_full()
-                                .h(px(LIST_GROUP_HEIGHT))
+                                .h(line_h)
                                 .px_3()
                                 .gap_4()
                                 .flex()
@@ -751,7 +805,7 @@ impl<V: Render> RenderOnce for DataList<V> {
             .min_h_0()
             .flex()
             .flex_col()
-            .child(heading)
+            .when(!self.hide_heading, |el| el.child(heading))
             .child(list);
         match self.selector {
             Some(s) => root

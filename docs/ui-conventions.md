@@ -370,8 +370,7 @@ matching rules in matcher order, the winner first and marked "wins".
 Checked rows replace the heading row with a Move bar ("N selected", a
 subcategory picker, Move, Clear). Show rule lands here: filters cleared,
 Search set to the pattern, the row scrolled into view in `list_active`
-until the user searches or leaves. The look, Total and the Move bar
-arrive with 3.58.
+until the user searches or leaves.
 
 **Transfers.** Open transfer reviews, each row with its candidates and
 "Not a transfer".
