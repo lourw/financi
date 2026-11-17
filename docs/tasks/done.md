@@ -1960,3 +1960,26 @@ degrade-safe.
   - Tests: each cache rebuilds on its input change and not on an
     unrelated notify (counter hooks); a toast tick doesn't re-render the
     page.
+
+- [x] **3.36 Chart legend under the chart.** The legend column beside the
+  bars (`LEGEND_W`, 140 px) still takes width the plot needs. Move it
+  below the chart and condense it (user request, 2026-11-11; changes
+  decision D1 from "beside" to "below"):
+  - **Review update (2026-11-11):** On `DashboardPage` (3.82), after 3.86: the plot width is measured, so drop the `LEGEND_W` arithmetic rather than adjusting it. Leave room in the chips for 3.46's selected / dimmed state.
+  - The plot takes the panel's full inner width; `chart_label_plan` /
+    `chart_plot_width` no longer subtract `LEGEND_W` (remove the const).
+  - **Legend:** a wrapping row of chips under the plot (`flex_wrap`,
+    `gap_x_3`, `gap_y_1`): each chip is the 10×10 swatch and the name in
+    `text_xs`, name ellipsized at ~120 px. Clicking, the tooltip
+    (amount · share), the selected chip's `list_active` and "← All
+    categories" (first chip when drilled in) all work as in 3.31.
+  - At most **two lines** of chips (~40 px). If more chips than fit, the
+    last visible chip is "+N more" (muted), whose tooltip lists the hidden
+    names; clicking it does nothing. The chart panel keeps its fixed
+    height (~340 px); the plot takes what the title and legend leave.
+  - Tests: the plot is wider than before at 1200 × 720 (about +150 px);
+    the legend paints below the plot's bottom edge and inside the panel;
+    with 15 categories it uses ≤ 2 lines and shows "+N more" with the
+    right N; clicking a chip still selects / drills; the 3.31 legend and
+    bar-label tests are updated, not deleted. Update the *Dashboard* row
+    of `ui-conventions.md` and D1.
