@@ -170,6 +170,11 @@ pub(super) struct DataCol {
     pub width: Col,
     /// Alignment, shared by heading and rows.
     pub align: ColAlign,
+    /// Whether this column's heading sorts the list (see
+    /// [`DataList::sort`]). Only sortable headings get the button and
+    /// arrow; the rest — a checkbox spacer, a tag column — stay plain
+    /// labels, so the sorted column's arrow is the only one on the row.
+    sortable: bool,
 }
 
 impl DataCol {
@@ -178,7 +183,14 @@ impl DataCol {
             title,
             width,
             align,
+            sortable: false,
         }
+    }
+
+    /// Let this column's heading sort the list (see [`DataList::sort`]).
+    pub fn sortable(mut self) -> Self {
+        self.sortable = true;
+        self
     }
 }
 
@@ -339,6 +351,9 @@ pub(super) struct DataList<V: Render> {
     heading_selectors: Option<SharedString>,
     selector: Option<SharedString>,
     scroll: VirtualListScrollHandle,
+    /// 3.58: draw without the 32 px heading row, so the page can put
+    /// something else in the heading slot (the Rules page's Move bar).
+    hide_heading: bool,
 }
 
 impl<V: Render> DataList<V> {
@@ -374,7 +389,28 @@ impl<V: Render> DataList<V> {
             heading_selectors: None,
             selector: None,
             scroll: VirtualListScrollHandle::new(),
+            hide_heading: false,
         }
+    }
+
+    /// Override the per-line heights: `f` returns a line's height in px
+    /// (3.58: the Rules page's in-row editor is taller than a plain row).
+    /// Default lines are [`LIST_ROW_HEIGHT`] / [`LIST_GROUP_HEIGHT`].
+    pub fn sizes(mut self, f: impl Fn(&DataItem) -> f32) -> Self {
+        self.sizes = Rc::new(
+            self.items
+                .iter()
+                .map(|item| size(px(0.), px(f(item))))
+                .collect(),
+        );
+        self
+    }
+
+    /// Skip the built-in heading row (3.58). The page is then responsible
+    /// for whatever occupies the top of the panel.
+    pub fn hide_heading(mut self) -> Self {
+        self.hide_heading = true;
+        self
     }
 
     /// Paint every line through `f`. For a [`DataItem::Row`] return one
@@ -443,9 +479,10 @@ impl<V: Render> DataList<V> {
     }
 
     /// Make the headings clickable: clicking the heading for column
-    /// `title` calls `f` with the direction to sort by next. (No page
-    /// sorts through the shared list yet; 3.58 wires the history.)
-    #[allow(dead_code)]
+    /// `title` calls `f` with the direction to sort by next. Only
+    /// columns marked [`DataCol::sortable`] get the button and arrow —
+    /// the others keep a plain label. (3.58: the Rules page is the
+    /// first user.)
     pub fn sort(
         mut self,
         f: impl Fn(&mut V, &'static str, SortState, &mut Window, &mut Context<V>) + 'static,
@@ -456,7 +493,6 @@ impl<V: Render> DataList<V> {
 
     /// Mark the column the list is sorted by; its heading shows an
     /// arrow and a repeat click flips the direction.
-    #[allow(dead_code)]
     pub fn sorted_by(mut self, title: &'static str, state: SortState) -> Self {
         self.sorted_by = Some((title, state));
         self
@@ -489,7 +525,7 @@ impl<V: Render> DataList<V> {
             .gap_1()
             .items_center()
             .child(div().child(col.title));
-        let inner = match (&self.sort, sorted) {
+        let inner = match (self.sort.as_ref().filter(|_| col.sortable), sorted) {
             (None, _) => inner.into_any_element(),
             (Some(_), state) => {
                 let next = match state {
@@ -499,7 +535,7 @@ impl<V: Render> DataList<V> {
                 let f = self.sort.clone().unwrap();
                 let host = self.host.clone();
                 let title = col.title;
-                inner
+                let btn = inner
                     .id(SharedString::from(format!(
                         "financi-heading-{}",
                         col.title.replace(' ', "-")
@@ -508,17 +544,30 @@ impl<V: Render> DataList<V> {
                     .hover(|s| s.underline())
                     .on_click(move |_, window, cx| {
                         host.update(cx, |v, cx| f(v, title, next, window, cx));
-                    })
-                    .child(
-                        div().flex_none().child(
-                            Icon::new(match state {
-                                Some((_, SortState::Descending)) => IconName::SortDescending,
-                                _ => IconName::SortAscending,
-                            })
-                            .xsmall(),
-                        ),
-                    )
-                    .into_any_element()
+                    });
+                // The arrow marks the sorted column — and only that
+                // one: an unsorted sortable heading is text alone. The
+                // test selector carries the direction, so a test can
+                // pin which way the arrow paints.
+                let inner = match state {
+                    Some((_, dir)) => {
+                        let (name, icon) = match dir {
+                            SortState::Ascending => ("asc", IconName::SortAscending),
+                            SortState::Descending => ("desc", IconName::SortDescending),
+                        };
+                        let arrow = div().flex_none().child(Icon::new(icon).xsmall());
+                        let arrow = match self.heading_selectors.as_ref() {
+                            Some(prefix) => {
+                                let sel = format!("{prefix}:heading:{}:arrow:{name}", col.title);
+                                arrow.debug_selector(move || sel.clone())
+                            }
+                            None => arrow,
+                        };
+                        btn.child(arrow)
+                    }
+                    None => btn,
+                };
+                inner.into_any_element()
             }
         };
         let cell = col_cell(col, div()).child(inner);
@@ -569,6 +618,7 @@ impl<V: Render> RenderOnce for DataList<V> {
 
         let columns = self.columns.clone();
         let items = self.items.clone();
+        let sizes = self.sizes.clone();
         let cells = self.cells.clone();
         let on_pass = self.on_pass.clone();
         let actions = self.actions.clone();
@@ -591,6 +641,10 @@ impl<V: Render> RenderOnce for DataList<V> {
                 let mut lines = Vec::with_capacity(range.len());
                 for (i, item) in items[range].iter().enumerate() {
                     let is_last = start + i + 1 == total;
+                    // The line's own height from the sizes table (40 px
+                    // rows and 36 px groups unless [`DataList::sizes`]
+                    // overrode them), so taller in-line content fits.
+                    let line_h = sizes[start + i].height;
                     let painted = cells(view, item, window, cx);
                     let line = match item {
                         DataItem::Row {
@@ -600,9 +654,13 @@ impl<V: Render> RenderOnce for DataList<V> {
                         } => {
                             let group = format!("financi-list-row-{selector}");
                             let selected = *selected;
+                            // 3.58: a line that paints exactly one cell
+                            // spans the full row (a page's in-line editor);
+                            // ordinary rows return one cell per column.
+                            let single = painted.len() == 1 && columns.len() > 1;
                             let mut row = div()
                                 .w_full()
-                                .h(px(LIST_ROW_HEIGHT))
+                                .h(line_h)
                                 .px_3()
                                 .gap_4()
                                 .flex()
@@ -616,10 +674,33 @@ impl<V: Render> RenderOnce for DataList<V> {
                                     let s = selector.clone();
                                     move || s.clone()
                                 })
-                                .children(painted.into_iter().enumerate().map(|(j, cell)| {
-                                    list_cell(&columns[j.min(columns.len() - 1)], cell, selector, j)
-                                }));
-                            if let (Some(f), Some(w)) = (&actions, actions_width) {
+                                .children(if single {
+                                    vec![
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .min_h_0()
+                                            .overflow_hidden()
+                                            .child(painted.into_iter().next().unwrap().el)
+                                            .into_any_element(),
+                                    ]
+                                } else {
+                                    painted
+                                        .into_iter()
+                                        .enumerate()
+                                        .map(|(j, cell)| {
+                                            list_cell(
+                                                &columns[j.min(columns.len() - 1)],
+                                                cell,
+                                                selector,
+                                                j,
+                                            )
+                                        })
+                                        .collect()
+                                });
+                            if let (Some(f), Some(w)) = (&actions, actions_width)
+                                && !single
+                            {
                                 let painted = f(view, item, window, cx);
                                 row = row.child(
                                     div()
@@ -658,7 +739,7 @@ impl<V: Render> RenderOnce for DataList<V> {
                             let group = format!("financi-list-group-{selector}");
                             let mut head = div()
                                 .w_full()
-                                .h(px(LIST_GROUP_HEIGHT))
+                                .h(line_h)
                                 .px_3()
                                 .gap_4()
                                 .flex()
@@ -751,7 +832,7 @@ impl<V: Render> RenderOnce for DataList<V> {
             .min_h_0()
             .flex()
             .flex_col()
-            .child(heading)
+            .when(!self.hide_heading, |el| el.child(heading))
             .child(list);
         match self.selector {
             Some(s) => root
@@ -850,8 +931,7 @@ pub(super) fn type_tag(label: impl Into<SharedString>) -> Tag {
 
 /// A row action: a ghost xsmall icon button with a tooltip naming it
 /// (ui-conventions *Interaction* — icon-only actions always explain
-/// themselves on hover). (Built ahead of the pages that move onto it.)
-#[allow(dead_code)]
+/// themselves on hover).
 pub(super) fn row_action_button(
     id: impl Into<SharedString>,
     icon: IconName,

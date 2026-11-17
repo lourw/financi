@@ -170,7 +170,7 @@ Start these only after both queues are done (`docs/tasks.md` → *Picking the ne
 
 ## Lane B — Categories and Rules pages (after both queues)
 
-- [ ] **3.58 A cleaner Rules page with totals.** The Rules page (3.28)
+- [x] **3.58 A cleaner Rules page with totals.** The Rules page (3.28)
   "is very very ugly". The user also wants each rule's **total amount**
   next to its count, and the page must stay virtualized and responsive
   (user request, 2026-11-11). Today it has 24 px rows on the page
