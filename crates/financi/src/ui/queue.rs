@@ -336,7 +336,7 @@ impl QueuePage {
         // continuation and swallow its refresh.
         cx.spawn_in(window, async move |this, cx| {
             let result = on_db(&db, move |c| {
-                categorize_group(c, &merchant_for_db, category_id)
+                categorize_group(c, &merchant_for_db, None, false, category_id)
             })
             .await;
             let _ = this.update_in(cx, |this, _window, cx| {
