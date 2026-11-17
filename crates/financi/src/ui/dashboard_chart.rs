@@ -265,6 +265,147 @@ pub(super) fn legend_visible(
     Some(0)
 }
 
+// --------------------------------------------------- 3.93 monthly stacks
+
+/// One month of the *Monthly spending by category* stacked bar chart
+/// (3.93): the month key (`YYYY-MM`), the bar's height in positive cents
+/// (the `Spend` row, or the drilled-in parent's row while drilled) and
+/// its segments bottom-up.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct MonthStack {
+    pub(crate) month: SharedString,
+    pub(crate) total: i64,
+    pub(crate) segments: Vec<StackSegment>,
+}
+
+/// One segment of a [`MonthStack`]: the category (`None` — the
+/// `Uncategorized` pseudo-row), its name, and its spend for that month
+/// in positive cents.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct StackSegment {
+    pub(crate) id: Option<i64>,
+    pub(crate) name: SharedString,
+    pub(crate) cents: i64,
+}
+
+/// Shape [`MonthlySummary`](financi_db::MonthlySummary) into the stacked
+/// bars (3.93) — GPUI-free so the rules are unit-testable:
+///
+/// - one bar per month, in the summary's month order;
+/// - top level: one segment per spend parent row (the `Transfers` row
+///   included exactly when the summary carries it, i.e. when the filter
+///   includes transfers), plus `Uncategorized`; the `Income`, `Spend`
+///   and `Net` rows and every child row are left out;
+/// - drilled into a parent: the segments are that parent's children and
+///   the bar height is the parent's own row;
+/// - `total` is the month's `Spend` row (or the parent's row when
+///   drilled), clamped to zero, so the bar's segments sum to the bar;
+/// - the segment order is the summary's row order (largest total over
+///   the range at the bottom, `Uncategorized` last) and is identical in
+///   every bar, so a category keeps its place and color month to month.
+///
+/// `categories` is the category tree: the summary's rows are parents
+/// each followed by their children, and only the tree says which is
+/// which (the same lookup as [`DashboardPage::parent_of`]).
+pub(crate) fn monthly_stacks(
+    summary: &MonthlySummary,
+    drill: Option<i64>,
+    categories: &[CategoryNode],
+) -> Vec<MonthStack> {
+    // The query's last three rows are always Income, Spend and Net
+    // (`summary_rows` in `financi-db`); above them sit the spend
+    // parents, each followed by its own children.
+    let n = summary.rows.len();
+    if n < 3 {
+        return Vec::new();
+    }
+    let category_rows = &summary.rows[..n - 3];
+    let parent_of = |id: i64| {
+        categories
+            .iter()
+            .find(|p| p.children.iter().any(|c| c.id == id))
+            .map(|p| p.id)
+    };
+    // Which summary rows the segments are drawn from, in bar order.
+    let seg_rows: Vec<&MonthlySummaryRow> = match drill {
+        None => {
+            let mut rows: Vec<&MonthlySummaryRow> = category_rows
+                .iter()
+                .filter(|r| match r.id {
+                    None => true, // the `Uncategorized` pseudo-row
+                    Some(id) => parent_of(id).is_none(),
+                })
+                .collect();
+            // `Uncategorized` is always the last category, whatever its
+            // amount (ui-conventions *Categories*), like the legend and
+            // the summary grid.
+            rows.sort_by_key(|r| r.id.is_none());
+            rows
+        }
+        Some(parent) => {
+            let child_ids: Vec<i64> = categories
+                .iter()
+                .find(|p| p.id == parent)
+                .map(|p| p.children.iter().map(|c| c.id).collect())
+                .unwrap_or_default();
+            category_rows
+                .iter()
+                .filter(|r| r.id.is_some_and(|id| child_ids.contains(&id)))
+                .collect()
+        }
+    };
+    // The row whose month values are the bar height: the `Spend` row at
+    // the top level, the drilled parent's own row when drilled (which
+    // can be absent if the parent has no spend in range — then every
+    // bar is an empty slot).
+    let height_row = match drill {
+        None => Some(&summary.rows[n - 2]),
+        Some(parent) => category_rows.iter().find(|r| r.id == Some(parent)),
+    };
+    summary
+        .months
+        .iter()
+        .enumerate()
+        .map(|(ix, month)| {
+            let total = height_row
+                .and_then(|r| r.months.get(ix))
+                .copied()
+                .unwrap_or(0)
+                .max(0);
+            let segments = seg_rows
+                .iter()
+                .filter_map(|r| {
+                    let cents = r.months.get(ix).copied().unwrap_or(0);
+                    (cents > 0).then(|| StackSegment {
+                        id: r.id,
+                        name: SharedString::from(r.name.as_str()),
+                        cents,
+                    })
+                })
+                .collect();
+            MonthStack {
+                month: SharedString::from(month.as_str()),
+                total,
+                segments,
+            }
+        })
+        .collect()
+}
+
+/// A left-axis gridline amount (3.93), compact so the gutter stays
+/// narrow: `$1.2k` from $1,000 up (one decimal, dropped when whole),
+/// whole dollars below (`$86`), and cents only under a dollar (`$0.42`).
+pub(crate) fn axis_amount(cents: i64) -> String {
+    if cents >= 100_000 {
+        let s = format!("{:.1}", cents as f64 / 100_000.);
+        format!("${}k", s.strip_suffix(".0").unwrap_or(&s))
+    } else if cents >= 100 {
+        format!("${}", cents.div_euclid(100))
+    } else {
+        format!("${:.2}", cents as f64 / 100.)
+    }
+}
+
 impl DashboardPage {
     /// Click a legend row (3.5). A parent at the top level drills the chart
     /// and legend into its children and filters the table to that parent;

@@ -26,6 +26,7 @@ mod layout;
 mod legend_selection;
 mod row_menu;
 mod search;
+mod stacked_bars;
 mod summary;
 mod summary_scroll;
 mod table;
