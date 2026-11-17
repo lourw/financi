@@ -100,18 +100,14 @@ impl Default for TxSort {
     }
 }
 
-/// The dashboard table's query parameters beyond the shared [`ViewFilter`]
-/// (task 3.4): a selected category (parent or child), an optional month, a
-/// case-insensitive text search, the two table toggles and the sort. With
-/// [`Default`] the query is the plain browse table: no category, no month,
-/// no search, hidden rows excluded, newest first.
+/// The dashboard's view-wide narrowing (3.46): the conditions every
+/// dashboard query applies — chart, summary grid and table alike — so a
+/// search or toggle narrows the whole page, not just the table. The table
+/// owns this through [`TxTableFilter::narrow`]; the aggregate queries take
+/// it directly. With [`Default`] nothing is narrowed: no search text, all
+/// categories, hidden rows excluded.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct TxTableFilter {
-    /// A category id, matched whether it is a parent (its children's rows)
-    /// or a child (that child's rows).
-    pub category_id: Option<i64>,
-    /// A `YYYY-MM` month, matched against the start of `posted_date`.
-    pub month: Option<String>,
+pub struct ViewNarrow {
     /// Case-insensitive substring matched against `description_raw` or
     /// `merchant`; empty or `None` matches everything.
     pub search: Option<String>,
@@ -119,6 +115,22 @@ pub struct TxTableFilter {
     pub uncategorized_only: bool,
     /// Include hidden rows; when false they are left out.
     pub show_hidden: bool,
+}
+
+/// The dashboard table's query parameters beyond the shared [`ViewFilter`]
+/// (task 3.4): the view-wide [`ViewNarrow`], a selected category (parent or
+/// child), an optional month and the sort. With [`Default`] the query is
+/// the plain browse table: nothing narrowed, no category, no month, newest
+/// first.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TxTableFilter {
+    /// The search and the two toggles, shared with the chart and summary.
+    pub narrow: ViewNarrow,
+    /// A category id, matched whether it is a parent (its children's rows)
+    /// or a child (that child's rows).
+    pub category_id: Option<i64>,
+    /// A `YYYY-MM` month, matched against the start of `posted_date`.
+    pub month: Option<String>,
     pub sort: TxSort,
 }
 
@@ -139,13 +151,16 @@ pub struct FilterSql {
 }
 
 impl FilterSql {
-    /// The conditions for a shared filter and, when given, the table's own
-    /// conditions: the inclusive date range, the account list (empty means
-    /// every account), transfers excluded unless requested, and the table's
-    /// category, month, uncategorized-only and search conditions. Hidden
-    /// rows are excluded unless the table filter shows them; with no table
-    /// filter they are always excluded (the aggregate queries' rule).
-    pub fn new(filter: &ViewFilter, table: Option<&TxTableFilter>) -> Self {
+    /// The conditions for a shared filter and the view-wide narrowing
+    /// (3.46): the inclusive date range, the account list (empty means
+    /// every account), transfers excluded unless requested, the search,
+    /// the uncategorized-only toggle and hidden rows excluded unless
+    /// `narrow` shows them. When a table filter is given its own
+    /// conditions are appended too: the category and month selections
+    /// (its narrowing rides the `narrow` argument — pass
+    /// `&table.narrow`, so the table and the aggregate queries can never
+    /// diverge on it).
+    pub fn new(filter: &ViewFilter, narrow: &ViewNarrow, table: Option<&TxTableFilter>) -> Self {
         let mut fs = Self {
             sql: String::new(),
             args: Vec::new(),
@@ -168,51 +183,48 @@ impl FilterSql {
         if !filter.include_transfers {
             fs.push_sql(" AND COALESCE(c.kind, 'expense') <> 'transfer'");
         }
-        match table {
-            None => fs.push_sql(" AND t.hidden = 0"),
-            Some(table) => {
-                // A category selection matches that category, or a parent's children.
-                if let Some(cat) = table.category_id {
-                    let a = fs.push_arg(Box::new(cat));
-                    let b = fs.push_arg(Box::new(cat));
-                    fs.push_sql(&format!(" AND (t.category_id = {a} OR c.parent_id = {b})"));
-                }
-                if let Some(month) = table.month.as_ref().filter(|m| !m.is_empty()) {
-                    // A half-open `posted_date` range rather than
-                    // `substr(posted_date, 1, 7) = ?`, so the planner can
-                    // use the date index (3.88).
-                    match month_bounds(month) {
-                        Some((start, end)) => {
-                            let a = fs.push_arg(Box::new(start));
-                            let b = fs.push_arg(Box::new(end));
-                            fs.push_sql(&format!(
-                                " AND t.posted_date >= {a} AND t.posted_date < {b}"
-                            ));
-                        }
-                        // A malformed month matches nothing, as the old
-                        // equality against well-formed dates could.
-                        None => fs.push_sql(" AND 1 = 0"),
+        if narrow.uncategorized_only {
+            fs.push_sql(" AND t.category_id IS NULL");
+        }
+        // Case-insensitive substring on the raw stored strings. Case folding is
+        // ASCII-only: SQLite's `lower()` and Rust's `str::to_lowercase` are used
+        // on the term, so non-ASCII letters (e.g. an accented "café") are matched
+        // case-sensitively against the stored text. Good enough for v1; a
+        // locale-aware fold would need an ICU-backed SQLite build.
+        if let Some(term) = narrow.search.as_ref().filter(|s| !s.is_empty()) {
+            let term = term.to_lowercase();
+            let a = fs.push_arg(Box::new(term.clone()));
+            let b = fs.push_arg(Box::new(term));
+            fs.push_sql(&format!(
+                " AND (instr(lower(t.description_raw), {a}) > 0 \
+                   OR instr(lower(COALESCE(t.merchant, '')), {b}) > 0)"
+            ));
+        }
+        if !narrow.show_hidden {
+            fs.push_sql(" AND t.hidden = 0");
+        }
+        if let Some(table) = table {
+            // A category selection matches that category, or a parent's children.
+            if let Some(cat) = table.category_id {
+                let a = fs.push_arg(Box::new(cat));
+                let b = fs.push_arg(Box::new(cat));
+                fs.push_sql(&format!(" AND (t.category_id = {a} OR c.parent_id = {b})"));
+            }
+            if let Some(month) = table.month.as_ref().filter(|m| !m.is_empty()) {
+                // A half-open `posted_date` range rather than
+                // `substr(posted_date, 1, 7) = ?`, so the planner can
+                // use the date index (3.88).
+                match month_bounds(month) {
+                    Some((start, end)) => {
+                        let a = fs.push_arg(Box::new(start));
+                        let b = fs.push_arg(Box::new(end));
+                        fs.push_sql(&format!(
+                            " AND t.posted_date >= {a} AND t.posted_date < {b}"
+                        ));
                     }
-                }
-                if table.uncategorized_only {
-                    fs.push_sql(" AND t.category_id IS NULL");
-                }
-                // Case-insensitive substring on the raw stored strings. Case folding is
-                // ASCII-only: SQLite's `lower()` and Rust's `str::to_lowercase` are used
-                // on the term, so non-ASCII letters (e.g. an accented "café") are matched
-                // case-sensitively against the stored text. Good enough for v1; a
-                // locale-aware fold would need an ICU-backed SQLite build.
-                if let Some(term) = table.search.as_ref().filter(|s| !s.is_empty()) {
-                    let term = term.to_lowercase();
-                    let a = fs.push_arg(Box::new(term.clone()));
-                    let b = fs.push_arg(Box::new(term));
-                    fs.push_sql(&format!(
-                        " AND (instr(lower(t.description_raw), {a}) > 0 \
-                           OR instr(lower(COALESCE(t.merchant, '')), {b}) > 0)"
-                    ));
-                }
-                if !table.show_hidden {
-                    fs.push_sql(" AND t.hidden = 0");
+                    // A malformed month matches nothing, as the old
+                    // equality against well-formed dates could.
+                    None => fs.push_sql(" AND 1 = 0"),
                 }
             }
         }
@@ -246,19 +258,16 @@ fn month_bounds(month: &str) -> Option<(String, String)> {
 }
 
 /// Browse-table rows for the dashboard (tasks 3.3–3.4): the shared
-/// [`ViewFilter`] (date range, accounts, transfers) plus the table-only
-/// [`TxTableFilter`] (category, month, search, uncategorized-only, show
-/// hidden and sort). Hidden rows are shown only with
-/// [`TxTableFilter::show_hidden`]; the search is a case-insensitive
-/// substring of `description_raw` or `merchant` as stored; a category
-/// selection matches that category and, if it is a parent, its children.
-/// The default filter is the plain browse table, newest first.
+/// [`ViewFilter`] (date range, accounts, transfers) plus the table's own
+/// [`TxTableFilter`] (the view-wide narrowing, category, month and sort);
+/// a category selection matches that category and, if it is a parent, its
+/// children. The default filter is the plain browse table, newest first.
 pub fn list_transactions_filtered(
     conn: &Connection,
     filter: &ViewFilter,
     table: &TxTableFilter,
 ) -> Result<Vec<TransactionRow>> {
-    let fs = FilterSql::new(filter, Some(table));
+    let fs = FilterSql::new(filter, &table.narrow, Some(table));
     let mut sql = format!(
         "SELECT t.id, i.name || ' · ' || a.name, t.posted_date, t.description_raw, t.merchant,
                 c.name, t.amount_cents, t.category_id, t.hidden, t.transfer_pair_id,
@@ -364,6 +373,11 @@ const MAX_SUMMARY_MONTHS: i64 = 1200;
 /// (uncategorized rows belong to no child). Only spend-bucket rows count
 /// (see the module docs); income parents therefore return no rows.
 ///
+/// `narrow` is the dashboard's view-wide narrowing (3.46): the search and
+/// the two toggles apply here exactly as they do to the table. `month`
+/// (`YYYY-MM`) narrows the rows to one month — the chart's selected month
+/// — and rows with no matching row in that month drop out.
+///
 /// Sorted by spend descending, name ascending on ties. `share` is the row's
 /// spend over the total spend of the rows returned — the overall total in
 /// the parent view, the parent's own total in the child view — so the
@@ -372,22 +386,27 @@ pub fn spend_by_category(
     conn: &Connection,
     filter: &ViewFilter,
     parent: Option<i64>,
+    narrow: &ViewNarrow,
+    month: Option<&str>,
 ) -> Result<Vec<CategorySpend>> {
-    Ok(spend_rows(&aggregate(conn, filter)?, parent))
+    Ok(spend_rows(&aggregate(conn, filter, narrow)?, parent, month))
 }
 
 /// [`spend_by_category`]'s rows from an already-computed aggregate, so
-/// [`dashboard`] can share one pass with [`summary_rows`].
-fn spend_rows(agg: &Aggregate, parent: Option<i64>) -> Vec<CategorySpend> {
+/// [`dashboard`] can share one pass with [`summary_rows`]. `month` keeps
+/// only rows that have a row in that month (the aggregate records one map
+/// entry per month with data, so a `contains_key` is the filter).
+fn spend_rows(agg: &Aggregate, parent: Option<i64>, month: Option<&str>) -> Vec<CategorySpend> {
     let mut rows: Vec<(Option<i64>, String, i64)> = match parent {
         None => {
             let mut rows: Vec<_> = agg
                 .parents
                 .iter()
-                .map(|(id, p)| (Some(*id), p.name.clone(), net_spend(&p.months)))
+                .filter(|(_, p)| has_month(&p.months, month))
+                .map(|(id, p)| (Some(*id), p.name.clone(), net_spend_in(&p.months, month)))
                 .collect();
-            if !agg.uncategorized.is_empty() {
-                let cents = net_spend(&agg.uncategorized);
+            if !agg.uncategorized.is_empty() && has_month(&agg.uncategorized, month) {
+                let cents = net_spend_in(&agg.uncategorized, month);
                 rows.push((None, UNCATEGORIZED.to_string(), cents));
             }
             rows
@@ -398,7 +417,8 @@ fn spend_rows(agg: &Aggregate, parent: Option<i64>) -> Vec<CategorySpend> {
             .map(|p| {
                 p.children
                     .iter()
-                    .map(|(id, c)| (Some(*id), c.name.clone(), net_spend(&c.months)))
+                    .filter(|(_, c)| has_month(&c.months, month))
+                    .map(|(id, c)| (Some(*id), c.name.clone(), net_spend_in(&c.months, month)))
                     .collect()
             })
             .unwrap_or_default(),
@@ -421,22 +441,35 @@ fn spend_rows(agg: &Aggregate, parent: Option<i64>) -> Vec<CategorySpend> {
 
 /// The monthly summary grid described on [`MonthlySummary`]. Parent and
 /// child rows are sorted by total spend descending (name ascending on
-/// ties) within the grid; `Uncategorized` sorts with the parents.
-pub fn monthly_summary(conn: &Connection, filter: &ViewFilter) -> Result<MonthlySummary> {
-    Ok(summary_rows(&aggregate(conn, filter)?, filter))
+/// ties) within the grid; `Uncategorized` sorts with the parents. The grid
+/// keeps every month in the range — a selected month highlights a column
+/// rather than dropping the others (3.46).
+pub fn monthly_summary(
+    conn: &Connection,
+    filter: &ViewFilter,
+    narrow: &ViewNarrow,
+) -> Result<MonthlySummary> {
+    Ok(summary_rows(&aggregate(conn, filter, narrow)?, filter))
 }
 
 /// Both dashboard queries in one pass over the matching rows (3.88): the
 /// top-level [`spend_by_category`] rows (as `dashboard` feeds the chart,
 /// `parent` is `None`) and the [`monthly_summary`] grid, aggregating the
-/// filtered rows once instead of twice. Equal to calling the two wrappers
-/// with the same filter.
+/// filtered rows once instead of twice. `narrow` is the view-wide
+/// narrowing, shared by both queries (3.46); `chart_month` narrows the
+/// chart rows only — the grid keeps its full month range, or the selected
+/// month's highlight and drill-down would lose their grid.
 pub fn dashboard(
     conn: &Connection,
     filter: &ViewFilter,
+    narrow: &ViewNarrow,
+    chart_month: Option<&str>,
 ) -> Result<(Vec<CategorySpend>, MonthlySummary)> {
-    let agg = aggregate(conn, filter)?;
-    Ok((spend_rows(&agg, None), summary_rows(&agg, filter)))
+    let agg = aggregate(conn, filter, narrow)?;
+    Ok((
+        spend_rows(&agg, None, chart_month),
+        summary_rows(&agg, filter),
+    ))
 }
 
 /// [`monthly_summary`]'s grid from an already-computed aggregate, so
@@ -530,8 +563,12 @@ struct GroupedRow {
     amount: i64,
 }
 
-fn grouped_rows(conn: &Connection, filter: &ViewFilter) -> Result<Vec<GroupedRow>> {
-    let fs = FilterSql::new(filter, None);
+fn grouped_rows(
+    conn: &Connection,
+    filter: &ViewFilter,
+    narrow: &ViewNarrow,
+) -> Result<Vec<GroupedRow>> {
+    let fs = FilterSql::new(filter, narrow, None);
     let sql = format!(
         "SELECT COALESCE(c.kind, 'expense'), p.id, p.name, c.id, c.name,
                 substr(t.posted_date, 1, 7), SUM(t.amount_cents)
@@ -584,9 +621,9 @@ struct Aggregate {
     spend: BTreeMap<String, i64>,
 }
 
-fn aggregate(conn: &Connection, filter: &ViewFilter) -> Result<Aggregate> {
+fn aggregate(conn: &Connection, filter: &ViewFilter, narrow: &ViewNarrow) -> Result<Aggregate> {
     let mut agg = Aggregate::default();
-    for row in grouped_rows(conn, filter)? {
+    for row in grouped_rows(conn, filter, narrow)? {
         if row.kind == "income" {
             *agg.income.entry(row.month).or_default() += row.amount;
             continue;
@@ -692,6 +729,20 @@ fn row_values(months: &[String], map: &BTreeMap<String, i64>, negate: bool) -> (
 
 fn net_spend(months: &BTreeMap<String, i64>) -> i64 {
     -months.values().sum::<i64>()
+}
+
+/// [`net_spend`] over one `YYYY-MM` month; `None` is every month (3.46).
+fn net_spend_in(months: &BTreeMap<String, i64>, month: Option<&str>) -> i64 {
+    match month {
+        None => net_spend(months),
+        Some(m) => -months.get(m).copied().unwrap_or(0),
+    }
+}
+
+/// Whether the bucket has a row in `month`; `None` is every month, and a
+/// bucket with any row passes (3.46).
+fn has_month(months: &BTreeMap<String, i64>, month: Option<&str>) -> bool {
+    month.is_none_or(|m| months.contains_key(m))
 }
 
 fn sort_rows(rows: &mut [(Option<i64>, String, i64)]) {
@@ -834,6 +885,7 @@ mod tests {
                     include_transfers: true,
                     ..Default::default()
                 },
+                &ViewNarrow::default(),
             )
             .unwrap();
             assert_eq!(summary.months, want_months, "{file}: month grid");
@@ -870,7 +922,8 @@ mod tests {
             }
 
             // With transfers excluded the card payments drop out of spend.
-            let closed = monthly_summary(&conn, &ViewFilter::default()).unwrap();
+            let closed =
+                monthly_summary(&conn, &ViewFilter::default(), &ViewNarrow::default()).unwrap();
             let closed_spend = named(&closed, "Spend");
             assert!(
                 closed.rows.iter().all(|r| r.name != "Transfers"),
@@ -938,11 +991,17 @@ mod tests {
         set_hidden(&f.conn, hidden, true).unwrap();
         add(&f.conn, "2026-10-12", -150_000, Some(f.card_payment));
 
-        let mine: Vec<(String, i64)> = spend_by_category(&f.conn, &ViewFilter::default(), None)
-            .unwrap()
-            .into_iter()
-            .map(|r| (r.name, r.spend_cents))
-            .collect();
+        let mine: Vec<(String, i64)> = spend_by_category(
+            &f.conn,
+            &ViewFilter::default(),
+            None,
+            &ViewNarrow::default(),
+            None,
+        )
+        .unwrap()
+        .into_iter()
+        .map(|r| (r.name, r.spend_cents))
+        .collect();
         assert_eq!(
             mine,
             vec![
@@ -1053,10 +1112,16 @@ mod tests {
             &[f.account_id, f.other_account_id],
             false,
         );
-        let (spend, summary) = dashboard(&f.conn, &filter).unwrap();
+        let (spend, summary) = dashboard(&f.conn, &filter, &ViewNarrow::default(), None).unwrap();
         // The thin wrappers agree with the single-pass dashboard.
-        assert_eq!(spend_by_category(&f.conn, &filter, None).unwrap(), spend);
-        assert_eq!(monthly_summary(&f.conn, &filter).unwrap(), summary);
+        assert_eq!(
+            spend_by_category(&f.conn, &filter, None, &ViewNarrow::default(), None).unwrap(),
+            spend
+        );
+        assert_eq!(
+            monthly_summary(&f.conn, &filter, &ViewNarrow::default()).unwrap(),
+            summary
+        );
         // Chart rows and the grid's Spend row are the same total, and the
         // row table over the same filter nets to the Net row: the hidden,
         // transfer and out-of-range rows are out of all three.
@@ -1101,7 +1166,7 @@ mod tests {
         };
         assert_eq!(ids(&by_month), ids(&by_range), "month = its date range");
         assert_eq!(by_month.iter().map(|r| r.amount_cents).sum::<i64>(), -8_300);
-        let (_, oct_sum) = dashboard(&f.conn, &october).unwrap();
+        let (_, oct_sum) = dashboard(&f.conn, &october, &ViewNarrow::default(), None).unwrap();
         assert_eq!(named(&oct_sum, "Spend").total, 8_300);
 
         // A category selection narrows the table to that parent's rows,
@@ -1117,7 +1182,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(by_food.iter().map(|r| r.amount_cents).sum::<i64>(), -7_600);
-        let (oct_spend, _) = dashboard(&f.conn, &october).unwrap();
+        let (oct_spend, _) = dashboard(&f.conn, &october, &ViewNarrow::default(), None).unwrap();
         let food_row = oct_spend
             .iter()
             .find(|r| r.id == Some(food))
@@ -1151,7 +1216,14 @@ mod tests {
             1200,
             Some(f.groceries),
         );
-        let rows = spend_by_category(&f.conn, &ViewFilter::default(), None).unwrap();
+        let rows = spend_by_category(
+            &f.conn,
+            &ViewFilter::default(),
+            None,
+            &ViewNarrow::default(),
+            None,
+        )
+        .unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].spend_cents, 3800, "the refund nets into Groceries");
         assert_eq!(rows[0].share, 1.0);
@@ -1165,7 +1237,14 @@ mod tests {
             9000,
             Some(f.groceries),
         );
-        let rows = spend_by_category(&f.conn, &ViewFilter::default(), None).unwrap();
+        let rows = spend_by_category(
+            &f.conn,
+            &ViewFilter::default(),
+            None,
+            &ViewNarrow::default(),
+            None,
+        )
+        .unwrap();
         assert_eq!(rows[0].spend_cents, -5200);
     }
 
@@ -1183,13 +1262,26 @@ mod tests {
         );
         let parent = transfers_parent(&f.conn);
 
-        let closed = spend_by_category(&f.conn, &ViewFilter::default(), None).unwrap();
+        let closed = spend_by_category(
+            &f.conn,
+            &ViewFilter::default(),
+            None,
+            &ViewNarrow::default(),
+            None,
+        )
+        .unwrap();
         assert_eq!(closed.len(), 1, "the transfer row is not shown");
         assert_eq!(closed[0].name, "Uncategorized");
         assert!(
-            spend_by_category(&f.conn, &ViewFilter::default(), Some(parent))
-                .unwrap()
-                .is_empty(),
+            spend_by_category(
+                &f.conn,
+                &ViewFilter::default(),
+                Some(parent),
+                &ViewNarrow::default(),
+                None
+            )
+            .unwrap()
+            .is_empty(),
             "drilling into Transfers with the toggle off has no rows"
         );
 
@@ -1197,16 +1289,17 @@ mod tests {
             include_transfers: true,
             ..Default::default()
         };
-        let rows = spend_by_category(&f.conn, &open, None).unwrap();
+        let rows = spend_by_category(&f.conn, &open, None, &ViewNarrow::default(), None).unwrap();
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].name, "Transfers");
         assert_eq!(rows[0].spend_cents, 100_000, "money out is positive spend");
-        let children = spend_by_category(&f.conn, &open, Some(parent)).unwrap();
+        let children =
+            spend_by_category(&f.conn, &open, Some(parent), &ViewNarrow::default(), None).unwrap();
         assert_eq!(children.len(), 1);
         assert_eq!(children[0].name, "Card Payment");
         assert_eq!(children[0].spend_cents, 100_000);
 
-        let summary = monthly_summary(&f.conn, &open).unwrap();
+        let summary = monthly_summary(&f.conn, &open, &ViewNarrow::default()).unwrap();
         assert_eq!(
             named(&summary, "Spend").total,
             100_700,
@@ -1221,18 +1314,24 @@ mod tests {
         let a = add_txn(&f.conn, f.account_id, f.import_id, "2026-10-05", -700, None);
         let b = add_txn(&f.conn, f.account_id, f.import_id, "2026-10-06", -300, None);
         let spend = |conn: &Connection| {
-            spend_by_category(conn, &ViewFilter::default(), None)
-                .unwrap()
-                .iter()
-                .map(|r| r.spend_cents)
-                .sum::<i64>()
+            spend_by_category(
+                conn,
+                &ViewFilter::default(),
+                None,
+                &ViewNarrow::default(),
+                None,
+            )
+            .unwrap()
+            .iter()
+            .map(|r| r.spend_cents)
+            .sum::<i64>()
         };
         assert_eq!(spend(&f.conn), 1000);
         set_hidden(&f.conn, a, true).unwrap();
         assert_eq!(spend(&f.conn), 300);
         assert_eq!(
             named(
-                &monthly_summary(&f.conn, &ViewFilter::default()).unwrap(),
+                &monthly_summary(&f.conn, &ViewFilter::default(), &ViewNarrow::default()).unwrap(),
                 "Spend"
             )
             .total,
@@ -1244,9 +1343,15 @@ mod tests {
         assert_eq!(spend(&f.conn), 700, "only b is hidden now");
         set_hidden(&f.conn, a, true).unwrap();
         assert!(
-            spend_by_category(&f.conn, &ViewFilter::default(), None)
-                .unwrap()
-                .is_empty(),
+            spend_by_category(
+                &f.conn,
+                &ViewFilter::default(),
+                None,
+                &ViewNarrow::default(),
+                None
+            )
+            .unwrap()
+            .is_empty(),
             "hiding every row leaves no Uncategorized row at all"
         );
     }
@@ -1265,7 +1370,7 @@ mod tests {
             None,
         );
         let total = |filter: &ViewFilter| {
-            spend_by_category(&f.conn, filter, None)
+            spend_by_category(&f.conn, filter, None, &ViewNarrow::default(), None)
                 .unwrap()
                 .iter()
                 .map(|r| r.spend_cents)
@@ -1701,7 +1806,10 @@ mod tests {
         let only = table_ids(
             &f.conn,
             &TxTableFilter {
-                uncategorized_only: true,
+                narrow: ViewNarrow {
+                    uncategorized_only: true,
+                    ..Default::default()
+                },
                 ..Default::default()
             },
         );
@@ -1749,7 +1857,10 @@ mod tests {
             table_ids(
                 &f.conn,
                 &TxTableFilter {
-                    search: Some(term.to_string()),
+                    narrow: ViewNarrow {
+                        search: Some(term.to_string()),
+                        ..Default::default()
+                    },
                     ..Default::default()
                 },
             )
@@ -1802,7 +1913,10 @@ mod tests {
         let on = table_ids(
             &f.conn,
             &TxTableFilter {
-                show_hidden: true,
+                narrow: ViewNarrow {
+                    show_hidden: true,
+                    ..Default::default()
+                },
                 ..Default::default()
             },
         );
@@ -2119,9 +2233,9 @@ mod tests {
         add_txn(&f.conn, f.account_id, f.import_id, "2026-02-28", -300, None);
         add_txn(&f.conn, f.account_id, f.import_id, "2026-03-01", -400, None);
         let filter = range("2026-02-01", "2026-02-28", &[], false);
-        let rows = spend_by_category(&f.conn, &filter, None).unwrap();
+        let rows = spend_by_category(&f.conn, &filter, None, &ViewNarrow::default(), None).unwrap();
         assert_eq!(rows.iter().map(|r| r.spend_cents).sum::<i64>(), 500);
-        let summary = monthly_summary(&f.conn, &filter).unwrap();
+        let summary = monthly_summary(&f.conn, &filter, &ViewNarrow::default()).unwrap();
         assert_eq!(summary.months, ["2026-02"]);
         assert_eq!(named(&summary, "Spend").months, [500]);
     }
@@ -2156,18 +2270,38 @@ mod tests {
             Some(games),
         );
 
-        let rows = spend_by_category(&f.conn, &ViewFilter::default(), None).unwrap();
+        let rows = spend_by_category(
+            &f.conn,
+            &ViewFilter::default(),
+            None,
+            &ViewNarrow::default(),
+            None,
+        )
+        .unwrap();
         assert_eq!(rows.len(), 2);
         assert_eq!((rows[0].name.as_str(), rows[0].spend_cents), ("Food", 7000));
         assert!((rows[0].share - 0.7).abs() < 1e-9);
         assert!((rows[1].share - 0.3).abs() < 1e-9);
         assert!((rows.iter().map(|r| r.share).sum::<f64>() - 1.0).abs() < 1e-9);
 
-        let children =
-            spend_by_category(&f.conn, &ViewFilter::default(), Some(f.groceries)).unwrap();
+        let children = spend_by_category(
+            &f.conn,
+            &ViewFilter::default(),
+            Some(f.groceries),
+            &ViewNarrow::default(),
+            None,
+        )
+        .unwrap();
         assert!(children.is_empty(), "Groceries is a child, not a parent");
         let food = conn_food(&f.conn);
-        let children = spend_by_category(&f.conn, &ViewFilter::default(), Some(food)).unwrap();
+        let children = spend_by_category(
+            &f.conn,
+            &ViewFilter::default(),
+            Some(food),
+            &ViewNarrow::default(),
+            None,
+        )
+        .unwrap();
         assert_eq!(
             children
                 .iter()
@@ -2207,7 +2341,14 @@ mod tests {
             5000,
             Some(f.groceries),
         );
-        let rows = spend_by_category(&f.conn, &ViewFilter::default(), None).unwrap();
+        let rows = spend_by_category(
+            &f.conn,
+            &ViewFilter::default(),
+            None,
+            &ViewNarrow::default(),
+            None,
+        )
+        .unwrap();
         assert_eq!(rows.len(), 1, "a netted-to-zero category still has a row");
         assert_eq!((rows[0].spend_cents, rows[0].share), (0, 0.0));
     }
@@ -2240,7 +2381,7 @@ mod tests {
             Some(f.payroll),
         );
         let filter = range("2026-01-01", "2026-03-31", &[], false);
-        let summary = monthly_summary(&f.conn, &filter).unwrap();
+        let summary = monthly_summary(&f.conn, &filter, &ViewNarrow::default()).unwrap();
         assert_eq!(summary.months, ["2026-01", "2026-02", "2026-03"]);
 
         let food = named(&summary, "Food");
@@ -2270,13 +2411,208 @@ mod tests {
         let f = fixture();
         add_txn(&f.conn, f.account_id, f.import_id, "2026-09-30", -100, None);
         add_txn(&f.conn, f.account_id, f.import_id, "2026-11-01", -200, None);
-        let summary = monthly_summary(&f.conn, &ViewFilter::default()).unwrap();
+        let summary =
+            monthly_summary(&f.conn, &ViewFilter::default(), &ViewNarrow::default()).unwrap();
         assert_eq!(summary.months, ["2026-09", "2026-10", "2026-11"]);
         assert_eq!(named(&summary, "Spend").months, [100, 0, 200]);
 
         let conn = open_in_memory().unwrap();
-        let summary = monthly_summary(&conn, &ViewFilter::default()).unwrap();
+        let summary =
+            monthly_summary(&conn, &ViewFilter::default(), &ViewNarrow::default()).unwrap();
         assert!(summary.months.is_empty(), "no data, no month columns");
         assert_eq!(summary.rows.len(), 3, "Income, Spend and Net remain");
+    }
+
+    /// The same search, show-hidden and uncategorized-only state narrows
+    /// the chart, the summary and the table alike: they are the
+    /// dashboard's filters, not the table's alone (3.46).
+    #[test]
+    fn the_view_narrow_applies_to_chart_summary_and_table() {
+        let f = fixture();
+        let beans = add_row(
+            &f.conn,
+            f.account_id,
+            f.import_id,
+            0,
+            "2026-01-20",
+            -40_000,
+            Some(f.groceries),
+            "Coffee beans",
+            None,
+        );
+        add_row(
+            &f.conn,
+            f.account_id,
+            f.import_id,
+            1,
+            "2026-01-05",
+            -90_000,
+            Some(f.groceries),
+            "Coffee run",
+            None,
+        );
+        let secret = add_row(
+            &f.conn,
+            f.account_id,
+            f.import_id,
+            2,
+            "2026-01-21",
+            -30_000,
+            Some(f.dining),
+            "Secret treat",
+            None,
+        );
+        set_hidden(&f.conn, secret, true).unwrap();
+        let odd = add_row(
+            &f.conn,
+            f.account_id,
+            f.import_id,
+            3,
+            "2026-01-22",
+            -5_000,
+            None,
+            "Odd income",
+            None,
+        );
+
+        // A search narrows the chart, the summary and the table alike.
+        let narrow = ViewNarrow {
+            search: Some("beans".into()),
+            ..Default::default()
+        };
+        let chart =
+            spend_by_category(&f.conn, &ViewFilter::default(), None, &narrow, None).unwrap();
+        assert_eq!(chart.len(), 1, "only the searched category remains");
+        assert_eq!(chart[0].name, "Food");
+        assert_eq!(chart[0].spend_cents, 40_000, "and only the searched money");
+        let summary = monthly_summary(&f.conn, &ViewFilter::default(), &narrow).unwrap();
+        assert_eq!(named(&summary, "Spend").total, 40_000);
+        assert_eq!(
+            table_ids(
+                &f.conn,
+                &TxTableFilter {
+                    narrow,
+                    ..Default::default()
+                }
+            ),
+            vec![beans]
+        );
+
+        // Show-hidden brings the hidden row back into all three.
+        let narrow = ViewNarrow {
+            show_hidden: true,
+            ..Default::default()
+        };
+        let chart =
+            spend_by_category(&f.conn, &ViewFilter::default(), None, &narrow, None).unwrap();
+        let food = chart.iter().find(|r| r.name == "Food").unwrap();
+        assert_eq!(food.spend_cents, 160_000, "the hidden spend counts again");
+        let summary = monthly_summary(&f.conn, &ViewFilter::default(), &narrow).unwrap();
+        assert_eq!(named(&summary, "Spend").total, 165_000);
+        let ids = table_ids(
+            &f.conn,
+            &TxTableFilter {
+                narrow,
+                ..Default::default()
+            },
+        );
+        assert!(ids.contains(&secret), "the hidden row is back in the table");
+
+        // Uncategorized only keeps the uncategorised row in all three.
+        let narrow = ViewNarrow {
+            uncategorized_only: true,
+            ..Default::default()
+        };
+        let chart =
+            spend_by_category(&f.conn, &ViewFilter::default(), None, &narrow, None).unwrap();
+        assert_eq!(
+            chart.iter().filter(|r| r.name != UNCATEGORIZED).count(),
+            0,
+            "no named category survives"
+        );
+        assert_eq!(chart[0].spend_cents, 5_000);
+        let summary = monthly_summary(&f.conn, &ViewFilter::default(), &narrow).unwrap();
+        assert_eq!(named(&summary, "Uncategorized").total, 5_000);
+        assert_eq!(named(&summary, "Spend").total, 5_000);
+        assert_eq!(
+            table_ids(
+                &f.conn,
+                &TxTableFilter {
+                    narrow,
+                    ..Default::default()
+                }
+            ),
+            vec![odd]
+        );
+    }
+
+    /// A chart month narrows the chart rows — categories without spending
+    /// in that month drop out — while the summary grid keeps every month,
+    /// or the selected month's highlight and drill-down would lose their
+    /// grid (3.46).
+    #[test]
+    fn a_chart_month_narrows_the_chart_but_not_the_summary() {
+        let f = fixture();
+        let play = create_parent(&f.conn, "Play", CategoryKind::Expense).unwrap();
+        let games = create_child(&f.conn, play, "Games").unwrap();
+        add_row(
+            &f.conn,
+            f.account_id,
+            f.import_id,
+            0,
+            "2026-01-05",
+            -90_000,
+            Some(f.groceries),
+            "January beans",
+            None,
+        );
+        add_row(
+            &f.conn,
+            f.account_id,
+            f.import_id,
+            1,
+            "2026-02-05",
+            -40_000,
+            Some(f.groceries),
+            "February beans",
+            None,
+        );
+        add_row(
+            &f.conn,
+            f.account_id,
+            f.import_id,
+            2,
+            "2026-01-08",
+            -70_000,
+            Some(games),
+            "January games",
+            None,
+        );
+
+        let chart = spend_by_category(
+            &f.conn,
+            &ViewFilter::default(),
+            None,
+            &ViewNarrow::default(),
+            Some("2026-02"),
+        )
+        .unwrap();
+        assert_eq!(chart.len(), 1, "the January-only category drops out");
+        assert_eq!(chart[0].name, "Food");
+        assert_eq!(chart[0].spend_cents, 40_000, "only February is spent");
+        assert_eq!(chart[0].share, 1.0, "shares rebase on the month");
+
+        let summary =
+            monthly_summary(&f.conn, &ViewFilter::default(), &ViewNarrow::default()).unwrap();
+        assert!(
+            summary.months.contains(&"2026-01".to_string())
+                && summary.months.contains(&"2026-02".to_string()),
+            "the grid keeps its months"
+        );
+        assert_eq!(
+            named(&summary, "Food").total,
+            130_000,
+            "the grid is not month-narrowed"
+        );
     }
 }

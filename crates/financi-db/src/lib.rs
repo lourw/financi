@@ -50,7 +50,7 @@ pub use transfers::{
 pub mod views;
 pub use views::{
     CategorySpend, FilterSql, MonthlySummary, MonthlySummaryRow, TxSort, TxSortColumn,
-    TxTableFilter, ViewFilter, dashboard, list_transactions_filtered, monthly_summary,
+    TxTableFilter, ViewFilter, ViewNarrow, dashboard, list_transactions_filtered, monthly_summary,
     spend_by_category,
 };
 
@@ -268,6 +268,7 @@ pub fn sidebar_counts(conn: &Connection) -> Result<(i64, i64)> {
             include_transfers: true,
             ..Default::default()
         },
+        &views::ViewNarrow::default(),
         None,
     );
     let sql = format!(

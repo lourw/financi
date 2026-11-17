@@ -55,7 +55,7 @@ use financi_db::rules::{
 use financi_db::settings::{self, DateRange};
 use financi_db::{
     Account, CategorySpend, DbError, DbWorker, MonthlySummary, TransferReview, TxSort,
-    TxSortColumn, TxTableFilter, ViewFilter, apply_rule_from_merchant, create_account,
+    TxSortColumn, TxTableFilter, ViewFilter, ViewNarrow, apply_rule_from_merchant, create_account,
     list_accounts, list_transactions_filtered, list_transfer_reviews, monthly_summary,
     resolve_transfer_review, rusqlite::Connection, set_category, set_hidden, sidebar_counts,
     spend_by_category, unpair_transaction,

@@ -77,9 +77,16 @@ fn the_uncategorized_toggle_and_a_category_selection_are_exclusive(cx: &mut Test
     });
     let food = cx.update(|cx| top_category_id(&shell, cx, "Food"));
 
+    // 3.46: the toggle narrows the whole page, so the chart keeps only
+    // the Uncategorized legend row while it is on.
     set_uncategorized_only(cx, handle, &shell, true);
     wait_until(cx, "only the uncategorized row", |cx| {
-        dash(cx, &shell).read(cx).row_count == 1
+        let d = dash(cx, &shell).read(cx);
+        d.row_count == 1 && d.chart_rows.iter().all(|r| r.id.is_none())
+    });
+    set_uncategorized_only(cx, handle, &shell, false);
+    wait_until(cx, "the chart is whole again", |cx| {
+        dash(cx, &shell).read(cx).chart_rows.len() == 3
     });
 
     // A category legend row wins: the checkbox goes off, the table shows
@@ -101,7 +108,13 @@ fn the_uncategorized_toggle_and_a_category_selection_are_exclusive(cx: &mut Test
             && dash(cx, &shell).read(cx).row_count == 1
     });
     cx.update(|cx| {
-        assert_eq!(dash(cx, &shell).read(cx).filter.chart_parent, Some(food));
+        let d = dash(cx, &shell).read(cx);
+        // 3.46: drilled into Food with the toggle on, the child chart
+        // would be empty (no uncategorized rows live under a named
+        // category), so the 3.56 revalidation un-drills and the top-level
+        // chart keeps only its Uncategorized row.
+        assert_eq!(d.filter.chart_parent, None);
+        assert!(d.chart_rows.iter().all(|r| r.id.is_none()));
         let rows = table_rows(&shell, cx);
         assert!(rows.iter().all(|r| r.category_id.is_none()));
     });
