@@ -156,6 +156,16 @@ Pages compose these; don't restyle them per page. They live in
 - **`row_action_button(icon, tooltip)`** — `xsmall` `ghost`, icon only,
   with a hover tooltip naming the action. Two-click destructive buttons
   widen to show "Click again to …" when armed.
+- **`StackedBarChart`** (3.93) — monthly stacked bars from plain divs
+  (gpui-kit's `BarChart` can't stack). One column per month; the column's
+  bar is a `flex_grow` share of the plot (`total / max_total`, no
+  measurement), each segment a div grown by its cents and filled with its
+  category color (Uncategorized `muted_foreground`). Segment order is the
+  summary's row order in every bar, so colors line up month to month. A
+  per-segment hover tooltip reads `Category · Oct 2026` over
+  `$412.30 · 22.4%`; segment and month-label clicks are callbacks. Below a
+  12 px bar floor the strip scrolls sideways from the latest month. Named
+  after its gpui-kit siblings so it can be upstreamed later.
 
 ## 4. Patterns
 
@@ -313,13 +323,22 @@ wrapping chip row under it — 10 px swatch + name `text_xs` ellipsized at
 120 px, click drills, tooltip `amount · share`, `list_active` selected,
 "← All categories" first while drilled, at most two lines with a muted
 "+N more" chip whose tooltip lists the hidden names; 340 px tall). Below
-it the *Monthly summary* `Panel` (3.45: its own full-width row at content
-height; the summary's name column and
+it the *Monthly spending by category* `Panel` (3.93: `StackedBarChart`,
+one stacked bar per month from the summary — parents, `Uncategorized` and
+`Transfers` when included, the drilled-in parent's children when drilled;
+compact-amount axis and gridlines, month labels thinned to fit, a 3.36
+chip legend (≤ 2 lines, "+N more") whose chips select the category alone,
+segment clicks selecting category + month like a summary cell, month
+labels the month alone, 3.46 dimming, sideways scroll from the latest
+month at a 12 px bar floor, "No spending in this range" when empty; full
+width, 340 px). Below it the *Monthly summary* `Panel` (3.45: its own
+full-width row at content height; the summary's name column and
 Total are pinned while only month columns scroll sideways on one shared
 handle, landing on the latest month). Then the transactions
 `DataTable`, where every column sorts (text A→Z first, Date
 and Amount newest/biggest first; the sort survives filter changes).
-Chart, summary and table stack in a scrolling page under a pinned filter
+Chart, stacked bars, summary and table stack in a scrolling page under a
+pinned filter
 row (3.45: the table fills the viewport below the filter row and scrolls
 inside itself; the page scrolls back to the top on entry), with the
 filter chip row and Clear all directly under that row (3.46);

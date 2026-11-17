@@ -4,7 +4,7 @@ Start these only after both queues are done (`docs/tasks.md` → *Picking the ne
 
 ## Lane A — dashboard (after both queues)
 
-- [ ] **3.93 Monthly stacked bar chart.** A new chart panel showing
+- [x] **3.93 Monthly stacked bar chart.** A new chart panel showing
   the *Monthly summary* as a picture: one bar per month, split into
   category segments, so the user can see how each month's spending
   divides up (user request, 2026-11-12). It comes after 3.46 so it

@@ -217,3 +217,298 @@ fn axis_amounts_stay_compact() {
     assert_eq!(axis_amount(123_456), "$1.2k");
     assert_eq!(axis_amount(1_234_567), "$12.3k");
 }
+
+// -- panel UI tests ------------------------------------------------------
+
+use super::summary::{seed_summary_rows, set_all_time, summary_parent_id};
+use crate::ui::dashboard_chart::StackColPaint;
+
+/// One parent, one spend per month for March–May 2026: bars of 1000,
+/// 2000 and 1500 cents, April the tallest.
+fn seed_three_months(conn: &financi_db::rusqlite::Connection) {
+    let acct = create_account(conn, "amex", "Cobalt", AccountKind::CreditCard).unwrap();
+    conn.execute(
+        "INSERT INTO imports (account_id, parser_id, file_name, imported_at, header_raw,
+                              encoding, has_bom, line_ending, trailing_newline, row_count)
+         VALUES (?1, 'amex', 'seed.csv', '2026-01-01', X'00', 'utf-8', 0, 'lf', 0, 0)",
+        [acct],
+    )
+    .unwrap();
+    let import = conn.last_insert_rowid();
+    let alpha =
+        financi_db::categories::create_parent(conn, "Alpha", CategoryKind::Expense).unwrap();
+    for (line, (date, cents)) in [
+        ("2026-03-10", -1000i64),
+        ("2026-04-10", -2000),
+        ("2026-05-10", -1500),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        conn.execute(
+            "INSERT INTO transactions (account_id, import_id, source_line, raw_bytes,
+                                       row_hash, posted_date, amount_cents,
+                                       description_raw, category_id)
+             VALUES (?1, ?2, ?3, X'00', ?4, ?5, ?6, ?7, ?8)",
+            (
+                acct,
+                import,
+                line as i64,
+                format!("stacks-hash-{line}"),
+                date,
+                cents,
+                "MONTHLY ALPHA",
+                alpha,
+            ),
+        )
+        .unwrap();
+    }
+}
+
+/// Switch to "All time" and wait for exactly the three seeded months.
+fn set_all_time_three_months(
+    cx: &mut TestAppContext,
+    handle: AnyWindowHandle,
+    shell: &Entity<Shell>,
+) {
+    with_window(cx, handle, |window, cx| {
+        dash(cx, shell).update(cx, |d, cx| {
+            d.change_date_preset(DatePreset::AllTime, window, cx);
+        });
+    });
+    wait_until(cx, "summary covers the three seeded months", |cx| {
+        dash(cx, shell).read(cx).summary.months == ["2026-03", "2026-04", "2026-05"]
+    });
+}
+
+/// The stacked panel paints full width between the chart and the summary, 340 px tall.
+#[gpui::test]
+fn the_stacked_panel_paints_between_the_chart_and_the_summary(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_summary_rows);
+    set_all_time(cx, handle, &shell);
+    wait_until(cx, "table loaded", |cx| {
+        dash(cx, &shell).read(cx).row_count == 7
+    });
+    draw_frame(cx, handle);
+    let chart = bounds(cx, handle, "panel:chart");
+    let stacked = bounds(cx, handle, "panel:stacked");
+    let summary = bounds(cx, handle, "panel:summary");
+    assert_eq!(stacked.size.height, px(340.), "the panel is 340 px tall");
+    assert!(
+        stacked.origin.y >= chart.origin.y + chart.size.height,
+        "the stacked panel sits below the chart panel"
+    );
+    assert!(
+        summary.origin.y >= stacked.origin.y + stacked.size.height,
+        "the summary panel sits below the stacked panel"
+    );
+    assert_eq!(stacked.origin.x, chart.origin.x);
+    assert_eq!(
+        stacked.size.width, chart.size.width,
+        "full width, the same as the chart panel"
+    );
+}
+
+/// Three seeded months paint three bars; the tallest fills the plot
+/// (bar area = plot minus the 16 px label row and the 2 px gap) and the
+/// others are proportional shares of it.
+#[gpui::test]
+fn three_months_paint_three_bars_and_the_tallest_fills_the_plot(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_three_months);
+    set_all_time_three_months(cx, handle, &shell);
+    wait_until(cx, "table loaded", |cx| {
+        dash(cx, &shell).read(cx).row_count == 3
+    });
+    draw_frame(cx, handle);
+    let plot = bounds(cx, handle, "stacked:plot");
+    let full = f32::from(plot.size.height) - 18.; // label row + gap
+    let mut bar = |ix: usize| bounds(cx, handle, format!("stacked:bar:{ix}")).size.height;
+    assert!(
+        (f32::from(bar(1)) - full).abs() < 2.,
+        "April's bar fills the plot height: {} vs {full}",
+        bar(1)
+    );
+    assert!(
+        (f32::from(bar(0)) - full / 2.).abs() < 2.,
+        "March's 1000 ¢ is half of April's 2000 ¢: {}",
+        bar(0)
+    );
+    assert!(
+        (f32::from(bar(2)) - full * 0.75).abs() < 2.,
+        "May's 1500 ¢ is three quarters of April's: {}",
+        bar(2)
+    );
+}
+
+/// Hovering a segment shows its tooltip; clicking it selects the
+/// category and the month and filters the table to their intersection.
+#[gpui::test]
+fn clicking_a_segment_filters_the_table_to_category_and_month(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_summary_rows);
+    set_all_time(cx, handle, &shell);
+    wait_until(cx, "table loaded", |cx| {
+        dash(cx, &shell).read(cx).row_count == 7
+    });
+    draw_frame(cx, handle);
+    let food = cx.update(|cx| summary_parent_id(&shell, cx, "Food"));
+    // March segments, bottom-up, are Food then Uncategorized; the widget
+    // renders them top-down, so Food is child index 1 of 2.
+    let si = cx.update(|cx| {
+        let d = dash(cx, &shell).read(cx);
+        let stacks = monthly_stacks(&d.summary, d.filter.chart_parent, &d.categories);
+        let segs = &stacks[0].segments;
+        segs.len() - 1 - segs.iter().position(|s| s.name == "Food").unwrap()
+    });
+    assert_eq!(si, 1);
+    // The tooltip carries `Category · Month` and the exact amount.
+    let mut window = VisualTestContext::from_window(handle, cx);
+    let seg = window
+        .debug_bounds(leaked(format!("stacked:seg:0:{si}")))
+        .expect("March's Food segment paints");
+    window.simulate_mouse_move(viewport_centre(seg), None, Modifiers::default());
+    cx.executor().advance_clock(Duration::from_millis(600));
+    cx.run_until_parked();
+    draw_frame(cx, handle);
+    assert!(
+        paints(cx, handle, format!("stacked:seg-tooltip:0:{si}")),
+        "hovering the segment shows its tooltip"
+    );
+    let tip = cx.update(|cx| {
+        let d = dash(cx, &shell).read(cx);
+        let stacks = monthly_stacks(&d.summary, d.filter.chart_parent, &d.categories);
+        let cols = d.stacked_paint(
+            &stacks,
+            &Default::default(),
+            Default::default(),
+            gpui::black(),
+        );
+        (
+            cols[0].segments[0].tooltip_title.to_string(),
+            cols[0].segments[0].tooltip_value.to_string(),
+        )
+    });
+    assert_eq!(tip.0, "Food · Mar 2026");
+    assert_eq!(tip.1, "$15.00 · 88.2%");
+
+    click(cx, handle, format!("stacked:seg:0:{si}"));
+    wait_until(cx, "only March's Food rows", |cx| {
+        dash(cx, &shell).read(cx).row_count == 2
+    });
+    cx.update(|cx| {
+        let d = dash(cx, &shell).read(cx);
+        assert!(matches!(
+            d.filter.legend_selection,
+            Some(LegendSelection::Category(id)) if id == food
+        ));
+        assert_eq!(d.filter.summary_month.as_deref(), Some("2026-03"));
+        let mut descs: Vec<String> = table_rows(&shell, cx)
+            .iter()
+            .map(|r| r.description.clone())
+            .collect();
+        descs.sort();
+        assert_eq!(descs, ["CORNER CAFE MAR", "GROCER STORE MAR"]);
+    });
+}
+
+/// Clicking a month label selects the month alone — no category.
+#[gpui::test]
+fn clicking_a_month_label_selects_the_month_alone(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_summary_rows);
+    set_all_time(cx, handle, &shell);
+    wait_until(cx, "table loaded", |cx| {
+        dash(cx, &shell).read(cx).row_count == 7
+    });
+    draw_frame(cx, handle);
+    click(cx, handle, "stacked:month-label:0");
+    wait_until(cx, "only March's rows", |cx| {
+        let d = dash(cx, &shell).read(cx);
+        d.row_count == 4
+            && d.filter.summary_month.as_deref() == Some("2026-03")
+            && d.filter.legend_selection.is_none()
+    });
+}
+
+/// Selecting through a legend chip selects the category with no month
+/// and no drill (3.93: this chart is not the drill's front door), and
+/// the paint model dims every other segment to 35 % alpha.
+#[gpui::test]
+fn a_chip_selection_dims_the_other_segments(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_summary_rows);
+    set_all_time(cx, handle, &shell);
+    wait_until(cx, "table loaded", |cx| {
+        dash(cx, &shell).read(cx).row_count == 7
+    });
+    draw_frame(cx, handle);
+    let food = cx.update(|cx| summary_parent_id(&shell, cx, "Food"));
+    // The chips run in first-seen order: Food, Uncategorized, Transport.
+    click(cx, handle, "stacked:legend-row:0");
+    wait_until(cx, "the table keeps only the Food rows", |cx| {
+        dash(cx, &shell).read(cx).row_count == 3
+    });
+    cx.update(|cx| {
+        let d = dash(cx, &shell).read(cx);
+        assert!(matches!(
+            d.filter.legend_selection,
+            Some(LegendSelection::Category(id)) if id == food
+        ));
+        assert!(
+            d.filter.summary_month.is_none(),
+            "a chip selects the category alone"
+        );
+        assert_eq!(d.filter.chart_parent, None, "a chip never drills");
+    });
+    let cols = |cx: &App| -> Vec<StackColPaint> {
+        let d = dash(cx, &shell).read(cx);
+        let stacks = monthly_stacks(&d.summary, d.filter.chart_parent, &d.categories);
+        // Empty colours and palette, like the 3.46 chart test: only the
+        // dimming moves the alpha.
+        d.stacked_paint(
+            &stacks,
+            &Default::default(),
+            Default::default(),
+            gpui::black(),
+        )
+    };
+    cx.update(|cx| {
+        let cols = cols(cx);
+        let alpha = |col: usize, name: &str| -> f32 {
+            cols[col]
+                .segments
+                .iter()
+                .find(|s| s.name == name)
+                .unwrap_or_else(|| panic!("{} is a segment", name))
+                .color
+                .a
+        };
+        assert!(
+            (alpha(0, "Food") - 1.).abs() < 0.01,
+            "the selection keeps its colour"
+        );
+        assert!((alpha(0, "Uncategorized") - 0.35).abs() < 0.01);
+        assert!((alpha(1, "Food") - 1.).abs() < 0.01);
+        assert!((alpha(1, "Transport") - 0.35).abs() < 0.01);
+    });
+}
+
+/// A range with no spending shows the empty state instead of bars.
+#[gpui::test]
+fn a_range_with_no_spending_shows_the_empty_state(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |conn| {
+        settings::set(conn, UI_DATE_RANGE, "custom:2020-01-01..2020-12-31").unwrap();
+        seed_summary_rows(conn);
+    });
+    wait_until(cx, "nothing in the 2020 range", |cx| {
+        let d = dash(cx, &shell).read(cx);
+        shell.read(cx).total_visible == 7 && d.row_count == 0 && !d.summary_has_data()
+    });
+    draw_frame(cx, handle);
+    assert!(
+        paints(cx, handle, "stacked:empty"),
+        "the panel shows 'No spending in this range'"
+    );
+    let mut window = VisualTestContext::from_window(handle, cx);
+    assert!(
+        window.debug_bounds("stacked:plot").is_none(),
+        "no bars paint in the empty state"
+    );
+}
