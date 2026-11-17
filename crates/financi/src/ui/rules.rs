@@ -81,7 +81,7 @@ enum RulesItem {
     Group {
         /// Child-category id; also the collapse key.
         id: i64,
-        /// "Parent › Child", from `child_choices`.
+        /// "Parent › Child", from `rule_target_label`.
         label: String,
         /// Rules shown in this group (after the page filters).
         count: usize,
@@ -219,10 +219,6 @@ pub(super) struct RulesPage {
     /// 3.58: the signed sum, in cents, of the rows each rule decides
     /// (the Total column); rules deciding nothing are absent.
     pub(super) rule_totals: HashMap<i64, i64>,
-    /// 3.28: the child categories — the target the rows and group
-    /// headers show. 3.59: the pickers no longer resolve against this
-    /// flat list (their items carry ids), but the labels and the tests do.
-    pub(super) child_choices: Vec<(i64, String)>,
     // -- The add-rule row and its in-place editor (3.24, 3.28): rendered
     // by both the Categories page and the Rules page.
     pub(super) rule_pattern: Entity<InputState>,
@@ -304,14 +300,6 @@ impl PageEntity for RulesPage {
         self.rule_totals = totals;
         // 3.85: the item cache's catalog inputs just moved.
         self.rules_gen += 1;
-        self.child_choices = tree
-            .iter()
-            .flat_map(|p| {
-                p.children
-                    .iter()
-                    .map(move |c| (c.id, format!("{} › {}", p.name, c.name)))
-            })
-            .collect();
         // 3.28: a refresh that dropped a rule drops its checkbox with it;
         // a deleted category drops its collapsed-group marker.
         self.selected_rules
@@ -515,7 +503,6 @@ impl RulesPage {
             rules: Vec::new(),
             rule_uses: HashMap::default(),
             rule_totals: HashMap::default(),
-            child_choices: Vec::new(),
             rule_pattern,
             rule_regex: false,
             rule_target: cx.new(|cx| {

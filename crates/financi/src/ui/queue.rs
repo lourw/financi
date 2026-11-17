@@ -88,11 +88,6 @@ pub(super) struct QueuePage {
     /// for the long-queue tests (like `tree_rows_built`).
     #[cfg(test)]
     pub(super) rows_built: std::cell::Cell<usize>,
-    /// "Parent › Child" labels of the child categories, in picker order —
-    /// the flat mirror of the tree the tests read; the pickers offer the
-    /// same children grouped by category (3.59) and resolve a pick by the
-    /// item's id value.
-    pub(super) child_choices: Vec<(i64, String)>,
 }
 
 impl EventEmitter<PageEvent> for QueuePage {}
@@ -123,23 +118,11 @@ impl PageEntity for QueuePage {
     }
 
     fn apply(&mut self, cx: &mut Context<Self>) {
-        let (groups, tree, choices) = {
+        let (groups, choices) = {
             let cat = self.catalog.read(cx);
-            (
-                cat.snap.queue.clone(),
-                cat.snap.tree.clone(),
-                cat.cat_choices(),
-            )
+            (cat.snap.queue.clone(), cat.cat_choices())
         };
         self.groups = groups;
-        self.child_choices = tree
-            .iter()
-            .flat_map(|p| {
-                p.children
-                    .iter()
-                    .map(move |c| (c.id, format!("{} › {}", p.name, c.name)))
-            })
-            .collect();
         // 3.19: a refresh that dropped a group drops its picker; 3.34: the
         // Categorize-mirror subscription retires with it.
         let current: HashSet<&str> = self.groups.iter().map(|g| g.merchant.as_str()).collect();
@@ -198,7 +181,6 @@ impl QueuePage {
             range: std::cell::Cell::new((0, 0)),
             #[cfg(test)]
             rows_built: std::cell::Cell::new(0),
-            child_choices: Vec::new(),
         }
     }
 

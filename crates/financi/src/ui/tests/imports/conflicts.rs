@@ -202,15 +202,11 @@ fn restore_in_flight_refuses_a_queue_apply(cx: &mut TestAppContext) {
             let picker = s
                 .queue_view
                 .update(cx, |p, cx| p.queue_picker(&refused, window, cx));
-            let ix = s
-                .queue_view
-                .read(cx)
-                .child_choices
-                .iter()
-                .position(|(id, _)| *id == child)
-                .unwrap();
+            // 3.59: the grouped picker items carry the sub-category id
+            // as their value, so the pick resolves by value (a sectioned
+            // menu's `IndexPath` is not a flat row number).
             picker.update(cx, |sel, cx| {
-                sel.set_selected_index(Some(gpui_kit::component::IndexPath::new(ix)), window, cx);
+                sel.set_selected_value(&child, window, cx);
             });
             s.queue_view.update(cx, |p, cx| {
                 p.categorize_merchant(refused.clone(), window, cx)
