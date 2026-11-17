@@ -50,10 +50,6 @@ pub(crate) struct ChartRow {
     pub(in crate::ui) color: Hsla,
 }
 
-/// The legend column inside the chart panel (3.31): just swatch and name,
-/// so it no longer carries the amount and share columns and the plot gets
-/// the width back.
-pub(crate) const LEGEND_W: f32 = 140.;
 /// The dashboard table's fixed columns (3.25): the `Date` and `Amount`
 /// widths, which never change with the window.
 pub(crate) const TX_FIXED_W: f32 = 110. + 120.;

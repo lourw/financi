@@ -38,8 +38,11 @@ fn chart_labels_adapt_to_the_window_size(cx: &mut TestAppContext) {
     // probes must have settled before the plan says anything.
     settle(cx, handle);
 
-    // `open_shell` opens 1200 wide: with the legend beside it the plot is
-    // narrow, so the labels are truncated to a small character budget.
+    // 3.36 moved the legend under the plot, so the plot only truncates
+    // band labels when the window itself is narrow: at 900 px the three
+    // bands share a third of the panel, and the labels lose characters.
+    resize_and_draw(cx, handle, 900., 720.);
+    settle(cx, handle);
     let (small_chars, small_labels) = cx.update(|cx| dash(cx, &shell).read(cx).chart_label_plan());
     assert_eq!(small_labels, 3);
     assert!(
@@ -101,13 +104,11 @@ fn the_chart_renders_long_names_and_many_categories(cx: &mut TestAppContext) {
     draw_frame(cx, _handle);
 }
 
-/// The legend column is just the key (3.31), so it must fit 140 px.
-const _: () = assert!(LEGEND_W <= 140.);
-
-/// 3.31: the legend is just swatch and name. The amount (76 px) and share
-/// (52 px) columns are gone, the column is 140 px wide, and the plot gets
-/// the width back — at 1200 × 720 it is far wider than the ~167 px the
-/// 220 px legend left it.
+/// 3.36: the legend is a wrapping chip row *under* the plot, not a column
+/// beside it. At 1200 × 720 it paints below the plot's bottom edge, stays
+/// inside the chart panel, and leaves the plot the panel's full inner
+/// width — about 150 px wider than the 140 px legend column it replaced.
+/// Each chip is still just swatch and name (3.31): no amount, no share.
 #[gpui::test]
 fn the_legend_is_just_a_key(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, seed_chart_rows);
@@ -115,6 +116,7 @@ fn the_legend_is_just_a_key(cx: &mut TestAppContext) {
         dash(cx, &shell).read(cx).chart_rows.len() == 3
     });
     resize_and_draw(cx, handle, 1200., 720.);
+    settle(cx, handle);
     let mut window = VisualTestContext::from_window(handle, cx);
     let rows: Vec<(String, i64, f64)> = cx.update(|cx| {
         dash(cx, &shell)
@@ -129,28 +131,57 @@ fn the_legend_is_just_a_key(cx: &mut TestAppContext) {
     let legend = window
         .debug_bounds("chart:legend")
         .expect("the legend paints");
-    assert!(
-        f32::from(legend.size.width) <= LEGEND_W + 0.5,
-        "the legend column is {:?} wide, expected ≤ {LEGEND_W}",
-        legend.size.width,
-    );
     let plot = window.debug_bounds("chart:plot").expect("the plot paints");
+    let panel = window
+        .debug_bounds("panel:chart")
+        .expect("the chart panel paints");
+
+    // Below the plot: the legend's top is at or under the plot's bottom.
     assert!(
-        f32::from(plot.size.width) >= 230.,
-        "the plot is {:?} wide at 1200 × 720 — the 220 px legend left it ~167 px",
-        plot.size.width,
+        f32::from(legend.origin.y) >= f32::from(plot.origin.y + plot.size.height),
+        "the legend top y {:?} is not below the plot bottom {:?}",
+        legend.origin.y,
+        plot.origin.y + plot.size.height,
+    );
+    // Inside the panel.
+    let (panel_left, panel_right, panel_bottom) = (
+        f32::from(panel.origin.x),
+        f32::from(panel.origin.x + panel.size.width),
+        f32::from(panel.origin.y + panel.size.height),
+    );
+    assert!(
+        f32::from(legend.origin.x) >= panel_left
+            && f32::from(legend.origin.x + legend.size.width) <= panel_right + 0.5
+            && f32::from(legend.origin.y + legend.size.height) <= panel_bottom + 0.5,
+        "the legend {:?} spills out of the panel {:?}",
+        legend,
+        panel,
+    );
+    // The plot owns the panel's inner width: the panel is 16 px padding
+    // and a 1 px border per side, and the plot is ~150 px wider than the
+    // ~240 px the 140 px legend column left it.
+    let plot_w = f32::from(plot.size.width);
+    assert!(
+        (plot_w - (f32::from(panel.size.width) - 34.)).abs() <= 1.,
+        "the plot is {plot_w:.1} wide, not the panel's inner width {:?}",
+        panel.size.width,
+    );
+    assert!(
+        plot_w >= 380.,
+        "the plot is {plot_w:.1} wide at 1200 × 720 — with the legend \
+         beside it, as 3.31 left it, it was ~240 px",
     );
 
-    // Each row draws its name and nothing else: no amount, no percentage.
+    // Each chip draws its name and nothing else: no amount, no percentage.
     for (ix, (name, cents, share)) in rows.iter().enumerate() {
         assert!(
             paints(cx, handle, format!("chart:legend-text:{ix}:{name}")),
-            "legend row {ix} draws its name"
+            "legend chip {ix} draws its name"
         );
         for gone in [crate::flow::money(*cents), format!("{:.1}%", share * 100.)] {
             assert!(
                 !paints(cx, handle, format!("chart:legend-text:{ix}:{gone}")),
-                "legend row {ix} no longer draws {gone:?}"
+                "legend chip {ix} no longer draws {gone:?}",
             );
         }
     }
@@ -305,17 +336,30 @@ fn fifteen_category_bars_keep_their_share_labels_clear(cx: &mut TestAppContext) 
     );
 }
 
-/// 3.86: the label plan is derived from *measured* bounds. At 1200 × 720
+/// 3.86: the label plan is derived from *measured* bounds. At 1200 × 900
 /// and at 1600 × 900 the stored plot width equals the painted
 /// `chart:plot` container's own width, the plan equals the budget computed
 /// from that painted width and the measured per-character width, and
 /// widening the window grows the budget — no window-width-minus-constants
-/// arithmetic anywhere.
+/// arithmetic anywhere. 3.36: with the legend under the plot a three-band
+/// chart's labels saturate at the character cap even at 1200 px, so the
+/// test watches the budget grow over six bands.
 #[gpui::test]
 fn the_label_plan_follows_the_measured_plot_at_1200_and_1600(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, seed_chart_rows);
     wait_until(cx, "three chart rows", |cx| {
         dash(cx, &shell).read(cx).chart_rows.len() == 3
+    });
+    dash(cx, &shell).update(cx, |d, cx| {
+        d.chart_rows = (0..6)
+            .map(|i| CategorySpend {
+                id: Some(i),
+                name: format!("Cat {i}"),
+                spend_cents: (i + 1) * 10_000,
+                share: 0.1,
+            })
+            .collect();
+        cx.notify();
     });
     let mut plans = Vec::new();
     for w in [1200., 1600.] {
@@ -347,7 +391,7 @@ fn the_label_plan_follows_the_measured_plot_at_1200_and_1600(cx: &mut TestAppCon
         );
         assert_eq!(
             (chars, labels),
-            band_label_budget(painted, 3, char_px),
+            band_label_budget(painted, 6, char_px),
             "at {w}px the plan must be the budget of the measured width"
         );
         plans.push((chars, labels));
@@ -359,4 +403,183 @@ fn the_label_plan_follows_the_measured_plot_at_1200_and_1600(cx: &mut TestAppCon
         plans[1],
         plans[0]
     );
+}
+
+/// 3.36: fifteen categories are more than two lines of chips can carry,
+/// so the legend shows a prefix of them plus a "+N more" chip that lists
+/// the rest — and the hidden chips are not built at all, so nothing
+/// clipped still answers a click.
+#[gpui::test]
+fn the_legend_caps_at_two_lines_with_more(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_chart_rows);
+    wait_until(cx, "three chart rows", |cx| {
+        dash(cx, &shell).read(cx).chart_rows.len() == 3
+    });
+    dash(cx, &shell).update(cx, |d, cx| {
+        d.chart_rows = (0..15)
+            .map(|i| CategorySpend {
+                id: Some(i),
+                name: format!("Cat {i:02}"),
+                spend_cents: (i + 1) * 10_000,
+                share: (i + 1) as f64 / 120.,
+            })
+            .collect();
+        cx.notify();
+    });
+    resize_and_draw(cx, handle, 1200., 720.);
+    settle(cx, handle);
+
+    // The same plan the view ran, recomputed from the measured state:
+    // fifteen chips must overflow two lines at this width.
+    let (shown, hidden, names) = cx.update(|cx| {
+        let d = dash(cx, &shell).read(cx);
+        let char_xs = d.chart_char_px * 12. / 10.;
+        let widths: Vec<f32> = d
+            .chart_rows
+            .iter()
+            .map(|r| legend_chip_w(r.name.chars().count(), char_xs))
+            .collect();
+        let shown = legend_visible(
+            &widths,
+            d.chart_plot_width(),
+            LEGEND_GAP_X,
+            LEGEND_LINES,
+            char_xs,
+        )
+        .unwrap_or(widths.len());
+        let names = d
+            .chart_rows
+            .iter()
+            .skip(shown)
+            .map(|r| r.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        (shown, widths.len() - shown, names)
+    });
+    assert!(
+        (1..15).contains(&shown) && hidden > 0,
+        "fifteen chips must not fit two lines at 1200 px: {shown} shown, \
+         {hidden} hidden"
+    );
+
+    // The "+N more" chip paints with the right count; the last visible
+    // chip paints and the first hidden one does not exist to paint.
+    assert!(paints(cx, handle, format!("chart:legend-more:{hidden}")));
+    assert!(paints(
+        cx,
+        handle,
+        format!("chart:legend-row:{}", shown - 1)
+    ));
+    assert!(
+        !paints(cx, handle, format!("chart:legend-row:{shown}")),
+        "the first hidden chip must not be built, not merely clipped"
+    );
+
+    // Two lines, no more: the legend stays inside its height cap.
+    let mut window = VisualTestContext::from_window(handle, cx);
+    let legend = window
+        .debug_bounds("chart:legend")
+        .expect("the legend paints");
+    assert!(
+        f32::from(legend.size.height) <= LEGEND_MAX_H + 0.5,
+        "the legend is {:?} tall, over the {LEGEND_MAX_H} two-line cap",
+        legend.size.height,
+    );
+
+    // Hovering "+N more" lists the hidden names.
+    let more = window
+        .debug_bounds(leaked(format!("chart:legend-more:{hidden}")))
+        .expect("the more chip paints");
+    window.simulate_mouse_move(more.center(), None, Modifiers::default());
+    cx.executor().advance_clock(Duration::from_millis(600));
+    cx.run_until_parked();
+    draw_frame(cx, handle);
+    assert!(
+        paints(
+            cx,
+            handle,
+            format!("chart:legend-more-tooltip:{hidden}:{names}")
+        ),
+        "the more chip's tooltip lists the hidden categories"
+    );
+
+    // Clicking it does nothing: no drill, no selection.
+    click(cx, handle, format!("chart:legend-more:{hidden}"));
+    cx.update(|cx| {
+        let d = dash(cx, &shell).read(cx);
+        assert_eq!(d.filter.legend_selection, None);
+        assert_eq!(d.filter.chart_parent, None);
+    });
+}
+
+/// 3.36: the pure chip plan — everything shown when it fits, the longest
+/// prefix plus "+N more" when it doesn't, and everything when the width
+/// has not been measured yet (the first frame must not flash an empty
+/// legend).
+#[test]
+fn legend_plan_fits_overflows_and_waits_for_measurement() {
+    let widths = vec![50.; 10];
+    // Fits: two lines of `50 + 12 + 50` each.
+    assert_eq!(legend_lines(&widths[..4], 120., LEGEND_GAP_X), 2);
+    assert_eq!(
+        legend_visible(&widths[..4], 120., LEGEND_GAP_X, 2, 8.),
+        None
+    );
+    // Overflows: only four chips of ten fit two lines with the more chip
+    // after them (`+6 more` is 8 chars at 8 px plus padding).
+    assert_eq!(legend_lines(&widths, 120., LEGEND_GAP_X), 5);
+    let shown = legend_visible(&widths, 120., LEGEND_GAP_X, 2, 8.);
+    assert_eq!(shown, Some(2));
+    // Whatever it returns, the shown chips plus "+N more" fit the cap.
+    let Some(v) = shown else {
+        unreachable!("ten 50 px chips overflow 120 px");
+    };
+    let mut shown_widths = widths[..v].to_vec();
+    shown_widths.push(legend_more_w(widths.len() - v, 8.));
+    assert!(legend_lines(&shown_widths, 120., LEGEND_GAP_X) <= 2);
+    // Unmeasured: show everything.
+    assert_eq!(legend_visible(&widths, 0., LEGEND_GAP_X, 2, 8.), None);
+    assert_eq!(legend_visible(&widths, -1., LEGEND_GAP_X, 2, 8.), None);
+}
+
+/// 3.36: while drilled, the "← All categories" chip is the first chip of
+/// the row — before the child chips — and clicking it clears the drill
+/// and the selection.
+#[gpui::test]
+fn the_all_categories_chip_is_first_and_clears_the_drill(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_chart_rows);
+    wait_until(cx, "table loaded", |cx| {
+        dash(cx, &shell).read(cx).row_count == 4
+    });
+    let food = cx.update(|cx| top_category_id(&shell, cx, "Food"));
+    click_chart_legend(cx, handle, &shell, Some(food));
+    wait_until(cx, "drilled into Food", |cx| {
+        dash(cx, &shell).read(cx).filter.chart_parent == Some(food)
+            && dash(cx, &shell)
+                .read(cx)
+                .chart_rows
+                .iter()
+                .any(|r| r.name == "Groceries")
+    });
+    settle(cx, handle);
+    let mut window = VisualTestContext::from_window(handle, cx);
+    let all = window
+        .debug_bounds("chart:legend-all")
+        .expect("the all-categories chip paints while drilled");
+    let first = window
+        .debug_bounds("chart:legend-row:0")
+        .expect("the first child chip paints");
+    assert!(
+        f32::from(all.origin.x) < f32::from(first.origin.x),
+        "the all-categories chip is at x {:?}, not before the first \
+         category chip at x {:?}",
+        all.origin.x,
+        first.origin.x,
+    );
+
+    click(cx, handle, "chart:legend-all");
+    wait_until(cx, "drill and selection cleared", |cx| {
+        let d = dash(cx, &shell).read(cx);
+        d.filter.chart_parent.is_none() && d.filter.legend_selection.is_none() && d.row_count == 4
+    });
 }
