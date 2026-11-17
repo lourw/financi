@@ -155,15 +155,17 @@ impl Render for DashboardPage {
                     )
                     .into_any_element(),
                 _ => {
+                    // 3.45: a scrolling dashboard — the filter row stays
+                    // pinned above a single page-level vertical scroller
+                    // holding the chart row, the summary row, and the
+                    // transactions table; the wheel over the table moves
+                    // the table, not the page (`occlude`).
                     v_flex()
                         .w_full()
                         .min_w_0()
                         .flex_1()
                         .min_h_0()
                         .gap_3()
-                        // Middle row: chart + legend left (3.5), the monthly
-                        // summary right (3.6), both inside `chart_panel`.
-                        .child(self.chart_panel(cx))
                         .child(
                             div()
                                 .w_full()
@@ -171,18 +173,61 @@ impl Render for DashboardPage {
                                 .flex_1()
                                 .min_h_0()
                                 .relative()
-                                .debug_selector(|| "panel:table".into())
-                                // 3.86: the column plan comes from this
-                                // panel's own measured width, reported by
-                                // the probe (no window-width arithmetic).
-                                .child(bounds_probe(cx.entity().downgrade(), |this, w, cx| {
-                                    this.set_table_width(w, cx)
-                                }))
-                                .child(if body == DashboardBody::NoMatches {
-                                    self.no_matches_panel(cx)
-                                } else {
-                                    DataTable::new(&self.table).stripe(false).into_any_element()
-                                }),
+                                // 3.45: the scroller's viewport height —
+                                // page minus the pinned filter row — comes
+                                // from this wrapper's own laid-out bounds
+                                // (the probe reports once per layout; the
+                                // wrapper's height comes from flex alone,
+                                // so nothing oscillates).
+                                .child(bounds_height_probe(
+                                    cx.entity().downgrade(),
+                                    |this, h, cx| this.set_viewport_height(h, cx),
+                                ))
+                                .child(
+                                    div()
+                                        .id("dashboard:scroll")
+                                        .debug_selector(|| "dashboard:scroll".into())
+                                        .w_full()
+                                        .h_full()
+                                        .min_w_0()
+                                        .overflow_y_scroll()
+                                        // 3.45: vertical-only, so a trackpad
+                                        // swipe inside the summary's month
+                                        // strips never nudges the page.
+                                        .restrict_scroll_to_axis()
+                                        .track_scroll(&self.page_scroll)
+                                        .gap_3()
+                                        .child(self.chart_panel(cx))
+                                        .child(self.summary_panel(cx))
+                                        // 3.45: the table fills the whole
+                                        // viewport height (the measured
+                                        // mirror of the wrapper above) and
+                                        // scrolls inside itself.
+                                        .child(
+                                            div()
+                                                .w_full()
+                                                .min_w_0()
+                                                .flex_none()
+                                                .h(px(self.tx_panel_h))
+                                                .relative()
+                                                .occlude()
+                                                .debug_selector(|| "panel:table".into())
+                                                // 3.86: the column plan comes from this
+                                                // panel's own measured width, reported by
+                                                // the probe (no window-width arithmetic).
+                                                .child(bounds_probe(
+                                                    cx.entity().downgrade(),
+                                                    |this, w, cx| this.set_table_width(w, cx),
+                                                ))
+                                                .child(if body == DashboardBody::NoMatches {
+                                                    self.no_matches_panel(cx)
+                                                } else {
+                                                    DataTable::new(&self.table)
+                                                        .stripe(false)
+                                                        .into_any_element()
+                                                }),
+                                        ),
+                                ),
                         )
                         .into_any_element()
                 }

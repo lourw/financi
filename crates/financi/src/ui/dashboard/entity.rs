@@ -81,11 +81,16 @@ pub(crate) struct DashboardPage {
     /// month cells track it, so they scroll together, while the name
     /// column and the `Total` column stay pinned.
     pub(in crate::ui) summary_scroll: ScrollHandle,
-    /// 3.85: the summary grid's virtualized body scrolls under this
-    /// page-owned handle (the rules page's pattern): `v_virtual_list`
-    /// builds a fresh internal handle per render, so without a persistent
-    /// one the wheel's offset would reset on every frame.
-    pub(in crate::ui) summary_rows_scroll: VirtualListScrollHandle,
+    /// 3.45: the page-level vertical scroller's handle. The scroll
+    /// position survives refreshes and filter changes (the handle lives
+    /// as long as the page); `set_visible` resets it to the top on page
+    /// entry.
+    pub(in crate::ui) page_scroll: ScrollHandle,
+    /// 3.45: the scroller's measured viewport height — the page minus the
+    /// pinned filter row — from the `bounds_height_probe` on the scroller's
+    /// wrapper. The transactions table's height, so it fills the view and
+    /// scrolls inside itself (mirrors `tx_panel_w`).
+    pub(in crate::ui) tx_panel_h: f32,
     /// The [`ViewFilter`] the newest applied load ran with — the record
     /// of what produced the rows on screen (3.56). The pickers and the
     /// checkbox handlers keep it mirrored so it can be read directly.
@@ -353,7 +358,8 @@ impl DashboardPage {
             summary_views_built: std::cell::Cell::new(0),
             expanded_parents: HashSet::new(),
             summary_scroll: ScrollHandle::new(),
-            summary_rows_scroll: VirtualListScrollHandle::new(),
+            page_scroll: ScrollHandle::new(),
+            tx_panel_h: 0.,
             view_filter: ViewFilter::default(),
             date_preset_select,
             date_from_picker,
@@ -422,6 +428,10 @@ impl PageEntity for DashboardPage {
         self.rule_offer = None;
         self.set_shown(visible);
         if visible {
+            // 3.45: a page entry starts at the top of the scrolling
+            // content; within a visit the position survives refreshes and
+            // filter changes (the handle is page-owned).
+            self.page_scroll.set_offset(gpui::Point::default());
             self.apply_if_dirty(cx);
             self.set_focus_pending(true);
         }

@@ -440,10 +440,11 @@ fn the_dashboard_filter_row_controls_share_one_centre_line(cx: &mut TestAppConte
     }
 }
 
-/// 3.25 (dashboard alignment): the filter region, the chart panel, the
+/// 3.25, 3.45 (dashboard layout): the filter region, the chart panel, the
 /// monthly summary and the table share the page's left and right edges
-/// exactly; the two middle panels are the same height and their titles sit
-/// on one line. At both window sizes.
+/// exactly. The panels stack in their own rows — the summary's top sits at
+/// or under the chart's bottom edge, and the titles line up in one column
+/// reading top-to-bottom. At both window sizes.
 #[gpui::test]
 fn the_dashboard_regions_share_the_page_edges(cx: &mut TestAppContext) {
     for (w, h) in [(1200., 720.), (1600., 1000.)] {
@@ -451,7 +452,12 @@ fn the_dashboard_regions_share_the_page_edges(cx: &mut TestAppContext) {
         let mut window = VisualTestContext::from_window(handle, cx);
         let left = SIDEBAR_W + PAGE_PAD;
         let right = w - PAGE_PAD;
-        for sel in ["filters:region", "panel:chart", "panel:table"] {
+        for sel in [
+            "filters:region",
+            "panel:chart",
+            "panel:summary",
+            "panel:table",
+        ] {
             let b = window
                 .debug_bounds(sel)
                 .unwrap_or_else(|| panic!("{sel} paints on the dashboard"));
@@ -461,7 +467,12 @@ fn the_dashboard_regions_share_the_page_edges(cx: &mut TestAppContext) {
                 f32::from(b.origin.x),
             );
         }
-        for sel in ["filters:region", "panel:summary", "panel:table"] {
+        for sel in [
+            "filters:region",
+            "panel:chart",
+            "panel:summary",
+            "panel:table",
+        ] {
             let b = window
                 .debug_bounds(sel)
                 .unwrap_or_else(|| panic!("{sel} paints on the dashboard"));
@@ -477,12 +488,19 @@ fn the_dashboard_regions_share_the_page_edges(cx: &mut TestAppContext) {
         let summary = window
             .debug_bounds("panel:summary")
             .expect("the summary panel paints");
+        // 3.45: stacked rows — the summary panel begins below the chart
+        // panel, it no longer shares the chart's row beside it.
         assert!(
-            (f32::from(chart.size.height) - f32::from(summary.size.height)).abs() <= 1.,
-            "the chart panel is {} tall, the summary {} ({w}x{h})",
-            f32::from(chart.size.height),
-            f32::from(summary.size.height),
+            f32::from(summary.origin.y)
+                >= f32::from(chart.origin.y + chart.size.height) - 1.,
+            "the summary panel top is at y {}, not below the chart panel's \
+             bottom {} ({w}x{h})",
+            f32::from(summary.origin.y),
+            f32::from(chart.origin.y + chart.size.height),
         );
+        // The 3.25 title alignment, restacked: the two panel titles share
+        // the page's left inner edge — one reading column — and the
+        // summary's title reads below the chart's.
         let chart_title = window
             .debug_bounds("label:Spending by category")
             .expect("the chart title paints");
@@ -490,10 +508,18 @@ fn the_dashboard_regions_share_the_page_edges(cx: &mut TestAppContext) {
             .debug_bounds("label:Monthly summary")
             .expect("the summary title paints");
         assert!(
-            (f32::from(chart_title.origin.y) - f32::from(summary_title.origin.y)).abs() <= 1.,
-            "the panel titles sit at y {} and y {}, not on one line ({w}x{h})",
-            f32::from(chart_title.origin.y),
+            (f32::from(chart_title.origin.x) - f32::from(summary_title.origin.x)).abs() <= 1.,
+            "the panel titles start at x {} and x {}, not one aligned \
+             column ({w}x{h})",
+            f32::from(chart_title.origin.x),
+            f32::from(summary_title.origin.x),
+        );
+        assert!(
+            f32::from(summary_title.origin.y) > f32::from(chart_title.origin.y),
+            "the summary title (y {}) does not read below the chart title \
+             (y {}) ({w}x{h})",
             f32::from(summary_title.origin.y),
+            f32::from(chart_title.origin.y),
         );
     }
 }

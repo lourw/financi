@@ -38,20 +38,23 @@ fn chart_labels_adapt_to_the_window_size(cx: &mut TestAppContext) {
     // probes must have settled before the plan says anything.
     settle(cx, handle);
 
-    // 3.36 moved the legend under the plot, so the plot only truncates
-    // band labels when the window itself is narrow: at 900 px the three
-    // bands share a third of the panel, and the labels lose characters.
+    // 3.45: the plot spans the full page width now, so even at 900 px
+    // three bands share enough of it to keep the whole 16-char label
+    // budget — the truncation the old 45 %-wide plot needed is gone.
+    // What the plan still tracks is the *measured* width: the plot grows
+    // with the window even when the capped plan no longer shows it.
     resize_and_draw(cx, handle, 900., 720.);
     settle(cx, handle);
     let (small_chars, small_labels) = cx.update(|cx| dash(cx, &shell).read(cx).chart_label_plan());
     assert_eq!(small_labels, 3);
-    assert!(
-        small_chars < CHART_LABEL_MAX_CHARS,
-        "a narrow window truncates, got {small_chars} chars"
+    assert_eq!(
+        small_chars, CHART_LABEL_MAX_CHARS,
+        "a full-width plot budgets three bands to the cap"
     );
+    let small_plot = cx.update(|cx| dash(cx, &shell).read(cx).chart_plot_width());
 
-    // A large window: every band gets its label again, and the labels
-    // grow. The `chart:plot` probe must have re-measured after the resize.
+    // A large window: every band keeps its label, and the measured plot
+    // grew — the `chart:plot` probe re-measured after the resize.
     with_window(cx, handle, |window, cx| {
         window.resize(size(px(2000.), px(900.)));
         window.bounds_changed(cx);
@@ -59,7 +62,9 @@ fn chart_labels_adapt_to_the_window_size(cx: &mut TestAppContext) {
     settle(cx, handle);
     let (big_chars, big_labels) = cx.update(|cx| dash(cx, &shell).read(cx).chart_label_plan());
     assert_eq!(big_labels, 3, "a wide window labels every band");
-    assert!(big_chars > small_chars, "{big_chars} vs {small_chars}");
+    assert_eq!(big_chars, CHART_LABEL_MAX_CHARS);
+    let big_plot = cx.update(|cx| dash(cx, &shell).read(cx).chart_plot_width());
+    assert!(big_plot > small_plot, "{big_plot} vs {small_plot}");
 
     // And the chart draws at both the minimum and a large window.
     with_window(cx, handle, |window, cx| {
@@ -95,11 +100,12 @@ fn the_chart_renders_long_names_and_many_categories(cx: &mut TestAppContext) {
         cx.notify();
     });
     // The plan stays bounded, and the chart draws without panic at the
-    // test window's width and at the minimum size. 25 bands across the
-    // narrow plot must thin the labels out, not squeeze them flat.
+    // test window's width and at the minimum size. 3.45: across the
+    // full-width plot all 25 bands keep a label (thinned characters);
+    // the plan never squeezes them to nothing either way.
     settle(cx, _handle);
     let (chars, labels) = cx.update(|cx| dash(cx, &shell).read(cx).chart_label_plan());
-    assert!((1..25).contains(&labels), "{labels} labels for 25 bands");
+    assert!((1..=25).contains(&labels), "{labels} labels for 25 bands");
     assert!((1..=CHART_LABEL_MAX_CHARS).contains(&chars));
     draw_frame(cx, _handle);
 }
@@ -268,10 +274,13 @@ fn fifteen_category_bars_keep_their_share_labels_clear(cx: &mut TestAppContext) 
         plot.size.width,
     );
 
-    // The bars are too narrow for fifteen labels: the plan thins them.
+    // Share labels: 3.45 gives the plot the full page width, so at
+    // 1200 px fifteen bars have room for every label — and the plan
+    // still comes out of the measured plot width. The clearance checks
+    // below hold whatever the plan decides to draw.
     let plot_w = f32::from(plot.size.width);
     let labels = bar_label_plan(plot_w, 15, char_px);
-    assert!((1..15).contains(&labels), "{labels} labels for 15 bars");
+    assert!((1..=15).contains(&labels), "{labels} labels for 15 bars");
 
     // Drawn labels: first-to-last, centres at least a whole label apart,
     // and the first and last ones inside the panel's borders even when
@@ -340,10 +349,10 @@ fn fifteen_category_bars_keep_their_share_labels_clear(cx: &mut TestAppContext) 
 /// and at 1600 × 900 the stored plot width equals the painted
 /// `chart:plot` container's own width, the plan equals the budget computed
 /// from that painted width and the measured per-character width, and
-/// widening the window grows the budget — no window-width-minus-constants
-/// arithmetic anywhere. 3.36: with the legend under the plot a three-band
-/// chart's labels saturate at the character cap even at 1200 px, so the
-/// test watches the budget grow over six bands.
+/// widening the window grows the measured plot — no
+/// window-width-minus-constants arithmetic anywhere. 3.45: with the plot
+/// full width six bands hold the capped character budget at both sizes,
+/// so the test watches the *plot* grow rather than the capped budget.
 #[gpui::test]
 fn the_label_plan_follows_the_measured_plot_at_1200_and_1600(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, seed_chart_rows);
@@ -394,21 +403,26 @@ fn the_label_plan_follows_the_measured_plot_at_1200_and_1600(cx: &mut TestAppCon
             band_label_budget(painted, 6, char_px),
             "at {w}px the plan must be the budget of the measured width"
         );
-        plans.push((chars, labels));
+        plans.push((stored, chars, labels));
     }
+    // 3.45: full width, six bands get the capped 16-char budget at both
+    // sizes — the budget no longer grows with the window at this band
+    // count. What must still grow is the measured plot itself.
     assert!(
         plans[1].0 > plans[0].0,
-        "a wider window measures more plot, so the budget grows: \
-         {:?} vs {:?}",
-        plans[1],
-        plans[0]
+        "a wider window measures more plot: {}px vs {}px",
+        plans[1].0,
+        plans[0].0,
     );
+    assert_eq!(plans[0].1, CHART_LABEL_MAX_CHARS);
+    assert_eq!(plans[1].1, CHART_LABEL_MAX_CHARS);
 }
 
-/// 3.36: fifteen categories are more than two lines of chips can carry,
-/// so the legend shows a prefix of them plus a "+N more" chip that lists
-/// the rest — and the hidden chips are not built at all, so nothing
-/// clipped still answers a click.
+/// 3.36, 3.45: fifteen categories are more than two lines of chips can
+/// carry, so the legend shows a prefix of them plus a "+N more" chip that
+/// lists the rest — and the hidden chips are not built at all, so nothing
+/// clipped still answers a click. The names are wide enough that even the
+/// full-width plot cannot fit all fifteen chips in two lines.
 #[gpui::test]
 fn the_legend_caps_at_two_lines_with_more(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, seed_chart_rows);
@@ -419,7 +433,7 @@ fn the_legend_caps_at_two_lines_with_more(cx: &mut TestAppContext) {
         d.chart_rows = (0..15)
             .map(|i| CategorySpend {
                 id: Some(i),
-                name: format!("Cat {i:02}"),
+                name: format!("Category {i:02} long name"),
                 spend_cents: (i + 1) * 10_000,
                 share: (i + 1) as f64 / 120.,
             })
