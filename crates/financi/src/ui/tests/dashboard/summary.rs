@@ -5,7 +5,7 @@ use super::*;
 /// 3.85: a cached view row carries its cells twice — raw cents (what
 /// the sign-dependent colours read) and the drawn text. Tests that
 /// check amounts read `.cents`; this builds the matching drawn strings.
-fn money_cells(values: &[i64]) -> Vec<gpui_kit::SharedString> {
+pub(super) fn money_cells(values: &[i64]) -> Vec<gpui_kit::SharedString> {
     values
         .iter()
         .map(|&c| gpui_kit::SharedString::from(crate::flow::money(c)))
@@ -16,7 +16,7 @@ fn money_cells(values: &[i64]) -> Vec<gpui_kit::SharedString> {
 /// Restaurants -500), Transport (Bus -300), one uncategorized -200, and a
 /// $2,105.00 salary each month. The tests switch to "All time", so the
 /// grid covers exactly the seeded months whatever today's date is.
-fn seed_summary_rows(conn: &financi_db::rusqlite::Connection) {
+pub(super) fn seed_summary_rows(conn: &financi_db::rusqlite::Connection) {
     let acct = create_account(conn, "amex", "Cobalt", AccountKind::CreditCard).unwrap();
     conn.execute(
         "INSERT INTO imports (account_id, parser_id, file_name, imported_at, header_raw,
@@ -91,7 +91,11 @@ fn seed_summary_rows_uncategorized_largest(conn: &financi_db::rusqlite::Connecti
 
 /// Switch the dashboard to "All time" and wait until the summary grid
 /// covers exactly the two seeded months.
-fn set_all_time(cx: &mut TestAppContext, handle: AnyWindowHandle, shell: &Entity<Shell>) {
+pub(super) fn set_all_time(
+    cx: &mut TestAppContext,
+    handle: AnyWindowHandle,
+    shell: &Entity<Shell>,
+) {
     with_window(cx, handle, |window, cx| {
         dash(cx, shell).update(cx, |d, cx| {
             d.change_date_preset(DatePreset::AllTime, window, cx);
@@ -104,7 +108,7 @@ fn set_all_time(cx: &mut TestAppContext, handle: AnyWindowHandle, shell: &Entity
 
 /// 3.75: click a summary grid cell for real. `id` is the category row
 /// (`None` — the Uncategorized row), `month` the column (`None` — Total).
-fn click_summary_cell(
+pub(super) fn click_summary_cell(
     cx: &mut TestAppContext,
     handle: AnyWindowHandle,
     shell: &Entity<Shell>,
@@ -138,7 +142,7 @@ fn click_summary_cell(
 
 /// Expand a collapsed summary parent by clicking its name cell, so its
 /// child rows paint and can be clicked (3.75).
-fn expand_summary_parent(
+pub(super) fn expand_summary_parent(
     cx: &mut TestAppContext,
     handle: AnyWindowHandle,
     shell: &Entity<Shell>,
@@ -177,7 +181,7 @@ fn summary_row_names(shell: &Entity<Shell>, cx: &App) -> Vec<String> {
         .collect()
 }
 
-fn summary_parent_id(shell: &Entity<Shell>, cx: &App, name: &str) -> i64 {
+pub(super) fn summary_parent_id(shell: &Entity<Shell>, cx: &App, name: &str) -> i64 {
     dash(cx, shell)
         .read(cx)
         .summary_rows()
@@ -264,12 +268,12 @@ fn summary_views_are_built_once_per_load_and_never_per_repaint(cx: &mut TestAppC
     });
 }
 
-/// 3.85 (review follow-up): the virtualized grid repaints new data with
-/// no scrolling. Categorizing the uncategorized March purchase moves 200
-/// onto the Food rows; when the write's reload lands, the views the row
-/// closure paints — `summary_views`, what `render` draws each frame —
-/// show the new month text on the next plain repaint. Nothing scrolls:
-/// the tracked list keeps no item cache, so a data change is enough.
+/// 3.85 (review follow-up): the summary grid paints every row from
+/// `summary_views`, and keeps no item cache, so a data change is enough.
+/// Categorizing the uncategorized March purchase moves 200 onto the Food
+/// rows; when the write's reload lands, the views the row closure paints —
+/// `summary_views`, what `render` draws each frame — show the new month
+/// text on the next plain repaint. Nothing scrolls.
 #[gpui::test]
 fn summary_rows_repaint_after_a_data_change_without_scrolling(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, seed_summary_rows);
@@ -466,12 +470,12 @@ fn expanding_a_summary_parent_shows_its_child_rows(cx: &mut TestAppContext) {
     });
 }
 
-/// The month is only half of a summary-cell selection: every handler that
-/// clears `legend_selection` must clear `summary_month` too, or the table
-/// stays silently month-filtered — no cell highlight, and the refresh
-/// revalidation only drops a month missing from the grid.
+/// 3.46: the month is an independent global filter — clearing
+/// `legend_selection` by re-clicking the legend row leaves it, and the
+/// table stays narrowed to the month alone. The compound controls still
+/// clear it: "← All categories", Esc, and turning on "Uncategorized only".
 #[gpui::test]
-fn clearing_the_legend_selection_clears_the_summary_month(cx: &mut TestAppContext) {
+fn clearing_the_legend_selection_leaves_the_month(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, seed_summary_rows);
     set_all_time(cx, handle, &shell);
     wait_until(cx, "table loaded", |cx| {
@@ -482,28 +486,32 @@ fn clearing_the_legend_selection_clears_the_summary_month(cx: &mut TestAppContex
     // The Groceries cell only exists once Food is expanded.
     expand_summary_parent(cx, handle, &shell, food);
 
-    // Re-clicking the selected legend row: the pair clears together.
+    // Re-clicking the selected legend row: the selection clears, the
+    // month stays — the table keeps April's three rows.
     click_summary_cell(cx, handle, &shell, Some(groceries), Some("2026-04"));
     wait_until(cx, "only April's Groceries row", |cx| {
         dash(cx, &shell).read(cx).row_count == 1
     });
     click_chart_legend(cx, handle, &shell, Some(groceries));
-    wait_until(cx, "the month goes with the selection", |cx| {
-        dash(cx, &shell).read(cx).row_count == 7
-            && dash(cx, &shell).read(cx).filter.legend_selection.is_none()
-            && dash(cx, &shell).read(cx).filter.summary_month.is_none()
+    wait_until(cx, "the month stays with the table", |cx| {
+        let d = dash(cx, &shell).read(cx);
+        d.row_count == 3
+            && d.filter.legend_selection.is_none()
+            && d.filter.summary_month.as_deref() == Some("2026-04")
     });
 
-    // Re-clicking the `Uncategorized` legend row: the same.
+    // Re-clicking the `Uncategorized` legend row: the same — March's
+    // four rows stay.
     click_summary_cell(cx, handle, &shell, None, Some("2026-03"));
     wait_until(cx, "only March's uncategorized row", |cx| {
         dash(cx, &shell).read(cx).row_count == 1
     });
     click_chart_legend(cx, handle, &shell, None);
-    wait_until(cx, "the month goes with the uncategorized row", |cx| {
-        dash(cx, &shell).read(cx).row_count == 7
-            && dash(cx, &shell).read(cx).filter.legend_selection.is_none()
-            && dash(cx, &shell).read(cx).filter.summary_month.is_none()
+    wait_until(cx, "the month stays with the uncategorized clear", |cx| {
+        let d = dash(cx, &shell).read(cx);
+        d.row_count == 4
+            && d.filter.legend_selection.is_none()
+            && d.filter.summary_month.as_deref() == Some("2026-03")
     });
 
     // "← All categories".

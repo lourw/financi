@@ -50,24 +50,38 @@ impl DashboardFilter {
         }
     }
 
-    /// The table's extra filters (3.4): search, the two toggles and the
-    /// sort, plus the legend selection (3.5) — the `Uncategorized` row
-    /// rides `uncategorized_only` — and the summary-cell month (3.6).
-    fn table_filter(&self) -> TxTableFilter {
-        TxTableFilter {
-            category_id: match self.legend_selection {
-                Some(LegendSelection::Category(id)) => Some(id),
-                Some(LegendSelection::Uncategorized) | None => None,
-            },
-            month: self.summary_month.clone(),
+    /// The dashboard's view-wide narrowing (3.46): the search and the two
+    /// toggles, applied to the chart, the summary and the table alike.
+    /// The legend selection is not part of it — on chart and summary a
+    /// selection is a highlight; it filters only the table.
+    fn view_narrow(&self) -> ViewNarrow {
+        ViewNarrow {
             search: if self.search.is_empty() {
                 None
             } else {
                 Some(self.search.clone())
             },
-            uncategorized_only: self.uncategorized_only
-                || matches!(self.legend_selection, Some(LegendSelection::Uncategorized)),
+            uncategorized_only: self.uncategorized_only,
             show_hidden: self.show_hidden,
+        }
+    }
+
+    /// The table's extra filters (3.4): the view-wide narrowing, the sort,
+    /// plus the legend selection (3.5) — the `Uncategorized` row rides
+    /// `uncategorized_only` here and not in [`Self::view_narrow`] — and
+    /// the summary-cell month (3.6).
+    fn table_filter(&self) -> TxTableFilter {
+        TxTableFilter {
+            narrow: ViewNarrow {
+                uncategorized_only: self.uncategorized_only
+                    || matches!(self.legend_selection, Some(LegendSelection::Uncategorized)),
+                ..self.view_narrow()
+            },
+            category_id: match self.legend_selection {
+                Some(LegendSelection::Category(id)) => Some(id),
+                Some(LegendSelection::Uncategorized) | None => None,
+            },
+            month: self.summary_month.clone(),
             sort: self.tx_sort,
         }
     }
@@ -146,19 +160,27 @@ pub(crate) fn load_dashboard(
     }
     let view_filter = filter.view_filter(DashboardPage::today(), ids);
     let table_filter = filter.table_filter();
+    let narrow = filter.view_narrow();
     log.record("list_transactions_filtered");
     let rows = list_transactions_filtered(c, &view_filter, &table_filter)?;
     let (chart, summary) = match filter.chart_parent {
         None => {
-            // Both aggregations in one pass (3.88).
+            // Both aggregations in one pass (3.88); the selected month
+            // narrows the chart rows only, never the grid (3.46).
             log.record("dashboard");
-            financi_db::dashboard(c, &view_filter)?
+            financi_db::dashboard(c, &view_filter, &narrow, filter.summary_month.as_deref())?
         }
         Some(parent) => {
             log.record("spend_by_category");
-            let chart = spend_by_category(c, &view_filter, Some(parent))?;
+            let chart = spend_by_category(
+                c,
+                &view_filter,
+                Some(parent),
+                &narrow,
+                filter.summary_month.as_deref(),
+            )?;
             log.record("monthly_summary");
-            let summary = monthly_summary(c, &view_filter)?;
+            let summary = monthly_summary(c, &view_filter, &narrow)?;
             (chart, summary)
         }
     };

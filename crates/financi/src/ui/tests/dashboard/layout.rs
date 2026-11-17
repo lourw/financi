@@ -246,7 +246,7 @@ fn clear_filters_restores_a_table_emptied_by_search(cx: &mut TestAppContext) {
     });
 
     with_window(cx, handle, |window, cx| {
-        dash(cx, &shell).update(cx, |d, cx| d.clear_filters(window, cx));
+        dash(cx, &shell).update(cx, |d, cx| d.clear_all_filters(window, cx));
     });
     wait_until(cx, "clear filters restores the rows", |cx| {
         dash(cx, &shell).read(cx).row_count == 100
@@ -523,11 +523,12 @@ fn the_dashboard_regions_share_the_page_edges(cx: &mut TestAppContext) {
     }
 }
 
-/// 3.25, 3.35 (dashboard alignment): opening the custom date range adds the
-/// From and To pickers without breaking anything — they join the filter
-/// row's centre line, every control and the count still paint inside the
-/// page (at 1200 × 720 nothing is clipped and nothing wraps), and the
-/// region still spans the page exactly. At both window sizes.
+/// 3.25, 3.35 (dashboard alignment), 3.46: opening the custom date range
+/// adds the From and To pickers without breaking anything — they join the
+/// filter row's centre line, every control and the count still paint inside
+/// the page (at 1200 × 720 nothing is clipped and nothing wraps), and the
+/// region still spans the page exactly. With a filter set the Clear all
+/// button joins the row and fits too. At both window sizes.
 #[gpui::test]
 fn the_dashboard_stays_aligned_with_a_custom_date_range(cx: &mut TestAppContext) {
     for (w, h) in [(1200., 720.), (1600., 1000.)] {
@@ -543,15 +544,27 @@ fn the_dashboard_stays_aligned_with_a_custom_date_range(cx: &mut TestAppContext)
                 DateRange::Custom { .. }
             )
         });
+        // A search makes the row's filter non-default, so Clear all shows.
+        with_window(cx, handle, |window, cx| {
+            dash(cx, &shell).update(cx, |d, cx| {
+                d.search_input
+                    .update(cx, |i, cx| i.set_value("cafe", window, cx));
+                d.apply_search("cafe", window, cx);
+            });
+        });
+        wait_until(cx, "clear all shows", |cx| {
+            dash(cx, &shell).read(cx).filter.search == "cafe"
+        });
         draw_frame(cx, handle);
         let mut window = VisualTestContext::from_window(handle, cx);
-        const CONTROLS: [&str; 7] = [
+        const CONTROLS: [&str; 8] = [
             "filters:date-range",
             "filters:from",
             "filters:to",
             "accounts:filter",
             "filters:search",
             "filters:options",
+            "filters:clear-all",
             "filters:count",
         ];
         let centre = centre_y(cx, handle, "filters:date-range");

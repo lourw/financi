@@ -113,7 +113,7 @@ fn the_chart_renders_long_names_and_many_categories(cx: &mut TestAppContext) {
 /// 3.36: the legend is a wrapping chip row *under* the plot, not a column
 /// beside it. At 1200 × 720 it paints below the plot's bottom edge, stays
 /// inside the chart panel, and leaves the plot the panel's full inner
-/// width — about 150 px wider than the 140 px legend column it replaced.
+/// width (3.45 added a checkbox and count per row without changing that).
 /// Each chip is still just swatch and name (3.31): no amount, no share.
 #[gpui::test]
 fn the_legend_is_just_a_key(cx: &mut TestAppContext) {
@@ -164,8 +164,7 @@ fn the_legend_is_just_a_key(cx: &mut TestAppContext) {
         panel,
     );
     // The plot owns the panel's inner width: the panel is 16 px padding
-    // and a 1 px border per side, and the plot is ~150 px wider than the
-    // ~240 px the 140 px legend column left it.
+    // and a 1 px border per side, so 34 px in all.
     let plot_w = f32::from(plot.size.width);
     assert!(
         (plot_w - (f32::from(panel.size.width) - 34.)).abs() <= 1.,

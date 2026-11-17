@@ -286,8 +286,21 @@ impl DashboardPage {
                 self.filter.chart_parent = Some(id);
                 Some(LegendSelection::Category(id))
             }
-            Some(id) => (self.filter.legend_selection != Some(LegendSelection::Category(id)))
-                .then_some(LegendSelection::Category(id)),
+            Some(id) => {
+                let selected = (self.filter.legend_selection
+                    != Some(LegendSelection::Category(id)))
+                .then_some(LegendSelection::Category(id));
+                if selected.is_some() {
+                    // 3.46: selecting a child here must expand its parent's
+                    // summary row too, or the selected row never paints
+                    // (`click_summary_cell` does the same through
+                    // `sync_chart_to_selection`).
+                    if let Some(parent) = self.parent_of(id) {
+                        self.expand_parent_row(parent);
+                    }
+                }
+                selected
+            }
         };
         if matches!(
             self.filter.legend_selection,
@@ -295,12 +308,9 @@ impl DashboardPage {
         ) {
             self.filter.uncategorized_only = false;
         }
-        // The month only ever narrows a category selection (the cell
-        // highlight and the chip read both from the pair), so clearing the
-        // selection clears it too — Esc does the same for both.
-        if self.filter.legend_selection.is_none() {
-            self.filter.summary_month = None;
-        }
+        // 3.46: the month is an independent global filter, so selecting
+        // or clearing a category leaves it alone. Esc still clears just
+        // the selection (the chips and Clear all take the month).
         // 3.65: the legend highlight paints with this click, not with the
         // answer (the rows and totals are the only part that waits).
         cx.notify();
@@ -362,11 +372,38 @@ impl DashboardPage {
             LegendSelection::Category(id) => {
                 if let Some(parent) = self.parent_of(id) {
                     self.filter.chart_parent = Some(parent);
+                    // 3.46: selecting a child from the grid reveals its
+                    // row — the parent expands so the selected child is
+                    // visible with its own highlighted cell.
+                    self.expand_parent_row(parent);
                 } else if self.filter.chart_parent != Some(id) {
                     self.filter.chart_parent = None;
                 }
             }
         }
+    }
+    /// Expand `parent`'s children in the summary grid (3.46): a selected
+    /// child's `list_active` row only exists while its parent is expanded,
+    /// so both selection paths (legend chip and summary cell) go through
+    /// here.
+    fn expand_parent_row(&mut self, parent: i64) {
+        if !self.expanded_parents.contains(&parent) {
+            self.expanded_parents.insert(parent);
+            self.summary_views_dirty = true;
+        }
+    }
+    /// Click a summary month heading (3.46): that month alone is selected
+    /// — the chart narrows to it, the summary tints its column, the table
+    /// filters to it. No category is involved; clicking the selected
+    /// heading again clears it.
+    pub(super) fn click_summary_month(&mut self, month: &str, cx: &mut Context<Self>) {
+        self.filter.summary_month = if self.filter.summary_month.as_deref() == Some(month) {
+            None
+        } else {
+            Some(month.to_string())
+        };
+        cx.notify();
+        self.reload(cx);
     }
     /// The id of `id`'s parent in the category tree, `None` for a
     /// top-level category.
@@ -546,20 +583,48 @@ impl DashboardPage {
                 .collect::<Vec<String>>(),
             label_chars,
         );
+        // 3.46: a selection keeps its bar and dims the others to about a
+        // third rather than filtering them away, so the bars stay
+        // comparable. `BarChart` has no per-row alpha, so the colour is
+        // dimmed before it goes in. Drilled into the selected parent,
+        // every bar is part of the selection, so nothing dims there.
+        let selected = match &self.filter.legend_selection {
+            Some(LegendSelection::Category(id)) => Some(*id),
+            _ => None,
+        };
+        let drilled_into_selection = selected.is_some() && self.filter.chart_parent == selected;
+        let unc_active = matches!(
+            self.filter.legend_selection,
+            Some(LegendSelection::Uncategorized)
+        ) || self.filter.uncategorized_only;
         let mut rows: Vec<ChartRow> = self
             .chart_rows
             .iter()
             .zip(shorts)
-            .map(|(r, short)| ChartRow {
-                id: r.id,
-                name: r.name.clone().into(),
-                short,
-                bar_label: SharedString::default(),
-                cents: r.spend_cents,
-                share: r.share,
-                color: r.id.map_or(muted, |id| {
+            .map(|(r, short)| {
+                let color = r.id.map_or(muted, |id| {
                     colors.get(&id).map(|ix| palette[ix % 12]).unwrap_or(muted)
-                }),
+                });
+                // The `Uncategorized` pseudo-row is never the selected
+                // category, so it dims for any real-category selection,
+                // even while the chart is drilled into one.
+                let dimmed = match r.id {
+                    Some(id) => {
+                        (selected.is_some() || unc_active)
+                            && !drilled_into_selection
+                            && selected != Some(id)
+                    }
+                    None => selected.is_some() && !unc_active,
+                };
+                ChartRow {
+                    id: r.id,
+                    name: r.name.clone().into(),
+                    short,
+                    bar_label: SharedString::default(),
+                    cents: r.spend_cents,
+                    share: r.share,
+                    color: if dimmed { color.opacity(0.35) } else { color },
+                }
             })
             .collect();
         // Uncategorized is always the last category row, whatever its amount.
@@ -831,6 +896,12 @@ impl DashboardPage {
         // (the old side-by-side 45/55 split is gone). The 340 px height
         // stays explicit — the page scroller gives its children no height
         // to fill — and `flex_none` keeps it at exactly that.
+        // 3.46: a selected month narrows the chart too, and the title says
+        // which month ("Spending by category · Oct 2026").
+        let title: SharedString = match self.filter.summary_month.as_deref() {
+            Some(m) => format!("Spending by category · {}", flow::month_label(m)).into(),
+            None => "Spending by category".into(),
+        };
         panel(cx, true)
             .w_full()
             .h(px(340.))
@@ -838,7 +909,7 @@ impl DashboardPage {
             .min_w_0()
             .debug_selector(|| "panel:chart".into())
             .gap_2()
-            .child(region_title("Spending by category"))
+            .child(region_title(title))
             .child(chart)
             .child(legend)
             .into_any_element()
@@ -854,12 +925,13 @@ impl DashboardPage {
     /// row, `danger` when negative; `Income` reads as money in (`success`).
     pub(super) fn summary_panel(&mut self, cx: &mut Context<Self>) -> AnyElement {
         // 3.85: palette indices from the Catalog (see `chart_panel`).
-        let (border, muted, list_active, danger, success, radius, colors, palette) = {
+        let (border, muted, list_active, list_hover, danger, success, radius, colors, palette) = {
             let theme = cx.theme();
             (
                 theme.border,
                 theme.muted_foreground,
                 theme.list_active,
+                theme.list_hover,
                 theme.danger,
                 theme.success,
                 theme.radius,
@@ -891,6 +963,11 @@ impl DashboardPage {
         }
         let selection = self.filter.legend_selection;
         let selected_month = self.filter.summary_month.clone();
+        // 3.46: the "Uncategorized only" checkbox and the legend's
+        // Uncategorized chip light the same thing, so the summary's
+        // Uncategorized row highlights for either.
+        let unc_active = matches!(selection, Some(LegendSelection::Uncategorized))
+            || self.filter.uncategorized_only;
         let month_values = self.summary.months.clone();
         // 3.85: the cached, pre-formatted rows (see `summary_views_mut`).
         let views = self.summary_views_mut();
@@ -948,14 +1025,30 @@ impl DashboardPage {
                 )
                 .child(months_strip().children(
                     month_values.iter().enumerate().map(|(col_ix, month)| {
+                        // 3.46: the heading selects its month on its own
+                        // (chart, summary column tint and table), and the
+                        // selected one is tinted like the column below it.
+                        let month = month.clone();
+                        let is_month = selected_month.as_deref() == Some(month.as_str());
+                        let label = flow::month_label(month.as_str());
                         div()
+                            .id(SharedString::from(format!(
+                                "summary:month-heading-{}",
+                                month
+                            )))
                             .w(px(MONTH_W))
                             .flex_none()
+                            .rounded(px(2.))
                             .debug_selector(move || format!("summary:month-label-{col_ix}"))
                             .text_right()
                             .text_sm()
                             .text_color(muted)
-                            .child(flow::month_label(month))
+                            .when(is_month, |d| d.bg(list_hover))
+                            .cursor_pointer()
+                            .child(label)
+                            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                this.click_summary_month(&month, cx);
+                            }))
                     }),
                 )),
             )
@@ -1084,6 +1177,11 @@ impl DashboardPage {
             for (col_ix, &cents) in row.cents.iter().enumerate() {
                 let is_total = col_ix >= month_count;
                 let cell_month = strip_months.get(col_ix).cloned();
+                // 3.46: the selected month tints its whole column; the
+                // selected cell (category and month together) keeps the
+                // stronger `list_active`.
+                let in_month_col =
+                    !is_total && selected_month.is_some() && cell_month == selected_month;
                 let selected = is_category
                     && cell_month == selected_month
                     && match (id, selection) {
@@ -1106,6 +1204,7 @@ impl DashboardPage {
                     .rounded(px(2.))
                     .when_some(color, |c, color| c.text_color(color))
                     .when(selected, |c| c.bg(list_active))
+                    .when(in_month_col && !selected, |c| c.bg(list_hover))
                     .when(is_category, |c| {
                         let month = cell_month.clone();
                         c.cursor_pointer().on_click(cx.listener(
@@ -1123,18 +1222,37 @@ impl DashboardPage {
                 }
             }
 
+            // 3.46: the selected category's whole row carries `list_active`
+            // (the legend and summary always agree on the selection); the
+            // `Uncategorized` row highlights for the checkbox too.
+            let row_selected = is_category
+                && match (id, selection) {
+                    (None, Some(LegendSelection::Uncategorized)) => true,
+                    (None, None) => unc_active,
+                    (Some(id), Some(LegendSelection::Category(c))) => c == id,
+                    _ => false,
+                };
+            // 3.46: the selector records the highlight, so a test can see
+            // the selected row paint (same rule as the legend rows).
+            let row_selector = format!(
+                "summary:row:{ix}{}",
+                if row_selected { ":active" } else { "" }
+            );
             h_flex()
                 .id(SharedString::from(format!("summary-row-{key}")))
                 .w_full()
                 .gap_2()
                 .items_center()
-                // 3.85: pinned to match the virtual list's
-                // `item_sizes`, so measured height never drifts.
+                .debug_selector(move || row_selector.clone())
+                // 3.85: the row markup pins its height so the measured
+                // height never drifts (3.45 moved the vertical scroll to
+                // the page, so there is no item cache to match).
                 .h(px(if is_income { INCOME_ROW_H } else { ROW_H }))
                 .overflow_hidden()
                 .px_1()
                 .py_1()
                 .rounded(radius)
+                .when(row_selected, |r| r.bg(list_active))
                 // A hairline above `Income` separates the totals from
                 // the category rows.
                 .when(is_income, |r| r.border_t_1().border_color(border))
@@ -1209,9 +1327,9 @@ impl DashboardPage {
     }
     /// The table's empty state (task 3.10, ui-conventions *States*): shown
     /// when transactions exist but the current filters select none. A
-    /// muted centered message plus a "Clear filters" link that drops every
-    /// table-narrowing filter. The header controls (date range, accounts,
-    /// transfers) keep their own widgets, so they stay as the user set them.
+    /// muted centered message plus a "Clear filters" link. 3.46: the link
+    /// runs the same reset as the filter row's "Clear all" button, so it
+    /// restores every filter, the header controls included.
     pub(super) fn no_matches_panel(&self, cx: &mut Context<Self>) -> AnyElement {
         let muted = cx.theme().muted_foreground;
         panel(cx, false)
@@ -1226,8 +1344,9 @@ impl DashboardPage {
                 Button::new("clear-filters")
                     .link()
                     .label("Clear filters")
+                    .debug_selector(|| "dashboard:no-matches-clear".into())
                     .on_click(cx.listener(|this, _, window, cx| {
-                        this.clear_filters(window, cx);
+                        this.clear_all_filters(window, cx);
                     })),
             )
             .into_any_element()

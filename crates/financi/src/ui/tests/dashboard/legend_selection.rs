@@ -77,9 +77,16 @@ fn the_uncategorized_toggle_and_a_category_selection_are_exclusive(cx: &mut Test
     });
     let food = cx.update(|cx| top_category_id(&shell, cx, "Food"));
 
+    // 3.46: the toggle narrows the whole page, so the chart keeps only
+    // the Uncategorized legend row while it is on.
     set_uncategorized_only(cx, handle, &shell, true);
     wait_until(cx, "only the uncategorized row", |cx| {
-        dash(cx, &shell).read(cx).row_count == 1
+        let d = dash(cx, &shell).read(cx);
+        d.row_count == 1 && d.chart_rows.iter().all(|r| r.id.is_none())
+    });
+    set_uncategorized_only(cx, handle, &shell, false);
+    wait_until(cx, "the chart is whole again", |cx| {
+        dash(cx, &shell).read(cx).chart_rows.len() == 3
     });
 
     // A category legend row wins: the checkbox goes off, the table shows
@@ -96,12 +103,18 @@ fn the_uncategorized_toggle_and_a_category_selection_are_exclusive(cx: &mut Test
     // chart stays drilled) instead of stacking both clauses.
     set_uncategorized_only(cx, handle, &shell, true);
     wait_until(cx, "uncategorized only again", |cx| {
-        dash(cx, &shell).read(cx).filter.uncategorized_only
-            && dash(cx, &shell).read(cx).filter.legend_selection.is_none()
-            && dash(cx, &shell).read(cx).row_count == 1
+        // 3.46: drilled into Food with the toggle on, the child chart
+        // would be empty (no uncategorized rows live under a named
+        // category), so the 3.56 revalidation un-drills and the top-level
+        // chart keeps only its Uncategorized row.
+        let d = dash(cx, &shell).read(cx);
+        d.filter.uncategorized_only
+            && d.filter.legend_selection.is_none()
+            && d.row_count == 1
+            && d.filter.chart_parent.is_none()
+            && d.chart_rows.iter().all(|r| r.id.is_none())
     });
     cx.update(|cx| {
-        assert_eq!(dash(cx, &shell).read(cx).filter.chart_parent, Some(food));
         let rows = table_rows(&shell, cx);
         assert!(rows.iter().all(|r| r.category_id.is_none()));
     });
