@@ -1347,8 +1347,9 @@ fn rules_page_group_headers_sum_uses_and_total(cx: &mut TestAppContext) {
 }
 
 /// 3.58: clicking the Total heading sorts each group by the Total's
-/// absolute amount — first click ascending (smallest flow first), the
-/// repeat descending; the Pattern heading restores the default.
+/// absolute amount — first click descending (biggest flow first, like
+/// the table's Amount), the repeat ascending; the Pattern heading
+/// restores the default.
 #[gpui::test]
 fn rules_page_sort_by_total_orders_by_magnitude(cx: &mut TestAppContext) {
     let (handle, _shell, _coffee, _snacks, _games, rules) = open_rules_page(cx);
@@ -1362,19 +1363,19 @@ fn rules_page_sort_by_total_orders_by_magnitude(cx: &mut TestAppContext) {
 
     click(cx, handle, "rules:heading:Total");
     draw_frame(cx, handle);
-    // Ascending by magnitude: r2 (−10.00) above r1 (−20.00).
+    // Descending by magnitude: r1 (−20.00) above r2 (−10.00).
     assert!(
-        centre_y(cx, handle, format!("rules:row-{r2}"))
-            < centre_y(cx, handle, format!("rules:row-{r1}")),
-        "Total ascending puts the smaller flow first"
+        centre_y(cx, handle, format!("rules:row-{r1}"))
+            < centre_y(cx, handle, format!("rules:row-{r2}")),
+        "Total's first click is descending, biggest flow first"
     );
 
     click(cx, handle, "rules:heading:Total");
     draw_frame(cx, handle);
     assert!(
-        centre_y(cx, handle, format!("rules:row-{r1}"))
-            < centre_y(cx, handle, format!("rules:row-{r2}")),
-        "the repeat click flips to descending"
+        centre_y(cx, handle, format!("rules:row-{r2}"))
+            < centre_y(cx, handle, format!("rules:row-{r1}")),
+        "the repeat click flips to ascending"
     );
 
     // The Pattern heading sorts by pattern again.
@@ -1385,6 +1386,31 @@ fn rules_page_sort_by_total_orders_by_magnitude(cx: &mut TestAppContext) {
             < centre_y(cx, handle, format!("rules:row-{r2}")),
         "Pattern ascending is the default order"
     );
+}
+
+/// 3.58: only Pattern, Uses and Total sort (ui-conventions *Rules*), so
+/// the Type and checkbox headings are plain labels — a click there
+/// leaves the sort alone.
+#[gpui::test]
+fn rules_page_only_the_sortable_headings_sort(cx: &mut TestAppContext) {
+    let (handle, _shell, _coffee, _snacks, _games, rules) = open_rules_page(cx);
+    let (r1, r2) = (rules[0], rules[1]);
+    draw_frame(cx, handle);
+    click(cx, handle, "rules:heading:Total");
+    draw_frame(cx, handle);
+    let y1 = centre_y(cx, handle, format!("rules:row-{r1}"));
+    let y2 = centre_y(cx, handle, format!("rules:row-{r2}"));
+    assert!(y1 < y2, "Total's first click sorts descending");
+
+    click(cx, handle, "rules:heading:Type");
+    draw_frame(cx, handle);
+    assert_eq!(centre_y(cx, handle, format!("rules:row-{r1}")), y1);
+    assert_eq!(centre_y(cx, handle, format!("rules:row-{r2}")), y2);
+
+    click(cx, handle, "rules:heading:");
+    draw_frame(cx, handle);
+    assert_eq!(centre_y(cx, handle, format!("rules:row-{r1}")), y1);
+    assert_eq!(centre_y(cx, handle, format!("rules:row-{r2}")), y2);
 }
 
 /// 3.28: Search filters live over the pattern and the target category's

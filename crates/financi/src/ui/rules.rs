@@ -1513,10 +1513,10 @@ impl Render for RulesPage {
         // column and the old spacer hack is gone.
         let columns = vec![
             DataCol::new("", Col::Fixed(RULE_SEL_W), ColAlign::Left),
-            DataCol::new("Pattern", Col::Flex, ColAlign::Left),
+            DataCol::new("Pattern", Col::Flex, ColAlign::Left).sortable(),
             DataCol::new("Type", Col::Fixed(RULE_TYPE_W), ColAlign::Left),
-            DataCol::new("Uses", Col::Fixed(RULE_USES_W), ColAlign::Right),
-            DataCol::new("Total", Col::Fixed(RULE_TOTAL_W), ColAlign::Right),
+            DataCol::new("Uses", Col::Fixed(RULE_USES_W), ColAlign::Right).sortable(),
+            DataCol::new("Total", Col::Fixed(RULE_TOTAL_W), ColAlign::Right).sortable(),
         ];
         let list = DataList::new(cx.entity(), columns, data_items)
             .on_pass(move |this, range| {
@@ -1726,7 +1726,16 @@ impl Render for RulesPage {
             .toggle(move |this, id, _window, cx| this.toggle_rule_group(id, cx))
             .sort(move |this, title, next, _window, cx| {
                 // 3.58: a heading click picks the column and direction.
-                this.rules_sort = Some((title, next));
+                // A repeat click flips (the `next` the list computed); a
+                // fresh click on a count or amount column starts
+                // biggest-first, like the transactions table's Date and
+                // Amount (ui-conventions *Lists*).
+                let state = match this.rules_sort {
+                    Some((col, _)) if col == title => next,
+                    _ if matches!(title, "Uses" | "Total") => SortState::Descending,
+                    _ => next,
+                };
+                this.rules_sort = Some((title, state));
                 cx.notify();
             })
             .heading_selectors("rules")

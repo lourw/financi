@@ -159,9 +159,9 @@ impl Render for ListHost {
 
 fn wh_columns() -> Vec<DataCol> {
     vec![
-        DataCol::new("Date", Col::Fixed(110.), ColAlign::Left),
-        DataCol::new("Description", Col::Flex, ColAlign::Left),
-        DataCol::new("Amount", Col::Fixed(120.), ColAlign::Right),
+        DataCol::new("Date", Col::Fixed(110.), ColAlign::Left).sortable(),
+        DataCol::new("Description", Col::Flex, ColAlign::Left).sortable(),
+        DataCol::new("Amount", Col::Fixed(120.), ColAlign::Right).sortable(),
     ]
 }
 
@@ -433,6 +433,42 @@ fn a_heading_click_reports_the_next_sort_direction(cx: &mut TestAppContext) {
         entity.update(cx, |h, _| h.sorted),
         Some(("Date", SortState::Ascending)),
         "another column's heading starts at ascending"
+    );
+}
+
+/// Only columns marked [`DataCol::sortable`] get the heading button and
+/// arrow; a click on a plain heading is inert (3.58 review: the checkbox
+/// spacer and tag columns must not sort).
+#[gpui::test]
+fn only_sortable_headings_are_clickable(cx: &mut TestAppContext) {
+    let mut host = wh_host(2);
+    host.sort = true;
+    host.columns = vec![
+        DataCol::new("Date", Col::Fixed(110.), ColAlign::Left),
+        DataCol::new("Description", Col::Flex, ColAlign::Left),
+        DataCol::new("Amount", Col::Fixed(120.), ColAlign::Right).sortable(),
+    ];
+    let (handle, _vtc, entity) = open_list_host(cx, host);
+    click(cx, handle, "wh:heading:Date");
+    draw_frame(cx, handle);
+    assert_eq!(
+        entity.update(cx, |h, _| h.sorted),
+        None,
+        "a plain heading click sorts nothing"
+    );
+    click(cx, handle, "wh:heading:Description");
+    draw_frame(cx, handle);
+    assert_eq!(
+        entity.update(cx, |h, _| h.sorted),
+        None,
+        "a plain heading click sorts nothing"
+    );
+    click(cx, handle, "wh:heading:Amount");
+    draw_frame(cx, handle);
+    assert_eq!(
+        entity.update(cx, |h, _| h.sorted),
+        Some(("Amount", SortState::Ascending)),
+        "the sortable column's heading still sorts"
     );
 }
 

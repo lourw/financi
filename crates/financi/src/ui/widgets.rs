@@ -170,6 +170,11 @@ pub(super) struct DataCol {
     pub width: Col,
     /// Alignment, shared by heading and rows.
     pub align: ColAlign,
+    /// Whether this column's heading sorts the list (see
+    /// [`DataList::sort`]). Only sortable headings get the button and
+    /// arrow; the rest — a checkbox spacer, a tag column — stay plain
+    /// labels, so the sorted column's arrow is the only one on the row.
+    sortable: bool,
 }
 
 impl DataCol {
@@ -178,7 +183,14 @@ impl DataCol {
             title,
             width,
             align,
+            sortable: false,
         }
+    }
+
+    /// Let this column's heading sort the list (see [`DataList::sort`]).
+    pub fn sortable(mut self) -> Self {
+        self.sortable = true;
+        self
     }
 }
 
@@ -467,8 +479,10 @@ impl<V: Render> DataList<V> {
     }
 
     /// Make the headings clickable: clicking the heading for column
-    /// `title` calls `f` with the direction to sort by next. (3.58: the
-    /// Rules page is the first user.)
+    /// `title` calls `f` with the direction to sort by next. Only
+    /// columns marked [`DataCol::sortable`] get the button and arrow —
+    /// the others keep a plain label. (3.58: the Rules page is the
+    /// first user.)
     pub fn sort(
         mut self,
         f: impl Fn(&mut V, &'static str, SortState, &mut Window, &mut Context<V>) + 'static,
@@ -511,7 +525,7 @@ impl<V: Render> DataList<V> {
             .gap_1()
             .items_center()
             .child(div().child(col.title));
-        let inner = match (&self.sort, sorted) {
+        let inner = match (self.sort.as_ref().filter(|_| col.sortable), sorted) {
             (None, _) => inner.into_any_element(),
             (Some(_), state) => {
                 let next = match state {
@@ -904,8 +918,7 @@ pub(super) fn type_tag(label: impl Into<SharedString>) -> Tag {
 
 /// A row action: a ghost xsmall icon button with a tooltip naming it
 /// (ui-conventions *Interaction* — icon-only actions always explain
-/// themselves on hover). (Built ahead of the pages that move onto it.)
-#[allow(dead_code)]
+/// themselves on hover).
 pub(super) fn row_action_button(
     id: impl Into<SharedString>,
     icon: IconName,
