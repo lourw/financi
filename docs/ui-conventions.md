@@ -305,14 +305,16 @@ tooltips; the plot takes the panel's full inner width, with the legend a
 wrapping chip row under it — 10 px swatch + name `text_xs` ellipsized at
 120 px, click drills, tooltip `amount · share`, `list_active` selected,
 "← All categories" first while drilled, at most two lines with a muted
-"+N more" chip whose tooltip lists the hidden names) beside the *Monthly
-summary* `Panel` (~45/55, both 340 px; the summary's name column and
+"+N more" chip whose tooltip lists the hidden names; 340 px tall). Below
+it the *Monthly summary* `Panel` (3.45: its own full-width row at content
+height; the summary's name column and
 Total are pinned while only month columns scroll sideways on one shared
 handle, landing on the latest month). Then filter chips and the
 transactions `DataTable`, where every column sorts (text A→Z first, Date
 and Amount newest/biggest first; the sort survives filter changes).
 Chart, summary and table stack in a scrolling page under a pinned filter
-row (3.45);
+row (3.45: the table fills the viewport below the filter row and scrolls
+inside itself; the page scrolls back to the top on entry);
 every filter applies to all three views, with Clear all (3.46); filter
 changes apply at once (3.56).
 

@@ -491,8 +491,7 @@ fn the_dashboard_regions_share_the_page_edges(cx: &mut TestAppContext) {
         // 3.45: stacked rows — the summary panel begins below the chart
         // panel, it no longer shares the chart's row beside it.
         assert!(
-            f32::from(summary.origin.y)
-                >= f32::from(chart.origin.y + chart.size.height) - 1.,
+            f32::from(summary.origin.y) >= f32::from(chart.origin.y + chart.size.height) - 1.,
             "the summary panel top is at y {}, not below the chart panel's \
              bottom {} ({w}x{h})",
             f32::from(summary.origin.y),
@@ -617,6 +616,139 @@ fn the_chart_panel_starts_higher_now_the_filters_are_one_row(cx: &mut TestAppCon
         "the chart panel's top is at y {}, not at least 80 px above the \
          pre-3.35 y {CHART_TOP_BEFORE}",
         f32::from(chart.origin.y)
+    );
+}
+
+/// 3.45: the page scrolls — the chart, summary and table rows ride the
+/// page-level scroller while the filter row stays pinned at the top of
+/// the page. The wheel over the chart panel moves the page handle.
+#[gpui::test]
+fn the_page_scrolls_its_panels_beneath_a_pinned_filter_row(cx: &mut TestAppContext) {
+    let (handle, shell) = open_dashboard_for_geometry(cx, 1200., 720.);
+    settle(cx, handle);
+    let chart_top = f32::from(bounds(cx, handle, "panel:chart").origin.y);
+    let filters_top = f32::from(bounds(cx, handle, "filters:region").origin.y);
+    let at = viewport_centre(bounds(cx, handle, "panel:chart"));
+    wheel(cx, handle, at, 0., -120.);
+    draw_frame(cx, handle);
+    let off = cx.update(|cx| dash(cx, &shell).read(cx).page_scroll.offset().y);
+    assert!(off < px(0.), "the wheel scrolled the page scroller");
+    assert!(
+        f32::from(bounds(cx, handle, "panel:chart").origin.y) < chart_top - 40.,
+        "the chart row did not ride the page up"
+    );
+    assert_eq!(
+        f32::from(bounds(cx, handle, "filters:region").origin.y),
+        filters_top,
+        "the filter row stays pinned while the page scrolls"
+    );
+}
+
+/// 3.45: the scroll position survives a refresh and a filter change —
+/// the handle is page-owned and the reload re-renders the same scroller
+/// in place.
+#[gpui::test]
+fn the_page_scroll_survives_a_filter_change(cx: &mut TestAppContext) {
+    let (handle, shell) = open_dashboard_for_geometry(cx, 1200., 720.);
+    settle(cx, handle);
+    let at = viewport_centre(bounds(cx, handle, "panel:chart"));
+    wheel(cx, handle, at, 0., -120.);
+    draw_frame(cx, handle);
+    let scrolled = cx.update(|cx| dash(cx, &shell).read(cx).page_scroll.offset().y);
+    assert!(scrolled < px(0.), "the page is scrolled down");
+    with_window(cx, handle, |window, cx| {
+        dash(cx, &shell).update(cx, |d, cx| {
+            d.change_date_preset(DatePreset::Last12Months, window, cx)
+        })
+    });
+    wait_until(cx, "filter applied", |cx| {
+        dash(cx, &shell).read(cx).filter.date_range == DateRange::Preset(DatePreset::Last12Months)
+    });
+    wait_idle(cx, &shell);
+    settle(cx, handle);
+    let after = cx.update(|cx| dash(cx, &shell).read(cx).page_scroll.offset().y);
+    assert_eq!(
+        after, scrolled,
+        "the filter change and its reload kept the page's scroll position"
+    );
+}
+
+/// 3.45: entering the dashboard starts at the top of the scrolling
+/// content — the scroll only persists *within* a visit (above).
+#[gpui::test]
+fn entering_the_dashboard_starts_at_the_top_of_the_page(cx: &mut TestAppContext) {
+    let (handle, shell) = open_dashboard_for_geometry(cx, 1200., 720.);
+    settle(cx, handle);
+    let at = viewport_centre(bounds(cx, handle, "panel:chart"));
+    wheel(cx, handle, at, 0., -120.);
+    draw_frame(cx, handle);
+    let scrolled = cx.update(|cx| dash(cx, &shell).read(cx).page_scroll.offset().y);
+    assert!(scrolled < px(0.), "the page is scrolled down");
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Categories, cx)));
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
+    wait_idle(cx, &shell);
+    settle(cx, handle);
+    let off = cx.update(|cx| dash(cx, &shell).read(cx).page_scroll.offset().y);
+    assert_eq!(off, px(0.), "the revisit starts at the top");
+    assert!(
+        f32::from(bounds(cx, handle, "panel:table").origin.y) > 0.,
+        "the table is laid out from the top of the scroller"
+    );
+}
+
+/// 3.45: the wheel over the transactions table scrolls the table, not
+/// the page — the table container occludes, so the page handle never
+/// moves.
+#[gpui::test]
+fn wheel_over_the_table_scrolls_the_table_not_the_page(cx: &mut TestAppContext) {
+    let (handle, shell) = open_dashboard_for_geometry(cx, 1200., 720.);
+    settle(cx, handle);
+    let chart_top = f32::from(bounds(cx, handle, "panel:chart").origin.y);
+    let at = viewport_centre(bounds(cx, handle, "panel:table"));
+    wheel(cx, handle, at, 0., -120.);
+    draw_frame(cx, handle);
+    let off = cx.update(|cx| dash(cx, &shell).read(cx).page_scroll.offset().y);
+    assert_eq!(
+        off,
+        px(0.),
+        "the wheel over the table reached the page scroller"
+    );
+    assert_eq!(
+        f32::from(bounds(cx, handle, "panel:chart").origin.y),
+        chart_top,
+        "the chart row did not move while the table scrolled"
+    );
+}
+
+/// 3.45: the table's height is the viewport minus the pinned filter row
+/// (the measured mirror the layout applies) — it fills to the bottom of
+/// the window instead of sitting in a fixed-height row.
+#[gpui::test]
+fn the_table_fills_the_viewport_below_the_filter_row(cx: &mut TestAppContext) {
+    let (handle, shell) = open_dashboard_for_geometry(cx, 1200., 720.);
+    settle(cx, handle);
+    let mut window = VisualTestContext::from_window(handle, cx);
+    let filters = window
+        .debug_bounds("filters:region")
+        .expect("the filter row paints");
+    let table = window
+        .debug_bounds("panel:table")
+        .expect("the table panel paints");
+    let table_h = f32::from(table.size.height);
+    // The box below the filter row: everything above it is pinned, and
+    // only the row's gap and the page's bottom padding come off the
+    // window height.
+    let below = 720. - (f32::from(filters.origin.y) + f32::from(filters.size.height));
+    assert!(
+        table_h <= below && table_h >= below - 48.,
+        "the table is {table_h:.1} px tall; the page leaves {below:.1} px \
+         below the filter row (viewport minus pinned row, gaps and padding)"
+    );
+    // The stored mirror equals the painted height (the probe is wired).
+    let stored = cx.update(|cx| dash(cx, &shell).read(cx).tx_panel_h);
+    assert!(
+        (stored - table_h).abs() <= 0.5,
+        "the probe stored {stored:.1}px but `panel:table` painted {table_h:.1}px"
     );
 }
 

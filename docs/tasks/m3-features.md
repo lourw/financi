@@ -4,7 +4,7 @@ Start these only after both queues are done (`docs/tasks.md` → *Picking the ne
 
 ## Lane A — dashboard (after both queues)
 
-- [ ] **3.45 Chart and summary on their own rows.** The middle row puts
+- [x] **3.45 Chart and summary on their own rows.** The middle row puts
   the chart panel (`CHART_PANEL_SHARE`, 45 %) and the monthly summary side
   by side at 340 px tall; both are cramped (user request, 2026-11-11;
   changes D1's "chart beside the summary"). The user chose **a scrolling

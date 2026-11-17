@@ -205,10 +205,10 @@ fn summary_months_scroll_under_pinned_name_and_total(cx: &mut TestAppContext) {
         "the Total column stays pinned"
     );
 
-    // Vertical scrolling of the body still works over the month zone,
-    // and the name column moves with the rows (it is part of the body).
-    // 3.85: the body is virtual, so the wheel is checked against the
-    // second row — a 40 px scroll carries the first row away entirely.
+    // Vertical scrolling still works over the month zone — 3.45: the
+    // wheel bubbles to the page's scroller (the summary is content-height
+    // now, it no longer virtualizes its rows), and the name column moves
+    // with its row either way.
     let y_before = bounds(cx, handle, "summary:name-1").origin.y;
     wheel(cx, handle, viewport_centre(zone), 0., -40.);
     draw_frame(cx, handle);
@@ -219,10 +219,38 @@ fn summary_months_scroll_under_pinned_name_and_total(cx: &mut TestAppContext) {
     );
 }
 
-/// 3.30: a horizontal swipe over the months scrolls the month strip only.
-/// A y-only scroller remaps a horizontal wheel delta onto its own axis,
-/// so `summary-rows` must restrict itself to the vertical axis — otherwise
-/// the same swipe that moves the months also jumps the rows.
+/// 3.45: the summary spans the page's full width, so a 12-month range
+/// shows nearly all of it — at least 8 whole month columns at 1600 px,
+/// where the old beside-the-chart panel showed about five.
+#[gpui::test]
+fn a_full_width_summary_shows_most_of_a_twelve_month_range(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |conn| seed_summary_months(conn, 12));
+    resize_and_draw(cx, handle, 1600., 900.);
+    set_all_time_covering(cx, handle, &shell, 12);
+    wait_until(cx, "12 months in the grid", |cx| {
+        dash(cx, &shell).read(cx).summary.months.len() == 12
+    });
+    draw_frame(cx, handle);
+    let zone = bounds(cx, handle, "summary:months-0");
+    let mut whole = 0;
+    for col in 0..12 {
+        let cell = bounds(cx, handle, format!("summary:cell:0:{col}"));
+        if cell.origin.x >= zone.origin.x - px(1.) && cell.right() <= zone.right() + px(1.) {
+            whole += 1;
+        }
+    }
+    assert!(
+        whole >= 8,
+        "the full-width grid shows only {whole} whole month columns at \
+         1600 px of a 12-month range (3.45 wants at least 8)",
+    );
+}
+
+/// 3.30, 3.45: a horizontal swipe over the months scrolls the month strip
+/// only. A y-only scroller remaps a horizontal wheel delta onto its own
+/// axis, so the month viewports and the page scroller keep the swipe
+/// horizontal (`restrict_scroll_to_axis`) — otherwise the same swipe that
+/// moves the months also jumps the page.
 #[gpui::test]
 fn a_horizontal_swipe_does_not_jump_the_summary_rows_vertically(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, |conn| seed_summary_months(conn, 24));
@@ -232,14 +260,15 @@ fn a_horizontal_swipe_does_not_jump_the_summary_rows_vertically(cx: &mut TestApp
     draw_frame(cx, handle);
     let zone = bounds(cx, handle, "summary:months-0");
 
-    // Wheel the body down first, so there is somewhere to jump back to.
-    // 3.85: the body is virtual — the second row is tracked, because a
-    // 40 px scroll carries the first row away entirely.
+    // Wheel the page down first, so there is somewhere to jump back to.
+    // 3.45: the wheel over the month zone rides the page scroller — the
+    // second row is tracked, because a 40 px scroll carries the first
+    // row away entirely.
     let y_top = bounds(cx, handle, "summary:name-1").origin.y;
     wheel(cx, handle, viewport_centre(zone), 0., -40.);
     draw_frame(cx, handle);
     let y_scrolled = bounds(cx, handle, "summary:name-1").origin.y;
-    assert!(y_scrolled < y_top, "the body is scrolled down");
+    assert!(y_scrolled < y_top, "the page is scrolled down");
 
     // A horizontal swipe over the month zone moves the months…
     let x0 = cx.update(|cx| dash(cx, &shell).read(cx).summary_scroll.offset().x);
@@ -314,9 +343,10 @@ fn changing_the_summary_range_lands_on_the_latest_month(cx: &mut TestAppContext)
 /// 3.30: when every month fits there is nothing to scroll and the
 /// horizontal scrollbar does not show.
 ///
-/// This runs at 1600 × 900 rather than 1200 × 720: with the name pinned at
-/// 160 px and Total at 96 px, the 1200-wide panel leaves only a ~200 px
-/// month zone, so even three 88 px columns overflow it by construction.
+/// This runs at 1600 × 900 rather than 1200 × 720 so the month zone is
+/// comfortably wider than three 88 px columns even before 3.45 widened
+/// the summary to the full page; the point stays that a range that fits
+/// has nothing to scroll.
 /// "Everything fits" needs a window wide enough for three months plus the
 /// two pinned columns.
 #[gpui::test]
