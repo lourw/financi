@@ -147,6 +147,17 @@ Pages compose these; don't restyle them per page. They live in
   controls, then Cancel and the primary action at the right end. Escape,
   Cancel, a successful submit and leaving the page close it; opening
   another form closes the open one (one form open at a time).
+- **Category pickers are searchable** (3.59) — every `Select` that picks
+  a category or subcategory (To categorize rows, the Rules Move bar and
+  add-rule row, the Categories Move and Delete forms) opens with its
+  search box focused; arrows move, Enter picks, Escape closes. The
+  sub-category pickers list sub-categories grouped under their category,
+  and the query matches category **and** sub-category names case-
+  insensitively, so every result shows with its category and same-named
+  sub-categories are told apart. The menu is wide enough for the longest
+  label up to 320 px; longer labels ellipsize. Items come from
+  `Catalog::cat_choices` (`ui/category_picker.rs`); pickers resolve picks
+  by the item's id value.
 - **`Swatch`** — 10 × 10 square, 2 px radius, the category color.
 - **`TypeTag`** — small outline tag (`text_xs`, `border`, radius), e.g.
   "text" / "regex", "system", the import preview's institution.

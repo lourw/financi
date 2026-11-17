@@ -19,15 +19,11 @@ fn queue_pick(
             let picker = s
                 .queue_view
                 .update(cx, |p, cx| p.queue_picker(merchant, window, cx));
-            let ix = s
-                .queue_view
-                .read(cx)
-                .child_choices
-                .iter()
-                .position(|(id, _)| *id == child)
-                .unwrap();
+            // 3.59: the grouped picker items carry the category id as
+            // their value, so the pick resolves by value (a sectioned
+            // menu's `IndexPath` is not a flat row number).
             picker.update(cx, |sel, cx| {
-                sel.set_selected_index(Some(gpui_kit::component::IndexPath::new(ix)), window, cx);
+                sel.set_selected_value(&child, window, cx);
             });
             // The popup's pick emits `Confirm`, which re-renders the rows;
             // `set_selected_index` drives the state directly, so the test
@@ -428,15 +424,16 @@ fn the_queue_prunes_pickers_as_its_window_moves(cx: &mut TestAppContext) {
         );
     });
     // The rebuilt picker offers the current categories: picking the queue's
-    // only child category lands on its "Food › Groceries" label.
+    // only child category lands on its id value (3.59: the grouped items
+    // carry the id, the label is the menu row).
     let child = cx.update(|cx| find_child(&shell, cx, "Groceries").unwrap());
     queue_pick(cx, handle, &shell, "QUEUE MERCHANT 0000", child);
     cx.update(|cx| {
         let p = shell.read(cx).queue_view.read(cx);
         let picker = p.picker("QUEUE MERCHANT 0000").expect("picker exists");
         assert_eq!(
-            picker.read(cx).selected_value().map(|v| v.to_string()),
-            Some("Food › Groceries".to_string()),
+            picker.read(cx).selected_value().copied(),
+            Some(child),
             "the rebuilt picker holds the current category choices"
         );
     });
@@ -462,8 +459,8 @@ fn the_queue_prunes_pickers_as_its_window_moves(cx: &mut TestAppContext) {
                 .unwrap()
                 .read(cx)
                 .selected_value()
-                .map(|v| v.to_string()),
-            Some("Food › Groceries".to_string()),
+                .copied(),
+            Some(child),
             "the pick itself survives the scroll"
         );
     });

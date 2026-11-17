@@ -9,6 +9,7 @@
 
 mod catalog;
 mod categories;
+mod category_picker;
 mod dashboard;
 mod dashboard_chart;
 mod dashboard_filters;
@@ -21,6 +22,7 @@ mod transfers;
 mod widgets;
 
 use self::categories::*;
+use self::category_picker::*;
 use self::dashboard::*;
 use self::imports::*;
 use self::page::{Cancel, PageEntity as _, PageEvent};
@@ -391,6 +393,10 @@ pub struct Shell {
     /// this page drives. Task 3.80 moves the list; this scaffold goes then.
     categories_page: CategoriesState,
     rules_page: Entity<RulesPage>,
+    /// 3.59: the grouped picker items `data_changed` last fed to the
+    /// sub-category pickers; `Rc::ptr_eq` against `Catalog`'s cache is
+    /// the "tree changed" test (the queue page's pattern).
+    cat_choices_held: Option<Rc<Vec<SelectGroup<SubChoice>>>>,
     transfers: Entity<TransfersPage>,
     imports: Entity<ImportsPage>,
     _subs: Vec<Subscription>,
@@ -600,6 +606,7 @@ impl Shell {
             categories_view: categories,
             categories_page,
             rules_page,
+            cat_choices_held: None,
             transfers,
             imports,
             _subs: vec![
@@ -726,6 +733,33 @@ impl Shell {
         }
         if sections & (S_CATEGORIES | S_RULES) != 0 {
             self.sync_category_choices(event.generation, window, cx);
+            // 3.59: the sub-category pickers take `Catalog`'s shared
+            // grouped items. The feed lives here (not in a page's
+            // `render`): it has the window `set_items` needs, and hidden
+            // pages never render — yet the Rules add-flow is driven from
+            // the Categories page and the tests drive hidden pages too
+            // (where the old flat feed ran). An `Rc` compare skips the
+            // churn when the tree did not change.
+            let choices = self.catalog.read(cx).cat_choices();
+            if self
+                .cat_choices_held
+                .as_ref()
+                .is_none_or(|held| !Rc::ptr_eq(held, &choices))
+            {
+                self.cat_choices_held = Some(choices);
+                let items = SearchableVec::new((*self.cat_choices_held.clone().unwrap()).clone());
+                self.categories_view.update(cx, |page, cx| {
+                    page.delete_target
+                        .update(cx, |s, cx| s.set_items(items, window, cx))
+                });
+                let items = SearchableVec::new((*self.cat_choices_held.clone().unwrap()).clone());
+                self.rules_page.update(cx, |p, cx| {
+                    p.rule_target
+                        .update(cx, |s, cx| s.set_items(items.clone(), window, cx));
+                    p.move_rules_target
+                        .update(cx, |s, cx| s.set_items(items, window, cx));
+                });
+            }
         }
         // 3.83: the To-categorize page is an entity and applies its own
         // section of the snapshot (see `ui/page.rs`).

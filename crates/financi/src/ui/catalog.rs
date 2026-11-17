@@ -266,6 +266,12 @@ pub(super) struct Catalog {
     /// consumers resolve `palette[ix % 12]` with the *current* theme,
     /// exactly as the per-frame `category_colors` build did.
     cat_colors: Rc<HashMap<i64, usize>>,
+    /// 3.59: the shared grouped category-picker items — one `SelectGroup`
+    /// per parent category, its children as `SubChoice` rows. A pure
+    /// function of the tree, rebuilt with it; every category picker wraps
+    /// a clone in its own `SearchableVec` (the filter state is per picker).
+    /// `Rc::ptr_eq` on the accessor is the "did the tree change" test.
+    cat_choices: Rc<Vec<SelectGroup<SubChoice>>>,
     /// 3.85 test hook: rebuild counts per derived cache, asserted by
     /// `caches_rebuild_only_when_their_inputs_change`.
     #[cfg(test)]
@@ -283,6 +289,7 @@ impl Catalog {
             patterns: Rc::new(HashMap::new()),
             rule_labels: Rc::new(HashMap::new()),
             cat_colors: Rc::new(HashMap::new()),
+            cat_choices: Rc::new(Vec::new()),
             #[cfg(test)]
             cache_rebuilds: std::cell::Cell::new((0, 0, 0)),
         }
@@ -307,6 +314,12 @@ impl Catalog {
     /// [`category_palette`] at draw time.
     pub(super) fn cat_colors(&self) -> Rc<HashMap<i64, usize>> {
         Rc::clone(&self.cat_colors)
+    }
+
+    /// The grouped picker items (3.59); rebuild a picker's `SearchableVec`
+    /// from a clone whenever this pointer changes.
+    pub(super) fn cat_choices(&self) -> Rc<Vec<SelectGroup<SubChoice>>> {
+        Rc::clone(&self.cat_choices)
     }
 
     /// The reader dependency map: the sections `domains` reloads.
@@ -480,6 +493,9 @@ impl Catalog {
                 }
             }
             self.cat_colors = Rc::new(colors);
+            // 3.59: the grouped picker items are a pure function of the
+            // tree too — built once here, shared by every picker.
+            self.cat_choices = Rc::new(sub_choice_groups(&self.snap.tree));
             #[cfg(test)]
             self.bump_cache(1);
         }

@@ -38,18 +38,9 @@ fn creating_a_rule_categorizes_matching_rows(cx: &mut TestAppContext) {
                     i.set_value(merchant.clone(), window, cx);
                 })
             });
-            let ix = s
-                .child_choices
-                .iter()
-                .position(|(id, _)| *id == child)
-                .unwrap();
             s.rules_page.update(cx, |p, cx| {
                 p.rule_target.update(cx, |sel, cx| {
-                    sel.set_selected_index(
-                        Some(gpui_kit::component::IndexPath::new(ix)),
-                        window,
-                        cx,
-                    );
+                    sel.set_selected_value(&child, window, cx);
                 })
             });
             s.rules_page.update(cx, |p, cx| p.add_rule(window, cx));
@@ -560,18 +551,9 @@ fn the_editor_error_stays_inside_its_row(cx: &mut TestAppContext) {
                 p.rule_pattern
                     .update(cx, |i, cx| i.set_value("TOAST".to_string(), window, cx))
             });
-            let ix = s
-                .child_choices
-                .iter()
-                .position(|(id, _)| *id == second)
-                .unwrap();
             s.rules_page.update(cx, |p, cx| {
                 p.rule_target.update(cx, |sel, cx| {
-                    sel.set_selected_index(
-                        Some(gpui_kit::component::IndexPath::new(ix)),
-                        window,
-                        cx,
-                    );
+                    sel.set_selected_value(&second, window, cx);
                 })
             });
             s.rules_page.update(cx, |p, cx| p.add_rule(window, cx));
@@ -653,18 +635,9 @@ fn the_rule_editor_gives_the_pattern_room(cx: &mut TestAppContext) {
                 p.rule_pattern
                     .update(cx, |i, cx| i.set_value("TOAST".to_string(), window, cx))
             });
-            let ix = s
-                .child_choices
-                .iter()
-                .position(|(id, _)| *id == second)
-                .unwrap();
             s.rules_page.update(cx, |p, cx| {
                 p.rule_target.update(cx, |sel, cx| {
-                    sel.set_selected_index(
-                        Some(gpui_kit::component::IndexPath::new(ix)),
-                        window,
-                        cx,
-                    );
+                    sel.set_selected_value(&second, window, cx);
                 })
             });
             s.rules_page.update(cx, |p, cx| p.add_rule(window, cx));
@@ -1727,24 +1700,11 @@ fn rules_page_move_recategorizes_rows_and_clears_selection(cx: &mut TestAppConte
     );
 
     // Target: Food › Snacks, the same child list the rule pickers use.
-    let ix = cx.update(|cx| {
-        shell
-            .read(cx)
-            .child_choices
-            .iter()
-            .position(|(id, _)| *id == snacks)
-            .unwrap()
-    });
     with_window(cx, handle, |window, cx| {
         shell.update(cx, |s, cx| {
             s.rules_page.update(cx, |p, cx| {
-                p.move_rules_target.update(cx, |sel, cx| {
-                    sel.set_selected_index(
-                        Some(gpui_kit::component::IndexPath::new(ix)),
-                        window,
-                        cx,
-                    );
-                });
+                p.move_rules_target
+                    .update(cx, |sel, cx| sel.set_selected_value(&snacks, window, cx));
             });
             s.rules_page
                 .update(cx, |p, cx| p.move_selected_rules(window, cx));

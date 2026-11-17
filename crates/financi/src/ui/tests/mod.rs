@@ -48,6 +48,7 @@ use crate::ui::sidebar::NAV_ROW_INSET;
 
 mod catalog;
 mod categories;
+mod category_picker;
 mod dashboard;
 mod imports;
 mod page;

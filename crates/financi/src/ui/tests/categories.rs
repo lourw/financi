@@ -165,18 +165,9 @@ fn delete_category_reassigns_transactions_and_rules(cx: &mut TestAppContext) {
                     i.set_value(merchant.clone(), window, cx);
                 })
             });
-            let ix = s
-                .child_choices
-                .iter()
-                .position(|(id, _)| *id == online)
-                .unwrap();
             s.rules_page.update(cx, |p, cx| {
                 p.rule_target.update(cx, |sel, cx| {
-                    sel.set_selected_index(
-                        Some(gpui_kit::component::IndexPath::new(ix)),
-                        window,
-                        cx,
-                    );
+                    sel.set_selected_value(&online, window, cx);
                 })
             });
             s.rules_page.update(cx, |p, cx| p.add_rule(window, cx));
@@ -203,8 +194,7 @@ fn delete_category_reassigns_transactions_and_rules(cx: &mut TestAppContext) {
             Some(online),
             "first click arms"
         );
-        let keep_ix = s_ix(&shell, cx, keep);
-        s_select(&shell, cx, keep_ix, window);
+        s_select(&shell, cx, keep, window);
         shell.update(cx, |s, cx| s.arm_delete_category(window, cx));
     });
     wait_until(cx, "Online deleted", |cx| {
@@ -220,26 +210,17 @@ fn delete_category_reassigns_transactions_and_rules(cx: &mut TestAppContext) {
     });
 }
 
-/// The index of `child` in the shell's child_choices.
-fn s_ix(shell: &Entity<Shell>, cx: &App, child: i64) -> usize {
-    shell
-        .read(cx)
-        .child_choices
-        .iter()
-        .position(|(id, _)| *id == child)
-        .unwrap()
-}
-
-fn s_select(shell: &Entity<Shell>, cx: &mut App, ix: usize, window: &mut Window) {
+/// 3.59: pick `child` in the Delete form's reassign picker. The grouped
+/// items carry the sub-category id as their value, so the pick is by
+/// value (a sectioned menu's `IndexPath` is not a flat row number).
+fn s_select(shell: &Entity<Shell>, cx: &mut App, child: i64, window: &mut Window) {
     let target = shell
         .read(cx)
         .categories_view
         .read(cx)
         .delete_target
         .clone();
-    target.update(cx, |sel, cx| {
-        sel.set_selected_index(Some(gpui_kit::component::IndexPath::new(ix)), window, cx)
-    });
+    target.update(cx, |sel, cx| sel.set_selected_value(&child, window, cx));
 }
 
 /// 3.12: with thousands of categories and rules the Categories page must
@@ -1004,8 +985,7 @@ fn the_categories_page_never_says_parent_or_child(cx: &mut TestAppContext) {
             s.select_category(food_id, window, cx);
         });
         shell.update(cx, |s, cx| s.arm_delete_category(window, cx));
-        let ix = s_ix(&shell, cx, child);
-        s_select(&shell, cx, ix, window);
+        s_select(&shell, cx, child, window);
         shell.update(cx, |s, cx| s.arm_delete_category(window, cx));
     });
     wait_until(cx, "the has-subcategories refusal", |cx| {
@@ -1496,17 +1476,11 @@ fn the_move_and_delete_forms_run_their_actions_and_close(cx: &mut TestAppContext
     });
     // Reopen, choose where the transactions go, and delete for real.
     click(cx, handle, "cat:title-delete");
-    let keep_ix = cx.update(|cx| s_ix(&shell, cx, keep));
     with_window(cx, handle, |window, cx| {
         shell.update(cx, |s, cx| {
             s.categories_view.update(cx, |p, cx| {
-                p.delete_target.update(cx, |sel, cx| {
-                    sel.set_selected_index(
-                        Some(gpui_kit::component::IndexPath::new(keep_ix)),
-                        window,
-                        cx,
-                    );
-                })
+                p.delete_target
+                    .update(cx, |sel, cx| sel.set_selected_value(&keep, window, cx))
             });
         });
     });
@@ -1691,17 +1665,11 @@ fn every_category_write_shows_loading_until_the_task_ends(cx: &mut TestAppContex
     with_window(cx, handle, |window, cx| {
         shell.update(cx, |s, cx| s.select_category(dining, window, cx));
     });
-    let cafes_ix = cx.update(|cx| s_ix(&shell, cx, cafes));
     with_window(cx, handle, |window, cx| {
         shell.update(cx, |s, cx| {
             s.categories_view.update(cx, |p, cx| {
-                p.delete_target.update(cx, |sel, cx| {
-                    sel.set_selected_index(
-                        Some(gpui_kit::component::IndexPath::new(cafes_ix)),
-                        window,
-                        cx,
-                    );
-                })
+                p.delete_target
+                    .update(cx, |sel, cx| sel.set_selected_value(&cafes, window, cx))
             });
             s.arm_delete_category(window, cx);
             assert_eq!(

@@ -157,7 +157,7 @@ Start these only after both queues are done (`docs/tasks.md` → *Picking the ne
 
 ## Lane C — small tasks (after both queues)
 
-- [ ] **3.59 Searchable category pickers.** From `plan.md` → *Make
+- [x] **3.59 Searchable category pickers.** From `plan.md` → *Make
   category dropdowns usable with thousands of categories* (never made a
   task; user confirmed 2026-11-11). A flat scrolling list doesn't work at
   that size, and same-named subcategories under different categories

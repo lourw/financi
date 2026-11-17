@@ -169,19 +169,12 @@ fn changing_a_rows_category_locks_it_and_offers_the_rule(cx: &mut TestAppContext
                     i.set_value(m.clone(), window, cx);
                 })
             });
-            let ix = s
-                .child_choices
-                .iter()
-                .position(|(id, _)| *id == groceries)
-                .unwrap();
+            // 3.59: the grouped picker items carry the sub-category id
+            // as their value, so the pick resolves by value (a sectioned
+            // menu's `IndexPath` is not a flat row number).
             s.rules_page.update(cx, |p, cx| {
-                p.rule_target.update(cx, |sel, cx| {
-                    sel.set_selected_index(
-                        Some(gpui_kit::component::IndexPath::new(ix)),
-                        window,
-                        cx,
-                    );
-                })
+                p.rule_target
+                    .update(cx, |sel, cx| sel.set_selected_value(&groceries, window, cx));
             });
             s.rules_page.update(cx, |p, cx| p.add_rule(window, cx));
         });
