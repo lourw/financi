@@ -285,6 +285,23 @@ fn clear_all_resets_every_filter_and_hides_itself(cx: &mut TestAppContext) {
     with_window(cx, handle, |window, cx| {
         dash(cx, &shell).update(cx, |d, cx| {
             d.change_date_preset(DatePreset::Custom, window, cx);
+            // Custom opens on this month, which holds none of the seed
+            // data, and a range that empties the chart legitimately clears
+            // the drill-down (3.56 revalidation). Widen it over the seeded
+            // months so the selection survives and the reset has a real
+            // Custom range to undo.
+            d.date_picked(
+                false,
+                NaiveDate::from_ymd_opt(2026, 3, 1).unwrap(),
+                window,
+                cx,
+            );
+            d.date_picked(
+                true,
+                NaiveDate::from_ymd_opt(2026, 4, 30).unwrap(),
+                window,
+                cx,
+            );
             d.apply_search("STORE", window, cx);
             d.set_include_transfers(true, window, cx);
             d.set_show_hidden(true, window, cx);
