@@ -1452,7 +1452,7 @@ impl Render for CategoriesPage {
                 // H4: the counters track the exact pass range (the tests'
                 // own — see [`Self::note_tree_paint_pass`]).
                 .on_pass(move |this, range| this.note_tree_paint_pass(range))
-                .cells(move |_this, item, _window, _cx| {
+                .cells(move |_this, item, _measuring, _window, _cx| {
                     let DataItem::Row { id, .. } = item else {
                         return Vec::new();
                     };

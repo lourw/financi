@@ -302,8 +302,11 @@ pub(super) enum DataItem {
     },
 }
 
-/// Paints one line's cells (see [`DataList::cells`]).
-type CellsFn<V> = Rc<dyn Fn(&V, &DataItem, &mut Window, &mut Context<V>) -> Vec<ListCell>>;
+/// Paints one line's cells (see [`DataList::cells`]). The `bool` is
+/// `measuring`: the list's per-frame one-row call that sizes the list
+/// before the visible pass (3.105), on which pages must take no
+/// side effects.
+type CellsFn<V> = Rc<dyn Fn(&V, &DataItem, bool, &mut Window, &mut Context<V>) -> Vec<ListCell>>;
 /// Notified once per paint pass with the lines about to be built (see
 /// [`DataList::on_pass`]).
 type PassFn<V> = Rc<dyn Fn(&V, std::ops::Range<usize>)>;
@@ -380,7 +383,7 @@ impl<V: Render> DataList<V> {
             columns: Rc::from(columns),
             items,
             sizes,
-            cells: Rc::new(|_, _, _, _| Vec::new()),
+            cells: Rc::new(|_, _, _, _, _| Vec::new()),
             on_pass: None,
             actions_width: None,
             actions: None,
@@ -421,9 +424,17 @@ impl<V: Render> DataList<V> {
     /// list's last `n` columns. Each cell is wrapped in its column's
     /// width and alignment; a [`ListCell::text`] cell additionally gets
     /// the tooltip holding its full text.
+    ///
+    /// `f` is called with `measuring = true` for the one-row call the
+    /// list makes per frame to size itself (3.105): build the line's
+    /// cells as usual but take no page-side side effects — no lazily
+    /// created entity, no prune keyed to "the visible range". That call
+    /// measures row 0 before any visible pass, so treating it as a
+    /// paint pass shrinks a prune window to row 0's neighbourhood and
+    /// rebuilds the visible rows' entities every frame.
     pub fn cells(
         mut self,
-        f: impl Fn(&V, &DataItem, &mut Window, &mut Context<V>) -> Vec<ListCell> + 'static,
+        f: impl Fn(&V, &DataItem, bool, &mut Window, &mut Context<V>) -> Vec<ListCell> + 'static,
     ) -> Self {
         self.cells = Rc::new(f);
         self
@@ -437,6 +448,12 @@ impl<V: Render> DataList<V> {
     /// height that is a multiple of the row) continues the ids with no
     /// break, so a sequence heuristic misses the window move and lets
     /// it grow unbounded (H4).
+    ///
+    /// 3.105: the list's per-frame one-row measure call (which runs
+    /// before the visible pass and always holds row 0) is **not** a
+    /// paint pass and is never reported here — a page that took it as
+    /// one would key its window to row 0 and drop everything below
+    /// the viewport.
     pub fn on_pass(mut self, f: impl Fn(&V, std::ops::Range<usize>) + 'static) -> Self {
         self.on_pass = Some(Rc::new(f));
         self
@@ -628,15 +645,34 @@ impl<V: Render> RenderOnce for DataList<V> {
         let on_toggle = self.on_toggle.clone();
         let on_row = self.on_row.clone();
         let total = items.len();
+        // 3.105: `VirtualList` calls the row closure twice per frame —
+        // once from `request_layout` to measure one row (gpui-base's
+        // `measure_item` → `render_items(0..1)`, i.e. row 0 whatever is
+        // on screen), and once from `prepaint` for the visible range.
+        // This closure is built fresh on every render, so the measure
+        // call is always its first call of the frame. It is not a
+        // paint pass: pages key their picker windows to the pass
+        // `on_pass` reports, and a window of row 0's neighbourhood
+        // drops every un-picked picker below the viewport, rebuilding
+        // the visible rows' entities frame after frame (the user's
+        // "buttons dead after scrolling"). Don't report it, and flag
+        // it to `cells` so pages skip their lazily-created entities
+        // and their prune on that call.
+        let calls = std::cell::Cell::new(0u32);
         let list = v_virtual_list(
             self.host.clone(),
             "financi-data-list",
             self.sizes.clone(),
             move |view, range, window, cx| {
+                let n = calls.get();
+                calls.set(n + 1);
+                let measuring = n == 0;
                 // H4: hand the page the exact pass range before any of
                 // its rows build, so its window is this frame's, not the
                 // union of every frame since the ids last broke.
-                if let Some(f) = &on_pass {
+                if let Some(f) = &on_pass
+                    && !measuring
+                {
                     f(view, range.clone());
                 }
                 let start = range.start;
@@ -647,7 +683,7 @@ impl<V: Render> RenderOnce for DataList<V> {
                     // rows and 36 px groups unless [`DataList::sizes`]
                     // overrode them), so taller in-line content fits.
                     let line_h = sizes[start + i].height;
-                    let painted = cells(view, item, window, cx);
+                    let painted = cells(view, item, measuring, window, cx);
                     let line = match item {
                         DataItem::Row {
                             id,

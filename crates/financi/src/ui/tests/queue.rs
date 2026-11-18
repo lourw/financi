@@ -737,6 +737,127 @@ fn the_queue_prunes_pickers_as_its_window_moves(cx: &mut TestAppContext) {
     });
 }
 
+/// 3.105: the To categorize buttons work after scrolling. The virtual
+/// list calls its row closure once per frame to measure row 0, before
+/// the visible pass; when the page treats that call as a paint pass,
+/// its prune drops every un-picked picker below the viewport and the
+/// visible rows get new picker entities every frame — the menu never
+/// opens and a pick never lands. Scrolled to row 150 of a 300-merchant
+/// queue, a visible row's picker must keep its entity across frames,
+/// and pick + Categorize must work there and at the end of the list.
+#[gpui::test]
+fn a_scrolled_queue_row_keeps_its_picker_and_can_categorize(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |conn| seed_queue_thousands(conn, 300));
+    wait_until(cx, "300 queue groups", |cx| queue_len(&shell, cx) == 300);
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::ToCategorize, cx)));
+    draw_frame(cx, handle);
+    // Scroll so row 150 sits at the top of the viewport (40 px rows,
+    // offset 20 px into the row so the window boundary is unambiguous).
+    cx.update(|cx| {
+        shell
+            .read(cx)
+            .queue_view
+            .read(cx)
+            .scroll
+            .set_offset(point(px(0.), px(-6_020.)));
+    });
+    draw_frame(cx, handle);
+    // A visible row's picker is the same entity across two frames.
+    let merchant = "QUEUE MERCHANT 0152";
+    let picker_id = |cx: &mut TestAppContext| {
+        cx.update(|cx| {
+            shell
+                .read(cx)
+                .queue_view
+                .read(cx)
+                .picker(merchant)
+                .expect("a visible row has a picker")
+                .entity_id()
+        })
+    };
+    let first = picker_id(cx);
+    draw_frame(cx, handle);
+    assert_eq!(
+        first,
+        picker_id(cx),
+        "a visible row's picker keeps its entity across frames — a new \
+         entity every frame means the menu never opens and picks die"
+    );
+    // A pick lands on that picker and enables the row's Categorize.
+    let child = cx.update(|cx| find_child(&shell, cx, "Groceries").unwrap());
+    queue_pick(cx, handle, &shell, merchant, child);
+    draw_frame(cx, handle);
+    assert!(
+        paints(
+            cx,
+            handle,
+            format!("queue:categorize-state:{merchant}:enabled")
+        ),
+        "picking a subcategory enables the scrolled row's Categorize",
+    );
+    // The click adds the merchant's rule and removes the row.
+    queue_categorize(cx, handle, &shell, merchant.to_string());
+    let gone = merchant.to_string();
+    let shell_for_gone = shell.clone();
+    wait_until(cx, "scrolled queue group categorized", move |cx| {
+        let s = shell_for_gone.read(cx);
+        s.rules.iter().any(|r| r.pattern == gone)
+            && s.queue_view
+                .read(cx)
+                .groups
+                .iter()
+                .all(|g| g.merchant != gone)
+    });
+    // The same at the end of the list: the last row's picker is stable
+    // across frames, picks, and categorizes.
+    cx.update(|cx| {
+        shell
+            .read(cx)
+            .queue_view
+            .read(cx)
+            .scroll
+            .set_offset(point(px(0.), px(-1_000_000.)));
+    });
+    draw_frame(cx, handle);
+    let last = "QUEUE MERCHANT 0299";
+    let picker_id = |cx: &mut TestAppContext| {
+        cx.update(|cx| {
+            shell
+                .read(cx)
+                .queue_view
+                .read(cx)
+                .picker(last)
+                .expect("the last row is visible at the bottom")
+                .entity_id()
+        })
+    };
+    let first = picker_id(cx);
+    draw_frame(cx, handle);
+    assert_eq!(
+        first,
+        picker_id(cx),
+        "the last row's picker keeps its entity across frames"
+    );
+    queue_pick(cx, handle, &shell, last, child);
+    draw_frame(cx, handle);
+    assert!(
+        paints(cx, handle, format!("queue:categorize-state:{last}:enabled")),
+        "picking a subcategory enables the last row's Categorize",
+    );
+    queue_categorize(cx, handle, &shell, last.to_string());
+    let gone = last.to_string();
+    let shell_for_gone = shell.clone();
+    wait_until(cx, "last queue group categorized", move |cx| {
+        let s = shell_for_gone.read(cx);
+        s.rules.iter().any(|r| r.pattern == gone)
+            && s.queue_view
+                .read(cx)
+                .groups
+                .iter()
+                .all(|g| g.merchant != gone)
+    });
+}
+
 /// H4: exact-page scrolls. Scrolling to the offset where the previous
 /// pass ended makes the built ids continue with no break (PageDown at a
 /// viewport height that's a multiple of the 40 px row); the old sequence
