@@ -356,12 +356,45 @@ fn resize_and_draw(cx: &mut TestAppContext, handle: AnyWindowHandle, w: f32, h: 
     draw_frame(cx, handle);
 }
 
+/// The view sources the two walks below read. They were the flat `ui/*.rs`
+/// set until the S1 splits moved pages into module directories
+/// (`rules/`, `categories/`, `dashboard/`), so the walk now descends into
+/// subdirectories — skipping `tests/`, whose selectors and labels remain
+/// the tests' own business. Names come back relative to `ui/`.
+fn view_sources(ui_dir: &std::path::Path) -> Vec<(String, String)> {
+    let mut files: Vec<std::path::PathBuf> = Vec::new();
+    let mut dirs: Vec<std::path::PathBuf> = vec![ui_dir.to_path_buf()];
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(&dir).expect("the view directory") {
+            let Ok(path) = entry.map(|e| e.path()) else {
+                continue;
+            };
+            if path.is_dir() {
+                if path.file_name().is_none_or(|n| n != "tests") {
+                    dirs.push(path);
+                }
+            } else if path.extension().is_some_and(|x| x == "rs") {
+                files.push(path);
+            }
+        }
+    }
+    files.sort();
+    files
+        .into_iter()
+        .map(|p| {
+            let name = p.strip_prefix(ui_dir).unwrap_or(&p);
+            let text = std::fs::read_to_string(&p).unwrap();
+            (name.to_string_lossy().into_owned(), text)
+        })
+        .collect()
+}
+
 /// 3.75: every debug selector the app emits follows `page:thing[:id]`.
 /// gpui keeps a rendered frame's selector map private (`Window`'s
 /// `debug_bounds` field is `pub(crate)`), so the walk runs over the
 /// source the frames are built from: every string literal inside a
-/// `.debug_selector(…)` call in the view code (`ui/*.rs`; test-only
-/// selectors are the tests' business). Selectors that reach a widget
+/// `.debug_selector(…)` call in the view code (all of `ui/` but `tests/`;
+/// test-only selectors are the tests' business). Selectors that reach a widget
 /// through a helper (`control_slot`, `month_viewport`) carry no literal
 /// at the `debug_selector` — the walk checks the literals those helpers
 /// receive at their call sites instead. A selector is at least two
@@ -371,20 +404,14 @@ fn resize_and_draw(cx: &mut TestAppContext, handle: AnyWindowHandle, w: f32, h: 
 /// widget id mistaken for a selector fails the walk.
 #[test]
 fn selectors_follow_the_page_thing_id_pattern() {
-    let ui_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("src")
-        .join("ui");
-    let mut files: Vec<_> = std::fs::read_dir(&ui_dir)
-        .expect("the view directory")
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| p.extension().is_some_and(|x| x == "rs"))
-        .collect();
-    files.sort();
+    let sources = view_sources(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src")
+            .join("ui"),
+    );
     let mut checked = 0usize;
     let mut bad: Vec<String> = Vec::new();
-    for path in files {
-        let text = std::fs::read_to_string(&path).unwrap();
-        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+    for (name, text) in sources {
         // `.debug_selector(` contributes one selector; the helpers take
         // their selectors as literal arguments at the call site.
         for (needle, expect) in [
@@ -525,7 +552,8 @@ fn selector_ok(sel: &str) -> bool {
 
 /// 3.43: no button label ends in "…" — a button names its action with an
 /// icon left of the label instead (ui-conventions, *Buttons*). The walk
-/// reads the view sources (`ui/*.rs`; test code is the tests' business)
+/// reads the view sources (all of `ui/` but `tests/`; test code is the
+/// tests' business)
 /// and fails on a string literal ending in "…" inside a `.label(…)` call,
 /// or on a `const NAME: &str = "…"` that is passed to `.label(NAME)`.
 /// Select placeholders (`.placeholder(…)`) and picker rows are not
@@ -534,22 +562,11 @@ fn selector_ok(sel: &str) -> bool {
 #[test]
 fn no_button_label_ends_in_an_ellipsis() {
     const ALLOWED: &[&str] = &["Restore from export…"];
-    let ui_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("src")
-        .join("ui");
-    let mut files: Vec<_> = std::fs::read_dir(&ui_dir)
-        .expect("the view directory")
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| p.extension().is_some_and(|x| x == "rs"))
-        .collect();
-    files.sort();
-    let texts: Vec<(String, String)> = files
-        .iter()
-        .map(|p| {
-            let text = std::fs::read_to_string(p).unwrap();
-            (p.file_name().unwrap().to_string_lossy().into_owned(), text)
-        })
-        .collect();
+    let texts = view_sources(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src")
+            .join("ui"),
+    );
     let mut bad: Vec<String> = Vec::new();
     let mut checked = 0usize;
     // Every `const NAME: &str = "…";`, checked against the uses below.
