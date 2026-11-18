@@ -671,77 +671,100 @@ fn the_page_does_not_scroll_and_the_panels_stay_put(cx: &mut TestAppContext) {
 }
 
 /// 3.100: the default arrangement is the 2×2 — chart | monthly bars
-/// above summary | transactions — with 12 px gutters and every panel
-/// at or above its minimum, all inside a 1200 × 720 window.
+/// above summary | transactions — with 12 px gutters between
+/// neighbours (measured between the painted panel boxes, at both
+/// window sizes) and every panel at or above its minimum, inside
+/// 1200 × 720 and 1600 × 1000.
 #[gpui::test]
 fn the_default_layout_is_a_two_by_two_with_gutters(cx: &mut TestAppContext) {
-    let (handle, _shell) = open_dashboard_for_geometry(cx, 1200., 720.);
-    settle(cx, handle);
-    let chart = bounds(cx, handle, "panel:chart");
-    let stacked = bounds(cx, handle, "panel:stacked");
-    let summary = bounds(cx, handle, "panel:summary");
-    let table = bounds(cx, handle, "panel:table");
-    let top = |b: gpui::Bounds<Pixels>| f32::from(b.origin.y);
-    assert!(
-        (top(chart) - top(stacked)).abs() <= 1.,
-        "chart and stacked are not on one row ({} vs {})",
-        top(chart),
-        top(stacked),
-    );
-    assert!(
-        (top(summary) - top(table)).abs() <= 1.,
-        "summary and table are not on one row ({} vs {})",
-        top(summary),
-        top(table),
-    );
-    assert!(
-        f32::from(chart.origin.x) < f32::from(stacked.origin.x),
-        "the chart is not the top-left panel"
-    );
-    assert!(
-        f32::from(summary.origin.x) < f32::from(table.origin.x),
-        "the summary is not the bottom-left panel"
-    );
-    assert!(
-        top(summary) > top(chart),
-        "the bottom row is not below the top row"
-    );
-    // The frames tile the dock (the divider straddles the seam), so the
-    // gutter is measured between the painted boxes: the chart's title
-    // row's right edge and the stacked panel's title row's left edge.
-    let chart_box = bounds(cx, handle, "dashboard:title:chart");
-    let stacked_box = bounds(cx, handle, "dashboard:title:stacked");
-    let gutter = f32::from(stacked_box.origin.x)
-        - (f32::from(chart_box.origin.x) + f32::from(chart_box.size.width));
-    assert!(
-        (gutter - 12.).abs() <= 1.,
-        "the gutter between the top-row panels is {gutter:.1} px, not 12 px"
-    );
-    // Every panel clears its minimum (240×160; the table 320×200) and
-    // the dock reaches the window's bottom-right corner (page padding
-    // 16 px, minus the 6 px the dock pulls back for its outer ring).
-    for (name, b, min_w, min_h) in [
-        ("chart", chart, 240., 160.),
-        ("stacked", stacked, 240., 160.),
-        ("summary", summary, 240., 160.),
-        ("table", table, 320., 200.),
-    ] {
-        let (w, h) = (f32::from(b.size.width), f32::from(b.size.height));
+    for (w, h) in [(1200., 720.), (1600., 1000.)] {
+        let (handle, _shell) = open_dashboard_for_geometry(cx, w, h);
+        settle(cx, handle);
+        let chart = bounds(cx, handle, "panel:chart");
+        let stacked = bounds(cx, handle, "panel:stacked");
+        let summary = bounds(cx, handle, "panel:summary");
+        let table = bounds(cx, handle, "panel:table");
+        let top = |b: gpui::Bounds<Pixels>| f32::from(b.origin.y);
         assert!(
-            w >= min_w && h >= min_h,
-            "{name} painted {w:.1}×{h:.1}, below its {min_w}×{min_h} minimum"
+            (top(chart) - top(stacked)).abs() <= 1.,
+            "at {w}×{h}: chart and stacked are not on one row ({} vs {})",
+            top(chart),
+            top(stacked),
+        );
+        assert!(
+            (top(summary) - top(table)).abs() <= 1.,
+            "at {w}×{h}: summary and table are not on one row ({} vs {})",
+            top(summary),
+            top(table),
+        );
+        assert!(
+            f32::from(chart.origin.x) < f32::from(stacked.origin.x),
+            "at {w}×{h}: the chart is not the top-left panel"
+        );
+        assert!(
+            f32::from(summary.origin.x) < f32::from(table.origin.x),
+            "at {w}×{h}: the summary is not the bottom-left panel"
+        );
+        assert!(
+            top(summary) > top(chart),
+            "at {w}×{h}: the bottom row is not below the top row"
+        );
+        // The frames tile the dock (the divider straddles the seam), so
+        // the gutter is measured between the painted boxes: the chart's
+        // title row's right edge and the stacked panel's title row's
+        // left edge.
+        let chart_box = bounds(cx, handle, "dashboard:title:chart");
+        let stacked_box = bounds(cx, handle, "dashboard:title:stacked");
+        let gutter = f32::from(stacked_box.origin.x)
+            - (f32::from(chart_box.origin.x) + f32::from(chart_box.size.width));
+        assert!(
+            (gutter - 12.).abs() <= 1.,
+            "at {w}×{h}: the gutter between the top-row panels is \
+             {gutter:.1} px, not 12 px"
+        );
+        // The vertical gutter, between the Chart panel's painted bottom
+        // edge (its frame's bottom less the 6 px ring) and the Summary
+        // panel's painted top edge (the top of its title row).
+        let summary_title = bounds(cx, handle, "dashboard:title:summary");
+        let ring = f32::from(crate::ui::dashboard::dock::DOCK_GUTTER);
+        let v_gutter =
+            f32::from(summary_title.origin.y) - (top(chart) + f32::from(chart.size.height) - ring);
+        assert!(
+            (v_gutter - 12.).abs() <= 1.,
+            "at {w}×{h}: the gutter between the rows is {v_gutter:.1} px, \
+             not 12 px (chart {chart:?}, summary title {summary_title:?})"
+        );
+        // Every panel clears its minimum (240×160; the table 320×200) and
+        // the dock reaches the window's bottom-right corner (page padding
+        // 16 px, minus the 6 px the dock pulls back for its outer ring).
+        for (name, b, min_w, min_h) in [
+            ("chart", chart, 240., 160.),
+            ("stacked", stacked, 240., 160.),
+            ("summary", summary, 240., 160.),
+            ("table", table, 320., 200.),
+        ] {
+            let (pw, ph) = (f32::from(b.size.width), f32::from(b.size.height));
+            assert!(
+                pw >= min_w && ph >= min_h,
+                "at {w}×{h}: {name} painted {pw:.1}×{ph:.1}, below its \
+                 {min_w}×{min_h} minimum"
+            );
+        }
+        let bottom = top(table) + f32::from(table.size.height);
+        let right = f32::from(table.origin.x) + f32::from(table.size.width);
+        assert!(
+            (bottom - (h - 10.)).abs() <= 2.,
+            "at {w}×{h}: the dock's bottom edge is at {bottom:.1}, not \
+             {} ({h:.0} − 16 padding + 6 ring)",
+            h - 10.,
+        );
+        assert!(
+            (right - (w - 10.)).abs() <= 2.,
+            "at {w}×{h}: the dock's right edge is at {right:.1}, not \
+             {} ({w:.0} − 16 padding + 6 ring)",
+            w - 10.,
         );
     }
-    let bottom = top(table) + f32::from(table.size.height);
-    let right = f32::from(table.origin.x) + f32::from(table.size.width);
-    assert!(
-        (bottom - 710.).abs() <= 2.,
-        "the dock's bottom edge is at {bottom:.1}, not 710 (720 − 16 padding + 6 ring)"
-    );
-    assert!(
-        (right - 1190.).abs() <= 2.,
-        "the dock's right edge is at {right:.1}, not 1190 (1200 − 16 padding + 6 ring)"
-    );
 }
 
 /// 3.100: the wheel over the transactions table scrolls the table

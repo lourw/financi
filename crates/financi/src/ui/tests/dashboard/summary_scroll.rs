@@ -431,6 +431,50 @@ fn a_forty_row_summary_scrolls_inside_its_panel(cx: &mut TestAppContext) {
     );
 }
 
+/// 3.100: the Summary panel's own scroller keeps its position across a
+/// filter change (the state.rs claim: the handle is page-owned, so only
+/// re-entering the page sends it back to the top). Wheel the grid down,
+/// apply a search that keeps every row, and the offset is unmoved.
+#[gpui::test]
+fn the_summary_scroller_survives_a_filter_change(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_forty_rows);
+    resize_and_draw(cx, handle, 1200., 560.);
+    set_all_time(cx, handle, &shell);
+    wait_idle(cx, &shell);
+    settle(cx, handle);
+
+    // Wheel the panel down so there is a position to keep.
+    let panel = bounds(cx, handle, "panel:summary");
+    wheel(cx, handle, viewport_centre(panel), 0., -120.);
+    draw_frame(cx, handle);
+    let scrolled = cx.update(|cx| dash(cx, &shell).read(cx).summary_rows_scroll.offset().y);
+    assert!(
+        scrolled < px(0.),
+        "the wheel scrolled the Summary panel down: {scrolled:?}"
+    );
+
+    // A filter change whose answer keeps all forty rows (every seeded
+    // description matches): the grid reloads, the scroller stays put.
+    with_window(cx, handle, |window, cx| {
+        dash(cx, &shell).update(cx, |d, cx| {
+            d.search_input
+                .update(cx, |i, cx| i.set_value("ONE-OFF", window, cx));
+            d.apply_search("ONE-OFF", window, cx);
+        });
+    });
+    wait_until(cx, "the search keeps all forty rows", |cx| {
+        dash(cx, &shell).read(cx).row_count == 40
+    });
+    wait_idle(cx, &shell);
+    draw_frame(cx, handle);
+
+    let after = cx.update(|cx| dash(cx, &shell).read(cx).summary_rows_scroll.offset().y);
+    assert_eq!(
+        after, scrolled,
+        "the filter change left the Summary scroller where it was"
+    );
+}
+
 /// 3.30: when every month fits there is nothing to scroll and the
 /// horizontal scrollbar does not show.
 ///

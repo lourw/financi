@@ -4,7 +4,7 @@
 
 use std::rc::Rc;
 
-use super::dock::{DashboardDock, clamp_min_sizes, default_layout};
+use super::dock::{DOCK_GUTTER, DashboardDock, clamp_min_sizes, default_layout};
 use super::panels::DashboardPanels;
 use super::*;
 use crate::ui::dashboard_filters::{
@@ -255,9 +255,9 @@ impl DashboardState {
                         // ring, so the dock pulls itself back by half a
                         // gutter to keep the page's 16 px padding at the
                         // window edge.
-                        .ml(px(-6.))
-                        .mr(px(-6.))
-                        .mb(px(-6.))
+                        .ml(-DOCK_GUTTER)
+                        .mr(-DOCK_GUTTER)
+                        .mb(-DOCK_GUTTER)
                         .child(dock)
                         .into_any_element()
                 }

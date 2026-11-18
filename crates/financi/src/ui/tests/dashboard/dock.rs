@@ -11,6 +11,7 @@
 use gpui_kit::MouseButton;
 
 use super::layout::open_dashboard_for_geometry;
+use super::summary::click_summary_cell;
 use super::*;
 use crate::ui::dashboard::dock::{DOCK_GUTTER, panel_min};
 
@@ -153,6 +154,142 @@ fn clicking_a_tab_switches_the_shown_panel(cx: &mut TestAppContext) {
     assert!(
         !paints(cx, handle, "summary:name-0"),
         "the Summary panel is hidden once Chart is shown"
+    );
+}
+
+/// 3.100: a move does not cut a panel off its data. Tab Summary into
+/// the Chart group, then reach every panel from the new arrangement:
+/// a selection made *inside the moved panel* (its summary cell), a
+/// search filter, and a drill-down from the legend chip each update
+/// the state, the table and the bar panels react, and the tabbed-away
+/// panel shows the same result when its tab is clicked.
+#[gpui::test]
+fn after_a_move_filters_drill_down_and_selection_reach_every_panel(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_chart_rows);
+    wait_until(cx, "table loaded", |cx| {
+        dash(cx, &shell).read(cx).row_count == 4
+    });
+    settle(cx, handle);
+    let food = cx.update(|cx| top_category_id(&shell, cx, "Food"));
+
+    // Move: Summary tabs on to Chart, and the group opens on Chart.
+    let summary_title = bounds(cx, handle, "dashboard:title:summary");
+    let chart_title = bounds(cx, handle, "dashboard:title:chart");
+    drag(
+        cx,
+        handle,
+        point(
+            px(f32::from(summary_title.origin.x) + 60.),
+            px(f32::from(summary_title.origin.y) + 8.),
+        ),
+        point(
+            px(f32::from(chart_title.origin.x) + 60.),
+            px(f32::from(chart_title.origin.y) + 8.),
+        ),
+        12,
+    );
+    settle(cx, handle);
+    click(cx, handle, "dashboard:tab:chart");
+    settle(cx, handle);
+
+    // Selection: a summary cell click inside the *moved* panel, driven
+    // from its tab, filters the table and records both filter halves.
+    click(cx, handle, "dashboard:tab:summary");
+    settle(cx, handle);
+    click_summary_cell(cx, handle, &shell, Some(food), Some("2026-11"));
+    wait_until(cx, "the moved panel's cell filters the table", |cx| {
+        let d = dash(cx, &shell).read(cx);
+        d.filter.summary_month.as_deref() == Some("2026-11")
+            && d.filter.legend_selection == Some(LegendSelection::Category(food))
+            && d.row_count == 2
+    });
+    // The panels that did not move react too.
+    assert!(
+        paints(cx, handle, "stacked:plot"),
+        "the Monthly bars still paint under the new filter"
+    );
+    assert!(
+        paints(cx, handle, "panel:table"),
+        "the table frame keeps its place in the dock"
+    );
+    click(cx, handle, "dashboard:tab:chart");
+    settle(cx, handle);
+    assert!(
+        paints(cx, handle, "chart:plot"),
+        "the tabbed Chart panel paints under the summary-cell filter"
+    );
+
+    // Clear the selection (the same cell again) and check the restore
+    // reaches the moved panel as well.
+    click(cx, handle, "dashboard:tab:summary");
+    settle(cx, handle);
+    click_summary_cell(cx, handle, &shell, Some(food), Some("2026-11"));
+    wait_until(cx, "all rows back", |cx| {
+        dash(cx, &shell).read(cx).row_count == 4
+    });
+
+    // Filter: a search term narrows the table *and* the summary grid
+    // (3.46 view-wide narrowing), reaching the moved panel behind its
+    // tab: only Transport keeps a row.
+    with_window(cx, handle, |window, cx| {
+        dash(cx, &shell).update(cx, |d, cx| {
+            d.search_input
+                .update(cx, |i, cx| i.set_value("CITY BUS", window, cx));
+            d.apply_search("CITY BUS", window, cx);
+        });
+    });
+    wait_until(cx, "the search narrows the table", |cx| {
+        dash(cx, &shell).read(cx).row_count == 1
+    });
+    let rows: Vec<String> = cx.update(|cx| {
+        dash(cx, &shell)
+            .read(cx)
+            .summary_rows()
+            .iter()
+            .map(|r| r.name.to_string())
+            .collect()
+    });
+    assert!(
+        rows.iter().any(|n| n == "Transport") && !rows.iter().any(|n| n == "Food"),
+        "the search narrowing reaches the moved Summary panel: {rows:?}"
+    );
+    assert!(
+        paints(cx, handle, "summary:name-0"),
+        "the tabbed Summary panel paints under the search filter"
+    );
+    with_window(cx, handle, |window, cx| {
+        dash(cx, &shell).update(cx, |d, cx| {
+            d.search_input
+                .update(cx, |i, cx| i.set_value("", window, cx));
+            d.apply_search("", window, cx);
+        });
+    });
+    wait_until(cx, "clearing the search restores the rows", |cx| {
+        dash(cx, &shell).read(cx).row_count == 4
+    });
+
+    // Drill-down: a legend chip on the tabbed Chart panel drills the
+    // chart to Food's children and filters the table…
+    click(cx, handle, "dashboard:tab:chart");
+    settle(cx, handle);
+    click_chart_legend(cx, handle, &shell, Some(food));
+    wait_until(cx, "chart drilled to Food's children", |cx| {
+        let d = dash(cx, &shell).read(cx);
+        d.filter.chart_parent == Some(food)
+            && d.row_count == 2
+            && d.chart_rows
+                .iter()
+                .map(|r| r.name.as_str())
+                .eq(["Groceries", "Restaurants"])
+    });
+    // …and the moved Summary panel still paints behind its tab — the
+    // dock keeps every panel live after a move (the grid itself is not
+    // narrowed by the drill, 3.46).
+    click(cx, handle, "dashboard:tab:summary");
+    settle(cx, handle);
+    assert!(
+        paints(cx, handle, "summary:name-0"),
+        "the moved panel paints under the drilled-down state"
     );
 }
 

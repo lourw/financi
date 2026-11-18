@@ -8,10 +8,10 @@
 //!
 //! The skin is hand-written against the base traits rather than built on
 //! `gpui_component`'s `TabPanelRenderer`: the component chrome deviates from
-//! `docs/ui-conventions.md` (its title row is not the drag handle, it brings
-//! its own padding and typography, and its group border does not match the
-//! `panel()` look every other page uses). The base traits carry no
-//! appearance of their own, so the skin is where the Panel look lives:
+//! `docs/ui-conventions.md` (it brings its own padding and typography, and
+//! its group border does not match the `panel()` look every other page
+//! uses). The base traits carry no appearance of their own, so the skin is
+//! where the Panel look lives:
 //!
 //! - one bordered, rounded box per group — the title row draws the top half
 //!   (rounded top, no bottom border) and the content frame the bottom half;
