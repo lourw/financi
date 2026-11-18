@@ -133,7 +133,7 @@ Order: 3.102 → 3.103 → 3.47 + 3.54 (one branch).
 
 Order: 3.105 → 3.95 → 3.104 (3.105 and 3.95 both change `ui/queue.rs`).
 
-- [ ] **3.104 Rename is the same size as the other category actions.**
+- [x] **3.104 Rename is the same size as the other category actions.**
   On the Categories detail title row, Rename is bigger than Add
   subcategory, Move and Delete (user report, 2026-11-17).
   - **Cause:** in `ui/categories.rs` the `rename-category` `Button` has no

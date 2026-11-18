@@ -933,6 +933,14 @@ pub(crate) const MEDIUM_ICON_BLOCK_W: f32 = 24.;
 
 pub(crate) const MEDIUM_BUTTON_PAD_X: f32 = 20.;
 
+/// 3.104: the same for a `small` button — its icon is `size_3p5` (14 px)
+/// with a `gap_1` (4 px) between icon and label, and it pads `px_2` per
+/// side. The label text size stays `text_sm`, so the `text_sm` reference
+/// window reads for both sizes.
+pub(crate) const SMALL_ICON_BLOCK_W: f32 = 18.;
+
+pub(crate) const SMALL_BUTTON_PAD_X: f32 = 16.;
+
 /// Slack for comparing a drawn button width against label + icon +
 /// padding: layout rounds to physical pixels. Tight enough that a
 /// dropped `.icon()` call — 24 px on these buttons — fails.
