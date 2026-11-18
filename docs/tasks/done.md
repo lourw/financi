@@ -2431,3 +2431,90 @@ already on screen (wheel loop only runs for the click step).
     `WonBy` it; locked, hidden and card-payment rows behave as above; the
     cap limits rows but not the counts; empty and invalid patterns give
     an empty preview.
+
+- [x] **3.47 A deleted rule leaves the list at once.** After the second
+  click on a rule's Delete, the row stays in the list for a noticeable
+  moment before it disappears (user report, 2026-11-11, after 3.40
+  landed). 3.40 made `reapply_rules` fast (34 ms for 5 000 rows × 50
+  regex rules), so the wait is elsewhere. Today `arm_delete_rule` only
+  changes the list after **both** the `delete_rule` task **and** the
+  full `refresh` finish: `refresh` re-runs every page's queries
+  (transactions, chart, summary, imports, category tree and counts,
+  rules, queue, transfer reviews) in one `on_db` call before
+  `self.rules` is replaced. On top of that, every `DbWorker` job queues
+  behind any in-flight one (the live preview count, a previous refresh).
+  - **Review update (2026-11-11):** Do it after 3.84 (feedback within a frame) and 3.64 (per-action tasks); `FINANCI_TIMINGS` comes from 3.77, and the scoped reloads from 3.78 / 3.57.
+  - **After 3.57.** 3.56 / 3.57 scope the refresh and add the
+    `FINANCI_TIMINGS=1` log; this task adds optimistic list updates and
+    fixes whatever the measurements still show.
+  - **Measure first.** With 3.56's `FINANCI_TIMINGS=1` log, record the time from the confirming click to (a)
+    `delete_rule` returning, (b) the refresh result arriving, and each
+    query inside `refresh`. Run it on the dev-seed DB and on a copy of the
+    real DB (`FINANCI_DB=.cache/real-copy.sqlite`, timings only; never
+    commit it). Put the numbers in the commit message, and fix whatever
+    dominates if it isn't covered below (e.g. a missing index for
+    `transaction_counts` or `uncategorized_by_merchant`).
+  - **Optimistic removal:** on the confirming click, drop the rule from
+    `self.rules` (and the visible list) right away and `cx.notify()`,
+    keeping a copy. On error, put it back at its position and show the
+    error in `rule_error`. The refresh still runs after and brings
+    counts and categories up to date.
+  - **Do the same for Save and Add**, so a rule edit shows its new
+    pattern/category in the row at once, and a new rule appears at once,
+    with the same rollback on error. Rollback on a failed Add means
+    removing the provisional row; it has no id until the DB returns one,
+    so give it a temporary negative id and swap it for the real one.
+  - Tests: after the confirming click, the rule is gone from the list in
+    the same frame, before the DB task completes (run the UI without
+    advancing the executor); a failing delete (rule removed underneath)
+    restores the row and shows the error; an edit's new pattern shows
+    before the save completes; a new rule appears before its add
+    completes and then carries its real id. The 3.24 delete and edit
+    tests still pass.
+
+- [x] **3.54 Category changes don't lag the page.** Deleting a category
+  and moving a subcategory (and likely add / rename) freeze or lag the
+  page noticeably (user report, 2026-11-11). The DB side is small:
+  `move_child` is one `UPDATE`, `delete_category` two `UPDATE`s and a
+  `DELETE`, with no rule re-run. That leaves two suspects:
+  - **Review update (2026-11-11):** Do it with 3.47, after 3.84. The `Names` list built once and shared, and the `transactions(category_id)` index, are already done by 3.78 and 3.73: drop those bullets and measure what's left.
+  - (a) As in 3.47, the change waits for the full `refresh`, which re-runs
+    every page's queries.
+  - (b) **UI-thread work on the result.** A changed category list
+    re-sets items on every category picker: `sync_queue` re-sets every
+    surviving queue picker, plus the rule / move / delete targets, the
+    Rules page's Move picker and the table delegate's `child_choices`.
+    The tree virtual list is also rebuilt.
+
+  There's also no index on `transactions(category_id)`, so the
+  reassign `UPDATE` and `transaction_counts` scan the table.
+  - **Measure first,** with 3.56's `FINANCI_TIMINGS=1` logging, after
+    3.57's scoped refreshes (do 3.47 and 3.54 in one branch), on the dev-seed DB and on a copy of the real
+    DB. Log for each of delete / move / add / rename: click to DB
+    returning, to refresh result, the refresh's per-query times, and the
+    **main-thread time spent applying the result** (from entering the
+    `update_in` closure to its return, broken down by picker re-sets and
+    table refresh). Numbers go in the commit message; fix what dominates.
+  - **Optimistic tree update:** delete removes the node (and its row
+    count moves to the reassign target) and move re-parents the node in
+    `self.categories` right away, with `cx.notify()`; roll back and show
+    the error on failure. The refresh then reconciles.
+  - **Cheaper picker refresh:** build the `Names` list once per refresh
+    and share it (`Rc`/`SharedString`s), and re-set items only on pickers
+    that are **built and visible** (queue pickers are already lazy per
+    3.19; do the same for the rest). Other pickers re-set lazily when
+    next opened or shown (a `categories_version` counter compared on
+    render).
+  - **Index:** if the measurements show the scans matter, add a numbered
+    migration `CREATE INDEX tx_category ON transactions(category_id)`
+    (0001 stays frozen).
+  - Tests:
+    - after a confirmed delete or a move, the tree shows the change in
+      the same frame, before the DB task completes;
+    - a failing move (e.g. target removed underneath) rolls back and
+      shows the error;
+    - after a category change, the hidden pickers are re-set on their
+      next render, not during the refresh (count re-sets with a test
+      hook);
+    - if the index is added, a migration test checks it exists;
+    - the existing category CRUD tests pass.
