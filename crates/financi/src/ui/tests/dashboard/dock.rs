@@ -23,7 +23,7 @@ fn open(cx: &mut TestAppContext, w: f32, h: f32) -> AnyWindowHandle {
 }
 
 /// Press at `from`, move in `steps` increments to `to`, release.
-fn drag(
+pub(super) fn drag(
     cx: &mut TestAppContext,
     handle: AnyWindowHandle,
     from: Point<Pixels>,

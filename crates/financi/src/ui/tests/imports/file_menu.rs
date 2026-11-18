@@ -5,12 +5,25 @@ use super::*;
 
 /// The File menu the native menu bar is built from (3.7). The macOS menu
 /// itself can't be observed headlessly; this checks the menu definition the
-/// platform is handed.
+/// platform is handed. 3.101 added the View menu beside it.
 #[gpui::test]
 fn the_file_menu_offers_all_five_actions(cx: &mut TestAppContext) {
     open_shell(cx, |_| {});
     let menus = cx.update(|cx| cx.get_menus()).expect("menus set");
-    assert_eq!(menus.len(), 1, "one top-level menu");
+    assert_eq!(menus.len(), 2, "File and View top-level menus");
+    assert_eq!(menus[1].name.as_ref(), "View");
+    let view_items: Vec<String> = menus[1]
+        .items
+        .iter()
+        .map(|item| match item {
+            OwnedMenuItem::Action { name, action, .. } => format!("{name} [{}]", action.name()),
+            _ => "?".into(),
+        })
+        .collect();
+    assert_eq!(
+        view_items,
+        ["Reset dashboard layout [financi_view::ResetDashboardLayout]"]
+    );
     let file = &menus[0];
     assert_eq!(file.name.as_ref(), "File");
     let items: Vec<String> = file

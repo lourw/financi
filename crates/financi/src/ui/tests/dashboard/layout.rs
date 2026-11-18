@@ -426,6 +426,7 @@ fn the_dashboard_filter_row_controls_share_one_centre_line(cx: &mut TestAppConte
             "filters:search",
             "filters:options",
             "filters:count",
+            "filters:reset-layout",
         ] {
             let cy = centre_y(cx, handle, sel);
             assert!(
@@ -561,7 +562,7 @@ fn the_dashboard_stays_aligned_with_a_custom_date_range(cx: &mut TestAppContext)
         });
         draw_frame(cx, handle);
         let mut window = VisualTestContext::from_window(handle, cx);
-        const CONTROLS: [&str; 8] = [
+        const CONTROLS: [&str; 9] = [
             "filters:date-range",
             "filters:from",
             "filters:to",
@@ -570,6 +571,7 @@ fn the_dashboard_stays_aligned_with_a_custom_date_range(cx: &mut TestAppContext)
             "filters:options",
             "filters:clear-all",
             "filters:count",
+            "filters:reset-layout",
         ];
         let centre = centre_y(cx, handle, "filters:date-range");
         for sel in CONTROLS {

@@ -19,7 +19,10 @@ pub(super) use self::{
 };
 
 /// The page's four panel entities (3.97), built once beside the state
-/// and mounted by [`DashboardState::render_dashboard`].
+/// and mounted by [`DashboardState::render_dashboard`]. `Clone` holds
+/// only `Entity` handles (3.101: the state stashes a clone for the
+/// layout reset, the dock holds the rest).
+#[derive(Clone)]
 pub(super) struct DashboardPanels {
     pub(super) chart: Entity<ChartPanel>,
     pub(super) stacked: Entity<StackedPanel>,

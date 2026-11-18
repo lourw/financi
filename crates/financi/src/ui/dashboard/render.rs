@@ -5,6 +5,7 @@
 use std::rc::Rc;
 
 use super::dock::{DOCK_GUTTER, DashboardDock, clamp_min_sizes, default_layout};
+use super::dock_layout::{LAYOUT_VERSION, register_dock_panels};
 use super::panels::DashboardPanels;
 use super::*;
 use crate::ui::dashboard_filters::{
@@ -176,6 +177,27 @@ impl DashboardState {
                                 "{} transactions",
                                 flow::count(self.row_count as i64)
                             )),
+                    )
+                    // 3.101: the layout reset — the last thing on the
+                    // row's right edge, beside the count it never
+                    // shifts. Puts the default 2×2 back and saves it;
+                    // *View ▸ Reset dashboard layout* does the same.
+                    .child(
+                        div()
+                            .debug_selector(|| "filters:reset-layout".into())
+                            .flex_none()
+                            .child(
+                                row_action_button(
+                                    "reset-layout",
+                                    IconName::LayoutDashboard,
+                                    "Reset layout",
+                                )
+                                .on_click(cx.listener(
+                                    |this, _, window, cx| {
+                                        this.reset_dock_layout(window, cx);
+                                    },
+                                )),
+                            ),
                     ),
             )
             // 3.46: the filter chips row — each active narrowing the row
@@ -213,17 +235,18 @@ impl DashboardState {
                     if self.dock.is_none() {
                         let weak = cx.entity().downgrade();
                         let dock = cx.new(|cx| {
-                            DockArea::new("dashboard-dock", Some(1), window, cx)
+                            DockArea::new("dashboard-dock", Some(LAYOUT_VERSION), window, cx)
                                 .with_renderer(Rc::new(DashboardDock::new(weak)))
                         });
+                        let page = cx.entity().downgrade();
                         let sub = cx.subscribe_in(
                             &dock,
                             window,
-                            |_,
-                             area: &Entity<DockArea>,
-                             ev: &DockEvent,
-                             window: &mut Window,
-                             cx| {
+                            move |_,
+                                  area: &Entity<DockArea>,
+                                  ev: &DockEvent,
+                                  window: &mut Window,
+                                  cx| {
                                 if matches!(ev, DockEvent::LayoutChanged) {
                                     // Deferred: the clamp must not re-enter
                                     // the dock mid-edit (this event *is* the
@@ -232,14 +255,32 @@ impl DashboardState {
                                     window.defer(cx, move |window, cx| {
                                         clamp_min_sizes(&area, window, cx);
                                     });
+                                    // 3.101: the debounced layout save, on
+                                    // the same deferral — the page is being
+                                    // borrowed here, and it starts its timer
+                                    // outside the dock's edit.
+                                    let page = page.clone();
+                                    window.defer(cx, move |_, cx| {
+                                        let _ = page.update(cx, |page, cx| {
+                                            page.schedule_layout_save(cx);
+                                        });
+                                    });
                                 }
                             },
                         );
                         self._dock_subs.push(sub);
+                        // 3.101: the panel builders a restored layout loads
+                        // through, and the handles a layout reset rebuilds
+                        // the default 2×2 from.
+                        register_dock_panels(panels, cx);
+                        self.dock_panels = Some(panels.clone());
                         dock.update(cx, |area, cx| {
                             area.set_center(default_layout(panels), window, cx)
                         });
                         self.dock = Some(dock);
+                        // Read the stored layout behind the default; the
+                        // save gate lifts when the read resolves.
+                        self.start_layout_restore(window, cx);
                     }
                     let dock = self.dock.clone().expect("just created");
                     // No `w_full()`: with the negative side margins an

@@ -330,7 +330,9 @@ describe`).
 **Dashboard.** No `PageHeader`; the first row is a `FilterRow`: Date range
 select, From/To pickers when Custom (shrinking first, to a floor), Accounts
 popover ("All accounts" / "N of M accounts"), Search, Options (Include
-transfers, Uncategorized only, Show hidden), then the transaction count.
+transfers, Uncategorized only, Show hidden), then the transaction count,
+then — right-aligned, after the count — the layout **Reset** icon button
+(Lucide `layout-dashboard`, tooltip "Reset layout", 3.101).
 It must fit 1200 × 720 with Custom open. Below sits the **dock**
 (3.100): a vertical split of two rows — top row Chart | Monthly bars,
 bottom row Summary | Transactions, all halves 50 % — with the filter row
@@ -343,7 +345,12 @@ Dividers resize both neighbours; gutters between panels are 12 px
 gutter and a `border`-colored line on hover or drag. Minimum panel size
 240 × 160, the table 320 × 200; everything still fits 1200 × 720. There
 is no page scroll: each panel scrolls inside its own frame when its
-content overflows (3.100). Top-left, the chart `Panel`
+content overflows (3.100). The arrangement is **saved**: 500 ms after
+the last move or resize it is written to the `dashboard.layout` settings
+key and restored at launch; a stored layout that is corrupt, of another
+version, or missing a panel falls back to the default 2×2. The Reset
+button (and *View ▸ Reset dashboard layout*) puts the default back and
+saves that (3.101). Top-left, the chart `Panel`
 (*Spending by category*: `BarChart`, share labels over bars, band labels
 shortened and thinned to fit the live width, full names in legend and
 tooltips; the plot takes the panel's full inner width, with the legend a
