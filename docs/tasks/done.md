@@ -2736,3 +2736,54 @@ Notes (3.101 review, benign, recorded not fixed):
   after launch (writes what's on screen; harmless).
 - One-hop race: a panel edit between first frame and restore-read resolving is
   gated then overwritten by the restore. Acceptable for a personal app.
+
+- [x] **H5 Stale comments and test nits from reviews.** Pure clean-up,
+  `refactor:`/`test:` commit, no behaviour change; run when a slot is idle
+  and nothing in flight touches these files. Collected from review notes
+  in `docs/tasks/done.md` (2026-11-15 to 11-17); skip any line that a
+  later change already fixed:
+  - `ui/rules.rs`: `start_edit_rule`'s doc comment still describes the
+    pre-3.48 one-line editor with a Category picker.
+  - `ui/categories.rs`: the sentence about the "context-less binding"
+    behind Escape, and the "no text-measurement path" parenthetical
+    (there is one since 3.86).
+  - `ui/dashboard/mod.rs`: the `#[allow(unused_imports)]` comments say
+    every `load` re-export is test-used; only some are. Say which.
+  - `ui/dashboard/table.rs` and `ui/dashboard/view.rs`: stale layout doc
+    comments from before 3.86.
+  - `ui/tests/rules.rs`: the "Delete…" wording in doc comments (the
+    button has been "Delete" since 3.43).
+  - `ui/tests/categories*`: `categories_heading_shows_uses_tip` checks
+    that the tip paints; also assert its exact text.
+  - `note_painted` / `note_tree_painted` (H4 note from 3.91): same
+    pass-width edge case, fix both together.
+  - `STACKED_BAR_INSET_H` / `STACKED_LEGEND_EXTRA_W`: derive the `2.`
+    and `8.` literals from the gap helpers; the stacked-bars test's
+    literal `18.` full height comes from the constant.
+  - `scripts/bundle-macos.sh`: confirm the Cargo.toml version fallback
+    is reachable when `git` is missing (add `|| true` if `set -o
+    pipefail` would abort first).
+
+  H5 partial (2026-11-18): done — the `start_edit_rule` doc comment, the
+  "no text-measurement path" parenthetical, the "Delete…" test wording,
+  the Uses-tip exact-text pin, the preview tag/summary/empty-line text
+  pins and the preview debounce pin-test, `bundle-macos.sh` `|| true`,
+  and the removal of `count_rule_matches`. Already fixed, skipped: the
+  Escape "context-less binding" sentence (reworded accurately at 3.82)
+  and the `note_painted` pair (both helpers died with H4's `7c072ac`).
+  H5 dashboard pass (2026-11-18): done — the three `ui/dashboard/**`
+  bullets: `mod.rs`'s `load` comment now says only `DashboardFilter` is
+  test-used (`DashboardData`/`load_dashboard` are path-stability only);
+  the pre-3.86 layout claims in `view.rs` (`page_w` is the table panel's
+  measured width since 3.86) and `table.rs`'s `flex_widths` comment are
+  fixed and `view.rs`'s misplaced "Import history table" banner now
+  matches what it heads; `panels/table.rs` and `render.rs` checked,
+  already current. `STACKED_LEGEND_EXTRA_W` derives its `8.` from a
+  named `STACKED_ROW_GAP` (`gap_2`) with the value pinned by a const
+  assert; 3.98 had already removed `STACKED_BAR_INSET_H` and the stacked
+  test's `18.` literal (it reads `stacked_bar_inset_h()`).
+  Left: renaming `count_rule_matches` →
+  `preview_pattern_matches` in `docs/tasks/final.md` (3.55's live-preview
+  description and perf budget still name the deleted function).
+
+Completed 2026-11-18 in three passes: H5-lite (rules/categories/tests/scripts/count_rule_matches removal, merged v0.50.4), dashboard pass (comments + STACKED_ROW_GAP derivation, merged v0.52.2), and the `docs/tasks/final.md` rename of the deleted `count_rule_matches` → `preview_pattern_matches`.

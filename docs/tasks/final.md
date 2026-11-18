@@ -10,7 +10,7 @@ Runs after M5, when every other task is done (user decision, 2026-11-11).
   `reapply_rules`, and again in `rule_use_stats` (3.58) inside `refresh`. At
   1 000 rules × 100 000 rows (10 years at the user's ~10 000 a year)
   that's ~100 M checks per pass, likely around a
-  second or more. The live preview (`count_rule_matches`) scans every row
+  second or more. The live preview (`preview_pattern_matches`) scans every row
   on each keystroke. **Runs last** (user decision, 2026-11-11): after M5 and every other
   task. Earlier tasks measure on the dev seed and a throwaway local seed;
   the committed scale seed and the timed budgets land here.
@@ -26,7 +26,7 @@ Runs after M5, when every other task is done (user decision, 2026-11-11).
     print their times:
     - `reapply_rules` < 150 ms;
     - `rule_use_stats` < 150 ms;
-    - `count_rule_matches` < 30 ms;
+    - `preview_pattern_matches` < 30 ms;
     - the full `refresh` query set < 250 ms;
     - main-thread apply of a refresh result < 16 ms;
     - opening the Categories and Rules pages < 16 ms per frame;
