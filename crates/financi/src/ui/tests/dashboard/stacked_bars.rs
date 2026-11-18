@@ -550,8 +550,7 @@ fn check_labels_fit(
         // keeps its layout box but paints nothing — only boxes that
         // meet the viewport take part in the checks below.
         let (b_left, b_right) = (f32::from(b.origin.x), f32::from(b.right()));
-        if b_right <= f32::from(plot.origin.x) - 0.01 || b_left >= f32::from(plot.right()) + 0.01
-        {
+        if b_right <= f32::from(plot.origin.x) - 0.01 || b_left >= f32::from(plot.right()) + 0.01 {
             continue;
         }
         let text = crate::flow::month_label(m);

@@ -389,7 +389,7 @@ fn the_dashboard_panels_name_themselves(cx: &mut TestAppContext) {
 }
 
 /// 3.25: the dashboard with the demo import, measured at `w` × `h`.
-fn open_dashboard_for_geometry(
+pub(super) fn open_dashboard_for_geometry(
     cx: &mut TestAppContext,
     w: f32,
     h: f32,
@@ -795,4 +795,3 @@ fn entering_the_dashboard_starts_at_the_top_of_the_panels(cx: &mut TestAppContex
 }
 
 // -- categories page -------------------------------------------------------
-

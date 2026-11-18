@@ -369,13 +369,7 @@ impl DashboardState {
         let paint = self.stacked_paint(&stacks, &colors, palette, muted);
         // 3.100: the dock owns the panel box, the title and the size;
         // both states paint the padded column below the title row.
-        let panel_shell = || {
-            v_flex()
-                .size_full()
-                .min_w_0()
-                .p_4()
-                .gap_2()
-        };
+        let panel_shell = || v_flex().size_full().min_w_0().p_4().gap_2();
         // *States*: no spend in the range is the empty state, whatever
         // the shape says (income-only months stack no bars either).
         if !self.summary_has_data() || !stacks.iter().any(|s| s.total > 0) {

@@ -17,7 +17,7 @@ use self::panels::stacked::MonthStack;
 use super::*;
 
 mod actions;
-mod dock;
+pub(in crate::ui) mod dock;
 mod entity;
 mod load;
 pub(super) mod panels;

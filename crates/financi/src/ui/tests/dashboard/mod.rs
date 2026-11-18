@@ -20,6 +20,7 @@ pub(super) fn dash<C: gpui::AppContext>(cx: &C, shell: &Entity<Shell>) -> Entity
 }
 mod chart_labels;
 mod date_range;
+mod dock;
 mod drill_down;
 mod global_filters;
 mod layout;

@@ -80,7 +80,7 @@ fn panel_title(name: &str, state: Option<&DashboardState>) -> SharedString {
 /// summary | transactions below. The one place the default layout is
 /// built (3.101 persists whatever the user made of it and falls back
 /// here).
-pub(in crate::ui) fn default_layout(panels: &DashboardPanels) -> DockLayout {
+pub(in crate::ui::dashboard) fn default_layout(panels: &DashboardPanels) -> DockLayout {
     DockLayout::v_split()
         .child(
             DockLayout::h_split()
@@ -441,7 +441,11 @@ fn subtree_min(node: &PaneNode, axis: Axis, area: &DockArea, cx: &App) -> Pixels
                 .map(|p| {
                     let name = area.panel(*p).map(|v| v.panel_name(cx)).unwrap_or("");
                     let (w, h) = panel_min(name);
-                    if axis == Axis::Horizontal { w + ring } else { h + ring }
+                    if axis == Axis::Horizontal {
+                        w + ring
+                    } else {
+                        h + ring
+                    }
                 })
                 .max()
                 .unwrap_or(px(0.))
