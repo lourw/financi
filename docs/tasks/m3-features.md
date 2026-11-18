@@ -11,28 +11,6 @@ Order: 3.98 → 3.97 → 3.100 → 3.101 → 3.99. The dashboard becomes a dock
 of resizable, rearrangeable panels (user decision, 2026-11-17: dock
 splits, not a scrolling grid).
 
-- [x] **3.97 Each dashboard panel is its own entity.** Refactor for
-  3.100, no visible change. Today `DashboardPage` renders all four panels
-  from methods (`chart_panel`, `stacked_panel`, `summary_panel`, and the
-  table wrapper in `ui/dashboard/render.rs`). gpui-base's dock holds
-  panels as entities (`PanelView`), so each needs its own.
-  - Move the shared state (filter, narrow, selection, loaded
-    `DashboardData`, caches from 3.85) into one `DashboardState` entity
-    that owns the loads and emits a change event, as `Catalog` does
-    (3.78). `ChartPanel`, `StackedPanel`, `SummaryPanel` and
-    `TablePanel` are entities that read it, subscribe to it, and write
-    selections back through it. The filter row stays on the page.
-  - Each panel keeps its own measured-bounds probes (3.86), scroll
-    handles and debug selectors (`panel:chart`, `panel:stacked`,
-    `panel:summary`, `panel:table`), so tests keep finding them.
-  - Each panel entity re-renders only when the state it reads changes (no
-    regression on 3.85's per-frame work).
-  - Split files the way `AGENTS.md` → *File size* says
-    (`ui/dashboard/panels/…`). `refactor:` commit.
-  - Tests: every existing dashboard test passes unchanged except for
-    the paths it imports; add one that a selection made in the summary
-    reaches the chart and table panels through `DashboardState`.
-
 - [ ] **3.100 The dashboard is a dock of resizable, movable panels.**
   The four panels stacked in one scrolling column (chart, monthly bars,
   summary, transactions) aren't usable: the user wants to rearrange
