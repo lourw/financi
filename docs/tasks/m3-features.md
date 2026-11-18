@@ -196,42 +196,6 @@ Order: 3.102 → 3.103 → 3.47 + 3.54 (one branch).
 
 Order: 3.105 → 3.95 → 3.104 (3.105 and 3.95 both change `ui/queue.rs`).
 
-- [x] **3.105 To categorize buttons work after scrolling.** Scroll far
-  enough down the To categorize page and no Categorize button works
-  (user report, 2026-11-17). Reproduced headlessly: a visible row's
-  picker is a new entity on every frame, so its menu never opens and a
-  pick never lands. The button stays disabled.
-  - **Cause:** gpui-base 0.9.0's `VirtualList` calls the row closure
-    twice per frame: once in `request_layout` to measure one row
-    (`measure_item` → `render_items(0..1)`, `virtual_list.rs:325`), and
-    again in `prepaint` for the visible range (`:706`). `DataList`
-    (`ui/widgets.rs`, the `v_virtual_list` closure) passes both calls to
-    `on_pass`. So every frame `QueuePage::note_paint_pass(0..1)` runs
-    first, and the cells callback for row 0 then runs `prune_visible`
-    with a keep window of rows 0–24. That drops every un-picked picker
-    further down, and `prepaint` builds new ones for the visible rows.
-    The click, hitboxes and merchant lookups are fine.
-  - **Fix:** in `DataList::render`, don't report the measure call to
-    `on_pass`. It is always the first call of the closure in a render (a
-    `Cell` counter created per render; or detect it as the one-row call
-    made before any visible pass). Also skip page-side work that only
-    belongs to a real pass during the measure call: pass a `measuring`
-    flag to `cells` (or a separate `measure_cells`), so `QueuePage`
-    neither builds a picker for row 0 nor prunes while measuring. Check
-    every other `on_pass` / cells user (Categories tree, Rules list) for
-    the same window shrink, and fix them the same way.
-  - Add the pitfall to `docs/tasks/gpui.md`: `v_virtual_list`'s closure
-    also runs once per frame to measure a single row, so it must not
-    hold side effects keyed to "the visible range".
-  - Tests (`ui/tests/queue.rs`): with a 300-merchant queue scrolled to
-    row 150, a visible row's picker keeps its entity id across two
-    frames; opening it and picking a subcategory enables the row's
-    Categorize, and clicking it adds the merchant's rule and removes the
-    row; the same at the end of the list; the 3.83 prune test still
-    passes (pickers far from the visible range are still dropped).
-    `DataList` unit test: `on_pass` sees only the visible range, once
-    per frame.
-
 - [ ] **3.104 Rename is the same size as the other category actions.**
   On the Categories detail title row, Rename is bigger than Add
   subcategory, Move and Delete (user report, 2026-11-17).
