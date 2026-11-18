@@ -308,6 +308,33 @@ pub fn rule_matches(conn: &Connection, rule_id: i64) -> Result<Vec<RuleMatchRow>
     let rule = fetch_rule(conn, rule_id)?;
     let pattern = CompiledPattern::new(&rule.pattern, rule.is_regex);
     let rules = CompiledRules::new(&list_rules(conn)?);
+    match_rows(conn, |description, locked| {
+        if !pattern.is_match(description) {
+            return None;
+        }
+        Some(if locked {
+            RuleMatchStatus::Locked
+        } else {
+            // The rule's own pattern matches, so `winning` returns at
+            // least this rule; anything else is the row's real owner.
+            match rules.winning(description) {
+                Some(winner) if winner == rule_id => RuleMatchStatus::Decides,
+                Some(winner) => RuleMatchStatus::WonBy(winner),
+                None => RuleMatchStatus::Decides,
+            }
+        })
+    })
+}
+
+/// Shared scan of [`rule_matches`] and [`preview_pattern_matches`]: every
+/// non-hidden, non-card-payment transaction (the same exclusions as
+/// [`rule_use_stats`]) whose status `status_of` reports — `None` drops the
+/// row. Sorted Decides first, then newest posted date first, then newest
+/// id first.
+fn match_rows(
+    conn: &Connection,
+    mut status_of: impl FnMut(&str, bool) -> Option<RuleMatchStatus>,
+) -> Result<Vec<RuleMatchRow>> {
     let mut stmt = conn.prepare(
         "SELECT t.id, t.description_raw, i.name || ' · ' || a.name,
                 t.amount_cents, t.posted_date, t.category_locked
@@ -339,19 +366,8 @@ pub fn rule_matches(conn: &Connection, rule_id: i64) -> Result<Vec<RuleMatchRow>
     })?;
     for row in found {
         let (transaction_id, description, account, amount_cents, posted_date, locked) = row?;
-        if !pattern.is_match(&description) {
+        let Some(status) = status_of(&description, locked) else {
             continue;
-        }
-        let status = if locked {
-            RuleMatchStatus::Locked
-        } else {
-            // The rule's own pattern matches, so `winning` returns at
-            // least this rule; anything else is the row's real owner.
-            match rules.winning(&description) {
-                Some(winner) if winner == rule_id => RuleMatchStatus::Decides,
-                Some(winner) => RuleMatchStatus::WonBy(winner),
-                None => RuleMatchStatus::Decides,
-            }
         };
         rows.push(RuleMatchRow {
             transaction_id,
@@ -370,6 +386,101 @@ pub fn rule_matches(conn: &Connection, rule_id: i64) -> Result<Vec<RuleMatchRow>
             .then_with(|| b.transaction_id.cmp(&a.transaction_id))
     });
     Ok(rows)
+}
+
+/// What [`preview_pattern_matches`] reports for an unsaved pattern (3.102).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PatternPreview {
+    /// Every row the pattern matches (after the exclusions), including
+    /// locked ones.
+    pub total: i64,
+    /// How many of those rows the pattern would decide.
+    pub decides: i64,
+    /// The rows to show: Decides first, then newest posted date first,
+    /// at most `limit` of them.
+    pub rows: Vec<RuleMatchRow>,
+}
+
+/// Preview an unsaved pattern as if it were a new rule (3.102), for the
+/// rule form's matches list. Hidden and card-payment rows are excluded and
+/// locked rows are [`RuleMatchStatus::Locked`], exactly as in
+/// [`rule_matches`]; matching follows [`financi_core::rules::pattern_matches`].
+///
+/// Each matching row's status is computed as if the pattern were saved as a
+/// new rule: the same tie-break as [`CompiledRules::pick`], with the new
+/// rule given id `max + 1` — ties go to the lowest id, so the new rule
+/// loses every tie and reports [`RuleMatchStatus::WonBy`] the existing
+/// rule that beats it. `exclude_rule_id` works as in [`count_rule_matches`]:
+/// while editing a rule, rows that rule already matches are left out, so
+/// the preview shows what the edit would newly categorize. An empty or
+/// invalid-regex pattern yields an empty preview, never an error.
+///
+/// The UI runs this as a keyed latest-wins read through
+/// [`DbWorker::call_keyed`](crate::DbWorker::call_keyed) (3.77), the way
+/// the live count runs.
+pub fn preview_pattern_matches(
+    conn: &Connection,
+    pattern: &str,
+    is_regex: bool,
+    exclude_rule_id: Option<i64>,
+    limit: usize,
+) -> Result<PatternPreview> {
+    // Compile the pattern and the excluded rule's once, as
+    // `count_rule_matches` does.
+    let compiled = CompiledPattern::new(pattern, is_regex);
+    let excluded = match exclude_rule_id {
+        Some(id) => {
+            let old = fetch_rule(conn, id)?;
+            Some(CompiledPattern::new(&old.pattern, old.is_regex))
+        }
+        None => None,
+    };
+    // The hypothetical new rule: id `max + 1` so it loses ties, and a
+    // category id that never matters — only the winner's id is read. An
+    // empty or invalid pattern compiles to match-nothing, and
+    // `CompiledRules::new` drops it; such a pattern matches no row either.
+    let mut rules: Vec<Rule> = list_rules(conn)?;
+    let new_id = rules.iter().map(|r| r.id).max().unwrap_or(0) + 1;
+    rules.push(Rule {
+        id: new_id,
+        pattern: pattern.to_string(),
+        is_regex,
+        category_id: 0,
+    });
+    let rules = CompiledRules::new(&rules);
+
+    let mut rows = match_rows(conn, |description, locked| {
+        if !compiled.is_match(description) {
+            return None;
+        }
+        if let Some(old) = &excluded
+            && old.is_match(description)
+        {
+            return None;
+        }
+        Some(if locked {
+            RuleMatchStatus::Locked
+        } else {
+            // The new rule's own pattern matches, so `winning` returns at
+            // least it; anything else beats the new rule on that row.
+            match rules.winning(description) {
+                Some(winner) if winner == new_id => RuleMatchStatus::Decides,
+                Some(winner) => RuleMatchStatus::WonBy(winner),
+                None => RuleMatchStatus::Decides,
+            }
+        })
+    })?;
+    let total = rows.len() as i64;
+    let decides = rows
+        .iter()
+        .filter(|r| matches!(r.status, RuleMatchStatus::Decides))
+        .count() as i64;
+    rows.truncate(limit);
+    Ok(PatternPreview {
+        total,
+        decides,
+        rows,
+    })
 }
 
 #[cfg(test)]
@@ -1089,6 +1200,217 @@ mod tests {
             rule_matches(&conn, 4242).unwrap_err(),
             DbError::UnknownRule(4242)
         ));
+    }
+
+    /// 3.102: a pattern loses to an existing longer rule (`WonBy` that
+    /// rule) and to an existing equal-length rule (ties go to the lowest
+    /// id, and the hypothetical new rule has the highest); it wins rows no
+    /// longer-or-equal pattern covers.
+    #[test]
+    fn preview_pattern_matches_wins_or_reports_won_by() {
+        let conn = open_in_memory().unwrap();
+        let cat = child_category(&conn);
+        let home = create_parent(&conn, "Home", CategoryKind::Expense).unwrap();
+        let dining = create_child(&conn, home, "Dining").unwrap();
+        let shop_rule = add_rule(&conn, "COFFEE SHOP", false, dining).unwrap();
+
+        add_transaction(&conn, "CORNER COFFEE SHOP", false, None);
+        add_transaction(&conn, "COFFEE VANCOUVER", false, None);
+
+        // Shorter than `COFFEE SHOP`: the shared row is WonBy, the other
+        // row the new pattern decides.
+        let p = preview_pattern_matches(&conn, "COFFEE", false, None, 50).unwrap();
+        assert_eq!(p.total, 2);
+        assert_eq!(p.decides, 1);
+        assert_eq!(
+            p.rows
+                .iter()
+                .map(|r| (r.description.as_str(), r.status))
+                .collect::<Vec<_>>(),
+            vec![
+                ("COFFEE VANCOUVER", RuleMatchStatus::Decides),
+                ("CORNER COFFEE SHOP", RuleMatchStatus::WonBy(shop_rule)),
+            ]
+        );
+
+        // A tie with the existing `COFFEE` rule (equal length, lower id):
+        // the existing rule still wins, so the new one decides nothing.
+        add_rule(&conn, "COFFEE", false, cat).unwrap();
+        let p = preview_pattern_matches(&conn, "COFFEE", false, None, 50).unwrap();
+        assert_eq!(p.total, 2);
+        assert_eq!(
+            p.decides, 0,
+            "the new rule has the highest id, so it loses ties"
+        );
+    }
+
+    /// 3.102: locked rows are `Locked` (counted in `total`, never in
+    /// `decides`); hidden and card-payment rows never appear, as in
+    /// `rule_matches`.
+    #[test]
+    fn preview_pattern_matches_locked_hidden_card_payment() {
+        let conn = open_in_memory().unwrap();
+        let cat = child_category(&conn);
+        let card = crate::categories::card_payment_category(&conn).unwrap();
+
+        add_transaction(&conn, "COFFEE VANCOUVER", false, None);
+        add_transaction(&conn, "COFFEE LOCKED", true, Some(cat));
+        let card_row = add_transaction(&conn, "COFFEE PAYMENT RECEIVED", false, None);
+        conn.execute(
+            "UPDATE transactions SET category_id = ?1 WHERE id = ?2",
+            (card, card_row),
+        )
+        .unwrap();
+        let hidden = add_transaction(&conn, "COFFEE HIDDEN", false, None);
+        set_hidden(&conn, hidden, true).unwrap();
+
+        let p = preview_pattern_matches(&conn, "COFFEE", false, None, 50).unwrap();
+        assert_eq!(p.total, 2, "the visible unlocked and locked rows");
+        assert_eq!(p.decides, 1, "the locked row is never decided");
+        assert_eq!(
+            p.rows
+                .iter()
+                .map(|r| (r.description.as_str(), r.status))
+                .collect::<Vec<_>>(),
+            vec![
+                ("COFFEE VANCOUVER", RuleMatchStatus::Decides),
+                ("COFFEE LOCKED", RuleMatchStatus::Locked),
+            ]
+        );
+    }
+
+    /// 3.102: `limit` caps `rows` but never `total` or `decides`, and the
+    /// capped rows keep the Decides-first, newest-first order.
+    #[test]
+    fn preview_pattern_matches_limit_caps_rows_not_counts() {
+        let conn = open_in_memory().unwrap();
+        let cat = child_category(&conn);
+        let older_decided = add_transaction(&conn, "COFFEE VANCOUVER", false, None);
+        set_date(&conn, older_decided, "2026-01-01");
+        let shop_rule = add_rule(&conn, "COFFEE SHOP", false, cat).unwrap();
+        for date in ["2026-11-01", "2026-11-02", "2026-11-03"] {
+            let row = add_transaction(&conn, "CORNER COFFEE SHOP", false, None);
+            set_date(&conn, row, date);
+        }
+
+        let p = preview_pattern_matches(&conn, "COFFEE", false, None, 2).unwrap();
+        assert_eq!(p.total, 4, "every match counts");
+        assert_eq!(p.decides, 1);
+        assert_eq!(p.rows.len(), 2, "capped at the limit");
+        assert_eq!(
+            p.rows
+                .iter()
+                .map(|r| r.status)
+                .collect::<Vec<RuleMatchStatus>>(),
+            vec![RuleMatchStatus::Decides, RuleMatchStatus::WonBy(shop_rule)],
+            "the Decides row leads even an older one, then newest first"
+        );
+    }
+
+    /// 3.102: `exclude_rule_id` (editing a rule) leaves out rows that rule
+    /// already matches, as in `count_rule_matches`.
+    #[test]
+    fn preview_pattern_matches_excludes_the_edited_rule() {
+        let conn = open_in_memory().unwrap();
+        let cat = child_category(&conn);
+        add_transaction(&conn, "COFFEE VANCOUVER", false, None);
+        add_transaction(&conn, "BEAN BURRITO", false, None);
+        let rule = add_rule(&conn, "COFFEE", false, cat).unwrap();
+
+        let without = preview_pattern_matches(&conn, "COFFEE|BEAN", true, None, 50).unwrap();
+        let edited = preview_pattern_matches(&conn, "COFFEE|BEAN", true, Some(rule), 50).unwrap();
+        assert_eq!(without.total, 2);
+        assert_eq!(edited.total, 1, "the row the old pattern matched drops out");
+        assert_eq!(edited.decides, 1);
+        assert_eq!(edited.rows[0].description, "BEAN BURRITO");
+    }
+
+    /// 3.102: an empty or invalid pattern gives an empty preview, never an
+    /// error — the form calls this on every keystroke.
+    #[test]
+    fn preview_pattern_matches_empty_and_invalid_patterns() {
+        let conn = open_in_memory().unwrap();
+        add_transaction(&conn, "COFFEE VANCOUVER", false, None);
+
+        for (pattern, is_regex) in [("", false), ("", true), ("[bad", true), ("(", true)] {
+            let p = preview_pattern_matches(&conn, pattern, is_regex, None, 50).unwrap();
+            assert_eq!((p.total, p.decides, p.rows.len()), (0, 0, 0));
+        }
+    }
+
+    /// 3.102: the preview runs as a keyed latest-wins read through
+    /// `DbWorker`, the way the rule form will call it (3.103).
+    #[test]
+    fn preview_pattern_matches_reads_through_the_worker_keyed() {
+        let conn = open_in_memory().unwrap();
+        add_transaction(&conn, "COFFEE VANCOUVER", false, None);
+        add_transaction(&conn, "BEAN BURRITO", false, None);
+        let db = crate::DbWorker::spawn(conn);
+
+        let preview = futures_executor::block_on(db.call_keyed("rule_preview:COFFEE", |conn| {
+            preview_pattern_matches(conn, "COFFEE", false, None, 10)
+        }))
+        .unwrap();
+        assert_eq!(preview.total, 1);
+        assert_eq!(preview.decides, 1);
+        assert_eq!(preview.rows[0].description, "COFFEE VANCOUVER");
+    }
+
+    /// 3.102: on the dev seed, substring and regex patterns report total /
+    /// decides / rows consistently — `total` agrees with
+    /// `count_rule_matches`, and the row order is Decides-first, newest
+    /// posted date first.
+    #[cfg(feature = "dev-seed")]
+    #[test]
+    fn preview_pattern_matches_dev_seed() {
+        let mut conn = open_in_memory().unwrap();
+        crate::seed::seed(
+            &mut conn,
+            chrono::NaiveDate::from_ymd_opt(2026, 11, 1).unwrap(),
+            3,
+        )
+        .unwrap();
+
+        // Substring, longer than the seeded `BEANERY` rule: it wins every
+        // `BEANERY COFFEE` row it matches.
+        let p = preview_pattern_matches(&conn, "BEANERY COFFEE", false, None, 10).unwrap();
+        assert!(p.total > 10, "the seed holds plenty of BEANERY COFFEE rows");
+        assert_eq!(p.total, p.decides, "no seeded rule beats the new one");
+        assert_eq!(p.rows.len(), 10, "capped at the limit");
+        assert!(
+            p.rows.iter().all(|r| r.status == RuleMatchStatus::Decides),
+            "every shown row is decided"
+        );
+        assert_eq!(
+            p.total,
+            count_rule_matches(&conn, "BEANERY COFFEE", false, None).unwrap(),
+            "the preview's total agrees with the live count"
+        );
+        let dates: Vec<&str> = p.rows.iter().map(|r| r.posted_date.as_str()).collect();
+        let mut sorted = dates.clone();
+        sorted.sort_by(|a, b| b.cmp(a));
+        assert_eq!(dates, sorted, "newest posted date first");
+
+        // Regex: a seeded *substring* rule beats regex rules, so the new
+        // regex matches rows but decides none of them.
+        let beanery = list_rules(&conn)
+            .unwrap()
+            .into_iter()
+            .find(|r| r.pattern == "BEANERY")
+            .unwrap()
+            .id;
+        let p = preview_pattern_matches(&conn, r"COFFEE\b", true, None, 500).unwrap();
+        assert!(p.total > 0);
+        assert_eq!(
+            p.decides, 0,
+            "the BEANERY substring rule outranks any regex"
+        );
+        assert!(
+            p.rows
+                .iter()
+                .all(|r| r.status == RuleMatchStatus::WonBy(beanery)),
+            "every matching row is won by BEANERY"
+        );
     }
 
     #[test]
