@@ -156,6 +156,49 @@ fn clicking_a_tab_switches_the_shown_panel(cx: &mut TestAppContext) {
     );
 }
 
+/// Dropping the Summary title on the Chart panel's right half splits
+/// that frame: Summary lands to Chart's right, side by side, and the
+/// two stay separate frames (no tab group).
+#[gpui::test]
+fn dropping_a_title_on_a_panels_right_half_moves_it_there(cx: &mut TestAppContext) {
+    let handle = open(cx, 1200., 720.);
+    let summary_title = bounds(cx, handle, "dashboard:title:summary");
+    let chart = bounds(cx, handle, "panel:chart");
+
+    drag(
+        cx,
+        handle,
+        point(
+            px(f32::from(summary_title.origin.x) + 60.),
+            px(f32::from(summary_title.origin.y) + 8.),
+        ),
+        point(
+            px(f32::from(chart.origin.x) + f32::from(chart.size.width) * 0.8),
+            px(f32::from(chart.origin.y) + f32::from(chart.size.height) * 0.6),
+        ),
+        12,
+    );
+    settle(cx, handle);
+
+    // Both panels are visible as their own frames, Summary to Chart's
+    // right, and no tab strip appeared.
+    let chart_after = bounds(cx, handle, "panel:chart");
+    let summary_after = bounds(cx, handle, "panel:summary");
+    assert!(
+        f32::from(summary_after.origin.x)
+            >= f32::from(chart_after.origin.x) + f32::from(chart_after.size.width) - 2.,
+        "the Summary panel sits to the right of the Chart panel\nchart:   {chart_after:?}\nsummary: {summary_after:?}"
+    );
+    assert!(
+        (f32::from(summary_after.origin.y) - f32::from(chart_after.origin.y)).abs() < 2.,
+        "the two frames share a row\nchart:   {chart_after:?}\nsummary: {summary_after:?}"
+    );
+    assert!(
+        !paints(cx, handle, "dashboard:tab:summary"),
+        "a drop on the content body splits, it does not tab"
+    );
+}
+
 /// Dragging the divider between the two top panels moves it: the left
 /// panel gains exactly the width the right one loses.
 #[gpui::test]

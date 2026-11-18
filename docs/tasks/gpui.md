@@ -154,6 +154,25 @@ that task has merged; until then, don't make the old pattern worse.
 - A scroll container (`overflow_y_scroll`) gives its children no height to
   fill: `flex_1` children collapse. Give every panel inside one an
   explicit height (3.45).
+- `gap_*` only works on flex and grid containers — on a plain `div` it
+  silently does nothing (that's why the old dashboard scroller's `gap_3`
+  gave panels touching edges). Grep `ui/` for `.gap_` chains without a
+  `.flex`/`flex_row`/`flex_col`/`v_flex`/`h_flex` before trusting a gap
+  (3.100).
+- `debug_bounds` keeps the *innermost* element registered under a
+  selector, and records layout boxes even for clipped or scrolled-out
+  elements. A per-panel `debug_selector("panel:*")` inside a view
+  shadows the dock frame's own `panel:*` selector — keep such selectors
+  on exactly one element, and tests comparing against a viewport must
+  skip boxes that paint outside it (3.100).
+- A `w_full()` child of a flex container pins its width before margins:
+  negative side margins then grow the box *past* the parent without
+  widening it. To let a box absorb negative margins, leave it
+  auto-width (the dock's negative-margin wrapper, 3.100).
+- To react to a layout pass with another layout change (e.g. clamping
+  dock sizes after `DockEvent::LayoutChanged`), re-enter the window with
+  `window.defer(cx, …)`, not `cx.spawn` — the deferred update runs on
+  the same frame's loop and sees the settled bounds (3.100).
 - Screenshots (macOS): `FINANCI_DB=/tmp/x.sqlite FINANCI_DEV_SEED=1
   FINANCI_DEV_OPEN=fixtures/demo/amex-sep-nov.csv cargo run -p financi`,
   then capture the window by id (`screencapture -o -l<id>`; find the id with

@@ -537,6 +537,7 @@ impl DashboardState {
             .child(
                 div()
                     .id("summary-vscrollbar")
+                    .debug_selector(|| "dashboard:summary-vscrollbar".into())
                     .absolute()
                     .right(px(4.))
                     .top(px(4.))

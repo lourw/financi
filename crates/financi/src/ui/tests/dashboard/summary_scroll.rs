@@ -1,5 +1,6 @@
 //! Summary grid scrolling: pinned columns, swipe and range changes.
 
+use super::summary::set_all_time;
 use super::*;
 
 /// 3.30: one spend per month for `months` consecutive months ending
@@ -341,6 +342,92 @@ fn changing_the_summary_range_lands_on_the_latest_month(cx: &mut TestAppContext)
     assert!(
         newest.right() > zone.origin.x && newest.origin.x < zone.right(),
         "the latest month is on screen"
+    );
+}
+
+/// 3.100: forty spend parents, one transaction each in March or April
+/// 2026, so the grid has far more rows than any panel height fits.
+fn seed_forty_rows(conn: &financi_db::rusqlite::Connection) {
+    let acct = create_account(conn, "amex", "Cobalt", AccountKind::CreditCard).unwrap();
+    conn.execute(
+        "INSERT INTO imports (account_id, parser_id, file_name, imported_at, header_raw,
+                              encoding, has_bom, line_ending, trailing_newline, row_count)
+         VALUES (?1, 'amex', 'seed.csv', '2026-01-01', X'00', 'utf-8', 0, 'lf', 0, 0)",
+        [acct],
+    )
+    .unwrap();
+    let import = conn.last_insert_rowid();
+    for line in 0..40i64 {
+        let parent = financi_db::categories::create_parent(
+            conn,
+            &format!("Cat {line}"),
+            CategoryKind::Expense,
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO transactions (account_id, import_id, source_line, raw_bytes,
+                                       row_hash, posted_date, amount_cents,
+                                       description_raw, category_id)
+             VALUES (?1, ?2, ?3, X'00', ?4, ?5, ?6, ?7, ?8)",
+            (
+                acct,
+                import,
+                line,
+                format!("forty-hash-{line}"),
+                if line % 2 == 0 {
+                    "2026-03-10"
+                } else {
+                    "2026-04-10"
+                },
+                -1000 - line,
+                "ONE-OFF SPEND",
+                parent,
+            ),
+        )
+        .unwrap();
+    }
+}
+
+/// 3.100: a forty-row summary scrolls inside its panel — the rows
+/// overflow, the always-visible vertical scrollbar paints inside the
+/// frame, and the `Total` amounts stop short of it.
+#[gpui::test]
+fn a_forty_row_summary_scrolls_inside_its_panel(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_forty_rows);
+    // Short enough that forty rows cannot fit the Summary frame.
+    resize_and_draw(cx, handle, 1200., 560.);
+    set_all_time(cx, handle, &shell);
+    wait_idle(cx, &shell);
+    settle(cx, handle);
+
+    let (offset, max) = cx.update(|cx| {
+        let d = dash(cx, &shell).read(cx);
+        (
+            d.summary_rows_scroll.offset().y,
+            d.summary_rows_scroll.max_offset().y,
+        )
+    });
+    assert!(
+        max > px(0.),
+        "forty rows overflow the Summary panel: max offset {max:?}"
+    );
+    assert_eq!(offset, px(0.), "the rows start at the top");
+
+    let panel = bounds(cx, handle, "panel:summary");
+    let bar = bounds(cx, handle, "dashboard:summary-vscrollbar");
+    assert!(
+        f64::from(bar.origin.x) >= f64::from(panel.origin.x)
+            && f64::from(bar.right()) <= f64::from(panel.right())
+            && f64::from(bar.origin.y) >= f64::from(panel.origin.y)
+            && f64::from(bar.bottom()) <= f64::from(panel.bottom()),
+        "the scrollbar paints inside panel:summary\npanel: {panel:?}\nbar:   {bar:?}"
+    );
+    // The `Total` column (two months, so Total is column 2) must not sit
+    // under the scrollbar overlay.
+    let total = bounds(cx, handle, "summary:cell:0:2");
+    assert!(
+        f64::from(total.right()) <= f64::from(bar.origin.x) + 1.,
+        "the Total amount must not sit under the scrollbar\namount: {total:?}\nbar: {bar:?}"
     );
 }
 
