@@ -151,8 +151,9 @@ const SUBCATEGORY_MIN_W: f32 = 130.;
 /// name's character count — the trigger up to [`RULE_CATEGORY_W`] (names
 /// past that ellipsize with a tooltip), the menu up to
 /// [`RULE_CATEGORY_MENU_W`] and never narrower than the trigger.
-/// Estimated, never measured: the app has no text-measurement path here
-/// (the Undo column does the same, see [`TEXT_SM_CHAR_PX`]).
+/// Estimated, never measured: `measure_text_width` exists since 3.86 —
+/// the Undo column measures — but this picker keeps the cheap estimate
+/// from [`TEXT_SM_CHAR_PX`], which errs wide.
 fn subcategory_widths(longest_chars: usize) -> (f32, f32) {
     let est = longest_chars as f32 * TEXT_SM_CHAR_PX + SELECT_CHROME_W;
     let trigger = est.clamp(SUBCATEGORY_MIN_W, RULE_CATEGORY_W);
@@ -175,6 +176,11 @@ pub(super) const SUBCATEGORY_PH: &str = "Subcategory…";
 /// form in place under the header (ui-conventions, *Pages*). 3.43: no
 /// trailing "…" — the button carries a `plus` icon instead.
 pub(super) const NEW_CATEGORY: &str = "New category";
+/// 3.49: the Uses heading's tooltip. H5: the tip's text and its
+/// `cat:rule-heading-uses-tip:<text>` selector both read this const, so
+/// the two can't desync and the hover test pins the exact words (the
+/// 3.33 scheme above).
+const RULE_USES_TIP: &str = "Transactions this rule categorizes";
 pub(super) const KIND_LABELS: [(&str, CategoryKind); 3] = [
     ("Expense", CategoryKind::Expense),
     ("Income", CategoryKind::Income),
@@ -2189,13 +2195,20 @@ impl Render for CategoriesPage {
                                                 })
                                                 .tooltip(|window, cx| {
                                                     Tooltip::element(move |_, _| {
+                                                        // H5: the tip's exact
+                                                        // words ride in the
+                                                        // selector (3.52's
+                                                        // matches-tag pin),
+                                                        // built per tooltip like
+                                                        // 3.52's own
+                                                        // `rules:match-tooltip:<text>`.
+                                                        let sel = format!(
+                                                            "cat:rule-heading-uses-tip:\
+                                                             {RULE_USES_TIP}"
+                                                        );
                                                         div()
-                                                            .debug_selector(|| {
-                                                                "cat:rule-heading-uses-tip".into()
-                                                            })
-                                                            .child(
-                                                                "Transactions this rule categorizes",
-                                                            )
+                                                            .debug_selector(move || sel.clone())
+                                                            .child(RULE_USES_TIP)
                                                     })
                                                     .build(window, cx)
                                                 })

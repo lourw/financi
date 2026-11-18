@@ -731,8 +731,23 @@ fn the_add_rule_preview_stays_hidden_while_editing(cx: &mut TestAppContext) {
     });
     let mut window = VisualTestContext::from_window(handle, cx);
     draw_frame(cx, handle);
+    // H5: the summary's counts ride in the selector (3.52's
+    // matches-summary pin), so the exact line is read back from the
+    // model and asserted, not just "a summary painted".
+    let (total, decides) = cx.update(|cx| {
+        let p = shell
+            .read(cx)
+            .rules_page
+            .read(cx)
+            .pattern_preview
+            .clone()
+            .unwrap();
+        (p.total, p.decides)
+    });
     assert!(
-        window.debug_bounds("rules:edit-preview").is_some(),
+        window
+            .debug_bounds(leaked(format!("rules:edit-preview:{total}:{decides}")))
+            .is_some(),
         "the editor shows the live count"
     );
     assert!(
@@ -831,7 +846,7 @@ fn the_editor_preview_excludes_the_edited_rule(cx: &mut TestAppContext) {
     });
     draw_frame(cx, handle);
     assert!(
-        paints(cx, handle, "rules:preview-empty"),
+        paints(cx, handle, "rules:preview-empty:No transactions match"),
         "the edited rule's own rows are not counted"
     );
     set_edit_pattern(cx, handle, &shell, "NEWPAT");
@@ -846,7 +861,7 @@ fn the_editor_preview_excludes_the_edited_rule(cx: &mut TestAppContext) {
     });
     draw_frame(cx, handle);
     assert!(
-        paints(cx, handle, "rules:edit-preview"),
+        paints(cx, handle, "rules:edit-preview:3:2"),
         "the editor's summary counts what the edit would newly categorize"
     );
     for id in [a, b] {
@@ -856,7 +871,7 @@ fn the_editor_preview_excludes_the_edited_rule(cx: &mut TestAppContext) {
         );
     }
     assert!(
-        paints(cx, handle, format!("rules:preview-tag:{locked}")),
+        paints(cx, handle, format!("rules:preview-tag:{locked}:locked")),
         "the locked row previews with its tag"
     );
     assert!(
@@ -1066,7 +1081,7 @@ fn selecting_another_category_cancels_the_rule_editor(cx: &mut TestAppContext) {
     });
 }
 
-/// 3.24: Delete… is the two-click confirm — the first click arms the row,
+/// 3.24: Delete is the two-click confirm — the first click arms the row,
 /// the second deletes; the rule is gone and its rows fall back to
 /// Uncategorized (the locked row keeps its manual category).
 #[gpui::test]
@@ -1430,7 +1445,7 @@ fn optimistic_delete_rolls_back_when_the_write_fails(cx: &mut TestAppContext) {
     });
 }
 
-/// 3.24: with thousands of rules the row actions (Edit, Delete…) are built
+/// 3.24: with thousands of rules the row actions (Edit, Delete) are built
 /// only for the rows the virtualized list renders — buttons come into the
 /// world inside `rule_row`, so the built-row window proves it. Opening an
 /// editor on a visible row must not change that.

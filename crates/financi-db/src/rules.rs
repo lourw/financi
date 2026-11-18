@@ -219,52 +219,6 @@ pub fn rule_use_stats(conn: &Connection) -> Result<HashMap<i64, RuleUse>> {
     Ok(stats)
 }
 
-/// How many unlocked, non-hidden transactions the pattern matches, for the
-/// live preview in the rule form ("matches 14 transactions"). Hidden rows
-/// are excluded like every other count, so a hidden row never inflates the
-/// preview. Matching follows
-/// [`financi_core::rules::pattern_matches`]: case-insensitive substring or
-/// case-insensitive regex; an empty or invalid-regex pattern matches
-/// nothing. When `exclude_rule_id` is set (editing an existing rule), rows
-/// the excluded rule already matches are left out, so the count shows what
-/// the edit would newly categorize.
-pub fn count_rule_matches(
-    conn: &Connection,
-    pattern: &str,
-    is_regex: bool,
-    exclude_rule_id: Option<i64>,
-) -> Result<i64> {
-    // 3.40: compile the new pattern and the excluded rule's once, not
-    // once per row, so the live preview keeps up with typing.
-    let pattern = CompiledPattern::new(pattern, is_regex);
-    let excluded = match exclude_rule_id {
-        Some(id) => {
-            let old = fetch_rule(conn, id)?;
-            Some(CompiledPattern::new(&old.pattern, old.is_regex))
-        }
-        None => None,
-    };
-    let mut stmt = conn.prepare(
-        "SELECT description_raw FROM transactions
-              WHERE category_locked = 0 AND hidden = 0",
-    )?;
-    let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
-    let mut count = 0;
-    for row in rows {
-        let description = row?;
-        if !pattern.is_match(&description) {
-            continue;
-        }
-        if let Some(old) = &excluded
-            && old.is_match(&description)
-        {
-            continue;
-        }
-        count += 1;
-    }
-    Ok(count)
-}
-
 /// How one transaction relates to one rule in the 3.52 matches list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuleMatchStatus {
@@ -410,9 +364,9 @@ pub struct PatternPreview {
 /// new rule: the same tie-break as [`CompiledRules::pick`], with the new
 /// rule given id `max + 1` — ties go to the lowest id, so the new rule
 /// loses every tie and reports [`RuleMatchStatus::WonBy`] the existing
-/// rule that beats it. `exclude_rule_id` works as in [`count_rule_matches`]:
-/// while editing a rule, rows that rule already matches are left out, so
-/// the preview shows what the edit would newly categorize. An empty or
+/// rule that beats it. When `exclude_rule_id` is set (editing a rule),
+/// rows that rule already matches are left out, so the preview shows what
+/// the edit would newly categorize. An empty or
 /// invalid-regex pattern yields an empty preview, never an error.
 ///
 /// The UI runs this as a keyed latest-wins read through
@@ -425,8 +379,7 @@ pub fn preview_pattern_matches(
     exclude_rule_id: Option<i64>,
     limit: usize,
 ) -> Result<PatternPreview> {
-    // Compile the pattern and the excluded rule's once, as
-    // `count_rule_matches` does.
+    // Compile the pattern and the excluded rule's once, not once per row.
     let compiled = CompiledPattern::new(pattern, is_regex);
     let excluded = match exclude_rule_id {
         Some(id) => {
@@ -872,41 +825,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn count_rule_matches_unlocked_rows_only() {
-        let conn = open_in_memory().unwrap();
-        let cat = child_category(&conn);
-        add_transaction(&conn, "COFFEE VANCOUVER", false, None);
-        add_transaction(&conn, "coffee bean roastery", false, None);
-        add_transaction(&conn, "COFFEE LOCKED", true, Some(cat));
-        add_transaction(&conn, "GROCERY STORE", false, None);
-
-        assert_eq!(count_rule_matches(&conn, "COFFEE", false, None).unwrap(), 2);
-        assert_eq!(
-            count_rule_matches(&conn, r"^coffee\b", true, None).unwrap(),
-            2
-        );
-        assert_eq!(count_rule_matches(&conn, "[bad", true, None).unwrap(), 0);
-        assert_eq!(count_rule_matches(&conn, "", false, None).unwrap(), 0);
-    }
-
-    #[test]
-    fn count_rule_matches_excludes_the_edited_rule() {
-        let conn = open_in_memory().unwrap();
-        let cat = child_category(&conn);
-        add_transaction(&conn, "COFFEE VANCOUVER", false, None);
-        add_transaction(&conn, "BEAN BURRITO", false, None);
-        let rule = add_rule(&conn, "COFFEE", false, cat).unwrap();
-
-        let without = count_rule_matches(&conn, "COFFEE|BEAN", true, None).unwrap();
-        let edited = count_rule_matches(&conn, "COFFEE|BEAN", true, Some(rule)).unwrap();
-        assert_eq!(without, 2);
-        assert_eq!(
-            edited, 1,
-            "the row the old pattern already matched is left out"
-        );
-    }
-
     /// Counted for *the winning rule* only, and the counts agree with the
     /// categories `reapply_rules` stored.
     #[test]
@@ -1308,7 +1226,7 @@ mod tests {
     }
 
     /// 3.102: `exclude_rule_id` (editing a rule) leaves out rows that rule
-    /// already matches, as in `count_rule_matches`.
+    /// already matches.
     #[test]
     fn preview_pattern_matches_excludes_the_edited_rule() {
         let conn = open_in_memory().unwrap();
@@ -1357,9 +1275,8 @@ mod tests {
     }
 
     /// 3.102: on the dev seed, substring and regex patterns report total /
-    /// decides / rows consistently — `total` agrees with
-    /// `count_rule_matches`, and the row order is Decides-first, newest
-    /// posted date first.
+    /// decides / rows consistently — the row order is Decides-first,
+    /// newest posted date first.
     #[cfg(feature = "dev-seed")]
     #[test]
     fn preview_pattern_matches_dev_seed() {
@@ -1380,11 +1297,6 @@ mod tests {
         assert!(
             p.rows.iter().all(|r| r.status == RuleMatchStatus::Decides),
             "every shown row is decided"
-        );
-        assert_eq!(
-            p.total,
-            count_rule_matches(&conn, "BEANERY COFFEE", false, None).unwrap(),
-            "the preview's total agrees with the live count"
         );
         let dates: Vec<&str> = p.rows.iter().map(|r| r.posted_date.as_str()).collect();
         let mut sorted = dates.clone();
@@ -1410,21 +1322,6 @@ mod tests {
                 .iter()
                 .all(|r| r.status == RuleMatchStatus::WonBy(beanery)),
             "every matching row is won by BEANERY"
-        );
-    }
-
-    #[test]
-    fn count_rule_matches_excludes_hidden_rows() {
-        let conn = open_in_memory().unwrap();
-        add_transaction(&conn, "COFFEE VANCOUVER", false, None);
-        let hidden = add_transaction(&conn, "COFFEE MARKET", false, None);
-
-        assert_eq!(count_rule_matches(&conn, "COFFEE", false, None).unwrap(), 2);
-        set_hidden(&conn, hidden, true).unwrap();
-        assert_eq!(
-            count_rule_matches(&conn, "COFFEE", false, None).unwrap(),
-            1,
-            "the live preview ignores hidden rows"
         );
     }
 

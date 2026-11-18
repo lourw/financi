@@ -162,6 +162,16 @@ Order: 3.105 → 3.95 → 3.104 (3.105 and 3.95 both change `ui/queue.rs`).
     is reachable when `git` is missing (add `|| true` if `set -o
     pipefail` would abort first).
 
+  H5 partial (2026-11-18): done — the `start_edit_rule` doc comment, the
+  "no text-measurement path" parenthetical, the "Delete…" test wording,
+  the Uses-tip exact-text pin, the preview tag/summary/empty-line text
+  pins and the preview debounce pin-test, `bundle-macos.sh` `|| true`,
+  and the removal of `count_rule_matches`. Already fixed, skipped: the
+  Escape "context-less binding" sentence (reworded accurately at 3.82)
+  and the `note_painted` pair (both helpers died with H4's `7c072ac`).
+  Left: the three `ui/dashboard/**` bullets, after the dashboard feature
+  (3.100) merges.
+
 ## Last in M3
 
 - [ ] **3.26 A scrollbar on everything that scrolls.** Most scrolling

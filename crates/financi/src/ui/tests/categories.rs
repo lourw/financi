@@ -2412,9 +2412,8 @@ fn open_preview_fixture(
 
 /// Type into the add form's Pattern input the way a keystroke does:
 /// `set_value` plus the emitted `Change` the preview subscription rides
-/// on, then run the fake clock past the 150 ms debounce (3.58's search
-/// tests' pattern — the clock only moves when a test advances it).
-fn set_add_pattern(
+/// on — without moving the clock, so a test can watch the debounce run.
+fn type_add_pattern(
     cx: &mut TestAppContext,
     handle: AnyWindowHandle,
     shell: &Entity<Shell>,
@@ -2431,6 +2430,17 @@ fn set_add_pattern(
             });
         });
     });
+}
+
+/// Type, then run the fake clock past the 150 ms debounce (3.58's search
+/// tests' pattern — the clock only moves when a test advances it).
+fn set_add_pattern(
+    cx: &mut TestAppContext,
+    handle: AnyWindowHandle,
+    shell: &Entity<Shell>,
+    v: &str,
+) {
+    type_add_pattern(cx, handle, shell, v);
     cx.executor().advance_clock(Duration::from_millis(160));
     cx.run_until_parked();
 }
@@ -2509,7 +2519,7 @@ fn the_preview_tags_locked_and_kept_rows(cx: &mut TestAppContext) {
     assert!(status, "the locked row reports Locked");
     assert!(
         paints(cx, handle, format!("cat:preview-row:{locked}"))
-            && paints(cx, handle, format!("cat:preview-tag:{locked}")),
+            && paints(cx, handle, format!("cat:preview-tag:{locked}:locked")),
         "the locked row previews with its \"locked\" tag"
     );
     set_add_pattern(cx, handle, &shell, "TEA HOUSE");
@@ -2543,9 +2553,74 @@ fn the_preview_tags_locked_and_kept_rows(cx: &mut TestAppContext) {
     });
     assert!(kept, "the row reports WonBy the TEA HOUSE rule");
     assert!(
-        paints(cx, handle, format!("cat:preview-tag:{tie}")),
+        paints(
+            cx,
+            handle,
+            format!("cat:preview-tag:{tie}:kept by TEA HOUSE")
+        ),
         "the row the TEA HOUSE rule wins previews with its \"kept by\" tag"
     );
+}
+
+/// H5 pin, the preview analogue of `rules_page_search_debounces_and_enter_applies_at_once`:
+/// typing alone reads nothing — the read waits for the 150 ms debounce —
+/// and a pattern typed inside the window supersedes the pending one, so
+/// when the clock finally moves only the last pattern is ever read.
+#[gpui::test]
+fn the_preview_debounces_and_only_the_last_pattern_shows(cx: &mut TestAppContext) {
+    let (handle, shell, _tea, _coffees, _locked, _tie) = open_preview_fixture(cx);
+    type_add_pattern(cx, handle, &shell, "COFFEE");
+    cx.run_until_parked();
+    draw_frame(cx, handle);
+    cx.update(|cx| {
+        assert!(
+            shell.read(cx).rules_page.read(cx).pattern_preview.is_none(),
+            "no read while the debounce runs"
+        );
+    });
+    assert!(
+        !paints(cx, handle, "cat:preview-list"),
+        "nothing previews while the debounce runs"
+    );
+
+    // A second pattern inside the window replaces the pending timer:
+    // when the clock moves, the read that runs is the last pattern's.
+    type_add_pattern(cx, handle, &shell, "BOOKS");
+    cx.executor().advance_clock(Duration::from_millis(160));
+    cx.run_until_parked();
+    wait_until(cx, "the BOOKS preview", |cx| {
+        shell
+            .read(cx)
+            .rules_page
+            .read(cx)
+            .pattern_preview
+            .as_deref()
+            .is_some_and(|p| {
+                p.total == 1 && p.rows.first().is_some_and(|r| r.description == "BOOKS")
+            })
+    });
+    draw_frame(cx, handle);
+    assert!(
+        paints(cx, handle, "cat:preview-list"),
+        "the last pattern's preview paints"
+    );
+
+    // And the superseded "COFFEE" timer never lands late: moving the
+    // clock further keeps the BOOKS result on screen.
+    cx.executor().advance_clock(Duration::from_millis(320));
+    cx.run_until_parked();
+    cx.update(|cx| {
+        assert!(
+            shell
+                .read(cx)
+                .rules_page
+                .read(cx)
+                .pattern_preview
+                .as_deref()
+                .is_some_and(|p| p.total == 1),
+            "the preview stays the BOOKS read, never the superseded COFFEE one"
+        );
+    });
 }
 
 /// 3.103: an empty pattern previews nothing at all — no summary, no list,
@@ -2583,7 +2658,7 @@ fn clearing_the_pattern_hides_the_preview(cx: &mut TestAppContext) {
     });
     draw_frame(cx, handle);
     assert!(
-        paints(cx, handle, "cat:preview-empty"),
+        paints(cx, handle, "cat:preview-empty:No transactions match"),
         "no match shows the \"No transactions match\" line"
     );
 }
@@ -2613,7 +2688,7 @@ fn an_invalid_regex_shows_the_error_instead_of_the_preview(cx: &mut TestAppConte
     );
     for sel in [
         "cat:preview-list",
-        "cat:preview-empty",
+        "cat:preview-empty:No transactions match",
         "cat:add-rule-preview",
     ] {
         assert!(
@@ -3797,8 +3872,12 @@ fn the_uses_heading_tells_what_it_counts(cx: &mut TestAppContext) {
     cx.run_until_parked();
     draw_frame(cx, handle);
     assert!(
-        paints(cx, handle, "cat:rule-heading-uses-tip"),
-        "hovering the Uses heading shows the tooltip"
+        paints(
+            cx,
+            handle,
+            "cat:rule-heading-uses-tip:Transactions this rule categorizes"
+        ),
+        "hovering the Uses heading shows the tip, its exact words pinned (H5)"
     );
 }
 
