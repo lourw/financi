@@ -731,8 +731,23 @@ fn the_add_rule_preview_stays_hidden_while_editing(cx: &mut TestAppContext) {
     });
     let mut window = VisualTestContext::from_window(handle, cx);
     draw_frame(cx, handle);
+    // H5: the summary's counts ride in the selector (3.52's
+    // matches-summary pin), so the exact line is read back from the
+    // model and asserted, not just "a summary painted".
+    let (total, decides) = cx.update(|cx| {
+        let p = shell
+            .read(cx)
+            .rules_page
+            .read(cx)
+            .pattern_preview
+            .clone()
+            .unwrap();
+        (p.total, p.decides)
+    });
     assert!(
-        window.debug_bounds("rules:edit-preview").is_some(),
+        window
+            .debug_bounds(leaked(format!("rules:edit-preview:{total}:{decides}")))
+            .is_some(),
         "the editor shows the live count"
     );
     assert!(
@@ -831,7 +846,7 @@ fn the_editor_preview_excludes_the_edited_rule(cx: &mut TestAppContext) {
     });
     draw_frame(cx, handle);
     assert!(
-        paints(cx, handle, "rules:preview-empty"),
+        paints(cx, handle, "rules:preview-empty:No transactions match"),
         "the edited rule's own rows are not counted"
     );
     set_edit_pattern(cx, handle, &shell, "NEWPAT");
@@ -846,7 +861,7 @@ fn the_editor_preview_excludes_the_edited_rule(cx: &mut TestAppContext) {
     });
     draw_frame(cx, handle);
     assert!(
-        paints(cx, handle, "rules:edit-preview"),
+        paints(cx, handle, "rules:edit-preview:3:2"),
         "the editor's summary counts what the edit would newly categorize"
     );
     for id in [a, b] {
@@ -856,7 +871,7 @@ fn the_editor_preview_excludes_the_edited_rule(cx: &mut TestAppContext) {
         );
     }
     assert!(
-        paints(cx, handle, format!("rules:preview-tag:{locked}")),
+        paints(cx, handle, format!("rules:preview-tag:{locked}:locked")),
         "the locked row previews with its tag"
     );
     assert!(

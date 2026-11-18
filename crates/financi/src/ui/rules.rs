@@ -68,6 +68,10 @@ const PREVIEW_ROW_H: f32 = 32.;
 /// 3.103: the preview's summary and empty/error lines, matching the
 /// editor's one-error-line allowance.
 const PREVIEW_LINE_H: f32 = 24.;
+/// 3.103: the line when a pattern matches nothing. H5: the line and its
+/// `…:preview-empty:<text>` selector both read this const, so a test can
+/// pin the exact words the way 3.52 pins `rules:match-tag:won by …`.
+const PREVIEW_EMPTY: &str = "No transactions match";
 
 /// 3.28: one entry of the Rules page virtual list — a group header row or a
 /// rule row. Group headers are items too, so collapsing a group just drops
@@ -1213,10 +1217,15 @@ fn rule_row(
 /// place of the rows.
 ///
 /// `prefix` namespaces the test selectors (`{prefix}:preview-list`,
-/// `…:preview-row:{id}`, `…:preview-tag:{id}`, `…:preview-empty`,
-/// `…:preview-error`); `summary_selector` is the summary line's selector
-/// (`None` on the Categories add form, whose summary sits in the form's
-/// second line). The rows come from [`RulesPage::pattern_preview`], already
+/// `…:preview-row:{id}`, `…:preview-tag:{id}:{tag}`,
+/// `…:preview-empty:{text}`, `…:preview-error`); `summary_selector` is
+/// the summary line's selector with `{total}:{decides}` appended (`None`
+/// on the Categories add form, whose summary sits in the form's
+/// second line). H5:
+/// the tag text, the empty line's text and the summary's counts ride in
+/// the selectors — the 3.52 matches panel's pin (`rules:match-tag:won by
+/// …`) — so tests assert the exact words, not just that a widget painted.
+/// The rows come from [`RulesPage::pattern_preview`], already
 /// excluded for the edited rule (2.5 re-run semantics), so this only paints
 /// what the read returned.
 pub(super) fn pattern_preview_block(
@@ -1251,12 +1260,16 @@ pub(super) fn pattern_preview_block(
         return div().into_any_element();
     };
     let summary = summary_selector.map(|sel| {
+        // The counts ride in the selector (3.52's matches-summary pin),
+        // so a test asserts the exact summary line, not just that one
+        // painted.
+        let sel = format!("{sel}:{}:{}", preview.total, preview.decides);
         div()
             .h(px(PREVIEW_LINE_H))
             .text_sm()
             .text_color(muted)
             .text_ellipsis()
-            .debug_selector(move || sel.into())
+            .debug_selector(move || sel.clone())
             .child(format!(
                 "Matches {} transactions · {} would move here",
                 flow::count(preview.total),
@@ -1264,13 +1277,13 @@ pub(super) fn pattern_preview_block(
             ))
     });
     let body = if preview.rows.is_empty() {
-        let empty_sel = format!("{prefix}:preview-empty");
+        let empty_sel = format!("{prefix}:preview-empty:{PREVIEW_EMPTY}");
         div()
             .h(px(PREVIEW_LINE_H))
             .text_sm()
             .text_color(muted)
             .debug_selector(move || empty_sel.clone())
-            .child("No transactions match")
+            .child(PREVIEW_EMPTY)
             .into_any_element()
     } else {
         // The "kept by …" tag names the winning rule by its pattern, the
@@ -1350,8 +1363,10 @@ pub(super) fn pattern_preview_block(
                         // The selector is built outside the
                         // `debug_selector` call — the 3.75 walk only
                         // checks literals inside it, and this one's
-                        // namespace is interpolated.
-                        let sel = format!("{prefix}:preview-tag:{}", row.transaction_id);
+                        // namespace is interpolated. The tag text rides
+                        // in it too (3.52's matches-tag pin): tests pin
+                        // "locked" / "kept by <pattern>" exactly.
+                        let sel = format!("{prefix}:preview-tag:{}:{t}", row.transaction_id);
                         d.child(
                             div()
                                 .id(SharedString::from(format!(
