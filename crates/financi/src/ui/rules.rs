@@ -204,6 +204,17 @@ pub(super) struct RulesPage {
     /// round-trip is in flight (negative, so it can never collide with a
     /// real `rules.id`).
     next_temp_rule_id: i64,
+    /// 3.54: the shared grouped items last fed to `rule_target` and
+    /// `move_rules_target` (3.59; `Rc::ptr_eq` is the change test), and
+    /// the flag that a newer list arrived between `apply` and `render` —
+    /// the queue page's lazy-picker pattern (3.19/3.83): a hidden page
+    /// does not pay for `set_items` until it is shown again.
+    cat_choices_held: Option<Rc<Vec<SelectGroup<SubChoice>>>>,
+    cat_pickers_need_items: bool,
+    /// 3.54 test hook: how many picker `set_items` calls this page made —
+    /// proves a hidden page is not re-fed during a refresh.
+    #[cfg(test)]
+    pub(super) cat_picker_sets: std::cell::Cell<usize>,
     /// 3.28: how many items the Rules page list built last frame (headers
     /// and rows together) and the range it drew, for the long-list tests.
     #[cfg(test)]
@@ -290,13 +301,14 @@ impl PageEntity for RulesPage {
     }
 
     fn apply(&mut self, cx: &mut Context<Self>) {
-        let (rules, uses, totals, tree) = {
+        let (rules, uses, totals, tree, choices) = {
             let cat = self.catalog.read(cx);
             (
                 cat.snap.rules.clone(),
                 cat.snap.uses.clone(),
                 cat.snap.rule_totals.clone(),
                 cat.snap.tree.clone(),
+                cat.cat_choices(),
             )
         };
         self.rules = rules;
@@ -304,6 +316,17 @@ impl PageEntity for RulesPage {
         self.rule_totals = totals;
         // 3.85: the item cache's catalog inputs just moved.
         self.rules_gen += 1;
+        // 3.54: a new shared picker list lands in `render`, where the
+        // window for `set_items` exists — a hidden page only flags it
+        // (the queue page's 3.19/3.83 pattern).
+        if self
+            .cat_choices_held
+            .as_ref()
+            .is_none_or(|held| !Rc::ptr_eq(held, &choices))
+        {
+            self.cat_choices_held = Some(choices);
+            self.cat_pickers_need_items = true;
+        }
         // 3.28: a refresh that dropped a rule drops its checkbox with it;
         // a deleted category drops its collapsed-group marker.
         self.selected_rules
@@ -499,6 +522,10 @@ impl RulesPage {
             rules_group_sums: Rc::new(HashMap::new()),
             rules_gen: 0,
             next_temp_rule_id: -1,
+            cat_choices_held: None,
+            cat_pickers_need_items: false,
+            #[cfg(test)]
+            cat_picker_sets: std::cell::Cell::new(0),
             #[cfg(test)]
             rules_page_rows_built: std::cell::Cell::new(0),
             #[cfg(test)]
@@ -591,7 +618,31 @@ impl RulesPage {
         }
     }
 
+    /// 3.54: re-set the two shared category pickers when `apply` flagged a
+    /// newer grouped-items `Rc` — `set_items` needs a window, so this runs
+    /// from `render` (where a shown page picks the change up) and from the
+    /// actions that read the pickers (the harness and the Categories-driven
+    /// add flow work pages that never rendered). Fresh pickers: a pointer
+    /// compare, no work (the queue page's 3.19/3.83 pattern).
+    fn refresh_cat_pickers(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.cat_pickers_need_items {
+            return;
+        }
+        self.cat_pickers_need_items = false;
+        if let Some(items) = self.cat_choices_held.clone() {
+            let items = SearchableVec::new((*items).clone());
+            self.rule_target
+                .update(cx, |s, cx| s.set_items(items.clone(), window, cx));
+            self.move_rules_target
+                .update(cx, |s, cx| s.set_items(items, window, cx));
+            #[cfg(test)]
+            self.cat_picker_sets.set(self.cat_picker_sets.get() + 2);
+        }
+    }
+
     pub(super) fn add_rule(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // 3.54: the pick resolves against current items (see the method).
+        self.refresh_cat_pickers(window, cx);
         // 3.59: the grouped items carry the sub-category id as their
         // value, so the pick resolves directly.
         let Some(category_id) = self.rule_target.read(cx).selected_value().copied() else {
@@ -1418,6 +1469,8 @@ impl RulesPage {
         if self.writes_blocked.get() {
             return;
         }
+        // 3.54: the pick resolves against current items (see the method).
+        self.refresh_cat_pickers(window, cx);
         // 3.59: the pick carries the sub-category id value directly.
         let Some(category_id) = self.move_rules_target.read(cx).selected_value().copied() else {
             self.rules_move_error = Some("Choose the category to move to.".into());
@@ -1828,10 +1881,13 @@ impl Render for RulesPage {
                 window.focus(&handle, cx);
             });
         }
+        // 3.54: a new shared category list lands through
+        // `refresh_cat_pickers`, from `render` and from the actions that
+        // read those pickers — a hidden page defers the re-set until it
+        // next renders or acts (the queue page's lazy-picker pattern).
+        self.refresh_cat_pickers(window, cx);
         // 3.59: the menu width both category pickers share: the longest
-        // "Category › Subcategory" label up to 320 px. The items
-        // themselves are fed by `Shell::data_changed` (a window is
-        // needed, and hidden pages never render).
+        // "Category › Subcategory" label up to 320 px.
         let cat_menu_w = sub_choices_menu_width(&self.catalog.read(cx).cat_choices());
         let (muted, fg, danger, border, success, primary) = {
             let theme = cx.theme();

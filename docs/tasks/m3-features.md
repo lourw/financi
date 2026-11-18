@@ -287,7 +287,7 @@ Order: 3.102 → 3.103 → 3.47 + 3.54 (one branch).
     completes and then carries its real id. The 3.24 delete and edit
     tests still pass.
 
-- [ ] **3.54 Category changes don't lag the page.** Deleting a category
+- [x] **3.54 Category changes don't lag the page.** Deleting a category
   and moving a subcategory (and likely add / rename) freeze or lag the
   page noticeably (user report, 2026-11-11). The DB side is small:
   `move_child` is one `UPDATE`, `delete_category` two `UPDATE`s and a

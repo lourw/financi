@@ -215,6 +215,179 @@ fn delete_category_reassigns_transactions_and_rules(cx: &mut TestAppContext) {
     });
 }
 
+/// 3.54: the confirming Delete click drops the node and moves its counts
+/// to the reassign target in its own frame; the DB round-trip only
+/// reconciles.
+#[gpui::test]
+fn a_confirmed_delete_leaves_the_tree_in_its_own_frame(cx: &mut TestAppContext) {
+    let (handle, shell, _rule, first, second) = open_rule_fixture(cx);
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.select_category(first, window, cx);
+            s.arm_delete_category(window, cx); // first click arms
+        });
+        s_select(&shell, cx, second, window);
+        shell.update(cx, |s, cx| {
+            s.arm_delete_category(window, cx); // second click runs it
+            // Same frame, before the executor runs anything: the mirror
+            // already shows the outcome — the node gone, its two
+            // transactions with it, and the rule re-pointed.
+            let view = s.categories_view.read(cx);
+            assert_eq!(view.cat_pending, Some(PendingCatWrite::Delete));
+            let drinks = view.tree.iter().find(|p| p.name == "Drinks").unwrap();
+            assert!(drinks.children.iter().all(|c| c.id != first));
+            assert_eq!(view.counts.get(&first), None);
+            assert_eq!(view.counts.get(&second), Some(&3));
+            assert!(view.rules.iter().all(|r| r.category_id != first));
+        });
+    });
+    wait_idle(cx, &shell);
+    // And the database agrees.
+    cx.update(|cx| {
+        assert!(find_child(&shell, cx, "First").is_none());
+        let s = shell.read(cx);
+        assert_eq!(s.cat_counts.get(&second), Some(&3));
+        assert!(
+            s.categories_view
+                .read(cx)
+                .tree
+                .iter()
+                .all(|p| p.id != first)
+        );
+    });
+}
+
+/// 3.54: a move the database refuses — the target was pulled out from
+/// under the app — rolls the tree back to its snapshot and shows an
+/// error. The refusal is injected as a `BEFORE UPDATE` trigger so the row
+/// itself stays put and the reconciling refresh reads a stable database.
+#[gpui::test]
+fn a_refused_move_rolls_the_node_back_and_shows_an_error(cx: &mut TestAppContext) {
+    let (handle, shell, _rule, first, _second) = open_rule_fixture(cx);
+    add_parent(cx, handle, &shell, "Home");
+    let db = cx.update(|cx| shell.read(cx).db.clone());
+    block_on(db.call(move |c| {
+        c.execute(
+            "CREATE TRIGGER test_no_parent_change BEFORE UPDATE ON categories \
+             BEGIN SELECT RAISE(ABORT, 'test: parent change refused'); END",
+            [],
+        )
+        .map(|_| ())
+    }))
+    .expect("the trigger job ran")
+    .expect("the trigger is created");
+
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.select_category(first, window, cx);
+        });
+        let home_ix = {
+            let s = shell.read(cx);
+            let drinks = s.categories.iter().find(|p| p.name == "Drinks").unwrap().id;
+            s.categories
+                .iter()
+                .filter(|p| p.kind == CategoryKind::Expense && p.id != drinks)
+                .position(|p| p.name == "Home")
+                .unwrap()
+        };
+        shell.update(cx, |s, cx| {
+            s.categories_view.update(cx, |p, cx| {
+                p.move_target.update(cx, |sel, cx| {
+                    sel.set_selected_index(
+                        Some(gpui_kit::component::IndexPath::new(home_ix)),
+                        window,
+                        cx,
+                    );
+                })
+            });
+            s.move_child_to_selected_parent(window, cx);
+            // Same frame: the node hangs under Home, off Drinks.
+            let view = s.categories_view.read(cx);
+            assert_eq!(view.cat_pending, Some(PendingCatWrite::Move));
+            assert!(
+                view.tree
+                    .iter()
+                    .find(|p| p.name == "Home")
+                    .unwrap()
+                    .children
+                    .iter()
+                    .any(|c| c.id == first)
+            );
+            assert!(
+                view.tree
+                    .iter()
+                    .find(|p| p.name == "Drinks")
+                    .unwrap()
+                    .children
+                    .iter()
+                    .all(|c| c.id != first)
+            );
+        });
+    });
+    wait_until(cx, "the refused move to land", |cx| {
+        let view = shell.read(cx).categories_view.read(cx);
+        view.cat_pending.is_none() && view.cat_error.is_some()
+    });
+    // The snapshot is back: First under Drinks again, Home empty.
+    cx.update(|cx| {
+        let view = shell.read(cx).categories_view.read(cx);
+        assert!(
+            view.tree
+                .iter()
+                .find(|p| p.name == "Drinks")
+                .unwrap()
+                .children
+                .iter()
+                .any(|c| c.id == first)
+        );
+        assert!(
+            view.tree
+                .iter()
+                .find(|p| p.name == "Home")
+                .unwrap()
+                .children
+                .iter()
+                .all(|c| c.id != first)
+        );
+    });
+    block_on(db.call(|c| {
+        c.execute("DROP TRIGGER test_no_parent_change", [])
+            .map(|_| ())
+    }))
+    .expect("the trigger job ran")
+    .expect("the trigger is dropped");
+}
+
+/// 3.54: a hidden page keeps its pickers as they are across a refresh —
+/// the refresh only flags them — and re-sets them on its next draw. The
+/// `cat_picker_sets` hook counts `set_items` calls, which need a window
+/// and so run in `render` and the picking actions only.
+#[gpui::test]
+fn a_hidden_page_re_sets_its_pickers_on_its_next_draw(cx: &mut TestAppContext) {
+    let (handle, shell, _rule, _first, _second) = open_rule_fixture(cx);
+    let base = cx.update(|cx| shell.read(cx).rules_page.read(cx).cat_picker_sets.get());
+    // A write while the Rules page is hidden refreshes the shared
+    // snapshot; its `apply` only flags the page.
+    add_parent(cx, handle, &shell, "Home");
+    wait_idle(cx, &shell);
+    cx.update(|cx| {
+        assert_eq!(
+            shell.read(cx).rules_page.read(cx).cat_picker_sets.get(),
+            base,
+            "a hidden page re-sets nothing during a refresh"
+        );
+    });
+    // Its next draw picks the change up — both pickers at once (+2).
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Rules, cx)));
+    draw_frame(cx, handle);
+    cx.update(|cx| {
+        assert_eq!(
+            shell.read(cx).rules_page.read(cx).cat_picker_sets.get(),
+            base + 2
+        );
+    });
+}
+
 /// 3.59: pick `child` in the Delete form's reassign picker. The grouped
 /// items carry the sub-category id as their value, so the pick is by
 /// value (a sectioned menu's `IndexPath` is not a flat row number).

@@ -527,6 +527,15 @@ pub(super) struct CategoriesPage {
     /// one is in flight its button renders loading and disabled, and a
     /// double-submit can't start a second write (`begin_cat_write`).
     pub(super) cat_pending: Option<PendingCatWrite>,
+    /// 3.54: the shared grouped items last fed to `delete_target`, and
+    /// the flag that a newer list arrived between `apply` and `render` —
+    /// the queue page's lazy-picker pattern (see `RulesPage`): a hidden
+    /// page does not pay for `set_items` until it is shown again.
+    cat_choices_held: Option<Rc<Vec<SelectGroup<SubChoice>>>>,
+    cat_pickers_need_items: bool,
+    /// 3.54 test hook: how many picker `set_items` calls this page made.
+    #[cfg(test)]
+    pub(super) cat_picker_sets: std::cell::Cell<usize>,
     /// The `Catalog` subscription (3.79); lives as long as the page.
     _catalog: Subscription,
     /// 3.96: Enter in the new-subcategory input adds the subcategory
@@ -537,8 +546,8 @@ pub(super) struct CategoriesPage {
     // rule list's Uses column shows — the same `rule_use_stats` mirror the
     // Rules page reads, taken off the shared snapshot rather than the
     // Rules page's own copy, which only refreshes when that page applies.
-    tree: Vec<CategoryNode>,
-    counts: HashMap<i64, i64>,
+    pub(super) tree: Vec<CategoryNode>,
+    pub(super) counts: HashMap<i64, i64>,
     pub(super) rules: Vec<Rule>,
     pub(super) uses: HashMap<i64, usize>,
     // -- State (3.74).
@@ -612,11 +621,31 @@ impl PageEntity for CategoriesPage {
     }
 
     fn apply(&mut self, cx: &mut Context<Self>) {
-        let cat = self.catalog.read(cx);
-        self.tree = cat.snap.tree.clone();
-        self.counts = cat.snap.counts.clone();
-        self.rules = cat.snap.rules.clone();
-        self.uses = cat.snap.uses.clone();
+        let (tree, counts, rules, uses, choices) = {
+            let cat = self.catalog.read(cx);
+            (
+                cat.snap.tree.clone(),
+                cat.snap.counts.clone(),
+                cat.snap.rules.clone(),
+                cat.snap.uses.clone(),
+                cat.cat_choices(),
+            )
+        };
+        self.tree = tree;
+        self.counts = counts;
+        self.rules = rules;
+        self.uses = uses;
+        // 3.54: a new shared picker list lands in `render`, where the
+        // window for `set_items` exists — a hidden page only flags it
+        // (the queue page's 3.19/3.83 pattern).
+        if self
+            .cat_choices_held
+            .as_ref()
+            .is_none_or(|held| !Rc::ptr_eq(held, &choices))
+        {
+            self.cat_choices_held = Some(choices);
+            self.cat_pickers_need_items = true;
+        }
     }
 }
 
@@ -696,6 +725,10 @@ impl CategoriesPage {
             delete_target,
             confirm_delete_category: None,
             cat_pending: None,
+            cat_choices_held: None,
+            cat_pickers_need_items: false,
+            #[cfg(test)]
+            cat_picker_sets: std::cell::Cell::new(0),
             detail_form: None,
             cat_error: None,
             tree_scroll: VirtualListScrollHandle::new(),
@@ -839,6 +872,92 @@ impl CategoriesPage {
             .collect();
         self.move_target
             .update(cx, |s, cx| s.set_items(names, window, cx));
+    }
+
+    /// 3.54: re-set the Delete form's reassign picker when `apply` flagged
+    /// a newer grouped-items `Rc` (the Rules page's method: `set_items`
+    /// needs a window, so `render` and the delete action pick the change
+    /// up; a hidden page does neither until it must).
+    fn refresh_cat_pickers(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.cat_pickers_need_items {
+            return;
+        }
+        self.cat_pickers_need_items = false;
+        if let Some(items) = self.cat_choices_held.clone() {
+            self.delete_target.update(cx, |s, cx| {
+                s.set_items(SearchableVec::new((*items).clone()), window, cx)
+            });
+            #[cfg(test)]
+            self.cat_picker_sets.set(self.cat_picker_sets.get() + 1);
+        }
+    }
+
+    /// 3.54: the mirror's view of `delete_category` — drop the node (a
+    /// parent takes its whole subtree), move the freed transaction counts
+    /// to the reassign target and re-point rules that targeted a dead id,
+    /// exactly as the DB write does. Runs on the confirming click; a
+    /// failed write restores the snapshot the caller kept.
+    fn remove_node_optimistically(&mut self, id: i64, reassign_to: i64) {
+        let mut dead: Vec<i64> = Vec::new();
+        let mut moved: i64 = 0;
+        if let Some(ix) = self.tree.iter().position(|p| p.id == id) {
+            let parent = self.tree.remove(ix);
+            dead.push(parent.id);
+            moved += self.counts.get(&parent.id).copied().unwrap_or(0);
+            for c in &parent.children {
+                dead.push(c.id);
+                moved += self.counts.get(&c.id).copied().unwrap_or(0);
+            }
+        } else {
+            for p in &mut self.tree {
+                if let Some(cix) = p.children.iter().position(|c| c.id == id) {
+                    let c = p.children.remove(cix);
+                    dead.push(c.id);
+                    moved += self.counts.get(&c.id).copied().unwrap_or(0);
+                    break;
+                }
+            }
+        }
+        if dead.is_empty() {
+            return;
+        }
+        for d in &dead {
+            self.counts.remove(d);
+        }
+        if !dead.contains(&reassign_to) {
+            *self.counts.entry(reassign_to).or_insert(0) += moved;
+        }
+        for r in &mut self.rules {
+            if dead.contains(&r.category_id) {
+                r.category_id = reassign_to;
+            }
+        }
+    }
+
+    /// 3.54: the mirror's view of `move_child` — lift the child out of
+    /// its current parent and insert it into the new one in name order
+    /// (`list_categories` sorts by name). Counts do not move: the same
+    /// transactions stay on the same child id.
+    fn reparent_optimistically(&mut self, child_id: i64, new_parent_id: i64) {
+        if !self.tree.iter().any(|p| p.id == new_parent_id) {
+            return;
+        }
+        let mut child = None;
+        for p in &mut self.tree {
+            if let Some(cix) = p.children.iter().position(|c| c.id == child_id) {
+                child = Some(p.children.remove(cix));
+                break;
+            }
+        }
+        let Some(child) = child else { return };
+        if let Some(parent) = self.tree.iter_mut().find(|p| p.id == new_parent_id) {
+            let ix = parent
+                .children
+                .iter()
+                .position(|c| c.name > child.name)
+                .unwrap_or(parent.children.len());
+            parent.children.insert(ix, child);
+        }
     }
 
     /// `go_page` (3.23): no transient UI travels across a page switch.
@@ -1091,6 +1210,10 @@ impl CategoriesPage {
         // 3.84: the Move button shows loading, disabled, until the DB is
         // done.
         self.cat_pending = Some(PendingCatWrite::Move);
+        // 3.54: the node re-parents in the tree at once; a failed write
+        // restores the snapshot below and the refresh reconciles either way.
+        let snapshot = self.tree.clone();
+        self.reparent_optimistically(child_id, new_parent_id);
         // 3.51: a successful move closes the Move form it was submitted
         // from (a successful action closes its form).
         let from_form = self.detail_form == Some(DetailForm::Move);
@@ -1108,7 +1231,11 @@ impl CategoriesPage {
                         }
                         this.cat_error = None;
                     }
-                    Err(e) => this.cat_error = Some(e),
+                    Err(e) => {
+                        // 3.54: roll the optimistic tree edit back.
+                        this.tree = snapshot;
+                        this.cat_error = Some(e);
+                    }
                 }
                 cx.emit(PageEvent::Changed(Domains::CATEGORIES_RULES_TX));
             });
@@ -1129,6 +1256,9 @@ impl CategoriesPage {
         }
         // Resolve against a current mirror (see `add_child`).
         self.apply_if_dirty(cx);
+        // 3.54: the reassign pick resolves against current items (see the
+        // method).
+        self.refresh_cat_pickers(window, cx);
         let Some(id) = self.selected_category else {
             return;
         };
@@ -1151,6 +1281,11 @@ impl CategoriesPage {
         // 3.84: the Delete button shows loading, disabled, until the DB
         // is done.
         self.cat_pending = Some(PendingCatWrite::Delete);
+        // 3.54: the node leaves the tree at once, its counts moving to the
+        // reassign target; a failed write restores the snapshot below and
+        // the later refresh reconciles either way.
+        let snapshot = (self.tree.clone(), self.counts.clone(), self.rules.clone());
+        self.remove_node_optimistically(id, reassign_to);
         // 3.64: detached — see `add_parent`.
         cx.spawn_in(window, async move |this, cx| {
             let result = on_db(&db, move |c| delete_category(c, id, reassign_to)).await;
@@ -1175,7 +1310,14 @@ impl CategoriesPage {
                         }
                         this.cat_error = None;
                     }
-                    Err(e) => this.cat_error = Some(e),
+                    Err(e) => {
+                        // 3.54: roll the optimistic tree edit back.
+                        let (tree, counts, rules) = snapshot;
+                        this.tree = tree;
+                        this.counts = counts;
+                        this.rules = rules;
+                        this.cat_error = Some(e);
+                    }
                 }
                 cx.emit(PageEvent::Changed(Domains::CATEGORIES_RULES_TX));
             });
@@ -1222,6 +1364,10 @@ impl Render for CategoriesPage {
             let focus = self.focus.clone();
             window.defer(cx, move |window, cx| window.focus(&focus, cx));
         }
+        // 3.54: a new shared category list lands through
+        // `refresh_cat_pickers`, from `render` and from the delete action
+        // — a hidden page defers the re-set until it next renders or acts.
+        self.refresh_cat_pickers(window, cx);
         // 3.81 transitional: the rule rows, the add-rule row and the
         // palette live in `Shell`; without it there is nothing to draw.
         let Some(shell) = self.shell.upgrade() else {
@@ -1232,8 +1378,7 @@ impl Render for CategoriesPage {
             (theme.muted_foreground, theme.border, theme.danger)
         };
         // 3.59: the Delete picker's menu width: the longest "Category ›
-        // Subcategory" label up to 320 px (items fed by
-        // `Shell::data_changed`).
+        // Subcategory" label up to 320 px (items fed lazily above, 3.54).
         let delete_menu_w = sub_choices_menu_width(&self.catalog.read(cx).cat_choices());
         // 3.84: the button whose write the DB is running renders loading,
         // disabled, until the answer arrives (the Rules page's 3.40
