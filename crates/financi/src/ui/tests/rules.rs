@@ -31,6 +31,12 @@ fn creating_a_rule_categorizes_matching_rows(cx: &mut TestAppContext) {
     let child = cx.update(|cx| find_child(&shell, cx, "Online").unwrap());
     let (merchant, rows) = cx.update(|cx| top_group(&shell, cx));
 
+    // 3.54: a page's pickers are fed on its next draw, so show the Rules
+    // page, let the data settle and draw once before picking a category.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Rules, cx)));
+    wait_idle(cx, &shell);
+    draw_frame(cx, handle);
+
     with_window(cx, handle, |window, cx| {
         shell.update(cx, |s, cx| {
             s.rules_page.update(cx, |p, cx| {
@@ -542,7 +548,7 @@ fn a_refused_rule_save_clears_the_loading_state(cx: &mut TestAppContext) {
 /// clamped to one ellipsized line and the slot grows while it is shown.
 #[gpui::test]
 fn the_editor_error_stays_inside_its_row(cx: &mut TestAppContext) {
-    let (handle, shell, rule, _first, second) = open_rule_fixture(cx);
+    let (handle, shell, rule, _first, _second) = open_rule_fixture(cx);
     // A second rule below the one being edited: its row is what an
     // overflowing error would overlap.
     with_window(cx, handle, |window, cx| {
@@ -551,12 +557,14 @@ fn the_editor_error_stays_inside_its_row(cx: &mut TestAppContext) {
                 p.rule_pattern
                     .update(cx, |i, cx| i.set_value("TOAST".to_string(), window, cx))
             });
-            s.rules_page.update(cx, |p, cx| {
-                p.rule_target.update(cx, |sel, cx| {
-                    sel.set_selected_value(&second, window, cx);
-                })
+            // 3.54: the fixture is on the Categories page, whose add row
+            // picks through `cat_rule_target` (fed with the selected
+            // parent's children, keyed by name); `rule_target` belongs to
+            // the hidden Rules page and is only fed on its next draw.
+            s.categories_page.cat_rule_target.update(cx, |sel, cx| {
+                sel.set_selected_value(&"Second".into(), window, cx);
             });
-            s.rules_page.update(cx, |p, cx| p.add_rule(window, cx));
+            s.add_rule_to_selected(window, cx);
         });
     });
     wait_until(cx, "the second rule", |cx| shell.read(cx).rules.len() == 2);
@@ -617,7 +625,7 @@ fn the_editor_error_stays_inside_its_row(cx: &mut TestAppContext) {
 /// two-line shape is only for the editor).
 #[gpui::test]
 fn the_rule_editor_gives_the_pattern_room(cx: &mut TestAppContext) {
-    let (handle, shell, rule, _first, second) = open_rule_fixture(cx);
+    let (handle, shell, rule, _first, _second) = open_rule_fixture(cx);
     resize_and_draw(cx, handle, 1200., 720.);
     // 3.48: the add-rule rows stay on one line — after 3.53 their
     // Pattern input is wide enough to edit there (spec threshold 240 px).
@@ -635,12 +643,14 @@ fn the_rule_editor_gives_the_pattern_room(cx: &mut TestAppContext) {
                 p.rule_pattern
                     .update(cx, |i, cx| i.set_value("TOAST".to_string(), window, cx))
             });
-            s.rules_page.update(cx, |p, cx| {
-                p.rule_target.update(cx, |sel, cx| {
-                    sel.set_selected_value(&second, window, cx);
-                })
+            // 3.54: the fixture is on the Categories page, whose add row
+            // picks through `cat_rule_target` (fed with the selected
+            // parent's children, keyed by name); `rule_target` belongs to
+            // the hidden Rules page and is only fed on its next draw.
+            s.categories_page.cat_rule_target.update(cx, |sel, cx| {
+                sel.set_selected_value(&"Second".into(), window, cx);
             });
-            s.rules_page.update(cx, |p, cx| p.add_rule(window, cx));
+            s.add_rule_to_selected(window, cx);
         });
     });
     wait_until(cx, "the second rule", |cx| shell.read(cx).rules.len() == 2);
@@ -1071,6 +1081,265 @@ fn the_armed_rule_delete_is_transient(cx: &mut TestAppContext) {
             s.rules_page.read(cx).armed_delete_rule,
             None,
             "and disarmed the delete"
+        );
+    });
+}
+
+/// 3.47: Add puts the row in the list at once on a temporary negative id
+/// and the completed write swaps in the real id — the list never waits
+/// for the round-trip, and no temporary id survives it.
+#[gpui::test]
+fn the_added_rule_shows_at_once_and_takes_its_real_id(cx: &mut TestAppContext) {
+    let (handle, shell, _rule, _first, second) = open_rule_fixture(cx);
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Rules, cx)));
+    wait_idle(cx, &shell);
+    draw_frame(cx, handle);
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.rules_page.update(cx, |p, cx| {
+                p.rule_pattern
+                    .update(cx, |i, cx| i.set_value("TOAST".to_string(), window, cx));
+                p.rule_target.update(cx, |sel, cx| {
+                    sel.set_selected_value(&second, window, cx);
+                });
+                p.add_rule(window, cx);
+            });
+        });
+        let p = shell.read(cx).rules_page.read(cx);
+        let row = p.rules.last().cloned().expect("the row appears at once");
+        assert!(
+            row.id < 0,
+            "the provisional row carries a temporary negative id"
+        );
+        assert_eq!(row.pattern, "TOAST");
+        assert_eq!(p.pending_rule_action, Some(PendingRuleAction::Add));
+    });
+    wait_until(cx, "the real id lands", |cx| {
+        shell
+            .read(cx)
+            .rules_page
+            .read(cx)
+            .rules
+            .iter()
+            .any(|r| r.pattern == "TOAST" && r.id > 0)
+    });
+    cx.update(|cx| {
+        let p = shell.read(cx).rules_page.read(cx);
+        assert_eq!(
+            p.rules.iter().filter(|r| r.pattern == "TOAST").count(),
+            1,
+            "one row, not one provisional and one real"
+        );
+        assert!(
+            p.rules.iter().all(|r| r.id > 0),
+            "no temporary id is left behind"
+        );
+    });
+}
+
+/// 3.47: a failed Add takes its provisional row back out — the list ends
+/// with exactly what the database holds — and reports the error.
+#[gpui::test]
+fn a_failed_add_takes_the_provisional_row_back(cx: &mut TestAppContext) {
+    let (handle, shell, _rule, _first, second) = open_rule_fixture(cx);
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Rules, cx)));
+    wait_idle(cx, &shell);
+    draw_frame(cx, handle);
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.rules_page.update(cx, |p, cx| {
+                p.rule_pattern
+                    .update(cx, |i, cx| i.set_value("[oops".to_string(), window, cx));
+                p.rule_regex = true;
+            });
+            s.rules_page.update(cx, |p, cx| {
+                p.rule_target.update(cx, |sel, cx| {
+                    sel.set_selected_value(&second, window, cx);
+                })
+            });
+            s.rules_page.update(cx, |p, cx| p.add_rule(window, cx));
+        });
+        let p = shell.read(cx).rules_page.read(cx);
+        let row = p.rules.last().cloned().expect("the row appeared at once");
+        assert!(row.id < 0, "provisional while the write runs");
+        assert_eq!(p.pending_rule_action, Some(PendingRuleAction::Add));
+    });
+    wait_until(cx, "the failed add clears", |cx| {
+        let p = shell.read(cx).rules_page.read(cx);
+        p.pending_rule_action.is_none() && p.rule_error.is_some()
+    });
+    cx.update(|cx| {
+        let p = shell.read(cx).rules_page.read(cx);
+        assert_eq!(p.rules.len(), 1, "the provisional row is taken back out");
+        assert!(p.rules.iter().all(|r| r.id > 0));
+    });
+}
+
+/// 3.47: the confirming Delete click drops the row from the list in the
+/// same frame, and a Save shows the new pattern on the row before the
+/// write completes (the later refresh reconciles both either way).
+#[gpui::test]
+fn delete_and_save_update_the_list_in_the_same_frame(cx: &mut TestAppContext) {
+    let (handle, shell, rule, _first, _second) = open_rule_fixture(cx);
+
+    // Save: the row carries the edited pattern the moment Save is pressed.
+    start_rule_edit(cx, handle, &shell, rule);
+    set_edit_pattern(cx, handle, &shell, "COFFEE BAR");
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.rules_page
+                .update(cx, |p, cx| p.save_rule_edit(window, cx))
+        });
+        let p = shell.read(cx).rules_page.read(cx);
+        assert_eq!(
+            p.rules
+                .iter()
+                .find(|r| r.id == rule)
+                .map(|r| r.pattern.as_str()),
+            Some("COFFEE BAR"),
+            "the row shows the new pattern at once"
+        );
+        assert_eq!(p.pending_rule_action, Some(PendingRuleAction::Save(rule)));
+    });
+    wait_until(cx, "the save lands", |cx| {
+        let p = shell.read(cx).rules_page.read(cx);
+        p.pending_rule_action.is_none() && p.rule_error.is_none()
+    });
+
+    // Delete: the confirming click takes the row out in its frame.
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.rules_page
+                .update(cx, |p, cx| p.arm_delete_rule(rule, window, cx))
+        });
+    });
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.rules_page
+                .update(cx, |p, cx| p.arm_delete_rule(rule, window, cx))
+        });
+        let p = shell.read(cx).rules_page.read(cx);
+        assert!(
+            p.rules.iter().all(|r| r.id != rule),
+            "the row leaves the list in the confirming click's frame"
+        );
+        assert_eq!(p.pending_rule_action, Some(PendingRuleAction::Delete(rule)));
+    });
+    wait_until(cx, "the delete lands", |cx| {
+        shell.read(cx).rules_page.read(cx).rules.is_empty()
+    });
+}
+
+/// 3.47: a failed Save puts the saved pattern back on the row — the
+/// editor stays open with its error over the old, still-effective rule.
+#[gpui::test]
+fn a_failed_save_puts_the_saved_pattern_back(cx: &mut TestAppContext) {
+    let (handle, shell, rule, _first, _second) = open_rule_fixture(cx);
+    start_rule_edit(cx, handle, &shell, rule);
+    set_edit_pattern(cx, handle, &shell, "[");
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.rules_page.update(cx, |p, _cx| p.rule_edit_regex = true);
+            s.rules_page
+                .update(cx, |p, cx| p.save_rule_edit(window, cx))
+        });
+        let p = shell.read(cx).rules_page.read(cx);
+        assert_eq!(
+            p.rules
+                .iter()
+                .find(|r| r.id == rule)
+                .map(|r| r.pattern.as_str()),
+            Some("["),
+            "the row shows the pending pattern at once"
+        );
+    });
+    wait_until(cx, "the failed save rolls back", |cx| {
+        let p = shell.read(cx).rules_page.read(cx);
+        p.pending_rule_action.is_none()
+            && p.rule_error.is_some()
+            && p.rules
+                .iter()
+                .find(|r| r.id == rule)
+                .is_some_and(|r| r.pattern == "COFFEE")
+    });
+    cx.update(|cx| {
+        let p = shell.read(cx).rules_page.read(cx);
+        assert_eq!(p.editing_rule, Some(rule), "the editor stays open");
+        assert!(
+            p.rules.iter().all(|r| !r.is_regex),
+            "the rolled-back row kept its plain-text kind"
+        );
+    });
+}
+
+/// 3.47: a failed Delete puts the row back at its position — the list
+/// order the user saw is restored, not appended to — and reports the
+/// error. A DB trigger aborts the DELETE so the row itself survives and
+/// the reconciling refresh keeps the restored list.
+#[gpui::test]
+fn optimistic_delete_rolls_back_when_the_write_fails(cx: &mut TestAppContext) {
+    let (handle, shell, rule, _first, second) = open_rule_fixture(cx);
+    // A second rule under the first, so the restore's position is visible.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Rules, cx)));
+    wait_idle(cx, &shell);
+    draw_frame(cx, handle);
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.rules_page.update(cx, |p, cx| {
+                p.rule_pattern
+                    .update(cx, |i, cx| i.set_value("TOAST".to_string(), window, cx));
+                p.rule_target.update(cx, |sel, cx| {
+                    sel.set_selected_value(&second, window, cx);
+                });
+                p.add_rule(window, cx);
+            });
+        });
+    });
+    wait_until(cx, "the second rule", |cx| {
+        shell.read(cx).rules_page.read(cx).rules.len() == 2
+    });
+    let db = cx.update(|cx| shell.read(cx).db.clone());
+    block_on(db.call(move |c| {
+        c.execute(
+            "CREATE TRIGGER test_no_rule_delete BEFORE DELETE ON category_rules \
+             BEGIN SELECT RAISE(ABORT, 'test: rule delete blocked'); END",
+            [],
+        )
+        .map(|_| ())
+    }))
+    .expect("the trigger job ran")
+    .expect("the trigger is created");
+
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.rules_page
+                .update(cx, |p, cx| p.arm_delete_rule(rule, window, cx))
+        });
+    });
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.rules_page
+                .update(cx, |p, cx| p.arm_delete_rule(rule, window, cx))
+        });
+        let p = shell.read(cx).rules_page.read(cx);
+        assert!(
+            p.rules.iter().all(|r| r.id != rule),
+            "the row is gone at once"
+        );
+    });
+    wait_until(cx, "the failed delete rolls back", |cx| {
+        let p = shell.read(cx).rules_page.read(cx);
+        p.pending_rule_action.is_none()
+            && p.rule_error.is_some()
+            && p.rules.iter().any(|r| r.id == rule)
+    });
+    cx.update(|cx| {
+        let p = shell.read(cx).rules_page.read(cx);
+        assert_eq!(p.rules.len(), 2, "both rows are listed");
+        assert_eq!(
+            p.rules.iter().position(|r| r.id == rule),
+            Some(0),
+            "the row came back at its own position"
         );
     });
 }

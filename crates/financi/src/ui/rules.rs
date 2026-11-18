@@ -200,6 +200,21 @@ pub(super) struct RulesPage {
     /// 3.85: bumped by [`RulesPage::apply`] — the fingerprint component
     /// covering the catalog mirrors (rules, Uses, category labels).
     rules_gen: u64,
+    /// 3.47: the id the next provisional rule row carries while its add
+    /// round-trip is in flight (negative, so it can never collide with a
+    /// real `rules.id`).
+    next_temp_rule_id: i64,
+    /// 3.54: the shared grouped items last fed to `rule_target` and
+    /// `move_rules_target` (3.59; `Rc::ptr_eq` is the change test), and
+    /// the flag that a newer list arrived between `apply` and `render` —
+    /// the queue page's lazy-picker pattern (3.19/3.83): a hidden page
+    /// does not pay for `set_items` until it is shown again.
+    cat_choices_held: Option<Rc<Vec<SelectGroup<SubChoice>>>>,
+    cat_pickers_need_items: bool,
+    /// 3.54 test hook: how many picker `set_items` calls this page made —
+    /// proves a hidden page is not re-fed during a refresh.
+    #[cfg(test)]
+    pub(super) cat_picker_sets: std::cell::Cell<usize>,
     /// 3.28: how many items the Rules page list built last frame (headers
     /// and rows together) and the range it drew, for the long-list tests.
     #[cfg(test)]
@@ -286,13 +301,14 @@ impl PageEntity for RulesPage {
     }
 
     fn apply(&mut self, cx: &mut Context<Self>) {
-        let (rules, uses, totals, tree) = {
+        let (rules, uses, totals, tree, choices) = {
             let cat = self.catalog.read(cx);
             (
                 cat.snap.rules.clone(),
                 cat.snap.uses.clone(),
                 cat.snap.rule_totals.clone(),
                 cat.snap.tree.clone(),
+                cat.cat_choices(),
             )
         };
         self.rules = rules;
@@ -300,6 +316,17 @@ impl PageEntity for RulesPage {
         self.rule_totals = totals;
         // 3.85: the item cache's catalog inputs just moved.
         self.rules_gen += 1;
+        // 3.54: a new shared picker list lands in `render`, where the
+        // window for `set_items` exists — a hidden page only flags it
+        // (the queue page's 3.19/3.83 pattern).
+        if self
+            .cat_choices_held
+            .as_ref()
+            .is_none_or(|held| !Rc::ptr_eq(held, &choices))
+        {
+            self.cat_choices_held = Some(choices);
+            self.cat_pickers_need_items = true;
+        }
         // 3.28: a refresh that dropped a rule drops its checkbox with it;
         // a deleted category drops its collapsed-group marker.
         self.selected_rules
@@ -494,6 +521,11 @@ impl RulesPage {
             rules_items_fp: None,
             rules_group_sums: Rc::new(HashMap::new()),
             rules_gen: 0,
+            next_temp_rule_id: -1,
+            cat_choices_held: None,
+            cat_pickers_need_items: false,
+            #[cfg(test)]
+            cat_picker_sets: std::cell::Cell::new(0),
             #[cfg(test)]
             rules_page_rows_built: std::cell::Cell::new(0),
             #[cfg(test)]
@@ -586,7 +618,31 @@ impl RulesPage {
         }
     }
 
+    /// 3.54: re-set the two shared category pickers when `apply` flagged a
+    /// newer grouped-items `Rc` — `set_items` needs a window, so this runs
+    /// from `render` (where a shown page picks the change up) and from the
+    /// actions that read the pickers (the harness and the Categories-driven
+    /// add flow work pages that never rendered). Fresh pickers: a pointer
+    /// compare, no work (the queue page's 3.19/3.83 pattern).
+    fn refresh_cat_pickers(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.cat_pickers_need_items {
+            return;
+        }
+        self.cat_pickers_need_items = false;
+        if let Some(items) = self.cat_choices_held.clone() {
+            let items = SearchableVec::new((*items).clone());
+            self.rule_target
+                .update(cx, |s, cx| s.set_items(items.clone(), window, cx));
+            self.move_rules_target
+                .update(cx, |s, cx| s.set_items(items, window, cx));
+            #[cfg(test)]
+            self.cat_picker_sets.set(self.cat_picker_sets.get() + 2);
+        }
+    }
+
     pub(super) fn add_rule(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // 3.54: the pick resolves against current items (see the method).
+        self.refresh_cat_pickers(window, cx);
         // 3.59: the grouped items carry the sub-category id as their
         // value, so the pick resolves directly.
         let Some(category_id) = self.rule_target.read(cx).selected_value().copied() else {
@@ -618,6 +674,18 @@ impl RulesPage {
         // done (a save that re-runs the rules can take seconds).
         self.pending_rule_action = Some(PendingRuleAction::Add);
         let submitted = pattern.clone();
+        // 3.47: the new row appears in the list at once with a temporary
+        // negative id; the Ok arm swaps in the real id, the Err arm drops
+        // the row again (the later refresh reconciles either way).
+        let temp_id = self.next_temp_rule_id;
+        self.next_temp_rule_id -= 1;
+        self.rules.push(Rule {
+            id: temp_id,
+            pattern: pattern.clone(),
+            is_regex,
+            category_id,
+        });
+        self.rules_gen += 1;
         // 3.64: detached — a later action must not cancel this write's
         // continuation and swallow its refresh.
         cx.spawn_in(window, async move |this, cx| {
@@ -630,7 +698,12 @@ impl RulesPage {
                     this.pending_rule_action = None;
                 }
                 match result {
-                    Ok(_) => {
+                    Ok(new_id) => {
+                        // 3.47: the provisional row carries its real id.
+                        if let Some(rule) = this.rules.iter_mut().find(|r| r.id == temp_id) {
+                            rule.id = new_id;
+                            this.rules_gen += 1;
+                        }
                         // The input still shows what was submitted — don't
                         // wipe a pattern typed after this one landed.
                         if this.rule_pattern.read(cx).value().trim() == submitted {
@@ -644,14 +717,23 @@ impl RulesPage {
                             this.rule_error = None;
                         }
                     }
-                    // 3.64: and only this add reports it: a failure that
-                    // lands after the user moved on (another action owns the
-                    // badge, or an editor is open) must not paint under
-                    // someone else's fields — `report_rule_error` toasts it
-                    // while an editor is open, and a stale add's failure is
-                    // the newer action's to report.
-                    Err(e) if own => this.report_rule_error(e, cx),
-                    Err(_) => {}
+                    // 3.47: a failed add takes the provisional row back
+                    // out, whether or not this add still owns the badge.
+                    // 3.64: and only this add reports the error: a failure
+                    // that lands after the user moved on (another action
+                    // owns the badge, or an editor is open) must not paint
+                    // under someone else's fields — `report_rule_error`
+                    // toasts it while one is open, and a stale add's
+                    // failure is the newer action's to report.
+                    Err(e) => {
+                        if let Some(ix) = this.rules.iter().position(|r| r.id == temp_id) {
+                            this.rules.remove(ix);
+                            this.rules_gen += 1;
+                        }
+                        if own {
+                            this.report_rule_error(e, cx);
+                        }
+                    }
                 }
                 cx.emit(PageEvent::Changed(Domains::RULES_TX));
                 cx.notify();
@@ -746,6 +828,18 @@ impl RulesPage {
         // 3.40: the Save button shows loading, disabled, until the DB is
         // done; on error the editor stays open and pending clears too.
         self.pending_rule_action = Some(PendingRuleAction::Save(id));
+        // 3.47: the row shows the new pattern at once; the Err arm puts
+        // the saved copy back (the refresh reconciles on success).
+        let previous = self
+            .rules
+            .iter()
+            .position(|r| r.id == id)
+            .map(|ix| self.rules[ix].clone());
+        if let Some(rule) = self.rules.iter_mut().find(|r| r.id == id) {
+            rule.pattern = pattern.clone();
+            rule.is_regex = is_regex;
+            self.rules_gen += 1;
+        }
         // 3.64: detached — see `commit_new_rule`.
         cx.spawn_in(window, async move |this, cx| {
             let result = on_db(&db, move |c| {
@@ -766,6 +860,13 @@ impl RulesPage {
                         }
                     }
                     Err(e) => {
+                        // 3.47: roll the optimistic edit back.
+                        if let Some(prev) = previous
+                            && let Some(rule) = this.rules.iter_mut().find(|r| r.id == id)
+                        {
+                            *rule = prev;
+                            this.rules_gen += 1;
+                        }
                         if this.editing_rule == Some(id) {
                             this.rule_error = Some(e);
                         }
@@ -794,6 +895,17 @@ impl RulesPage {
             // 3.40: the delete runs (and the button shows loading,
             // disabled) while the rules re-run over the unlocked rows.
             self.pending_rule_action = Some(PendingRuleAction::Delete(id));
+            // 3.47: the row leaves the list at once; a failed delete puts
+            // it back at its position and reports the error (3.24's
+            // "rule removed underneath" case).
+            let removed = self
+                .rules
+                .iter()
+                .position(|r| r.id == id)
+                .map(|ix| (ix, self.rules.remove(ix)));
+            if removed.is_some() {
+                self.rules_gen += 1;
+            }
             // 3.64: detached — see `commit_new_rule`.
             cx.spawn_in(window, async move |this, cx| {
                 let result = on_db(&db, move |c| delete_rule(c, id)).await;
@@ -813,7 +925,19 @@ impl RulesPage {
                         // 3.64: the failure of *this* delete never paints
                         // under an editor that belongs to another rule —
                         // `report_rule_error` toasts it while one is open.
-                        Err(e) => this.report_rule_error(e, cx),
+                        Err(e) => {
+                            // 3.47: restore the row unless a refresh has
+                            // already brought it back (it can't be gone
+                            // twice — but neither may it be listed twice).
+                            if let Some((ix, rule)) = removed
+                                && !this.rules.iter().any(|r| r.id == rule.id)
+                            {
+                                let ix = ix.min(this.rules.len());
+                                this.rules.insert(ix, rule);
+                                this.rules_gen += 1;
+                            }
+                            this.report_rule_error(e, cx)
+                        }
                     }
                     cx.emit(PageEvent::Changed(Domains::RULES_TX));
                     cx.notify();
@@ -1345,6 +1469,8 @@ impl RulesPage {
         if self.writes_blocked.get() {
             return;
         }
+        // 3.54: the pick resolves against current items (see the method).
+        self.refresh_cat_pickers(window, cx);
         // 3.59: the pick carries the sub-category id value directly.
         let Some(category_id) = self.move_rules_target.read(cx).selected_value().copied() else {
             self.rules_move_error = Some("Choose the category to move to.".into());
@@ -1755,10 +1881,13 @@ impl Render for RulesPage {
                 window.focus(&handle, cx);
             });
         }
+        // 3.54: a new shared category list lands through
+        // `refresh_cat_pickers`, from `render` and from the actions that
+        // read those pickers — a hidden page defers the re-set until it
+        // next renders or acts (the queue page's lazy-picker pattern).
+        self.refresh_cat_pickers(window, cx);
         // 3.59: the menu width both category pickers share: the longest
-        // "Category › Subcategory" label up to 320 px. The items
-        // themselves are fed by `Shell::data_changed` (a window is
-        // needed, and hidden pages never render).
+        // "Category › Subcategory" label up to 320 px.
         let cat_menu_w = sub_choices_menu_width(&self.catalog.read(cx).cat_choices());
         let (muted, fg, danger, border, success, primary) = {
             let theme = cx.theme();
