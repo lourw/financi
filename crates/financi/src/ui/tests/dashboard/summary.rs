@@ -386,6 +386,43 @@ fn clicking_a_summary_cell_filters_the_table_to_category_and_month(cx: &mut Test
 }
 
 #[gpui::test]
+fn a_summary_selection_reaches_the_chart_and_table_panels(cx: &mut TestAppContext) {
+    // 3.97: the panels are separate entities now — a selection made by
+    // clicking a summary cell still reaches both other panels through
+    // `DashboardState`: the chart's legend paints that category
+    // selected, and the table narrows to the category and month.
+    let (handle, shell) = open_shell(cx, seed_summary_rows);
+    set_all_time(cx, handle, &shell);
+    wait_until(cx, "table loaded", |cx| {
+        dash(cx, &shell).read(cx).row_count == 7
+    });
+    let food = cx.update(|cx| summary_parent_id(&shell, cx, "Food"));
+    let ix = cx.update(|cx| {
+        dash(cx, &shell)
+            .read(cx)
+            .chart_rows
+            .iter()
+            .position(|r| r.id == Some(food))
+            .expect("Food is one of the legend's rows")
+    });
+
+    click_summary_cell(cx, handle, &shell, Some(food), Some("2026-03"));
+    wait_until(cx, "the table panel narrowed with the selection", |cx| {
+        dash(cx, &shell).read(cx).row_count == 2
+    });
+    cx.update(|cx| {
+        let rows = table_rows(&shell, cx);
+        let mut descs: Vec<&str> = rows.iter().map(|r| r.description.as_str()).collect();
+        descs.sort_unstable();
+        assert_eq!(descs, ["CORNER CAFE MAR", "GROCER STORE MAR"]);
+    });
+    assert!(
+        paints(cx, handle, format!("chart:legend-row:{ix}:active")),
+        "the chart's legend paints the summary-selected category selected"
+    );
+}
+
+#[gpui::test]
 fn clicking_a_child_summary_cell_drills_the_chart_to_its_parent(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, seed_summary_rows);
     set_all_time(cx, handle, &shell);
