@@ -11,7 +11,7 @@ Order: 3.98 → 3.97 → 3.100 → 3.101 → 3.99. The dashboard becomes a dock
 of resizable, rearrangeable panels (user decision, 2026-11-17: dock
 splits, not a scrolling grid).
 
-- [ ] **3.97 Each dashboard panel is its own entity.** Refactor for
+- [x] **3.97 Each dashboard panel is its own entity.** Refactor for
   3.100, no visible change. Today `DashboardPage` renders all four panels
   from methods (`chart_panel`, `stacked_panel`, `summary_panel`, and the
   table wrapper in `ui/dashboard/render.rs`). gpui-base's dock holds

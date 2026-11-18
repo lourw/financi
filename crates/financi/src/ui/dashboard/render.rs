@@ -1,13 +1,26 @@
-//! The page's `Render` impl (3.35, 3.82).
+//! The page's render (3.35, 3.82): the body lives on the shared state
+//! as [`DashboardState::render_dashboard`] (3.97), and the thin view
+//! entity in [`entity`](super::entity) forwards to it.
 
+use super::panels::DashboardPanels;
 use super::*;
 use crate::ui::dashboard_filters::{
     FILTER_DATE_MIN_W, FILTER_DATE_RANGE_W, FILTER_DATE_W, FILTER_SEARCH_MIN_W,
 };
 use crate::ui::page::Cancel;
 
-impl Render for DashboardPage {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+impl DashboardState {
+    /// The whole page body (3.97): the filter row, the chips and the
+    /// panel stack — the four [`DashboardPanels`] entities, mounted in
+    /// the scroller — painted from the shared state. Called by
+    /// [`DashboardPage`]'s `Render` impl; it returns `AnyElement`
+    /// because the body's shape (empty state vs. scroller) varies.
+    pub(in crate::ui::dashboard) fn render_dashboard(
+        &mut self,
+        panels: &DashboardPanels,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         // 3.82: the page takes focus on the frame it is first shown, like
         // the other extracted pages — deferred so no element is borrowed
         // while the focus moves, and only once (D5).
@@ -228,42 +241,32 @@ impl Render for DashboardPage {
                                         .restrict_scroll_to_axis()
                                         .track_scroll(&self.page_scroll)
                                         .gap_3()
-                                        .child(self.chart_panel(cx))
-                                        .child(self.stacked_panel(cx))
-                                        .child(self.summary_panel(cx))
-                                        // 3.45: the table fills the whole
-                                        // viewport height (the measured
-                                        // mirror of the wrapper above) and
-                                        // scrolls inside itself.
-                                        .child(
-                                            div()
-                                                .w_full()
-                                                .min_w_0()
-                                                .flex_none()
-                                                .h(px(self.tx_panel_h))
-                                                .relative()
-                                                .occlude()
-                                                .debug_selector(|| "panel:table".into())
-                                                // 3.86: the column plan comes from this
-                                                // panel's own measured width, reported by
-                                                // the probe (no window-width arithmetic).
-                                                .child(bounds_probe(
-                                                    cx.entity().downgrade(),
-                                                    |this, w, cx| this.set_table_width(w, cx),
-                                                ))
-                                                .child(if body == DashboardBody::NoMatches {
-                                                    self.no_matches_panel(cx)
-                                                } else {
-                                                    DataTable::new(&self.table)
-                                                        .stripe(false)
-                                                        .into_any_element()
-                                                }),
-                                        ),
+                                        // 3.97: each panel is its own entity;
+                                        // the mount keeps its probes, scroll
+                                        // handles and `panel:*` selectors.
+                                        .child(panels.chart.clone())
+                                        .child(panels.stacked.clone())
+                                        .child(panels.summary.clone())
+                                        .child(panels.table.clone()),
                                 ),
                         )
                         .into_any_element()
                 }
             })
             .into_any_element()
+    }
+    /// Which dashboard empty state applies (task 3.10, ui-conventions
+    /// *States*). `total_visible` counts every non-hidden row ignoring all
+    /// filters, so it is the "empty database" signal; `row_count` is the
+    /// filtered table, so `0` with data present means the filters excluded
+    /// everything.
+    pub(in crate::ui) fn dashboard_body(&self) -> DashboardBody {
+        if self.total_visible == 0 {
+            DashboardBody::NoData
+        } else if self.row_count == 0 {
+            DashboardBody::NoMatches
+        } else {
+            DashboardBody::Rows
+        }
     }
 }

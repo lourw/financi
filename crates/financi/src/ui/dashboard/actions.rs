@@ -53,7 +53,7 @@ fn restore_row(cx: &mut App, table: &Entity<TableState<TxTable>>, undo: &RowUndo
     undo.restore(cx, table)
 }
 
-impl DashboardPage {
+impl DashboardState {
     /// Put a date range on the state and the controls without persisting
     /// and without refreshing (3.65: split from `apply_date_range` so the
     /// launch settings can land inside the refresh that loaded them).
@@ -99,7 +99,7 @@ impl DashboardPage {
         self.filter_touched = true;
         self.set_date_range(range, cx);
         self.reload(cx);
-        cx.notify();
+        self.changed(DashboardChanges::FILTER, cx);
     }
 
     /// Write the current selection to the `settings` table through the
@@ -202,7 +202,7 @@ impl DashboardPage {
         self.sync_account_filter();
         // 3.65: the checkbox repaints with this click, not when the
         // answer comes back.
-        cx.notify();
+        self.changed(DashboardChanges::FILTER, cx);
         self.reload(cx);
     }
 
@@ -229,7 +229,7 @@ impl DashboardPage {
             let _ = on_db(&db, move |c| settings::set_include_transfers(c, on)).await;
         }));
         // 3.65: the checkbox and the Options label repaint with this click.
-        cx.notify();
+        self.changed(DashboardChanges::FILTER, cx);
         self.reload(cx);
     }
 
@@ -246,7 +246,7 @@ impl DashboardPage {
         }
         self.filter.search = term.to_string();
         // 3.65: the box repaints with the keystroke, not with the answer.
-        cx.notify();
+        self.changed(DashboardChanges::FILTER, cx);
         self.reload(cx);
     }
 
@@ -274,7 +274,10 @@ impl DashboardPage {
             self.filter.summary_month = None;
         }
         // 3.65: the box and any cleared legend highlight repaint at once.
-        cx.notify();
+        self.changed(
+            DashboardChanges::FILTER.union(DashboardChanges::SELECTION),
+            cx,
+        );
         self.reload(cx);
     }
 
@@ -290,7 +293,7 @@ impl DashboardPage {
         }
         self.filter.show_hidden = on;
         // 3.65: the checkbox repaints with this click, not with the answer.
-        cx.notify();
+        self.changed(DashboardChanges::FILTER, cx);
         self.reload(cx);
     }
 
@@ -308,7 +311,7 @@ impl DashboardPage {
     ) {
         self.filter.tx_sort = sort;
         // 3.65: the header icon repaints with this click.
-        cx.notify();
+        self.changed(DashboardChanges::FILTER, cx);
         self.reload(cx);
     }
 
@@ -323,7 +326,7 @@ impl DashboardPage {
         self.filter.legend_selection = None;
         self.filter.summary_month = None;
         // 3.65: the legend repaints with this click, not with the answer.
-        cx.notify();
+        self.changed(DashboardChanges::SELECTION, cx);
         self.reload(cx);
     }
 
@@ -354,12 +357,12 @@ impl DashboardPage {
         self.filter.summary_month = None;
         // 3.65: the drill-down, legend highlight and summary-cell highlight
         // repaint with this Esc, not with the answer.
-        cx.notify();
+        self.changed(DashboardChanges::SELECTION, cx);
         self.reload(cx);
     }
 }
 
-impl DashboardPage {
+impl DashboardState {
     /// Change one transaction's category from the row menu (2.9). `set_category`
     /// locks the row so rules never move it again (2.6); on success the row
     /// starts offering to extend this choice to its whole merchant group.
@@ -543,12 +546,12 @@ impl DashboardPage {
             });
         })
         .detach();
-        cx.notify();
+        self.changed(DashboardChanges::DATA, cx);
     }
 
     // -- render (3.82) --------------------------------------------------------
 }
-impl DashboardPage {
+impl DashboardState {
     /// 3.46: "Clear all" (and the no-matches link) returns the dashboard
     /// to its defaults — every filter, the sort included, goes back to
     /// [`DashboardFilter::default()`], and the two persisted settings
@@ -579,7 +582,10 @@ impl DashboardPage {
         }
         // 3.65: the cleared box, legend highlight and summary-cell highlight
         // repaint with this click, not with the answer.
-        cx.notify();
+        self.changed(
+            DashboardChanges::FILTER.union(DashboardChanges::SELECTION),
+            cx,
+        );
         self.reload(cx);
     }
 
@@ -588,7 +594,7 @@ impl DashboardPage {
     /// rule). The chart repaints from the selection on the next frame.
     pub(in crate::ui) fn clear_category_chip(&mut self, cx: &mut Context<Self>) {
         self.filter.legend_selection = None;
-        cx.notify();
+        self.changed(DashboardChanges::SELECTION, cx);
         self.reload(cx);
     }
 
@@ -602,11 +608,11 @@ impl DashboardPage {
             return;
         }
         self.filter.search.clear();
-        cx.notify();
+        self.changed(DashboardChanges::FILTER, cx);
         self.reload(cx);
     }
 }
-impl DashboardPage {
+impl DashboardState {
     // -- shell forwards (3.82) ------------------------------------------------
     //
     // The file actions live on the Imports page and transfer pairing on the
@@ -655,6 +661,9 @@ impl DashboardPage {
         self.filter.chart_parent = None;
         self.rule_offer = None;
         self.last_category_choice = None;
-        cx.notify();
+        self.changed(
+            DashboardChanges::SELECTION.union(DashboardChanges::DATA),
+            cx,
+        );
     }
 }

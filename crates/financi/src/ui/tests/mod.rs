@@ -29,7 +29,7 @@ use gpui_kit::{
     WindowBounds, WindowOptions, div, point, px, size,
 };
 
-use super::dashboard_chart::{
+use super::dashboard::panels::chart::{
     BAR_LABEL_MAX_CHARS, CHART_LABEL_GAP, CHART_LABEL_MAX_CHARS, CHART_LABEL_MIN_CHARS,
     LEGEND_GAP_X, LEGEND_LINES, LEGEND_MAX_H, band_label_budget, bar_label_plan, bar_label_slots,
     bar_share_label, chart_tooltip_value, legend_chip_w, legend_lines, legend_more_w,

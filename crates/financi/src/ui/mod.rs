@@ -11,7 +11,6 @@ mod catalog;
 mod categories;
 mod category_picker;
 mod dashboard;
-mod dashboard_chart;
 mod dashboard_filters;
 mod imports;
 mod page;
@@ -380,8 +379,13 @@ pub struct Shell {
     // refresh from the `Catalog` (see `ui/page.rs`); `Shell` navigates
     // them with `set_visible` and hears from them through `PageEvent`.
     // 3.80: the Rules page joins them; 3.82 the Dashboard page; 3.83 the
-    // To-categorize page.
-    dashboard: Entity<DashboardPage>,
+    // To-categorize page. 3.97: the dashboard's state is its own entity
+    // (the lifecycle, the loads and the panels' data source); the view
+    // entity renders it, like the other pages above.
+    dashboard: Entity<DashboardState>,
+    /// 3.97: the dashboard's view entity, rendered like the pages above;
+    /// it owns the panel entities and subscribes to `dashboard`.
+    dashboard_view: Entity<DashboardPage>,
     /// 3.83: the To-categorize page is its own view, rendered like the
     /// other extracted pages.
     queue_view: Entity<QueuePage>,
@@ -413,7 +417,7 @@ impl Render for Shell {
         let page_area: AnyElement = match self.page {
             // 3.82: the dashboard is an entity too — the entity is the
             // element.
-            Page::Dashboard => self.dashboard.clone().into_any_element(),
+            Page::Dashboard => self.dashboard_view.clone().into_any_element(),
             // 3.83: the To-categorize page renders itself.
             Page::ToCategorize => self.queue_view.clone().into_any_element(),
             Page::Categories => self.categories_view.clone().into_any_element(),
@@ -544,7 +548,7 @@ impl Shell {
         let refresh_started = Rc::new(Cell::new(0));
         let refresh_applied = Rc::new(Cell::new(0));
         let dashboard = cx.new(|cx| {
-            DashboardPage::new(
+            DashboardState::new(
                 db.clone(),
                 writes_blocked.clone(),
                 &catalog,
@@ -556,6 +560,9 @@ impl Shell {
                 cx,
             )
         });
+        // 3.97: the view entity over the state; it owns the four panel
+        // entities.
+        let dashboard_view = cx.new(|cx| DashboardPage::new(dashboard.clone(), cx));
         // 3.79: the one page → `Shell` listener: toasts, reloads, page
         // resets and navigation arrive as `PageEvent`s on the page's own
         // entity, never as a call into `Shell`.
@@ -601,6 +608,7 @@ impl Shell {
             refresh_applied: refresh_applied.clone(),
             startup_settings: true,
             dashboard,
+            dashboard_view,
             queue_view,
             categories_view: categories,
             categories_page,

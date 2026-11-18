@@ -249,9 +249,12 @@ fn summary_views_are_built_once_per_load_and_never_per_repaint(cx: &mut TestAppC
     let built = |cx: &App| dash(cx, &shell).read(cx).summary_views_built.get();
     let before = cx.update(|cx| built(cx));
     assert!(before > 0, "the first painted frame built the views");
-    // An unrelated notify and a repaint rebuild nothing: the grid paints
-    // the cached views (3.85).
-    cx.update(|cx| dash(cx, &shell).update(cx, |_, cx| cx.notify()));
+    // An unrelated change report and a repaint rebuild nothing: the grid
+    // paints the cached views (3.85). MEASURED is what a bounds probe
+    // reports — it repaints every panel and invalidates no cache.
+    cx.update(|cx| {
+        dash(cx, &shell).update(cx, |d, cx| d.changed(DashboardChanges::MEASURED, cx));
+    });
     draw_frame(cx, handle);
     cx.update(|cx| {
         assert_eq!(built(cx), before, "a repaint must not rebuild views");
@@ -383,6 +386,43 @@ fn clicking_a_summary_cell_filters_the_table_to_category_and_month(cx: &mut Test
             && dash(cx, &shell).read(cx).filter.summary_month.is_none()
             && dash(cx, &shell).read(cx).filter.legend_selection.is_none()
     });
+}
+
+#[gpui::test]
+fn a_summary_selection_reaches_the_chart_and_table_panels(cx: &mut TestAppContext) {
+    // 3.97: the panels are separate entities now — a selection made by
+    // clicking a summary cell still reaches both other panels through
+    // `DashboardState`: the chart's legend paints that category
+    // selected, and the table narrows to the category and month.
+    let (handle, shell) = open_shell(cx, seed_summary_rows);
+    set_all_time(cx, handle, &shell);
+    wait_until(cx, "table loaded", |cx| {
+        dash(cx, &shell).read(cx).row_count == 7
+    });
+    let food = cx.update(|cx| summary_parent_id(&shell, cx, "Food"));
+    let ix = cx.update(|cx| {
+        dash(cx, &shell)
+            .read(cx)
+            .chart_rows
+            .iter()
+            .position(|r| r.id == Some(food))
+            .expect("Food is one of the legend's rows")
+    });
+
+    click_summary_cell(cx, handle, &shell, Some(food), Some("2026-03"));
+    wait_until(cx, "the table panel narrowed with the selection", |cx| {
+        dash(cx, &shell).read(cx).row_count == 2
+    });
+    cx.update(|cx| {
+        let rows = table_rows(&shell, cx);
+        let mut descs: Vec<&str> = rows.iter().map(|r| r.description.as_str()).collect();
+        descs.sort_unstable();
+        assert_eq!(descs, ["CORNER CAFE MAR", "GROCER STORE MAR"]);
+    });
+    assert!(
+        paints(cx, handle, format!("chart:legend-row:{ix}:active")),
+        "the chart's legend paints the summary-selected category selected"
+    );
 }
 
 #[gpui::test]

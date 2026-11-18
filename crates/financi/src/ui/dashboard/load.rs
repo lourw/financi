@@ -146,7 +146,7 @@ pub(crate) fn load_dashboard(
         .collect();
     // "Nothing checked" with accounts present: empty results, no queries.
     if ids.is_empty() && !accounts.is_empty() {
-        let view_filter = filter.view_filter(DashboardPage::today(), ids);
+        let view_filter = filter.view_filter(DashboardState::today(), ids);
         return Ok(DashboardData {
             rows: Vec::new(),
             chart: Vec::new(),
@@ -158,7 +158,7 @@ pub(crate) fn load_dashboard(
             settings,
         });
     }
-    let view_filter = filter.view_filter(DashboardPage::today(), ids);
+    let view_filter = filter.view_filter(DashboardState::today(), ids);
     let table_filter = filter.table_filter();
     let narrow = filter.view_narrow();
     log.record("list_transactions_filtered");
@@ -193,7 +193,7 @@ pub(crate) fn load_dashboard(
     })
 }
 
-impl DashboardPage {
+impl DashboardState {
     /// Take the next dispatch generation. It comes off the shell's shared
     /// reload counter (3.75): the tests' `wait_idle` compares that
     /// counter's two marks, and this page's loads must be counted in it
@@ -284,7 +284,7 @@ impl DashboardPage {
         }
         self.apply_dashboard_rows(data, cx);
         self.stamp_applied(generation);
-        cx.notify();
+        self.changed(DashboardChanges::DATA, cx);
     }
 
     /// Re-run the load with the current controls (3.56): what every
