@@ -2,12 +2,16 @@
 //! as [`DashboardState::render_dashboard`] (3.97), and the thin view
 //! entity in [`entity`](super::entity) forwards to it.
 
+use std::rc::Rc;
+
+use super::dock::{DOCK_GUTTER, DashboardDock, clamp_min_sizes, default_layout};
 use super::panels::DashboardPanels;
 use super::*;
 use crate::ui::dashboard_filters::{
     FILTER_DATE_MIN_W, FILTER_DATE_RANGE_W, FILTER_DATE_W, FILTER_SEARCH_MIN_W,
 };
 use crate::ui::page::Cancel;
+use gpui_kit::base::dock::{DockArea, DockEvent};
 
 impl DashboardState {
     /// The whole page body (3.97): the filter row, the chips and the
@@ -199,57 +203,62 @@ impl DashboardState {
                     )
                     .into_any_element(),
                 _ => {
-                    // 3.45: a scrolling dashboard — the filter row stays
-                    // pinned above a single page-level vertical scroller
-                    // holding the chart row, the summary row, and the
-                    // transactions table; the wheel over the table moves
-                    // the table, not the page (`occlude`).
-                    v_flex()
-                        .w_full()
+                    // 3.100: the dock — the four panels in a resizable,
+                    // movable 2×2 — replaces the page scroller. There is
+                    // no page scroll: each panel scrolls its own content.
+                    // The area is built on the first paint (building it
+                    // needs a window); its subscription re-applies the
+                    // panel minimums after every layout edit or divider
+                    // drag.
+                    if self.dock.is_none() {
+                        let weak = cx.entity().downgrade();
+                        let dock = cx.new(|cx| {
+                            DockArea::new("dashboard-dock", Some(1), window, cx)
+                                .with_renderer(Rc::new(DashboardDock::new(weak)))
+                        });
+                        let sub = cx.subscribe_in(
+                            &dock,
+                            window,
+                            |_,
+                             area: &Entity<DockArea>,
+                             ev: &DockEvent,
+                             window: &mut Window,
+                             cx| {
+                                if matches!(ev, DockEvent::LayoutChanged) {
+                                    // Deferred: the clamp must not re-enter
+                                    // the dock mid-edit (this event *is* the
+                                    // edit settling).
+                                    let area = area.clone();
+                                    window.defer(cx, move |window, cx| {
+                                        clamp_min_sizes(&area, window, cx);
+                                    });
+                                }
+                            },
+                        );
+                        self._dock_subs.push(sub);
+                        dock.update(cx, |area, cx| {
+                            area.set_center(default_layout(panels), window, cx)
+                        });
+                        self.dock = Some(dock);
+                    }
+                    let dock = self.dock.clone().expect("just created");
+                    // No `w_full()`: with the negative side margins an
+                    // auto-width stretched child grows 12 px past the page's
+                    // content box, which is exactly the half-ring on each
+                    // side. `w_full()` would pin the old width and lose the
+                    // right-hand half.
+                    div()
                         .min_w_0()
                         .flex_1()
                         .min_h_0()
-                        .gap_3()
-                        .child(
-                            div()
-                                .w_full()
-                                .min_w_0()
-                                .flex_1()
-                                .min_h_0()
-                                .relative()
-                                // 3.45: the scroller's viewport height —
-                                // page minus the pinned filter row — comes
-                                // from this wrapper's own laid-out bounds
-                                // (the probe reports once per layout; the
-                                // wrapper's height comes from flex alone,
-                                // so nothing oscillates).
-                                .child(bounds_height_probe(
-                                    cx.entity().downgrade(),
-                                    |this, h, cx| this.set_viewport_height(h, cx),
-                                ))
-                                .child(
-                                    div()
-                                        .id("dashboard:scroll")
-                                        .debug_selector(|| "dashboard:scroll".into())
-                                        .w_full()
-                                        .h_full()
-                                        .min_w_0()
-                                        .overflow_y_scroll()
-                                        // 3.45: vertical-only, so a trackpad
-                                        // swipe inside the summary's month
-                                        // strips never nudges the page.
-                                        .restrict_scroll_to_axis()
-                                        .track_scroll(&self.page_scroll)
-                                        .gap_3()
-                                        // 3.97: each panel is its own entity;
-                                        // the mount keeps its probes, scroll
-                                        // handles and `panel:*` selectors.
-                                        .child(panels.chart.clone())
-                                        .child(panels.stacked.clone())
-                                        .child(panels.summary.clone())
-                                        .child(panels.table.clone()),
-                                ),
-                        )
+                        // 12 px gutters: each group frame adds a 6 px
+                        // ring, so the dock pulls itself back by half a
+                        // gutter to keep the page's 16 px padding at the
+                        // window edge.
+                        .ml(-DOCK_GUTTER)
+                        .mr(-DOCK_GUTTER)
+                        .mb(-DOCK_GUTTER)
+                        .child(dock)
                         .into_any_element()
                 }
             })

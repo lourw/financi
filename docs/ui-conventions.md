@@ -116,7 +116,10 @@ Pages compose these; don't restyle them per page. They live in
   (background `background`). Optional title row: `text_sm`
   `font_semibold` title on the left, `small` actions on the right. A
   content panel pads `p_4`; a panel holding a `DataList` has no padding
-  and the list runs edge to edge.
+  and the list runs edge to edge. On the Dashboard the panels are dock
+  frames (3.100): a hand-written `DockAreaRenderer`/`TabGroupRenderer`
+  skin (`ui/dashboard/dock.rs`) draws this same look, with the title row
+  doubling as the drag handle (`cursor_grab`).
 - **`PageHeader { title, summary, actions }`** — the first row of every
   page except Dashboard: `text_lg` semibold title, a muted summary
   ("N rules · M unused", counts via `flow::count`), actions right-aligned.
@@ -307,7 +310,9 @@ columns keep their names (`parent_id`).
 
 ## 5. Pages
 
-Every page has `p_4` padding and `gap_3` between regions. Opening a file
+Every page has `p_4` padding and `gap_3` between regions (on the
+Dashboard the dock draws that `gap_3` as 12 px gutters between panel
+frames, 3.100). Opening a file
 (drop anywhere, ⌘O, Import CSV, `FINANCI_DEV_OPEN`) switches to Imports
 with the preview open. The selected page isn't persisted; launch opens
 Dashboard.
@@ -326,34 +331,42 @@ describe`).
 select, From/To pickers when Custom (shrinking first, to a floor), Accounts
 popover ("All accounts" / "N of M accounts"), Search, Options (Include
 transfers, Uncategorized only, Show hidden), then the transaction count.
-It must fit 1200 × 720 with Custom open. Below: the chart `Panel`
+It must fit 1200 × 720 with Custom open. Below sits the **dock**
+(3.100): a vertical split of two rows — top row Chart | Monthly bars,
+bottom row Summary | Transactions, all halves 50 % — with the filter row
+pinned outside it. Panels keep the `Panel` look; the title row is the
+drag handle (`cursor_grab`): dragging a panel onto another panel's title
+tabs them (a `text_xs` tab strip appears in the frame — tabs only when a
+group holds two or more panels), and onto its content half splits it.
+Dividers resize both neighbours; gutters between panels are 12 px
+(`gap_3`, "between page regions") with the divider's hit area in the
+gutter and a `border`-colored line on hover or drag. Minimum panel size
+240 × 160, the table 320 × 200; everything still fits 1200 × 720. There
+is no page scroll: each panel scrolls inside its own frame when its
+content overflows (3.100). Top-left, the chart `Panel`
 (*Spending by category*: `BarChart`, share labels over bars, band labels
 shortened and thinned to fit the live width, full names in legend and
 tooltips; the plot takes the panel's full inner width, with the legend a
 wrapping chip row under it — 10 px swatch + name `text_xs` ellipsized at
 120 px, click drills, tooltip `amount · share`, `list_active` selected,
 "← All categories" first while drilled, at most two lines with a muted
-"+N more" chip whose tooltip lists the hidden names; 340 px tall). Below
-it the *Monthly spending by category* `Panel` (3.93: `StackedBarChart`,
+"+N more" chip whose tooltip lists the hidden names). Top-right, the
+*Monthly spending by category* `Panel` (3.93: `StackedBarChart`,
 one stacked bar per month from the summary — parents, `Uncategorized` and
 `Transfers` when included, the drilled-in parent's children when drilled;
 compact-amount axis and gridlines, month labels thinned to fit, a 3.36
 chip legend (≤ 2 lines, "+N more") whose chips select the category alone,
 segment clicks selecting category + month like a summary cell, month
 labels the month alone, 3.46 dimming, sideways scroll from the latest
-month at a 12 px bar floor, "No spending in this range" when empty; full
-width, 340 px). Below it the *Monthly summary* `Panel` (3.45: its own
-full-width row at content height; the summary's name column and
-Total are pinned while only month columns scroll sideways on one shared
-handle, landing on the latest month). Then the transactions
+month at a 12 px bar floor, "No spending in this range" when empty).
+Bottom-left, the *Monthly summary* `Panel` (3.45: the summary's name
+column and Total are pinned while only month columns scroll sideways on
+one shared handle, landing on the latest month; 3.100: its rows scroll
+vertically inside the frame). Bottom-right, the transactions
 `DataTable`, where every column sorts (text A→Z first, Date
 and Amount newest/biggest first; the sort survives filter changes).
-Chart, stacked bars, summary and table stack in a scrolling page under a
-pinned filter
-row (3.45: the table fills the viewport below the filter row and scrolls
-inside itself; the page scrolls back to the top on entry), with the
-filter chip row and Clear all directly under that row (3.46);
-every filter applies to all three views, and filter
+The filter chip row and Clear all sit directly under the filter row
+(3.46); every filter applies to all four panels, and filter
 changes apply at once (3.56).
 
 **To categorize.** `PageHeader` ("N transactions · M merchants") and one

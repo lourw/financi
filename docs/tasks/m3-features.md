@@ -11,7 +11,7 @@ Order: 3.98 → 3.97 → 3.100 → 3.101 → 3.99. The dashboard becomes a dock
 of resizable, rearrangeable panels (user decision, 2026-11-17: dock
 splits, not a scrolling grid).
 
-- [ ] **3.100 The dashboard is a dock of resizable, movable panels.**
+- [x] **3.100 The dashboard is a dock of resizable, movable panels.**
   The four panels stacked in one scrolling column (chart, monthly bars,
   summary, transactions) aren't usable: the user wants to rearrange
   them and resize them both ways (user request, 2026-11-17). Two related

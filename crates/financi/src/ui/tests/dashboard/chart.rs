@@ -38,18 +38,17 @@ fn chart_labels_adapt_to_the_window_size(cx: &mut TestAppContext) {
     // probes must have settled before the plan says anything.
     settle(cx, handle);
 
-    // 3.45: the plot spans the full page width now, so even at 900 px
-    // three bands share enough of it to keep the whole 16-char label
-    // budget — the truncation the old 45 %-wide plot needed is gone.
-    // What the plan still tracks is the *measured* width: the plot grows
-    // with the window even when the capped plan no longer shows it.
+    // 3.45, 3.100: the plot now lives in a half-width dock cell, so at
+    // 900 px the three-band budget sits *below* the 16-char cap — the
+    // plan tracks the *measured* width again, and a wide window restores
+    // the cap. Truncation at narrow sizes is the dock's trade.
     resize_and_draw(cx, handle, 900., 720.);
     settle(cx, handle);
     let (small_chars, small_labels) = cx.update(|cx| dash(cx, &shell).read(cx).chart_label_plan());
     assert_eq!(small_labels, 3);
-    assert_eq!(
-        small_chars, CHART_LABEL_MAX_CHARS,
-        "a full-width plot budgets three bands to the cap"
+    assert!(
+        small_chars <= CHART_LABEL_MAX_CHARS,
+        "the plan never exceeds the cap: {small_chars} chars"
     );
     let small_plot = cx.update(|cx| dash(cx, &shell).read(cx).chart_plot_width());
 
@@ -163,11 +162,11 @@ fn the_legend_is_just_a_key(cx: &mut TestAppContext) {
         legend,
         panel,
     );
-    // The plot owns the panel's inner width: the panel is 16 px padding
-    // and a 1 px border per side, so 34 px in all.
+    // The plot owns the panel's inner width: the dock's 6 px ring, a
+    // 1 px border and 16 px padding per side, so 46 px in all (3.100).
     let plot_w = f32::from(plot.size.width);
     assert!(
-        (plot_w - (f32::from(panel.size.width) - 34.)).abs() <= 1.,
+        (plot_w - (f32::from(panel.size.width) - 46.)).abs() <= 1.,
         "the plot is {plot_w:.1} wide, not the panel's inner width {:?}",
         panel.size.width,
     );
@@ -404,17 +403,18 @@ fn the_label_plan_follows_the_measured_plot_at_1200_and_1600(cx: &mut TestAppCon
         );
         plans.push((stored, chars, labels));
     }
-    // 3.45: full width, six bands get the capped 16-char budget at both
-    // sizes — the budget no longer grows with the window at this band
-    // count. What must still grow is the measured plot itself.
+    // 3.45, 3.100: with the plot in a half-width dock cell the budget
+    // *does* track the window again at six bands — the loop above pins
+    // the plan to the budget of the measured plot at both sizes, which
+    // is the contract. What must still grow is the plot itself.
     assert!(
         plans[1].0 > plans[0].0,
         "a wider window measures more plot: {}px vs {}px",
         plans[1].0,
         plans[0].0,
     );
-    assert_eq!(plans[0].1, CHART_LABEL_MAX_CHARS);
-    assert_eq!(plans[1].1, CHART_LABEL_MAX_CHARS);
+    assert!(plans[0].1 <= CHART_LABEL_MAX_CHARS);
+    assert!(plans[1].1 <= CHART_LABEL_MAX_CHARS);
 }
 
 /// 3.36, 3.45: fifteen categories are more than two lines of chips can

@@ -1,5 +1,6 @@
 //! Summary grid scrolling: pinned columns, swipe and range changes.
 
+use super::summary::set_all_time;
 use super::*;
 
 /// 3.30: one spend per month for `months` consecutive months ending
@@ -206,10 +207,12 @@ fn summary_months_scroll_under_pinned_name_and_total(cx: &mut TestAppContext) {
         "the Total column stays pinned"
     );
 
-    // Vertical scrolling still works over the month zone — 3.45: the
-    // wheel bubbles to the page's scroller (the summary is content-height
-    // now, it no longer virtualizes its rows), and the name column moves
-    // with its row either way.
+    // Vertical scrolling still works over the month zone — 3.100: the
+    // summary panel has its own scroller now (there is no page scroll),
+    // and the wheel over the month zone rides it. Shorten the window so
+    // the eight seeded rows overflow the panel.
+    resize_and_draw(cx, handle, 1200., 560.);
+    let zone = bounds(cx, handle, "summary:months-0");
     let y_before = bounds(cx, handle, "summary:name-1").origin.y;
     wheel(cx, handle, viewport_centre(zone), 0., -40.);
     draw_frame(cx, handle);
@@ -220,13 +223,13 @@ fn summary_months_scroll_under_pinned_name_and_total(cx: &mut TestAppContext) {
     );
 }
 
-/// 3.45: the summary spans the page's full width, so a 12-month range
-/// shows nearly all of it — at least 8 whole month columns at 1600 px,
-/// where the old beside-the-chart panel showed about five.
+/// 3.45, 3.100: the summary sits in a half-width dock cell, so a
+/// 12-month range needs a wide window to show most of itself: at
+/// 2560 px the cell is wide enough for at least 8 whole month columns.
 #[gpui::test]
-fn a_full_width_summary_shows_most_of_a_twelve_month_range(cx: &mut TestAppContext) {
+fn a_wide_summary_shows_most_of_a_twelve_month_range(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, |conn| seed_summary_months(conn, 12));
-    resize_and_draw(cx, handle, 1600., 1260.);
+    resize_and_draw(cx, handle, 2560., 1440.);
     set_all_time_covering(cx, handle, &shell, 12);
     wait_until(cx, "12 months in the grid", |cx| {
         dash(cx, &shell).read(cx).summary.months.len() == 12
@@ -242,34 +245,35 @@ fn a_full_width_summary_shows_most_of_a_twelve_month_range(cx: &mut TestAppConte
     }
     assert!(
         whole >= 8,
-        "the full-width grid shows only {whole} whole month columns at \
-         1600 px of a 12-month range (3.45 wants at least 8)",
+        "the summary cell shows only {whole} whole month columns at \
+         2560 px of a 12-month range (3.100 wants at least 8)",
     );
 }
 
-/// 3.30, 3.45: a horizontal swipe over the months scrolls the month strip
-/// only. A y-only scroller remaps a horizontal wheel delta onto its own
-/// axis, so the month viewports and the page scroller keep the swipe
-/// horizontal (`restrict_scroll_to_axis`) — otherwise the same swipe that
-/// moves the months also jumps the page.
+/// 3.30, 3.45, 3.100: a horizontal swipe over the months scrolls the month
+/// strip only. A y-only scroller remaps a horizontal wheel delta onto its
+/// own axis, so the month viewports and the summary panel's own scroller
+/// keep the swipe horizontal (`restrict_scroll_to_axis`) — otherwise the
+/// same swipe that moves the months also jumps the panel.
 #[gpui::test]
 fn a_horizontal_swipe_does_not_jump_the_summary_rows_vertically(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, |conn| seed_summary_months(conn, 24));
-    resize_and_draw(cx, handle, 1200., 1080.);
+    // 3.100: short window, so the panel's own scroller has somewhere to
+    // go (there is no page scroll any more).
+    resize_and_draw(cx, handle, 1200., 560.);
     set_all_time_covering(cx, handle, &shell, 24);
     wait_idle(cx, &shell);
     draw_frame(cx, handle);
     let zone = bounds(cx, handle, "summary:months-0");
 
-    // Wheel the page down first, so there is somewhere to jump back to.
-    // 3.45: the wheel over the month zone rides the page scroller — the
-    // second row is tracked, because a 40 px scroll carries the first
+    // Wheel the panel down first, so there is somewhere to jump back to.
+    // The second row is tracked, because a 40 px scroll carries the first
     // row away entirely.
     let y_top = bounds(cx, handle, "summary:name-1").origin.y;
     wheel(cx, handle, viewport_centre(zone), 0., -40.);
     draw_frame(cx, handle);
     let y_scrolled = bounds(cx, handle, "summary:name-1").origin.y;
-    assert!(y_scrolled < y_top, "the page is scrolled down");
+    assert!(y_scrolled < y_top, "the panel is scrolled down");
 
     // A horizontal swipe over the month zone moves the months…
     let x0 = cx.update(|cx| dash(cx, &shell).read(cx).summary_scroll.offset().x);
@@ -338,6 +342,136 @@ fn changing_the_summary_range_lands_on_the_latest_month(cx: &mut TestAppContext)
     assert!(
         newest.right() > zone.origin.x && newest.origin.x < zone.right(),
         "the latest month is on screen"
+    );
+}
+
+/// 3.100: forty spend parents, one transaction each in March or April
+/// 2026, so the grid has far more rows than any panel height fits.
+fn seed_forty_rows(conn: &financi_db::rusqlite::Connection) {
+    let acct = create_account(conn, "amex", "Cobalt", AccountKind::CreditCard).unwrap();
+    conn.execute(
+        "INSERT INTO imports (account_id, parser_id, file_name, imported_at, header_raw,
+                              encoding, has_bom, line_ending, trailing_newline, row_count)
+         VALUES (?1, 'amex', 'seed.csv', '2026-01-01', X'00', 'utf-8', 0, 'lf', 0, 0)",
+        [acct],
+    )
+    .unwrap();
+    let import = conn.last_insert_rowid();
+    for line in 0..40i64 {
+        let parent = financi_db::categories::create_parent(
+            conn,
+            &format!("Cat {line}"),
+            CategoryKind::Expense,
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO transactions (account_id, import_id, source_line, raw_bytes,
+                                       row_hash, posted_date, amount_cents,
+                                       description_raw, category_id)
+             VALUES (?1, ?2, ?3, X'00', ?4, ?5, ?6, ?7, ?8)",
+            (
+                acct,
+                import,
+                line,
+                format!("forty-hash-{line}"),
+                if line % 2 == 0 {
+                    "2026-03-10"
+                } else {
+                    "2026-04-10"
+                },
+                -1000 - line,
+                "ONE-OFF SPEND",
+                parent,
+            ),
+        )
+        .unwrap();
+    }
+}
+
+/// 3.100: a forty-row summary scrolls inside its panel — the rows
+/// overflow, the always-visible vertical scrollbar paints inside the
+/// frame, and the `Total` amounts stop short of it.
+#[gpui::test]
+fn a_forty_row_summary_scrolls_inside_its_panel(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_forty_rows);
+    // Short enough that forty rows cannot fit the Summary frame.
+    resize_and_draw(cx, handle, 1200., 560.);
+    set_all_time(cx, handle, &shell);
+    wait_idle(cx, &shell);
+    settle(cx, handle);
+
+    let (offset, max) = cx.update(|cx| {
+        let d = dash(cx, &shell).read(cx);
+        (
+            d.summary_rows_scroll.offset().y,
+            d.summary_rows_scroll.max_offset().y,
+        )
+    });
+    assert!(
+        max > px(0.),
+        "forty rows overflow the Summary panel: max offset {max:?}"
+    );
+    assert_eq!(offset, px(0.), "the rows start at the top");
+
+    let panel = bounds(cx, handle, "panel:summary");
+    let bar = bounds(cx, handle, "dashboard:summary-vscrollbar");
+    assert!(
+        f64::from(bar.origin.x) >= f64::from(panel.origin.x)
+            && f64::from(bar.right()) <= f64::from(panel.right())
+            && f64::from(bar.origin.y) >= f64::from(panel.origin.y)
+            && f64::from(bar.bottom()) <= f64::from(panel.bottom()),
+        "the scrollbar paints inside panel:summary\npanel: {panel:?}\nbar:   {bar:?}"
+    );
+    // The `Total` column (two months, so Total is column 2) must not sit
+    // under the scrollbar overlay.
+    let total = bounds(cx, handle, "summary:cell:0:2");
+    assert!(
+        f64::from(total.right()) <= f64::from(bar.origin.x) + 1.,
+        "the Total amount must not sit under the scrollbar\namount: {total:?}\nbar: {bar:?}"
+    );
+}
+
+/// 3.100: the Summary panel's own scroller keeps its position across a
+/// filter change (the state.rs claim: the handle is page-owned, so only
+/// re-entering the page sends it back to the top). Wheel the grid down,
+/// apply a search that keeps every row, and the offset is unmoved.
+#[gpui::test]
+fn the_summary_scroller_survives_a_filter_change(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_forty_rows);
+    resize_and_draw(cx, handle, 1200., 560.);
+    set_all_time(cx, handle, &shell);
+    wait_idle(cx, &shell);
+    settle(cx, handle);
+
+    // Wheel the panel down so there is a position to keep.
+    let panel = bounds(cx, handle, "panel:summary");
+    wheel(cx, handle, viewport_centre(panel), 0., -120.);
+    draw_frame(cx, handle);
+    let scrolled = cx.update(|cx| dash(cx, &shell).read(cx).summary_rows_scroll.offset().y);
+    assert!(
+        scrolled < px(0.),
+        "the wheel scrolled the Summary panel down: {scrolled:?}"
+    );
+
+    // A filter change whose answer keeps all forty rows (every seeded
+    // description matches): the grid reloads, the scroller stays put.
+    with_window(cx, handle, |window, cx| {
+        dash(cx, &shell).update(cx, |d, cx| {
+            d.search_input
+                .update(cx, |i, cx| i.set_value("ONE-OFF", window, cx));
+            d.apply_search("ONE-OFF", window, cx);
+        });
+    });
+    wait_until(cx, "the search keeps all forty rows", |cx| {
+        dash(cx, &shell).read(cx).row_count == 40
+    });
+    wait_idle(cx, &shell);
+    draw_frame(cx, handle);
+
+    let after = cx.update(|cx| dash(cx, &shell).read(cx).summary_rows_scroll.offset().y);
+    assert_eq!(
+        after, scrolled,
+        "the filter change left the Summary scroller where it was"
     );
 }
 

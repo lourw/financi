@@ -6,6 +6,7 @@
 
 use super::*;
 use crate::ui::widgets::*;
+use gpui_kit::base::dock::{Panel, PanelEvent};
 
 impl DashboardState {
     /// Click a monthly summary cell (3.6): narrow the table to that
@@ -185,17 +186,14 @@ impl DashboardState {
         // zeros rather than an empty `months`. Treat an all-zero grid as
         // empty too (task 3.10): the panel says "No spending in this range".
         if !self.summary_has_data() {
-            return panel(cx, true)
-                .w_full()
+            return v_flex()
+                .size_full()
                 .min_w_0()
-                .debug_selector(|| "panel:summary".into())
-                .gap_2()
-                .child(region_title("Monthly summary"))
+                .p_4()
+                .items_center()
+                .justify_center()
                 .child(
                     div()
-                        .py_4()
-                        .w_full()
-                        .text_center()
                         .text_sm()
                         .text_color(muted)
                         .child("No spending in this range"),
@@ -510,15 +508,47 @@ impl DashboardState {
                 .into_any_element()
         }));
 
-        panel(cx, true)
-            .w_full()
+        // 3.100: the dock owns the panel box and the title; the grid
+        // scrolls inside the panel now (there is no page scroll), with an
+        // always-visible vertical scrollbar and the month strip's own
+        // horizontal one overlaid as before.
+        v_flex()
+            .size_full()
             .min_w_0()
-            .relative()
-            .debug_selector(|| "panel:summary".into())
+            .p_4()
             .gap_2()
-            .child(region_title("Monthly summary"))
-            // Month header and rows keep their tighter `gap_1`.
-            .child(v_flex().w_full().gap_1().child(header).child(body))
+            .relative()
+            .child(
+                div()
+                    .id("summary-vscroll")
+                    .debug_selector(|| "dashboard:summary-scroll".into())
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    // 3.30, 3.100: a horizontal swipe over the months
+                    // must not be remapped onto this scroller's axis.
+                    .restrict_scroll_to_axis()
+                    .track_scroll(&self.summary_rows_scroll)
+                    // Month header and rows keep their tighter `gap_1`.
+                    .child(v_flex().w_full().gap_1().child(header).child(body)),
+            )
+            // The always-visible vertical scrollbar (3.100): a thin overlay
+            // at the panel's right edge, inside the padding.
+            .child(
+                div()
+                    .id("summary-vscrollbar")
+                    .debug_selector(|| "dashboard:summary-vscrollbar".into())
+                    .absolute()
+                    .right(px(4.))
+                    .top(px(4.))
+                    .bottom(px(4.))
+                    .w(px(12.))
+                    .child(
+                        Scrollbar::vertical(&self.summary_rows_scroll)
+                            .mode(ScrollbarMode::Always)
+                            .viewport_from_layout(),
+                    ),
+            )
             // The month strip's horizontal scrollbar (3.30): a thin overlay
             // pinned to the panel's bottom edge, inset to span only the
             // month zone — the name column and `Total` stay clear of it.
@@ -564,6 +594,8 @@ pub(in crate::ui::dashboard) struct SummaryPanel {
     state: Entity<DashboardState>,
     /// The state subscription; lives as long as the panel.
     _subs: Subscription,
+    /// Dock focus handle (3.100: `Panel`'s `Focusable` bound).
+    focus: FocusHandle,
 }
 
 impl SummaryPanel {
@@ -576,12 +608,41 @@ impl SummaryPanel {
                 cx.notify();
             }
         });
-        Self { state, _subs }
+        Self {
+            state,
+            _subs,
+            focus: cx.focus_handle(),
+        }
     }
 }
 
 impl Render for SummaryPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.state.update(cx, |state, cx| state.summary_panel(cx))
+    }
+}
+
+/// Dock plumbing (3.100): the focus handle and the `Panel` identity. The
+/// four panels are the dock's fixed set, so none of them is closable or
+/// zoomable — the grid is only ever moved and resized.
+impl Focusable for SummaryPanel {
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
+        self.focus.clone()
+    }
+}
+
+impl EventEmitter<PanelEvent> for SummaryPanel {}
+
+impl Panel for SummaryPanel {
+    fn panel_name(&self) -> &'static str {
+        "summary"
+    }
+
+    fn closable(&self, _cx: &App) -> bool {
+        false
+    }
+
+    fn zoomable(&self, _cx: &App) -> bool {
+        false
     }
 }

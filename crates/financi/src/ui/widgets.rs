@@ -1064,28 +1064,6 @@ pub(super) fn bounds_probe<R: 'static>(
     .size_full()
 }
 
-/// The height-reporting mirror of [`bounds_probe`] (3.45): the same
-/// absolutely positioned canvas, reporting the container's laid-out
-/// *height*. Attach it to a container whose height comes from layout
-/// alone (a `flex_1` box beside a pinned row), never to one the report
-/// feeds back into, and the notify-on-change rule keeps it converged.
-pub(super) fn bounds_height_probe<R: 'static>(
-    observee: WeakEntity<R>,
-    set: impl Fn(&mut R, f32, &mut Context<R>) + 'static,
-) -> impl IntoElement {
-    canvas(
-        move |bounds, window, cx| {
-            let height = bounds.size.height.as_f32();
-            window.defer(cx, move |_, cx| {
-                observee.update(cx, |this, cx| set(this, height, cx)).ok();
-            });
-        },
-        |_, _, _, _| {},
-    )
-    .absolute()
-    .size_full()
-}
-
 /// The category palette (ui-conventions, *Category colors*): the six base
 /// colors then their light variants, so red and green — which also mean
 /// danger and money in — come last.
