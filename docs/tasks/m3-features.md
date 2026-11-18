@@ -151,7 +151,7 @@ splits, not a scrolling grid).
 
 Order: 3.102 → 3.103 → 3.47 + 3.54 (one branch).
 
-- [ ] **3.102 Preview a pattern's matches, backend.** For 3.103 (user
+- [x] **3.102 Preview a pattern's matches, backend.** For 3.103 (user
   request, 2026-11-17). Backend only.
   - `preview_pattern_matches(conn, pattern, is_regex, exclude_rule_id,
     limit) -> Result<PatternPreview>` in `financi-db/src/rules.rs`, with
