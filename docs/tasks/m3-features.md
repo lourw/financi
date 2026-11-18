@@ -11,36 +11,6 @@ Order: 3.98 → 3.97 → 3.100 → 3.101 → 3.99. The dashboard becomes a dock
 of resizable, rearrangeable panels (user decision, 2026-11-17: dock
 splits, not a scrolling grid).
 
-- [x] **3.98 Month labels on the stacked bars aren't cut off.** On
-  *Monthly spending by category* the month labels under the bars are
-  clipped (user report, 2026-11-17).
-  - **Cause:** `StackedBarChart` (`ui/widgets.rs`) puts each label in
-    its own column, sized `w_full()` with `overflow_hidden()` and
-    `text_ellipsis()`. `month_label_plan` thins the labels so that, for
-    example, every third one shows, but a shown label is still only as
-    wide as its own column, so "Oct 2026" is clipped whenever a column is
-    narrower than the text (6+ months at the minimum width, and every
-    long range). Also check the vertical fit: the label row is a fixed
-    `STACKED_LABEL_H` = 16 px, which may be shorter than `text_xs`'s line
-    height.
-  - **Fix:** paint each shown label in an absolutely positioned,
-    unclipped box centred on its column, as wide as the label width
-    `month_label_plan` budgets for (8 characters plus `CHART_LABEL_GAP`).
-    It may overlap the neighbouring columns, which `bar_label_slots`
-    already leaves empty. Clamp the first and last labels so they stay
-    inside the plot instead of being cut off at the edge. Derive the label
-    row height from the measured line height (the same font metrics behind
-    `chart_char_px`), not from a literal. Keep the click target on the
-    label and the `stacked:month-label:<ix>` selector. If "Oct 2026"
-    still leaves too few labels on narrow plots, show "Oct" and add the
-    year only on January and on the first shown label ("Jan 2026"), and
-    record that in `ui-conventions.md`.
-  - Tests (`ui/tests/dashboard/stacked_bars.rs`): with 3, 12 and 36
-    months at 1200 × 720, every painted label's bounds are at least as
-    wide as its text's shaped width (no ellipsis), no two labels overlap,
-    and every label sits inside the plot's bounds; clicking a label still
-    selects its month.
-
 - [ ] **3.97 Each dashboard panel is its own entity.** Refactor for
   3.100, no visible change. Today `DashboardPage` renders all four panels
   from methods (`chart_panel`, `stacked_panel`, `summary_panel`, and the
