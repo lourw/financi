@@ -879,9 +879,12 @@ impl RulesPage {
     }
 
     /// 3.24: swap a rule's row for its editor, pre-filled from the rule —
-    /// same shape as the add-rule row (Pattern, regex switch, Category
-    /// picker, Save, Cancel). One rule is edited at a time, so opening a
-    /// second row's editor closes the first and disarms any pending delete.
+    /// the two-line form 3.103 gave the add-rule row (Pattern over the
+    /// input, then the regex switch with Save and Cancel), and like it no
+    /// Category picker (3.53: Edit changes pattern and kind only), with
+    /// [`pattern_preview_block`] under it. One rule is edited at a time,
+    /// so opening a second row's editor closes the first and disarms any
+    /// pending delete.
     pub(super) fn start_edit_rule(&mut self, id: i64, window: &mut Window, cx: &mut Context<Self>) {
         let Some(rule) = self.rules.iter().find(|r| r.id == id).cloned() else {
             return;

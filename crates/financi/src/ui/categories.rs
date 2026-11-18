@@ -151,8 +151,9 @@ const SUBCATEGORY_MIN_W: f32 = 130.;
 /// name's character count — the trigger up to [`RULE_CATEGORY_W`] (names
 /// past that ellipsize with a tooltip), the menu up to
 /// [`RULE_CATEGORY_MENU_W`] and never narrower than the trigger.
-/// Estimated, never measured: the app has no text-measurement path here
-/// (the Undo column does the same, see [`TEXT_SM_CHAR_PX`]).
+/// Estimated, never measured: `measure_text_width` exists since 3.86 —
+/// the Undo column measures — but this picker keeps the cheap estimate
+/// from [`TEXT_SM_CHAR_PX`], which errs wide.
 fn subcategory_widths(longest_chars: usize) -> (f32, f32) {
     let est = longest_chars as f32 * TEXT_SM_CHAR_PX + SELECT_CHROME_W;
     let trigger = est.clamp(SUBCATEGORY_MIN_W, RULE_CATEGORY_W);

@@ -1066,7 +1066,7 @@ fn selecting_another_category_cancels_the_rule_editor(cx: &mut TestAppContext) {
     });
 }
 
-/// 3.24: Delete… is the two-click confirm — the first click arms the row,
+/// 3.24: Delete is the two-click confirm — the first click arms the row,
 /// the second deletes; the rule is gone and its rows fall back to
 /// Uncategorized (the locked row keeps its manual category).
 #[gpui::test]
@@ -1430,7 +1430,7 @@ fn optimistic_delete_rolls_back_when_the_write_fails(cx: &mut TestAppContext) {
     });
 }
 
-/// 3.24: with thousands of rules the row actions (Edit, Delete…) are built
+/// 3.24: with thousands of rules the row actions (Edit, Delete) are built
 /// only for the rows the virtualized list renders — buttons come into the
 /// world inside `rule_row`, so the built-row window proves it. Opening an
 /// editor on a visible row must not change that.
