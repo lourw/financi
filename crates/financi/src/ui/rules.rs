@@ -59,6 +59,15 @@ pub(super) const RULE_MOVE_BAR_H: f32 = 32.;
 /// `the_editor_error_stays_inside_its_row` pin them down.
 pub(super) const RULE_EDITOR_H: f32 = 148.;
 pub(super) const RULE_EDITOR_ERROR_H: f32 = 176.;
+/// 3.103: how many preview rows the match preview shows under the add-rule
+/// form and the editor (the rest are implied by the summary count).
+pub(super) const PREVIEW_ROWS: usize = 8;
+/// 3.103: one preview row's height — Date, Merchant and Amount at the
+/// list's comfortable line height.
+const PREVIEW_ROW_H: f32 = 32.;
+/// 3.103: the preview's summary and empty/error lines, matching the
+/// editor's one-error-line allowance.
+const PREVIEW_LINE_H: f32 = 24.;
 
 /// 3.28: one entry of the Rules page virtual list — a group header row or a
 /// rule row. Group headers are items too, so collapsing a group just drops
@@ -241,11 +250,19 @@ pub(super) struct RulesPage {
     /// 3.59: the add-rule target picker — grouped and searchable like
     /// the Move bar's.
     pub(super) rule_target: Entity<SelectState<SubChoices>>,
-    /// The add row's and the editor's shared "matches N transactions"
-    /// preview (the editor owns it while open; see
-    /// [`RulesPage::preview_rule_match`]).
-    pub(super) rule_match_count: Option<i64>,
-    rule_task: Option<Task<()>>,
+    /// The add row's and the editor's shared match preview (the editor owns
+    /// it while open; see [`RulesPage::preview_rule_match`]). 3.103: the
+    /// rows behind the current draft, not just a count.
+    pub(super) pattern_preview: Option<Rc<PatternPreview>>,
+    /// The in-flight preview: the debounce timer while keystrokes are still
+    /// arriving, then the keyed database read. Clearing it — a keystroke, a
+    /// regex toggle, a close — cancels the earlier run.
+    pattern_preview_task: Option<Task<()>>,
+    /// Why the preview refused to run: a regex pattern that doesn't
+    /// compile, worded by the same check `new_rule` applies.
+    pub(super) pattern_preview_error: Option<SharedString>,
+    /// Keeps the preview list's scroll position across re-renders (3.103).
+    preview_scroll: VirtualListScrollHandle,
     pub(super) rule_error: Option<String>,
     /// 3.24: the rule whose row currently shows the in-place editor. One at
     /// a time; `select_category` and `go_page` close it. `start_edit_rule`
@@ -261,8 +278,8 @@ pub(super) struct RulesPage {
     pub(super) pending_rule_action: Option<PendingRuleAction>,
     /// 3.24: the editor's own controls, separate entities from the add-rule
     /// row's so the two never share an `InputState` on screen at once.
-    /// While the editor is open the shared `rule_match_count`
-    /// preview belongs to it (the add-rule row hides it, like `rule_error`)
+    /// While the editor is open the shared `pattern_preview`
+    /// belongs to it (the add-rule row hides it, like `rule_error`)
     /// and excludes that rule (2.5 re-run semantics); every close path
     /// clears it, and [`RulesPage::apply`] closes the editor when its rule
     /// is gone.
@@ -540,8 +557,10 @@ impl RulesPage {
             rule_target: cx.new(|cx| {
                 SelectState::new(SubChoices::new(vec![]), None, window, cx).searchable(true)
             }),
-            rule_match_count: None,
-            rule_task: None,
+            pattern_preview: None,
+            pattern_preview_task: None,
+            pattern_preview_error: None,
+            preview_scroll: VirtualListScrollHandle::new(),
             rule_error: None,
             editing_rule: None,
             armed_delete_rule: None,
@@ -554,40 +573,128 @@ impl RulesPage {
 }
 
 impl RulesPage {
-    /// Count rows the current pattern would categorize, live as the user
-    /// types (ui-conventions, Categories page).
+    /// The draft the preview runs against: the editor's pattern and kind
+    /// while an editor is open, the add row's otherwise.
+    fn preview_draft(&self, editing: Option<i64>, cx: &App) -> (String, bool) {
+        match editing {
+            Some(_) => (
+                self.rule_edit_pattern.read(cx).value().trim().to_string(),
+                self.rule_edit_regex,
+            ),
+            None => (
+                self.rule_pattern.read(cx).value().trim().to_string(),
+                self.rule_regex,
+            ),
+        }
+    }
+
+    /// Show what the current pattern would categorize, live as the user
+    /// types (ui-conventions, Categories page). 3.103: the read is debounced
+    /// by 150 ms — each keystroke replaces the pending timer, so a burst of
+    /// typing previews once after the last key (the 3.58 search box's
+    /// pattern); a toggle or an editor open runs [`Self::run_pattern_preview`
+    /// right away instead.
     pub(super) fn preview_rule_match(&mut self, cx: &mut Context<Self>) {
-        // 3.24: while a rule is being edited, the preview reads the
-        // editor's controls and excludes that rule, so the count shows what
-        // the edit would newly categorize (`count_rule_matches`' contract).
         let editing = self.editing_rule;
-        let pattern = match editing {
-            Some(_) => self.rule_edit_pattern.read(cx).value().trim().to_string(),
-            None => self.rule_pattern.read(cx).value().trim().to_string(),
-        };
+        let (pattern, _) = self.preview_draft(editing, cx);
         if pattern.is_empty() {
-            self.rule_task = None;
-            self.rule_match_count = None;
+            self.pattern_preview_task = None;
+            self.pattern_preview = None;
+            self.pattern_preview_error = None;
             cx.notify();
             return;
         }
-        let is_regex = match editing {
-            Some(_) => self.rule_edit_regex,
-            None => self.rule_regex,
-        };
-        let db = self.db.clone();
-        self.rule_task = Some(cx.spawn(async move |this, cx| {
-            let result = on_db(&db, move |c| {
-                count_rule_matches(c, &pattern, is_regex, editing).map_err(|e| e.to_string())
-            })
-            .await;
+        self.pattern_preview_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(150))
+                .await;
             let _ = this.update(cx, |this, cx| {
-                if let Ok(count) = result {
-                    this.rule_match_count = Some(count);
-                    cx.notify();
-                }
+                this.pattern_preview_task = None;
+                this.run_pattern_preview(cx);
             });
         }));
+    }
+
+    /// Run the preview now: validate the draft, then queue a latest-wins
+    /// read (3.77) of [`preview_pattern_matches`] — a newer keystroke
+    /// supersedes a running read, and a result whose draft isn't the
+    /// current one is dropped, so the preview never shows a pattern the
+    /// user has already retyped. 3.24: while an editor is open the draft is
+    /// the editor's and that rule is excluded, so the rows are what the
+    /// edit would newly categorize.
+    pub(super) fn run_pattern_preview(&mut self, cx: &mut Context<Self>) {
+        let editing = self.editing_rule;
+        let (pattern, is_regex) = self.preview_draft(editing, cx);
+        if pattern.is_empty() {
+            self.pattern_preview_task = None;
+            self.pattern_preview = None;
+            self.pattern_preview_error = None;
+            cx.notify();
+            return;
+        }
+        // `preview_pattern_matches` reads an invalid regex as
+        // match-nothing; the user needs the compiler's words instead —
+        // the same check `new_rule` applies, worded the same way.
+        if is_regex && let Err(message) = financi_core::rules::validate_regex(&pattern) {
+            self.pattern_preview_task = None;
+            self.pattern_preview = None;
+            self.pattern_preview_error = Some(
+                DbError::InvalidRulePattern {
+                    pattern: pattern.clone(),
+                    message,
+                }
+                .to_string()
+                .into(),
+            );
+            cx.notify();
+            return;
+        }
+        self.pattern_preview_error = None;
+        let db = self.db.clone();
+        let requested = pattern.clone();
+        self.pattern_preview_task = Some(cx.spawn(async move |this, cx| {
+            let result = db
+                .call_keyed("rules:pattern-preview", move |conn| {
+                    preview_pattern_matches(conn, &requested, is_regex, editing, PREVIEW_ROWS)
+                })
+                .await;
+            // A superseded read, or any failure, keeps what's on screen;
+            // the next keystroke tries again.
+            if let Ok(preview) = result {
+                let _ = this.update(cx, |this, cx| {
+                    let (current, _) = this.preview_draft(editing, cx);
+                    if this.editing_rule == editing && current == pattern {
+                        this.pattern_preview = Some(Rc::new(preview));
+                        cx.notify();
+                    }
+                });
+            }
+        }));
+    }
+
+    /// 3.103: the height the preview adds under the open editor — the
+    /// virtualized rule lists on both pages must reserve it (gpui doesn't
+    /// clip per item), and it changes when the preview arrives, so the page
+    /// notify rebuilds `sizes`. Zero while the editor is closed or the
+    /// first read is still in flight: the row grows when the rows do.
+    pub(super) fn editor_preview_extra_h(&self) -> f32 {
+        if self.editing_rule.is_none() {
+            return 0.;
+        }
+        if self.pattern_preview_error.is_some() {
+            return PREVIEW_LINE_H + 4.;
+        }
+        match self.pattern_preview.as_deref() {
+            Some(preview) => {
+                let list = if preview.rows.is_empty() {
+                    PREVIEW_LINE_H
+                } else {
+                    preview.rows.len() as f32 * PREVIEW_ROW_H
+                };
+                PREVIEW_LINE_H + 4. + list
+            }
+            None => 0.,
+        }
     }
 
     /// 3.40: is `action` the rule button currently waiting on the DB? The
@@ -744,15 +851,16 @@ impl RulesPage {
     }
 
     /// 3.24: close the rule editor and drop everything it owns — the
-    /// error line and the live preview count, including its in-flight task
+    /// error line and the live preview, including its in-flight task
     /// (dropping a `Task` cancels it, so a late result can't repopulate
-    /// the count after the editor is gone). Returns whether an editor was
+    /// the preview after the editor is gone). Returns whether an editor was
     /// open. Every editor-close path goes through here.
     pub(super) fn close_rule_editor(&mut self) -> bool {
         if self.editing_rule.take().is_some() {
             self.rule_error = None;
-            self.rule_task = None;
-            self.rule_match_count = None;
+            self.pattern_preview_task = None;
+            self.pattern_preview = None;
+            self.pattern_preview_error = None;
             true
         } else {
             false
@@ -761,9 +869,11 @@ impl RulesPage {
 
     /// 3.24: close the rule editor without saving. The editor's controls
     /// keep their values (invisible while closed); `start_edit_rule`
-    /// re-fills them from the next rule.
+    /// re-fills them from the next rule. 3.103: the add row's preview,
+    /// which the editor had taken over, runs again right away.
     pub(super) fn cancel_edit_rule(&mut self, cx: &mut Context<Self>) {
         if self.close_rule_editor() {
+            self.run_pattern_preview(cx);
             cx.notify();
         }
     }
@@ -784,7 +894,7 @@ impl RulesPage {
             i.set_value(rule.pattern.clone(), window, cx);
         });
         // 3.53: no category picker — Edit changes pattern and kind only.
-        self.preview_rule_match(cx);
+        self.run_pattern_preview(cx);
         cx.notify();
         // 3.48: focus lands in the pattern input with the caret at the
         // end (`set_value` places a single-line caret at the end of the
@@ -1090,8 +1200,212 @@ fn rule_row(
         .into_any_element()
 }
 
+/// 3.103: the live match preview shared by the Categories add-rule form and
+/// the rule editor (both pages) — a one-line summary over a heading-less
+/// [`DataList`] of at most [`PREVIEW_ROWS`] rows (Date, Merchant, Amount),
+/// each match tagged muted "kept by `<pattern>`" when an existing rule wins
+/// it or "locked" when the row is locked, and nothing at all while the
+/// pattern is empty or the first read is in flight. An empty preview reads
+/// "No transactions match"; a bad regex shows the compiler's words in
+/// place of the rows.
+///
+/// `prefix` namespaces the test selectors (`{prefix}:preview-list`,
+/// `…:preview-row:{id}`, `…:preview-tag:{id}`, `…:preview-empty`,
+/// `…:preview-error`); `summary_selector` is the summary line's selector
+/// (`None` on the Categories add form, whose summary sits in the form's
+/// second line). The rows come from [`RulesPage::pattern_preview`], already
+/// excluded for the edited rule (2.5 re-run semantics), so this only paints
+/// what the read returned.
+pub(super) fn pattern_preview_block(
+    page: &RulesPage,
+    host: &Entity<RulesPage>,
+    prefix: &str,
+    summary_selector: Option<&'static str>,
+    cx: &App,
+) -> AnyElement {
+    let (fg, muted, danger) = {
+        let theme = cx.theme();
+        (theme.foreground, theme.muted_foreground, theme.danger)
+    };
+    let prefix: SharedString = prefix.into();
+    let preview = page.pattern_preview.clone();
+    if let Some(error) = page.pattern_preview_error.clone() {
+        // One ellipsized line: like the editor's error, the virtualized
+        // editor row can't grow past what it reserves. The selector is
+        // hoisted (no literal at the call) — the 3.75 walk only checks
+        // literals, and this one's namespace is interpolated.
+        let error_sel = format!("{prefix}:preview-error");
+        return div()
+            .h(px(PREVIEW_LINE_H))
+            .text_sm()
+            .text_color(danger)
+            .text_ellipsis()
+            .debug_selector(move || error_sel.clone())
+            .child(error)
+            .into_any_element();
+    }
+    let Some(preview) = preview else {
+        return div().into_any_element();
+    };
+    let summary = summary_selector.map(|sel| {
+        div()
+            .h(px(PREVIEW_LINE_H))
+            .text_sm()
+            .text_color(muted)
+            .text_ellipsis()
+            .debug_selector(move || sel.into())
+            .child(format!(
+                "Matches {} transactions · {} would move here",
+                flow::count(preview.total),
+                flow::count(preview.decides)
+            ))
+    });
+    let body = if preview.rows.is_empty() {
+        let empty_sel = format!("{prefix}:preview-empty");
+        div()
+            .h(px(PREVIEW_LINE_H))
+            .text_sm()
+            .text_color(muted)
+            .debug_selector(move || empty_sel.clone())
+            .child("No transactions match")
+            .into_any_element()
+    } else {
+        // The "kept by …" tag names the winning rule by its pattern, the
+        // 3.52 matches panel's wording; the map is built once per render.
+        let pattern_by_id: Rc<HashMap<i64, String>> = Rc::new(
+            page.rules
+                .iter()
+                .map(|r| (r.id, r.pattern.clone()))
+                .collect(),
+        );
+        let rows = preview.rows.clone();
+        let list_h = rows.len() as f32 * PREVIEW_ROW_H;
+        let items: Vec<DataItem> = rows
+            .iter()
+            .map(|row| DataItem::Row {
+                id: row.transaction_id as usize,
+                selected: false,
+                selector: format!("{prefix}:preview-row:{}", row.transaction_id),
+            })
+            .collect();
+        let list_selector = format!("{prefix}:preview-list");
+        let list = DataList::new(host.clone(), preview_columns(), items)
+            .hide_heading()
+            .sizes(|_| PREVIEW_ROW_H)
+            .scroll(page.preview_scroll.clone())
+            .selector(list_selector)
+            .cells(move |_this, item, _measuring, _window, _cx| {
+                let DataItem::Row { id, .. } = item else {
+                    return Vec::new();
+                };
+                let Some(row) = rows.iter().find(|r| r.transaction_id == *id as i64) else {
+                    return Vec::new();
+                };
+                // Merchant first, like the transactions list: the raw
+                // description behind it stays in the tooltip.
+                let merchant = financi_core::parse::merchant(&row.description);
+                let merchant_cell = div()
+                    .id(SharedString::from(format!(
+                        "preview-merchant-{}",
+                        row.transaction_id
+                    )))
+                    .w_full()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .text_color(fg)
+                    .tooltip({
+                        let text = row.description.clone();
+                        move |window, cx| {
+                            let text = text.clone();
+                            Tooltip::element(move |_, _| {
+                                let text = text.clone();
+                                div().child(text)
+                            })
+                            .build(window, cx)
+                        }
+                    })
+                    .child(merchant)
+                    .into_any_element();
+                let tag = match &row.status {
+                    RuleMatchStatus::WonBy(winner) => Some(format!(
+                        "kept by {}",
+                        pattern_by_id
+                            .get(winner)
+                            .cloned()
+                            .unwrap_or_else(|| format!("#{winner}"))
+                    )),
+                    RuleMatchStatus::Locked => Some("locked".into()),
+                    RuleMatchStatus::Decides => None,
+                };
+                let amount = h_flex()
+                    .justify_end()
+                    .gap_1()
+                    .text_color(fg)
+                    .child(flow::money(row.amount_cents))
+                    .when_some(tag, |d, t| {
+                        // The selector is built outside the
+                        // `debug_selector` call — the 3.75 walk only
+                        // checks literals inside it, and this one's
+                        // namespace is interpolated.
+                        let sel = format!("{prefix}:preview-tag:{}", row.transaction_id);
+                        d.child(
+                            div()
+                                .id(SharedString::from(format!(
+                                    "preview-tag-{}",
+                                    row.transaction_id
+                                )))
+                                .flex_shrink_0()
+                                .text_xs()
+                                .text_color(muted)
+                                .debug_selector(move || sel.clone())
+                                .child(t),
+                        )
+                    });
+                vec![
+                    ListCell::from(
+                        div()
+                            .text_color(fg)
+                            .child(row.posted_date.clone())
+                            .into_any_element(),
+                    ),
+                    ListCell::from(merchant_cell),
+                    ListCell::from(amount.into_any_element()),
+                ]
+            });
+        // The list keeps its own scroll: tight space shrinks the preview to
+        // one visible row instead of pushing the rule list out of view.
+        div()
+            .w_full()
+            .h(px(list_h))
+            .flex_shrink_1()
+            .min_h(px(PREVIEW_ROW_H))
+            .overflow_hidden()
+            .flex()
+            .flex_col()
+            .child(list)
+            .into_any_element()
+    };
+    v_flex()
+        .w_full()
+        .children(summary)
+        .child(body)
+        .into_any_element()
+}
+
+/// The preview list's columns: Date, the one flex Merchant, and a
+/// right-aligned Amount — the matches panel's shape without the Account
+/// column (3.103).
+fn preview_columns() -> Vec<DataCol> {
+    vec![
+        DataCol::new("Date", Col::Fixed(110.), ColAlign::Left),
+        DataCol::new("Merchant", Col::Flex, ColAlign::Left),
+        DataCol::new("Amount", Col::Fixed(110.), ColAlign::Right),
+    ]
+}
+
 /// 3.24: the in-place editor that replaces one rule's row, pre-filled
-/// from the rule, with the same live "matches N transactions" count. A
+/// from the rule, with the same live match preview. A
 /// validation error shows in `danger` under the editor and keeps it open —
 /// clamped to one ellipsized line, because the virtual list doesn't clip
 /// per item and a taller row would paint over the rows below.
@@ -1103,13 +1417,20 @@ fn rule_row(
 /// `items_center` row of the 32 px controls: the regex switch, then Save
 /// and Cancel pushed right with `ml_auto`. Line 2 carries no labels, so
 /// the switch lines up on its own — no 3.42 `control_slot` here (the
-/// add-rule rows keep theirs). The preview count and error line stay
+/// Rules page add row keeps its own; 3.103 gave the Categories one this
+/// same two-line shape). The preview block and error line stay
 /// under both lines; the row reserves [`RULE_EDITOR_H`]
-/// ([`RULE_EDITOR_ERROR_H`] with an error open).
+/// ([`RULE_EDITOR_ERROR_H`] with an error open) plus the preview's own
+/// height.
 ///
 /// 3.53: no Category picker — the editor changes pattern and kind only,
 /// and the rule keeps its category (moving is the Rules page Move bar's
 /// job). 3.80: a free function over the page entity, like [`rule_row`].
+///
+/// 3.103: under the form sits [`pattern_preview_block`] — the live match
+/// preview of the editor's draft (that rule excluded), the same rows the
+/// Categories add-rule form shows. The row reserves [`RULE_EDITOR_H`] plus
+/// [`RulesPage::editor_preview_extra_h`].
 fn rule_editor_row(
     rule: &Rule,
     muted: Hsla,
@@ -1118,15 +1439,7 @@ fn rule_editor_row(
     entity: &Entity<RulesPage>,
     cx: &App,
 ) -> AnyElement {
-    let preview = match page.rule_match_count {
-        Some(n) => div()
-            .text_sm()
-            .text_color(muted)
-            .debug_selector(|| "rules:edit-preview".into())
-            .child(format!("matches {} transactions", flow::count(n)))
-            .into_any_element(),
-        None => div().into_any_element(),
-    };
+    let preview = pattern_preview_block(page, entity, "rules", Some("rules:edit-preview"), cx);
     let switch_entity = entity.clone();
     let save_entity = entity.clone();
     let cancel_entity = entity.clone();
@@ -1178,7 +1491,7 @@ fn rule_editor_row(
                                             move |checked: &bool, _, cx| {
                                                 switch_entity.update(cx, |page, cx| {
                                                     page.rule_edit_regex = *checked;
-                                                    page.preview_rule_match(cx);
+                                                    page.run_pattern_preview(cx);
                                                     cx.notify();
                                                 });
                                             },
@@ -1931,6 +2244,8 @@ impl Render for RulesPage {
         let sums = Rc::clone(&self.rules_group_sums);
         let editing = self.editing_rule;
         let edit_error = self.rule_error.is_some();
+        // 3.103: the editor row grows by its preview's height.
+        let preview_extra = self.editor_preview_extra_h();
         // One [`DataItem`] per line for the shared list (3.89): a row's
         // `id` carries the rule id (always positive), and only the row
         // *Show rule* (3.29) landed on is `selected` (`list_active`).
@@ -1997,11 +2312,11 @@ impl Render for RulesPage {
             .sizes(move |item| match item {
                 DataItem::Row { id, .. } => {
                     if editing == Some(*id as i64) {
-                        if edit_error {
+                        (if edit_error {
                             RULE_EDITOR_ERROR_H
                         } else {
                             RULE_EDITOR_H
-                        }
+                        }) + preview_extra
                     } else {
                         LIST_ROW_HEIGHT
                     }
@@ -2338,14 +2653,18 @@ impl Render for RulesPage {
                     ),
             });
         let add_preview = match self
-            .rule_match_count
+            .pattern_preview
+            .as_deref()
             .filter(|_| self.editing_rule.is_none())
         {
-            Some(n) => div()
+            Some(preview) => div()
                 .text_sm()
                 .text_color(muted)
                 .debug_selector(|| "rules:add-preview".into())
-                .child(format!("matches {} transactions", flow::count(n)))
+                .child(format!(
+                    "matches {} transactions",
+                    flow::count(preview.total)
+                ))
                 .into_any_element(),
             None => div().into_any_element(),
         };
@@ -2499,7 +2818,7 @@ impl Render for RulesPage {
                                             .on_click(cx.listener(
                                                 |this, checked: &bool, _, cx| {
                                                     this.rule_regex = *checked;
-                                                    this.preview_rule_match(cx);
+                                                    this.run_pattern_preview(cx);
                                                     cx.notify();
                                                 },
                                             )),
