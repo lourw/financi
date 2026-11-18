@@ -152,6 +152,11 @@ pub(crate) struct DashboardPage {
     /// guess lives on only as the seed of that measurement's docs. The
     /// label-plan math converts px budgets to character counts with this.
     pub(in crate::ui) chart_char_px: f32,
+    /// 3.98: one `text_xs` line's measured height (ascent + descent,
+    /// the same `shape_line` metrics as [`Self::chart_char_px`], taken
+    /// once at construction). The stacked chart's month-label row and
+    /// the axis inset below the bars derive from it.
+    pub(in crate::ui) chart_label_h: f32,
     /// 3.86: the transactions panel's (`panel:table`) measured width in px
     /// (0. until the first frame paints it). The flex column plan is
     /// derived from it through [`Self::set_table_width`].
@@ -230,6 +235,10 @@ impl DashboardPage {
         let chart_char_px =
             gpui_kit::base::plot::label::measure_text_width(&"MMMMMMMMMM".into(), px(10.), window)
                 / 10.;
+        // 3.98: the month-label row's height, measured from the real
+        // font — never a literal (the stacked panel and its axis inset
+        // both derive from it).
+        let chart_label_h = crate::ui::widgets::text_xs_line_h(window);
         let table = cx.new(|cx| {
             TableState::new(
                 TxTable {
@@ -398,6 +407,7 @@ impl DashboardPage {
             // is seeded collapsed to match).
             plot_w: 0.,
             chart_char_px,
+            chart_label_h,
             tx_panel_w: 0.,
             date_widgets_stale: false,
             _subs: vec![date_preset_sub, date_from_sub, date_to_sub, search_sub],

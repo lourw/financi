@@ -1120,11 +1120,60 @@ impl DashboardPage {
     /// How many `Oct 2026` month labels fit across the stacked bars'
     /// measured plot (3.93). The drawn ones spread evenly first-to-last
     /// through [`bar_label_slots`], so they never collide; below one the
-    /// plan still paints the first month.
-    pub(super) fn month_label_plan(&self) -> usize {
+    /// plan still paints the first month. 3.98: each shown label's box
+    /// is [`Self::stacked_label_w`] wide, centred on its column, so the
+    /// plan also reserves the overhang the first and last labels lose
+    /// when their box clamps against the strip's edge.
+    pub(super) fn month_label_plan(&self, count: usize) -> usize {
+        if count <= 1 {
+            return count;
+        }
+        let label_w = self.stacked_label_w();
+        let strip_w = self.stacked_strip_w(count);
+        let col_w = self.stacked_col_w(count);
+        // A column narrower than the label budget shifts its edge
+        // label's box by up to half the overhang to stay in the plot;
+        // every gap must clear that on top of the label width.
+        let shift = ((label_w - col_w) / 2.).max(0.);
+        let need = label_w + shift;
+        let band_w = strip_w / count as f32;
+        let step = (need / band_w.max(1.)).ceil().max(1.) as usize;
+        (count - 1) / step + 1
+    }
+    /// 3.98: the width of one stacked month label's box: the budget
+    /// `Oct 2026` (8 characters at the measured `text_xs` `M` width,
+    /// 3.86) plus the label gap.
+    pub(super) fn stacked_label_w(&self) -> f32 {
         let char_xs = self.chart_char_px * 12. / 10.;
-        let label_w = 8. * char_xs + CHART_LABEL_GAP;
-        (self.stacks_plot_w / label_w).floor().max(1.) as usize
+        8. * char_xs + CHART_LABEL_GAP
+    }
+    /// 3.98: the strip's laid-out width — its viewport once every column
+    /// fits, else the `min_w` floor the strip paints at while scrolling.
+    fn stacked_strip_w(&self, count: usize) -> f32 {
+        self.stacks_plot_w
+            .max(count as f32 * (STACKED_MIN_BAR_W + STACKED_BAR_GAP))
+    }
+    /// 3.98: one month column's laid-out width inside the strip.
+    fn stacked_col_w(&self, count: usize) -> f32 {
+        ((self.stacked_strip_w(count) - (count.saturating_sub(1)) as f32 * STACKED_BAR_GAP)
+            / count.max(1) as f32)
+            .max(STACKED_MIN_BAR_W)
+    }
+    /// 3.98: the strip-coordinate left edge of a shown label's box:
+    /// centred on its column and clamped so the box stays inside the
+    /// strip — the first and last labels are never cut off at the plot
+    /// edge.
+    fn stacked_label_left(&self, count: usize, ix: usize) -> f32 {
+        let label_w = self.stacked_label_w();
+        let centre = self.stacked_col_w(count) / 2.
+            + ix as f32 * (self.stacked_col_w(count) + STACKED_BAR_GAP);
+        (centre - label_w / 2.).clamp(0., (self.stacked_strip_w(count) - label_w).max(0.))
+    }
+    /// 3.98: what the value axis (gridlines and gutter) insets at its
+    /// bottom so its baseline lands on the bars' baseline: the measured
+    /// label row plus the `gap_0p5` above it.
+    pub(in crate::ui) fn stacked_bar_inset_h(&self) -> f32 {
+        self.chart_label_h + STACKED_LABEL_GAP
     }
     /// The stacked columns prepared for drawing (3.93): palette colours
     /// per segment, dimmed to a third when another category holds the
@@ -1148,7 +1197,7 @@ impl DashboardPage {
             self.filter.legend_selection,
             Some(LegendSelection::Uncategorized)
         ) || self.filter.uncategorized_only;
-        let slots = bar_label_slots(stacks.len(), self.month_label_plan());
+        let slots = bar_label_slots(stacks.len(), self.month_label_plan(stacks.len()));
         stacks
             .iter()
             .zip(slots)
@@ -1257,8 +1306,9 @@ impl DashboardPage {
         // alone — the same shared selection state the grid uses.
         let columns: Vec<StackColView> = paint
             .iter()
+            .enumerate()
             .zip(stacks.iter())
-            .map(|(col, stack)| {
+            .map(|((ix, col), stack)| {
                 let segments = col
                     .segments
                     .iter()
@@ -1284,7 +1334,11 @@ impl DashboardPage {
                     month: col.month.clone(),
                     total: col.total,
                     month_selected: col.month_selected,
-                    show_label: col.show_label,
+                    // 3.98: the label box's strip-coordinate left edge,
+                    // centred on this column and clamped inside the plot.
+                    label_left: col
+                        .show_label
+                        .then(|| self.stacked_label_left(paint.len(), ix)),
                     segments,
                     on_label_click: Rc::new(cx.listener(
                         move |this, _: &ClickEvent, _window, cx| {
@@ -1301,6 +1355,9 @@ impl DashboardPage {
         // `$0` on the bars' baseline, not the panel's (the bars stop
         // above the month-label row).
         let max_total = stacks.iter().map(|s| s.total).max().unwrap_or(0).max(1);
+        // 3.98: the inset follows the measured label row height, so the
+        // axis keeps sitting on the bars' baseline.
+        let inset = self.stacked_bar_inset_h();
         let gutter = div()
             .flex_none()
             .w(px(STACKED_GUTTER_W))
@@ -1308,7 +1365,7 @@ impl DashboardPage {
             .flex()
             .flex_col()
             .justify_between()
-            .pb(px(STACKED_BAR_INSET_H))
+            .pb(px(inset))
             .text_xs()
             .text_right()
             .text_color(muted)
@@ -1331,7 +1388,7 @@ impl DashboardPage {
         let grid = div()
             .absolute()
             .inset_0()
-            .bottom(px(STACKED_BAR_INSET_H))
+            .bottom(px(inset))
             .flex()
             .flex_col()
             .justify_between()
@@ -1361,6 +1418,8 @@ impl DashboardPage {
                     .child(StackedBarChart {
                         columns: Rc::new(columns),
                         min_bar_w: STACKED_MIN_BAR_W,
+                        label_w: self.stacked_label_w(),
+                        label_h: self.chart_label_h,
                     }),
             );
         // The chip legend (3.36): one chip per segment, first-seen order

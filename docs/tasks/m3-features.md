@@ -11,7 +11,7 @@ Order: 3.98 → 3.97 → 3.100 → 3.101 → 3.99. The dashboard becomes a dock
 of resizable, rearrangeable panels (user decision, 2026-11-17: dock
 splits, not a scrolling grid).
 
-- [ ] **3.98 Month labels on the stacked bars aren't cut off.** On
+- [x] **3.98 Month labels on the stacked bars aren't cut off.** On
   *Monthly spending by category* the month labels under the bars are
   clipped (user report, 2026-11-17).
   - **Cause:** `StackedBarChart` (`ui/widgets.rs`) puts each label in
