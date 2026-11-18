@@ -127,7 +127,7 @@ pub(crate) struct DashboardState {
     /// month cells track it, so they scroll together, while the name
     /// column and the `Total` column stay pinned.
     pub(in crate::ui) summary_scroll: ScrollHandle,
-    /// 3.93: the cached [`monthly_stacks`](crate::ui::dashboard_chart::monthly_stacks)
+    /// 3.93: the cached [`monthly_stacks`](crate::ui::dashboard::panels::stacked::monthly_stacks)
     /// for the stacked bar chart — rebuilt when the summary or the chart's
     /// drill changes, not per frame (the 3.85 pattern).
     pub(in crate::ui) stacks: Rc<Vec<MonthStack>>,

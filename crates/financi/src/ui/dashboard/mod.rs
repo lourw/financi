@@ -9,16 +9,17 @@
 //! filter controls and row actions), [`render`] (the `Render` impl),
 //! [`table`] (the table delegate and row menu) and [`view`] (the chart and
 //! summary view types). The `use` below keeps every `dashboard::` path
-//! resolving as before; chart/summary rendering and the filter popovers
-//! live in the sibling modules [`crate::ui::dashboard_chart`] and
+//! resolving as before; the panel entities and their render methods live
+//! in [`panels`] (3.97) and the filter popovers in the sibling
 //! [`crate::ui::dashboard_filters`].
 
+use self::panels::stacked::MonthStack;
 use super::*;
-use crate::ui::dashboard_chart::MonthStack;
 
 mod actions;
 mod entity;
 mod load;
+pub(super) mod panels;
 mod render;
 mod state;
 mod table;

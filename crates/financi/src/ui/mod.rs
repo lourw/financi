@@ -11,7 +11,6 @@ mod catalog;
 mod categories;
 mod category_picker;
 mod dashboard;
-mod dashboard_chart;
 mod dashboard_filters;
 mod imports;
 mod page;

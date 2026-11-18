@@ -2,7 +2,9 @@
 //! unit tests (the GPUI-free shaping) and the panel's UI tests.
 
 use super::*;
-use crate::ui::dashboard_chart::{MonthStack, StackSegment, axis_amount, monthly_stacks};
+use crate::ui::dashboard::panels::stacked::{
+    MonthStack, StackSegment, axis_amount, monthly_stacks,
+};
 use financi_db::categories::CategoryNode;
 use financi_db::{MonthlySummary, MonthlySummaryRow};
 
@@ -221,7 +223,7 @@ fn axis_amounts_stay_compact() {
 // -- panel UI tests ------------------------------------------------------
 
 use super::summary::{seed_summary_rows, set_all_time, summary_parent_id};
-use crate::ui::dashboard_chart::StackColPaint;
+use crate::ui::dashboard::panels::stacked::StackColPaint;
 
 /// One parent, one spend per month for March–May 2026: bars of 1000,
 /// 2000 and 1500 cents, April the tallest.
