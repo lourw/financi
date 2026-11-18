@@ -11,26 +11,6 @@ Order: 3.98 → 3.97 → 3.100 → 3.101 → 3.99. The dashboard becomes a dock
 of resizable, rearrangeable panels (user decision, 2026-11-17: dock
 splits, not a scrolling grid).
 
-- [x] **3.101 The dashboard layout is remembered, and can be reset.**
-  After 3.100.
-  - Save `DockArea::dump()` (`DockAreaState`, JSON) to the `settings`
-    table under `dashboard.layout` through `DbWorker`, 500 ms after the
-    last `DockEvent::LayoutChanged` (one keyed latest-wins job, 3.77).
-    Restore it with `DockArea::load` and a `PanelRegistry` that builds
-    the four panels by name.
-  - A stored layout that fails to load (bad JSON, an unknown panel, a
-    panel missing) falls back to the default layout and logs once. It
-    never blocks startup. Store a layout version; a version bump resets
-    to the default.
-  - **Reset layout:** an icon button (Lucide `layout-dashboard`,
-    tooltip "Reset layout") at the right end of the filter row, and a
-    *View > Reset dashboard layout* menu item. It restores the default
-    and saves it.
-  - Tests: DB — the setting round-trips; UI — move a panel and resize a
-    divider, rebuild the window from the same DB, and the layout is the
-    same (bounds); a corrupt stored value gives the default layout;
-    Reset layout restores the default and stores it.
-
 - [ ] **3.99 Spending by category as a pie chart.** Replace the
   *Spending by category* `BarChart` with a donut chart (user request,
   2026-11-17). Do it last in the lane, after the dock layout (3.100), so

@@ -2710,3 +2710,29 @@ Follow-ups (3.100 review, 2026-11-18):
   panel names; default_layout lives in ui/dashboard/dock.rs.
 - 3.26: per-Scrollbar .mode(Always) is set locally on the dashboard panels;
   the app-wide ScrollbarTheme mode change is still 3.26's job.
+
+- [x] **3.101 The dashboard layout is remembered, and can be reset.**
+  After 3.100.
+  - Save `DockArea::dump()` (`DockAreaState`, JSON) to the `settings`
+    table under `dashboard.layout` through `DbWorker`, 500 ms after the
+    last `DockEvent::LayoutChanged` (one keyed latest-wins job, 3.77).
+    Restore it with `DockArea::load` and a `PanelRegistry` that builds
+    the four panels by name.
+  - A stored layout that fails to load (bad JSON, an unknown panel, a
+    panel missing) falls back to the default layout and logs once. It
+    never blocks startup. Store a layout version; a version bump resets
+    to the default.
+  - **Reset layout:** an icon button (Lucide `layout-dashboard`,
+    tooltip "Reset layout") at the right end of the filter row, and a
+    *View > Reset dashboard layout* menu item. It restores the default
+    and saves it.
+  - Tests: DB — the setting round-trips; UI — move a panel and resize a
+    divider, rebuild the window from the same DB, and the layout is the
+    same (bounds); a corrupt stored value gives the default layout;
+    Reset layout restores the default and stores it.
+
+Notes (3.101 review, benign, recorded not fixed):
+- A restore's own load emits LayoutChanged → one redundant same-value re-save ~500 ms
+  after launch (writes what's on screen; harmless).
+- One-hop race: a panel edit between first frame and restore-read resolving is
+  gated then overwritten by the restore. Acceptable for a personal app.
