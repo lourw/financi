@@ -2576,3 +2576,57 @@ already on screen (wheel loop only runs for the click step).
   - Tests: every existing dashboard test passes unchanged except for
     the paths it imports; add one that a selection made in the summary
     reaches the chart and table panels through `DashboardState`.
+
+- [x] **3.103 A tidier add-rule form with a match preview.** On the
+  Categories page, the add-rule row under a category's rules crams a
+  Pattern input, the regex switch, the Subcategory picker (when a
+  category is selected), the Add rule button and the "matches N" count
+  into one line. The user finds it messy (user request, 2026-11-17).
+  It stays visible by default (user's call); re-lay it out and show what
+  the pattern would catch. Needs 3.102.
+  - **Layout:** the add-rule row becomes a two-line `InlineForm`, the
+    same shape as the rule editor (3.48), so adding and editing look
+    alike. Line 1: "Pattern" label over a full-width `Input`. Line 2:
+    the regex `Switch` at the left, then the "Subcategory…" `Select`
+    when the selection is a category (the 3.53 rules for which picker
+    shows, unchanged), then, right-aligned, the match summary and
+    **Add rule**. No `control_slot` hacks on one line. Update the
+    `ui-conventions.md` *Categories* paragraph so the add-rule row is
+    described as this form, and change the convention rather than
+    adding an exception (`docs/tasks.md` → *Writing tasks*).
+  - **Match preview:** while the pattern is non-empty, a compact
+    `DataList` under the form shows up to 8 of the matching transactions
+    from `preview_pattern_matches` (Date, Merchant ellipsized, Amount)
+    with a muted tag on rows another rule would keep ("kept by
+    `<pattern>`") or that are locked ("locked"). Above it, a summary:
+    "Matches 42 transactions · 37 would move here". Under 8 rows the list
+    shrinks to fit. "No transactions match" when empty, and nothing at
+    all for an empty pattern. The query reruns 150 ms after the last
+    keystroke (latest wins). An invalid regex shows the existing error
+    text in place of the preview.
+  - Reuse the same preview in the rule editor (Edit on a rule row),
+    with `exclude_rule_id` = the edited rule. The Rules page's matches
+    panel (3.52) is unchanged.
+  - **Space:** the detail panel scrolls if form + preview + rules
+    outgrow it. At 1200 × 720 the form and a full preview fit without
+    pushing the rule list out of view entirely.
+  - Tests (`ui/tests/categories*`): the form's two lines (pattern on
+    its own line, switch / picker / button on the second) by bounds;
+    typing a pattern shows the summary and up to 8 preview rows matching
+    3.102's result; a row another rule keeps shows its tag; clearing the
+    pattern hides the preview; an invalid regex shows the error; Add
+    rule still adds the rule to the right subcategory (the 3.53 tests
+    pass); the editor shows the preview without counting its own rule.
+
+Follow-ups (3.103 review, 2026-11-18, accepted consciously):
+- Rules-page add-row "matches N" now uses `preview_pattern_matches().total`:
+  locked rows included, card-payment rows excluded (differs from
+  `count_rule_matches`; matches the 3.52 panel and the editor preview).
+  `count_rule_matches` now has no app callers and its stale doc comment —
+  remove it or fix the comment (→ H5).
+- Pin the "kept by `<pattern>`" / "locked" tag text and the summary line in
+  selectors like 3.52 does (`rules:match-tag:won by …`); add a debounce /
+  latest-wins pin-test for the preview timer (→ H5).
+- `ui/rules.rs` (2960), `ui/categories.rs` (2465), `ui/tests/categories.rs`
+  (3704) are past the split signal — schedule a coordinated `refactor:`
+  split with nothing else in flight on those files.
