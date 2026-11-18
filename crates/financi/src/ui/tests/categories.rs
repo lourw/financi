@@ -157,7 +157,12 @@ fn delete_category_reassigns_transactions_and_rules(cx: &mut TestAppContext) {
     let online = cx.update(|cx| find_child(&shell, cx, "Online").unwrap());
     let (merchant, _) = cx.update(|cx| top_group(&shell, cx));
 
-    // Categorize the top merchant's rows onto Online, so a delete has work to move.
+    // Categorize the top merchant's rows onto Online, so a delete has work
+    // to move. 3.54: `rule_target` is fed on the Rules page's next draw,
+    // so show it and settle before picking.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Rules, cx)));
+    wait_idle(cx, &shell);
+    draw_frame(cx, handle);
     with_window(cx, handle, |window, cx| {
         shell.update(cx, |s, cx| {
             s.rules_page.update(cx, |p, cx| {
@@ -1667,11 +1672,14 @@ fn every_category_write_shows_loading_until_the_task_ends(cx: &mut TestAppContex
     });
     with_window(cx, handle, |window, cx| {
         shell.update(cx, |s, cx| {
+            // 3.54: the first click arms and, through the delete action,
+            // re-sets the pickers against the current list — the pick of
+            // a reassign target then resolves against fresh items.
+            s.arm_delete_category(window, cx);
             s.categories_view.update(cx, |p, cx| {
                 p.delete_target
                     .update(cx, |sel, cx| sel.set_selected_value(&cafes, window, cx))
             });
-            s.arm_delete_category(window, cx);
             assert_eq!(
                 s.categories_view.read(cx).cat_pending,
                 None,

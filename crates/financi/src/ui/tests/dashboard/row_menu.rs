@@ -162,6 +162,12 @@ fn changing_a_rows_category_locks_it_and_offers_the_rule(cx: &mut TestAppContext
 
     // A later rule for the same merchant moves the siblings but never the
     // manually-set (locked) row.
+    //
+    // 3.54: `rule_target` is the Rules page's picker and is fed on the
+    // page's next draw, so show it and settle before picking.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Rules, cx)));
+    wait_idle(cx, &shell);
+    draw_frame(cx, handle);
     with_window(cx, handle, |window, cx| {
         shell.update(cx, |s, cx| {
             s.rules_page.update(cx, |p, cx| {
@@ -179,6 +185,9 @@ fn changing_a_rows_category_locks_it_and_offers_the_rule(cx: &mut TestAppContext
             s.rules_page.update(cx, |p, cx| p.add_rule(window, cx));
         });
     });
+    // 3.54: back to the Dashboard, where the hidden table reloads and the
+    // assertions below read it.
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
     wait_until(cx, "siblings moved, locked target held", |cx| {
         let rows = table_rows(&shell, cx);
         let cat = |id: i64| {

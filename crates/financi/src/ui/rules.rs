@@ -200,6 +200,10 @@ pub(super) struct RulesPage {
     /// 3.85: bumped by [`RulesPage::apply`] — the fingerprint component
     /// covering the catalog mirrors (rules, Uses, category labels).
     rules_gen: u64,
+    /// 3.47: the id the next provisional rule row carries while its add
+    /// round-trip is in flight (negative, so it can never collide with a
+    /// real `rules.id`).
+    next_temp_rule_id: i64,
     /// 3.28: how many items the Rules page list built last frame (headers
     /// and rows together) and the range it drew, for the long-list tests.
     #[cfg(test)]
@@ -494,6 +498,7 @@ impl RulesPage {
             rules_items_fp: None,
             rules_group_sums: Rc::new(HashMap::new()),
             rules_gen: 0,
+            next_temp_rule_id: -1,
             #[cfg(test)]
             rules_page_rows_built: std::cell::Cell::new(0),
             #[cfg(test)]
@@ -618,6 +623,18 @@ impl RulesPage {
         // done (a save that re-runs the rules can take seconds).
         self.pending_rule_action = Some(PendingRuleAction::Add);
         let submitted = pattern.clone();
+        // 3.47: the new row appears in the list at once with a temporary
+        // negative id; the Ok arm swaps in the real id, the Err arm drops
+        // the row again (the later refresh reconciles either way).
+        let temp_id = self.next_temp_rule_id;
+        self.next_temp_rule_id -= 1;
+        self.rules.push(Rule {
+            id: temp_id,
+            pattern: pattern.clone(),
+            is_regex,
+            category_id,
+        });
+        self.rules_gen += 1;
         // 3.64: detached — a later action must not cancel this write's
         // continuation and swallow its refresh.
         cx.spawn_in(window, async move |this, cx| {
@@ -630,7 +647,12 @@ impl RulesPage {
                     this.pending_rule_action = None;
                 }
                 match result {
-                    Ok(_) => {
+                    Ok(new_id) => {
+                        // 3.47: the provisional row carries its real id.
+                        if let Some(rule) = this.rules.iter_mut().find(|r| r.id == temp_id) {
+                            rule.id = new_id;
+                            this.rules_gen += 1;
+                        }
                         // The input still shows what was submitted — don't
                         // wipe a pattern typed after this one landed.
                         if this.rule_pattern.read(cx).value().trim() == submitted {
@@ -644,14 +666,23 @@ impl RulesPage {
                             this.rule_error = None;
                         }
                     }
-                    // 3.64: and only this add reports it: a failure that
-                    // lands after the user moved on (another action owns the
-                    // badge, or an editor is open) must not paint under
-                    // someone else's fields — `report_rule_error` toasts it
-                    // while an editor is open, and a stale add's failure is
-                    // the newer action's to report.
-                    Err(e) if own => this.report_rule_error(e, cx),
-                    Err(_) => {}
+                    // 3.47: a failed add takes the provisional row back
+                    // out, whether or not this add still owns the badge.
+                    // 3.64: and only this add reports the error: a failure
+                    // that lands after the user moved on (another action
+                    // owns the badge, or an editor is open) must not paint
+                    // under someone else's fields — `report_rule_error`
+                    // toasts it while one is open, and a stale add's
+                    // failure is the newer action's to report.
+                    Err(e) => {
+                        if let Some(ix) = this.rules.iter().position(|r| r.id == temp_id) {
+                            this.rules.remove(ix);
+                            this.rules_gen += 1;
+                        }
+                        if own {
+                            this.report_rule_error(e, cx);
+                        }
+                    }
                 }
                 cx.emit(PageEvent::Changed(Domains::RULES_TX));
                 cx.notify();
@@ -746,6 +777,18 @@ impl RulesPage {
         // 3.40: the Save button shows loading, disabled, until the DB is
         // done; on error the editor stays open and pending clears too.
         self.pending_rule_action = Some(PendingRuleAction::Save(id));
+        // 3.47: the row shows the new pattern at once; the Err arm puts
+        // the saved copy back (the refresh reconciles on success).
+        let previous = self
+            .rules
+            .iter()
+            .position(|r| r.id == id)
+            .map(|ix| self.rules[ix].clone());
+        if let Some(rule) = self.rules.iter_mut().find(|r| r.id == id) {
+            rule.pattern = pattern.clone();
+            rule.is_regex = is_regex;
+            self.rules_gen += 1;
+        }
         // 3.64: detached — see `commit_new_rule`.
         cx.spawn_in(window, async move |this, cx| {
             let result = on_db(&db, move |c| {
@@ -766,6 +809,13 @@ impl RulesPage {
                         }
                     }
                     Err(e) => {
+                        // 3.47: roll the optimistic edit back.
+                        if let Some(prev) = previous
+                            && let Some(rule) = this.rules.iter_mut().find(|r| r.id == id)
+                        {
+                            *rule = prev;
+                            this.rules_gen += 1;
+                        }
                         if this.editing_rule == Some(id) {
                             this.rule_error = Some(e);
                         }
@@ -794,6 +844,17 @@ impl RulesPage {
             // 3.40: the delete runs (and the button shows loading,
             // disabled) while the rules re-run over the unlocked rows.
             self.pending_rule_action = Some(PendingRuleAction::Delete(id));
+            // 3.47: the row leaves the list at once; a failed delete puts
+            // it back at its position and reports the error (3.24's
+            // "rule removed underneath" case).
+            let removed = self
+                .rules
+                .iter()
+                .position(|r| r.id == id)
+                .map(|ix| (ix, self.rules.remove(ix)));
+            if removed.is_some() {
+                self.rules_gen += 1;
+            }
             // 3.64: detached — see `commit_new_rule`.
             cx.spawn_in(window, async move |this, cx| {
                 let result = on_db(&db, move |c| delete_rule(c, id)).await;
@@ -813,7 +874,19 @@ impl RulesPage {
                         // 3.64: the failure of *this* delete never paints
                         // under an editor that belongs to another rule —
                         // `report_rule_error` toasts it while one is open.
-                        Err(e) => this.report_rule_error(e, cx),
+                        Err(e) => {
+                            // 3.47: restore the row unless a refresh has
+                            // already brought it back (it can't be gone
+                            // twice — but neither may it be listed twice).
+                            if let Some((ix, rule)) = removed
+                                && !this.rules.iter().any(|r| r.id == rule.id)
+                            {
+                                let ix = ix.min(this.rules.len());
+                                this.rules.insert(ix, rule);
+                                this.rules_gen += 1;
+                            }
+                            this.report_rule_error(e, cx)
+                        }
                     }
                     cx.emit(PageEvent::Changed(Domains::RULES_TX));
                     cx.notify();
