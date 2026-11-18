@@ -2630,3 +2630,25 @@ Follow-ups (3.103 review, 2026-11-18, accepted consciously):
 - `ui/rules.rs` (2960), `ui/categories.rs` (2465), `ui/tests/categories.rs`
   (3704) are past the split signal — schedule a coordinated `refactor:`
   split with nothing else in flight on those files.
+
+- [x] **3.104 Rename is the same size as the other category actions.**
+  On the Categories detail title row, Rename is bigger than Add
+  subcategory, Move and Delete (user report, 2026-11-17).
+  - **Cause:** in `ui/categories.rs` the `rename-category` `Button` has no
+    `.small()`, while `title-add-sub`, `title-move` and `title-delete`
+    all have it (the convention says the title row's actions are
+    `small`).
+  - **Fix:** add `.small()`, and order the group the way
+    `ui-conventions.md` lists it (Rename; Add subcategory, Move, Delete)
+    if it doesn't already match. Look for other button rows where one
+    button's size differs from its neighbours (`grep -n 'Button::new'
+    ui/`), and fix those in the same commit.
+  - Tests: on a selected category and on a selected subcategory, every
+    title-row button has the same height (bounds); an existing 3.43
+    Rename test still finds its pencil icon.
+
+Follow-up (3.104 review, 2026-11-18): rules.rs:1168/1180 rule-row Edit/Delete
+are `.ghost().text_xs()` at medium size; `.text_xs()` there is inert
+(button sets button_text_size itself). ui-conventions.md wants list-row
+buttons `xsmall` `ghost` — open task to make them xsmall (touches 3.43
+metric tests).
