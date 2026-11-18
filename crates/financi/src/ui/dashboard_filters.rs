@@ -55,8 +55,10 @@ fn filter_chip(
 pub(super) const FILTER_DATE_RANGE_W: Pixels = px(170.);
 // 3.46: floor lowered from 140 px — with Clear all shown and the custom
 // range open, the row must still fit 1200 × 720 (the search box stays the
-// item that takes the slack).
-pub(super) const FILTER_SEARCH_MIN_W: Pixels = px(100.);
+// item that takes the slack). 3.101: 80 px — the row gained the layout
+// Reset button at the right end, and the search floor is again where the
+// ~20 px come from (measured: the button overflowed by 18 px at 1200).
+pub(super) const FILTER_SEARCH_MIN_W: Pixels = px(80.);
 /// The custom range's From/To pickers: 140 px when there is room, shrinking
 /// first, down to [`FILTER_DATE_MIN_W`], when the window is at its minimum
 /// and the rest of the row must still fit on the page (3.25, 3.35).
