@@ -99,8 +99,18 @@ Order: 3.105 → 3.95 → 3.104 (3.105 and 3.95 both change `ui/queue.rs`).
   and the removal of `count_rule_matches`. Already fixed, skipped: the
   Escape "context-less binding" sentence (reworded accurately at 3.82)
   and the `note_painted` pair (both helpers died with H4's `7c072ac`).
-  Left: the three `ui/dashboard/**` bullets, after the dashboard feature
-  (3.100) merges; and renaming `count_rule_matches` →
+  H5 dashboard pass (2026-11-18): done — the three `ui/dashboard/**`
+  bullets: `mod.rs`'s `load` comment now says only `DashboardFilter` is
+  test-used (`DashboardData`/`load_dashboard` are path-stability only);
+  the pre-3.86 layout claims in `view.rs` (`page_w` is the table panel's
+  measured width since 3.86) and `table.rs`'s `flex_widths` comment are
+  fixed and `view.rs`'s misplaced "Import history table" banner now
+  matches what it heads; `panels/table.rs` and `render.rs` checked,
+  already current. `STACKED_LEGEND_EXTRA_W` derives its `8.` from a
+  named `STACKED_ROW_GAP` (`gap_2`) with the value pinned by a const
+  assert; 3.98 had already removed `STACKED_BAR_INSET_H` and the stacked
+  test's `18.` literal (it reads `stacked_bar_inset_h()`).
+  Left: renaming `count_rule_matches` →
   `preview_pattern_matches` in `docs/tasks/final.md` (3.55's live-preview
   description and perf budget still name the deleted function).
 

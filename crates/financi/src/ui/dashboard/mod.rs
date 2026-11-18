@@ -31,7 +31,9 @@ mod view;
 // menu, the job body, the layout constants): the bin build never names
 // them, but every `dashboard::` path stays resolvable (H3).
 pub(super) use self::entity::DashboardPage;
-#[allow(unused_imports)] // used by tests via `ui::…`
+#[allow(unused_imports)] // `DashboardFilter` alone is test-used (via
+// `ui::…`); `DashboardData` and `load_dashboard` are named inside `load`
+// only and re-exported just to keep their `dashboard::` paths resolving
 pub(super) use self::load::{DashboardData, DashboardFilter, load_dashboard};
 #[allow(unused_imports)] // used by the panels and the page
 pub(super) use self::state::{DashboardChanges, DashboardEvent, DashboardState};

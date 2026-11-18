@@ -4,7 +4,7 @@
 use super::*;
 
 // ---------------------------------------------------------------------------
-// Import history table (Imports page)
+// Legend selection and the dashboard's empty states (3.5, 3.10)
 
 /// The one dashboard category selection (3.5): a legend row — a real
 /// category (parent or child) or the `Uncategorized` pseudo-row — that
@@ -53,12 +53,13 @@ pub(crate) struct ChartRow {
 /// The dashboard table's fixed columns (3.25): the `Date` and `Amount`
 /// widths, which never change with the window.
 pub(crate) const TX_FIXED_W: f32 = 110. + 120.;
-/// The dashboard table's `Account`, `Description` and `Category` widths for
-/// `page_w` pixels of page (3.25, the same shape as `history_flex_widths`):
-/// what the fixed columns leave over, split in the widths' original
-/// proportions, with the flexed total floored at three times
-/// `HISTORY_FLEX_MIN_W`. The sum always reaches the page's right edge, so
-/// the table never overhangs it.
+/// The dashboard table's `Account`, `Description` and `Category` widths
+/// for `page_w` pixels of table (3.25, the same shape as
+/// `history_flex_widths`): what the fixed columns leave over, split in the
+/// widths' original proportions, with the flexed total floored at three
+/// times `HISTORY_FLEX_MIN_W`. Since 3.86 the caller passes the table
+/// panel's own measured width, not the window's, and the sum always fills
+/// it, so the table never overhangs its panel.
 pub(crate) fn tx_flex_widths(page_w: f32) -> (f32, f32, f32) {
     let flex = (page_w - TX_FIXED_W - TABLE_BORDER_X).max(3. * HISTORY_FLEX_MIN_W);
     const TOTAL: f32 = 300. + 360. + 260.;

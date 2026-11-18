@@ -156,9 +156,15 @@ pub(in crate::ui) const STACKED_MIN_BAR_W: f32 = 12.;
 /// the panel's inner width — gutter + row gap + plot — so its fit plan
 /// measures `plot + STACKED_LEGEND_EXTRA_W`, not the plot alone.
 const STACKED_GUTTER_W: f32 = 48.;
+/// The row gap between the stacked chart's gutter and plot: the row's
+/// `gap_2` (3.93).
+const STACKED_ROW_GAP: f32 = 8.;
 /// The legend's extra width over the plot: the gutter plus the row's
-/// `gap_2` (8 px) between gutter and plot (3.93).
-const STACKED_LEGEND_EXTRA_W: f32 = STACKED_GUTTER_W + 8.;
+/// `gap_2` (3.93).
+const STACKED_LEGEND_EXTRA_W: f32 = STACKED_GUTTER_W + STACKED_ROW_GAP;
+// Pin the 56 px the legend's fit plan has measured with since 3.93, so
+// naming the gap literal could not have shifted it.
+const _: () = assert!(STACKED_LEGEND_EXTRA_W == 56.);
 
 /// One painted segment of the stacked bars (3.93): the shaping's cents,
 /// the resolved colour (dimmed when the selection says so), and the two

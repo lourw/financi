@@ -151,7 +151,8 @@ pub struct TxTable {
     /// the shell re-queries and refreshes.
     pub(in crate::ui) on_sort: SortFn,
     /// Widths of the three flexible columns (Account, Description,
-    /// Category), kept in sync with the window (3.25, `tx_flex_widths`).
+    /// Category), re-flexed to the table panel's measured width on every
+    /// resize (3.25, `tx_flex_widths`; measured since 3.86).
     pub(in crate::ui) flex_widths: (f32, f32, f32),
 }
 
