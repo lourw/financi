@@ -7,6 +7,7 @@
 
 use super::*;
 use crate::ui::widgets::*;
+use gpui_kit::base::dock::{Panel, PanelEvent};
 
 impl DashboardState {
     /// Store a freshly measured table-container width (3.86, from the
@@ -24,33 +25,18 @@ impl DashboardState {
         });
         self.changed(DashboardChanges::MEASURED, cx);
     }
-    /// Store the page scroller's measured viewport height (3.45, from the
-    /// `bounds_height_probe` on its wrapper): the transactions table's
-    /// height, so the table fills the view below the pinned filter row and
-    /// scrolls inside itself. Notify-on-change only, like
-    /// [`Self::set_table_width`].
-    pub(in crate::ui) fn set_viewport_height(&mut self, h: f32, cx: &mut Context<Self>) {
-        if (self.tx_panel_h - h).abs() < 0.5 {
-            return;
-        }
-        self.tx_panel_h = h;
-        self.changed(DashboardChanges::MEASURED, cx);
-    }
-    /// The transactions panel (3.45): fills the viewport height the
-    /// page's probe measured (`Self::set_viewport_height`), flexes its
+    /// The transactions panel (3.45, dock shape since 3.100): fills the
+    /// dock's pane (no explicit height — the divider sizes it), flexes its
     /// columns to its own measured width (`Self::set_table_width`), and
     /// holds the table or its empty state. The `panel:table` wrapper and
     /// its probe live here (3.97), so the page no longer repaints when
     /// they move.
     pub(in crate::ui) fn render_table_panel(&mut self, cx: &mut Context<Self>) -> AnyElement {
         div()
-            .w_full()
+            .size_full()
             .min_w_0()
-            .flex_none()
-            .h(px(self.tx_panel_h))
             .relative()
             .occlude()
-            .debug_selector(|| "panel:table".into())
             // 3.86: the column plan comes from this panel's own
             // measured width, reported by the probe (no window-width
             // arithmetic).
@@ -71,7 +57,9 @@ impl DashboardState {
     /// restores every filter, the header controls included.
     pub(in crate::ui) fn no_matches_panel(&self, cx: &mut Context<Self>) -> AnyElement {
         let muted = cx.theme().muted_foreground;
-        panel(cx, false)
+        // 3.100: the dock draws the panel box, so this is the bare
+        // centred content, not a `panel()` of its own.
+        v_flex()
             .size_full()
             .items_center()
             .justify_center()
@@ -102,6 +90,8 @@ pub(in crate::ui::dashboard) struct TablePanel {
     state: Entity<DashboardState>,
     /// The state subscription; lives as long as the panel.
     _subs: Subscription,
+    /// Dock focus handle (3.100: `Panel`'s `Focusable` bound).
+    focus: FocusHandle,
 }
 
 impl TablePanel {
@@ -112,7 +102,11 @@ impl TablePanel {
                 cx.notify();
             }
         });
-        Self { state, _subs }
+        Self {
+            state,
+            _subs,
+            focus: cx.focus_handle(),
+        }
     }
 }
 
@@ -120,5 +114,30 @@ impl Render for TablePanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.state
             .update(cx, |state, cx| state.render_table_panel(cx))
+    }
+}
+
+/// Dock plumbing (3.100): the focus handle and the `Panel` identity. The
+/// four panels are the dock's fixed set, so none of them is closable or
+/// zoomable — the grid is only ever moved and resized.
+impl Focusable for TablePanel {
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
+        self.focus.clone()
+    }
+}
+
+impl EventEmitter<PanelEvent> for TablePanel {}
+
+impl Panel for TablePanel {
+    fn panel_name(&self) -> &'static str {
+        "table"
+    }
+
+    fn closable(&self, _cx: &App) -> bool {
+        false
+    }
+
+    fn zoomable(&self, _cx: &App) -> bool {
+        false
     }
 }

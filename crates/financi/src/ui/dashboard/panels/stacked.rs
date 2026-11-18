@@ -6,6 +6,7 @@
 use super::chart::*;
 use super::*;
 use crate::ui::widgets::*;
+use gpui_kit::base::dock::{Panel, PanelEvent};
 
 // --------------------------------------------------- 3.93 monthly stacks
 
@@ -366,21 +367,19 @@ impl DashboardState {
         };
         let stacks = self.stacks_mut();
         let paint = self.stacked_paint(&stacks, &colors, palette, muted);
-        let panel_shell = |title: SharedString| {
-            panel(cx, true)
-                .w_full()
-                .h(px(340.))
-                .flex_none()
+        // 3.100: the dock owns the panel box, the title and the size;
+        // both states paint the padded column below the title row.
+        let panel_shell = || {
+            v_flex()
+                .size_full()
                 .min_w_0()
+                .p_4()
                 .gap_2()
-                .debug_selector(|| "panel:stacked".into())
-                .child(region_title(title))
         };
-        let title: SharedString = "Monthly spending by category".into();
         // *States*: no spend in the range is the empty state, whatever
         // the shape says (income-only months stack no bars either).
         if !self.summary_has_data() || !stacks.iter().any(|s| s.total > 0) {
-            return panel_shell(title)
+            return panel_shell()
                 .child(
                     div()
                         .flex_1()
@@ -679,7 +678,7 @@ impl DashboardState {
                         }),
                 )
             });
-        panel_shell(title)
+        panel_shell()
             .child(
                 div()
                     .flex_1()
@@ -706,6 +705,8 @@ pub(in crate::ui::dashboard) struct StackedPanel {
     state: Entity<DashboardState>,
     /// The state subscription; lives as long as the panel.
     _subs: Subscription,
+    /// Dock focus handle (3.100: `Panel`'s `Focusable` bound).
+    focus: FocusHandle,
 }
 
 impl StackedPanel {
@@ -718,12 +719,41 @@ impl StackedPanel {
                 cx.notify();
             }
         });
-        Self { state, _subs }
+        Self {
+            state,
+            _subs,
+            focus: cx.focus_handle(),
+        }
     }
 }
 
 impl Render for StackedPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.state.update(cx, |state, cx| state.stacked_panel(cx))
+    }
+}
+
+/// Dock plumbing (3.100): the focus handle and the `Panel` identity. The
+/// four panels are the dock's fixed set, so none of them is closable or
+/// zoomable — the grid is only ever moved and resized.
+impl Focusable for StackedPanel {
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
+        self.focus.clone()
+    }
+}
+
+impl EventEmitter<PanelEvent> for StackedPanel {}
+
+impl Panel for StackedPanel {
+    fn panel_name(&self) -> &'static str {
+        "stacked"
+    }
+
+    fn closable(&self, _cx: &App) -> bool {
+        false
+    }
+
+    fn zoomable(&self, _cx: &App) -> bool {
+        false
     }
 }

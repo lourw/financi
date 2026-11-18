@@ -447,12 +447,8 @@ fn the_no_matches_link_clears_every_filter(cx: &mut TestAppContext) {
         d.row_count == 0 && d.dashboard_body() == DashboardBody::NoMatches
     });
 
-    // The link paints below the fold on the page scroller; scroll it in.
-    cx.update(|cx| {
-        dash(cx, &shell).update(cx, |d, _cx| {
-            d.page_scroll.set_offset(point(px(0.), px(-400.)));
-        });
-    });
+    // 3.100: the link sits inside the table panel — no page scroll to
+    // cross to reach it any more.
     click(cx, handle, "dashboard:no-matches-clear");
     wait_until(cx, "the link resets every filter", |cx| {
         let d = dash(cx, &shell).read(cx);

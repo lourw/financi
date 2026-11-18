@@ -283,9 +283,11 @@ fn set_all_time_three_months(
     });
 }
 
-/// The stacked panel paints full width between the chart and the summary, 340 px tall.
+/// 3.100: the monthly bars sit in the dock's top-right cell — one row
+/// with the chart, to its right, at the same width; the summary shares
+/// the chart's column below it.
 #[gpui::test]
-fn the_stacked_panel_paints_between_the_chart_and_the_summary(cx: &mut TestAppContext) {
+fn the_stacked_panel_paints_right_of_the_chart(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, seed_summary_rows);
     set_all_time(cx, handle, &shell);
     wait_until(cx, "table loaded", |cx| {
@@ -295,19 +297,28 @@ fn the_stacked_panel_paints_between_the_chart_and_the_summary(cx: &mut TestAppCo
     let chart = bounds(cx, handle, "panel:chart");
     let stacked = bounds(cx, handle, "panel:stacked");
     let summary = bounds(cx, handle, "panel:summary");
-    assert_eq!(stacked.size.height, px(340.), "the panel is 340 px tall");
     assert!(
-        stacked.origin.y >= chart.origin.y + chart.size.height,
-        "the stacked panel sits below the chart panel"
+        (f32::from(stacked.origin.y) - f32::from(chart.origin.y)).abs() <= 1.,
+        "the stacked panel is not on the chart's row ({} vs {})",
+        f32::from(stacked.origin.y),
+        f32::from(chart.origin.y),
     );
     assert!(
-        summary.origin.y >= stacked.origin.y + stacked.size.height,
-        "the summary panel sits below the stacked panel"
+        f32::from(stacked.origin.x) >= f32::from(chart.right()) - 1.,
+        "the stacked panel is not right of the chart panel",
     );
-    assert_eq!(stacked.origin.x, chart.origin.x);
     assert_eq!(
         stacked.size.width, chart.size.width,
-        "full width, the same as the chart panel"
+        "both top-row cells are the same width"
+    );
+    assert_eq!(stacked.size.height, chart.size.height);
+    assert!(
+        summary.origin.y >= chart.origin.y + chart.size.height - px(1.),
+        "the summary panel sits below the chart panel"
+    );
+    assert_eq!(
+        summary.origin.x, chart.origin.x,
+        "the summary shares the chart's column"
     );
 }
 
@@ -534,6 +545,15 @@ fn check_labels_fit(
         }
         shown.push(ix);
         let b = bounds(cx, handle, sel);
+        // 3.100: the strip scrolls sideways inside the plot (parked at
+        // the latest month). A planned label scrolled past the viewport
+        // keeps its layout box but paints nothing — only boxes that
+        // meet the viewport take part in the checks below.
+        let (b_left, b_right) = (f32::from(b.origin.x), f32::from(b.right()));
+        if b_right <= f32::from(plot.origin.x) - 0.01 || b_left >= f32::from(plot.right()) + 0.01
+        {
+            continue;
+        }
         let text = crate::flow::month_label(m);
         let text_w = shaped(cx, text.clone());
         assert!(
@@ -543,16 +563,16 @@ fn check_labels_fit(
         );
         if let Some(right) = prev_right {
             assert!(
-                f32::from(b.origin.x) >= right - 0.01,
-                "month {ix} ({text}) overlaps the previous label: {} < {right}",
-                f32::from(b.origin.x),
+                b_left >= right - 0.01,
+                "month {ix} ({text}) overlaps the previous label: {b_left} < {right}",
             );
         }
-        prev_right = Some(f32::from(b.origin.x) + f32::from(b.size.width));
+        prev_right = Some(b_right);
+        // 3.100: horizontally, a label may hang over a scroll fold —
+        // that is the strip's own scroll, not the plan cutting text.
+        // Vertically it must stay inside the plot.
         assert!(
-            f32::from(b.origin.x) >= f32::from(plot.origin.x) - 0.01
-                && f32::from(b.right()) <= f32::from(plot.right()) + 0.01
-                && f32::from(b.origin.y) >= f32::from(plot.origin.y) - 0.01
+            f32::from(b.origin.y) >= f32::from(plot.origin.y) - 0.01
                 && f32::from(b.bottom()) <= f32::from(plot.bottom()) + 0.01,
             "month {ix} ({text}) box {b:?} lies outside the plot {plot:?}",
         );

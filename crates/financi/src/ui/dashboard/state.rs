@@ -7,6 +7,7 @@
 
 use super::*;
 use crate::ui::page::{PageEntity, PageEvent, watch_catalog};
+use gpui_kit::base::dock::DockArea;
 
 /// Which parts of [`DashboardState`] changed (3.97): a bitset the
 /// panels filter their subscriptions with, mirroring
@@ -141,16 +142,17 @@ pub(crate) struct DashboardState {
     /// 3.93: the stacked chart's measured plot viewport width, used only
     /// to thin the month labels (see [`Self::set_stacks_plot_width`]).
     pub(in crate::ui) stacks_plot_w: f32,
-    /// 3.45: the page-level vertical scroller's handle. The scroll
-    /// position survives refreshes and filter changes (the handle lives
-    /// as long as the page); `set_visible` resets it to the top on page
-    /// entry.
-    pub(in crate::ui) page_scroll: ScrollHandle,
-    /// 3.45: the scroller's measured viewport height — the page minus the
-    /// pinned filter row — from the `bounds_height_probe` on the scroller's
-    /// wrapper. The transactions table's height, so it fills the view and
-    /// scrolls inside itself (mirrors `tx_panel_w`).
-    pub(in crate::ui) tx_panel_h: f32,
+    /// 3.100: the summary panel's own vertical scroller (it replaces the
+    /// old page scroller — the dock panels scroll inside themselves).
+    /// `set_visible` resets it to the top on page entry.
+    pub(in crate::ui) summary_rows_scroll: ScrollHandle,
+    /// 3.100: the panel dock entity — created on the first dashboard
+    /// paint (building it needs a window) and holding the 2×2 layout;
+    /// 3.101 dumps and loads the user's arrangement through it.
+    pub(in crate::ui) dock: Option<Entity<DockArea>>,
+    /// 3.100: the dock's subscriptions (the min-size clamp); live as
+    /// long as the dock.
+    pub(in crate::ui) _dock_subs: Vec<Subscription>,
     /// The [`ViewFilter`] the newest applied load ran with — the record
     /// of what produced the rows on screen (3.56). The pickers and the
     /// checkbox handlers keep it mirrored so it can be read directly.
@@ -443,8 +445,9 @@ impl DashboardState {
             stacks_drill: None,
             stacks_scroll: ScrollHandle::new(),
             stacks_plot_w: 0.,
-            page_scroll: ScrollHandle::new(),
-            tx_panel_h: 0.,
+            summary_rows_scroll: ScrollHandle::new(),
+            dock: None,
+            _dock_subs: Vec::new(),
             view_filter: ViewFilter::default(),
             date_preset_select,
             date_from_picker,
@@ -512,10 +515,11 @@ impl PageEntity for DashboardState {
         self.rule_offer = None;
         self.set_shown(visible);
         if visible {
-            // 3.45: a page entry starts at the top of the scrolling
-            // content; within a visit the position survives refreshes and
-            // filter changes (the handle is page-owned).
-            self.page_scroll.set_offset(gpui::Point::default());
+            // 3.100: with no page scroll, a page entry puts the summary
+            // panel's own scroller back at the top; within a visit the
+            // position survives refreshes and filter changes (the handle
+            // is page-owned).
+            self.summary_rows_scroll.set_offset(gpui::Point::default());
             self.apply_if_dirty(cx);
             self.set_focus_pending(true);
         }

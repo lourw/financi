@@ -6,6 +6,7 @@
 
 use super::*;
 use crate::ui::widgets::*;
+use gpui_kit::base::dock::{Panel, PanelEvent};
 
 /// Minimum horizontal gap between two neighbouring drawn band labels.
 pub(in crate::ui) const CHART_LABEL_GAP: f32 = 8.;
@@ -721,24 +722,14 @@ impl DashboardState {
                 )
             });
 
-        // 3.45: the chart takes its own full-width row above the summary
-        // (the old side-by-side 45/55 split is gone). The 340 px height
-        // stays explicit — the page scroller gives its children no height
-        // to fill — and `flex_none` keeps it at exactly that.
-        // 3.46: a selected month narrows the chart too, and the title says
-        // which month ("Spending by category · Oct 2026").
-        let title: SharedString = match self.filter.summary_month.as_deref() {
-            Some(m) => format!("Spending by category · {}", flow::month_label(m)).into(),
-            None => "Spending by category".into(),
-        };
-        panel(cx, true)
-            .w_full()
-            .h(px(340.))
-            .flex_none()
+        // 3.100: the dock owns the panel box, the title (including the
+        // selected-month suffix, 3.46 — the dock paints it) and the size;
+        // the panel content is the padded column below the title row.
+        v_flex()
+            .size_full()
             .min_w_0()
-            .debug_selector(|| "panel:chart".into())
+            .p_4()
             .gap_2()
-            .child(region_title(title))
             .child(chart)
             .child(legend)
             .into_any_element()
@@ -755,6 +746,8 @@ pub(in crate::ui::dashboard) struct ChartPanel {
     state: Entity<DashboardState>,
     /// The state subscription; lives as long as the panel.
     _subs: Subscription,
+    /// Dock focus handle (3.100: `Panel`'s `Focusable` bound).
+    focus: FocusHandle,
 }
 
 impl ChartPanel {
@@ -765,12 +758,41 @@ impl ChartPanel {
                 cx.notify();
             }
         });
-        Self { state, _subs }
+        Self {
+            state,
+            _subs,
+            focus: cx.focus_handle(),
+        }
     }
 }
 
 impl Render for ChartPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.state.update(cx, |state, cx| state.chart_panel(cx))
+    }
+}
+
+/// Dock plumbing (3.100): the focus handle and the `Panel` identity. The
+/// four panels are the dock's fixed set, so none of them is closable or
+/// zoomable — the grid is only ever moved and resized.
+impl Focusable for ChartPanel {
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
+        self.focus.clone()
+    }
+}
+
+impl EventEmitter<PanelEvent> for ChartPanel {}
+
+impl Panel for ChartPanel {
+    fn panel_name(&self) -> &'static str {
+        "chart"
+    }
+
+    fn closable(&self, _cx: &App) -> bool {
+        false
+    }
+
+    fn zoomable(&self, _cx: &App) -> bool {
+        false
     }
 }

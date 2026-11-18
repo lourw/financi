@@ -38,9 +38,10 @@ fn dashboard_table_columns_fit_every_page_width() {
 
 /// 3.86: the table's column widths follow the measured container. At
 /// 1200 × 720 and at 1600 × 900 the stored panel width equals the
-/// painted `panel:table` width, the columns the table renders sum to
-/// that measured width, and widening the window grows the flex columns
-/// — no `SIDEBAR_W` arithmetic in the plan.
+/// `panel:table` frame's content width, the columns the table renders at
+/// least fill it (below the columns' floor the table scrolls sideways),
+/// and widening the window grows the flex columns — no `SIDEBAR_W`
+/// arithmetic in the plan.
 #[gpui::test]
 fn the_dashboard_table_follows_the_measured_panel_at_1200_and_1600(cx: &mut TestAppContext) {
     let mut sums = Vec::new();
@@ -67,15 +68,18 @@ fn the_dashboard_table_follows_the_measured_panel_at_1200_and_1600(cx: &mut Test
                 .collect();
             (page.tx_panel_w, widths)
         });
+        // 3.100: `panel:table` is the dock frame; the probe measures the
+        // content inside the 6 px ring and the 1 px border — 14 px in all.
+        let content = painted - 14.;
         assert!(
-            (stored - painted).abs() <= 0.5,
-            "at {w}px the probe stored {stored:.1}px but `panel:table` \
-             painted {painted:.1}px",
+            (stored - content).abs() <= 0.5,
+            "at {w}px the probe stored {stored:.1}px but `panel:table`'s \
+             content is {content:.1}px (frame {painted:.1}px)",
         );
         assert!(
-            (widths.iter().sum::<f32>() + TABLE_BORDER_X - painted).abs() <= 0.5,
+            widths.iter().sum::<f32>() + TABLE_BORDER_X >= content - 0.5,
             "at {w}px the columns plus the table's 1 px borders sum to {} \
-             but the panel measured {painted:.1}px",
+             but the panel's content measures {content:.1}px",
             widths.iter().sum::<f32>() + TABLE_BORDER_X,
         );
         sums.push(widths[1]);
@@ -440,11 +444,13 @@ fn the_dashboard_filter_row_controls_share_one_centre_line(cx: &mut TestAppConte
     }
 }
 
-/// 3.25, 3.45 (dashboard layout): the filter region, the chart panel, the
-/// monthly summary and the table share the page's left and right edges
-/// exactly. The panels stack in their own rows — the summary's top sits at
-/// or under the chart's bottom edge, and the titles line up in one column
-/// reading top-to-bottom. At both window sizes.
+/// 3.25, 3.45, 3.100 (dashboard layout): the filter region spans the page's
+/// edges, and so do the dock's painted panel boxes: the left column's
+/// titles start at the page's left edge, the right column's end at its
+/// right edge (the 6 px rings cross the page padding — that is what the
+/// 12 px gutters are made of). The left column reads top-to-bottom: the
+/// summary's title sits below the chart's, in one aligned column. At both
+/// window sizes.
 #[gpui::test]
 fn the_dashboard_regions_share_the_page_edges(cx: &mut TestAppContext) {
     for (w, h) in [(1200., 720.), (1600., 1000.)] {
@@ -454,9 +460,8 @@ fn the_dashboard_regions_share_the_page_edges(cx: &mut TestAppContext) {
         let right = w - PAGE_PAD;
         for sel in [
             "filters:region",
-            "panel:chart",
-            "panel:summary",
-            "panel:table",
+            "dashboard:title:chart",
+            "dashboard:title:summary",
         ] {
             let b = window
                 .debug_bounds(sel)
@@ -469,9 +474,8 @@ fn the_dashboard_regions_share_the_page_edges(cx: &mut TestAppContext) {
         }
         for sel in [
             "filters:region",
-            "panel:chart",
-            "panel:summary",
-            "panel:table",
+            "dashboard:title:stacked",
+            "dashboard:title:table",
         ] {
             let b = window
                 .debug_bounds(sel)
@@ -632,137 +636,163 @@ fn the_chart_panel_starts_higher_now_the_filters_are_one_row(cx: &mut TestAppCon
     );
 }
 
-/// 3.45: the page scrolls — the chart, summary and table rows ride the
-/// page-level scroller while the filter row stays pinned at the top of
-/// the page. The wheel over the chart panel moves the page handle.
+/// 3.100: the dock replaced the page scroller — the page itself never
+/// scrolls. Wheeling over panels that fit their content moves nothing:
+/// the filter row stays pinned and the panels stay in their quadrants.
+/// (Panel-internal scrolling is the table's own, tested in *table*;
+/// the summary's own scroller is tested in *dock*.)
 #[gpui::test]
-fn the_page_scrolls_its_panels_beneath_a_pinned_filter_row(cx: &mut TestAppContext) {
+fn the_page_does_not_scroll_and_the_panels_stay_put(cx: &mut TestAppContext) {
     let (handle, shell) = open_dashboard_for_geometry(cx, 1200., 720.);
     settle(cx, handle);
     let chart_top = f32::from(bounds(cx, handle, "panel:chart").origin.y);
     let filters_top = f32::from(bounds(cx, handle, "filters:region").origin.y);
-    let at = viewport_centre(bounds(cx, handle, "panel:chart"));
-    wheel(cx, handle, at, 0., -120.);
-    draw_frame(cx, handle);
-    let off = cx.update(|cx| dash(cx, &shell).read(cx).page_scroll.offset().y);
-    assert!(off < px(0.), "the wheel scrolled the page scroller");
-    assert!(
-        f32::from(bounds(cx, handle, "panel:chart").origin.y) < chart_top - 40.,
-        "the chart row did not ride the page up"
-    );
+    for sel in ["panel:chart", "panel:stacked", "panel:summary"] {
+        let at = viewport_centre(bounds(cx, handle, sel));
+        wheel(cx, handle, at, 0., -120.);
+        draw_frame(cx, handle);
+    }
     assert_eq!(
         f32::from(bounds(cx, handle, "filters:region").origin.y),
         filters_top,
-        "the filter row stays pinned while the page scrolls"
-    );
-}
-
-/// 3.45: the scroll position survives a refresh and a filter change —
-/// the handle is page-owned and the reload re-renders the same scroller
-/// in place.
-#[gpui::test]
-fn the_page_scroll_survives_a_filter_change(cx: &mut TestAppContext) {
-    let (handle, shell) = open_dashboard_for_geometry(cx, 1200., 720.);
-    settle(cx, handle);
-    let at = viewport_centre(bounds(cx, handle, "panel:chart"));
-    wheel(cx, handle, at, 0., -120.);
-    draw_frame(cx, handle);
-    let scrolled = cx.update(|cx| dash(cx, &shell).read(cx).page_scroll.offset().y);
-    assert!(scrolled < px(0.), "the page is scrolled down");
-    with_window(cx, handle, |window, cx| {
-        dash(cx, &shell).update(cx, |d, cx| {
-            d.change_date_preset(DatePreset::Last12Months, window, cx)
-        })
-    });
-    wait_until(cx, "filter applied", |cx| {
-        dash(cx, &shell).read(cx).filter.date_range == DateRange::Preset(DatePreset::Last12Months)
-    });
-    wait_idle(cx, &shell);
-    settle(cx, handle);
-    let after = cx.update(|cx| dash(cx, &shell).read(cx).page_scroll.offset().y);
-    assert_eq!(
-        after, scrolled,
-        "the filter change and its reload kept the page's scroll position"
-    );
-}
-
-/// 3.45: entering the dashboard starts at the top of the scrolling
-/// content — the scroll only persists *within* a visit (above).
-#[gpui::test]
-fn entering_the_dashboard_starts_at_the_top_of_the_page(cx: &mut TestAppContext) {
-    let (handle, shell) = open_dashboard_for_geometry(cx, 1200., 720.);
-    settle(cx, handle);
-    let at = viewport_centre(bounds(cx, handle, "panel:chart"));
-    wheel(cx, handle, at, 0., -120.);
-    draw_frame(cx, handle);
-    let scrolled = cx.update(|cx| dash(cx, &shell).read(cx).page_scroll.offset().y);
-    assert!(scrolled < px(0.), "the page is scrolled down");
-    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Categories, cx)));
-    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
-    wait_idle(cx, &shell);
-    settle(cx, handle);
-    let off = cx.update(|cx| dash(cx, &shell).read(cx).page_scroll.offset().y);
-    assert_eq!(off, px(0.), "the revisit starts at the top");
-    assert!(
-        f32::from(bounds(cx, handle, "panel:table").origin.y) > 0.,
-        "the table is laid out from the top of the scroller"
-    );
-}
-
-/// 3.45: the wheel over the transactions table scrolls the table, not
-/// the page — the table container occludes, so the page handle never
-/// moves.
-#[gpui::test]
-fn wheel_over_the_table_scrolls_the_table_not_the_page(cx: &mut TestAppContext) {
-    let (handle, shell) = open_dashboard_for_geometry(cx, 1200., 720.);
-    settle(cx, handle);
-    let chart_top = f32::from(bounds(cx, handle, "panel:chart").origin.y);
-    let at = viewport_centre(bounds(cx, handle, "panel:table"));
-    wheel(cx, handle, at, 0., -120.);
-    draw_frame(cx, handle);
-    let off = cx.update(|cx| dash(cx, &shell).read(cx).page_scroll.offset().y);
-    assert_eq!(
-        off,
-        px(0.),
-        "the wheel over the table reached the page scroller"
+        "the filter row stays pinned while the wheel turns over the panels"
     );
     assert_eq!(
         f32::from(bounds(cx, handle, "panel:chart").origin.y),
         chart_top,
-        "the chart row did not move while the table scrolled"
+        "a panel rode the wheel — the page must not scroll (3.100)"
+    );
+    let off = cx.update(|cx| dash(cx, &shell).read(cx).summary_rows_scroll.offset().y);
+    assert_eq!(
+        off,
+        px(0.),
+        "the summary fits its panel, so its own scroller stays at the top"
     );
 }
 
-/// 3.45: the table's height is the viewport minus the pinned filter row
-/// (the measured mirror the layout applies) — it fills to the bottom of
-/// the window instead of sitting in a fixed-height row.
+/// 3.100: the default arrangement is the 2×2 — chart | monthly bars
+/// above summary | transactions — with 12 px gutters and every panel
+/// at or above its minimum, all inside a 1200 × 720 window.
 #[gpui::test]
-fn the_table_fills_the_viewport_below_the_filter_row(cx: &mut TestAppContext) {
+fn the_default_layout_is_a_two_by_two_with_gutters(cx: &mut TestAppContext) {
+    let (handle, _shell) = open_dashboard_for_geometry(cx, 1200., 720.);
+    settle(cx, handle);
+    let chart = bounds(cx, handle, "panel:chart");
+    let stacked = bounds(cx, handle, "panel:stacked");
+    let summary = bounds(cx, handle, "panel:summary");
+    let table = bounds(cx, handle, "panel:table");
+    let top = |b: gpui::Bounds<Pixels>| f32::from(b.origin.y);
+    assert!(
+        (top(chart) - top(stacked)).abs() <= 1.,
+        "chart and stacked are not on one row ({} vs {})",
+        top(chart),
+        top(stacked),
+    );
+    assert!(
+        (top(summary) - top(table)).abs() <= 1.,
+        "summary and table are not on one row ({} vs {})",
+        top(summary),
+        top(table),
+    );
+    assert!(
+        f32::from(chart.origin.x) < f32::from(stacked.origin.x),
+        "the chart is not the top-left panel"
+    );
+    assert!(
+        f32::from(summary.origin.x) < f32::from(table.origin.x),
+        "the summary is not the bottom-left panel"
+    );
+    assert!(
+        top(summary) > top(chart),
+        "the bottom row is not below the top row"
+    );
+    // The frames tile the dock (the divider straddles the seam), so the
+    // gutter is measured between the painted boxes: the chart's title
+    // row's right edge and the stacked panel's title row's left edge.
+    let chart_box = bounds(cx, handle, "dashboard:title:chart");
+    let stacked_box = bounds(cx, handle, "dashboard:title:stacked");
+    let gutter = f32::from(stacked_box.origin.x)
+        - (f32::from(chart_box.origin.x) + f32::from(chart_box.size.width));
+    assert!(
+        (gutter - 12.).abs() <= 1.,
+        "the gutter between the top-row panels is {gutter:.1} px, not 12 px"
+    );
+    // Every panel clears its minimum (240×160; the table 320×200) and
+    // the dock reaches the window's bottom-right corner (page padding
+    // 16 px, minus the 6 px the dock pulls back for its outer ring).
+    for (name, b, min_w, min_h) in [
+        ("chart", chart, 240., 160.),
+        ("stacked", stacked, 240., 160.),
+        ("summary", summary, 240., 160.),
+        ("table", table, 320., 200.),
+    ] {
+        let (w, h) = (f32::from(b.size.width), f32::from(b.size.height));
+        assert!(
+            w >= min_w && h >= min_h,
+            "{name} painted {w:.1}×{h:.1}, below its {min_w}×{min_h} minimum"
+        );
+    }
+    let bottom = top(table) + f32::from(table.size.height);
+    let right = f32::from(table.origin.x) + f32::from(table.size.width);
+    assert!(
+        (bottom - 710.).abs() <= 2.,
+        "the dock's bottom edge is at {bottom:.1}, not 710 (720 − 16 padding + 6 ring)"
+    );
+    assert!(
+        (right - 1190.).abs() <= 2.,
+        "the dock's right edge is at {right:.1}, not 1190 (1200 − 16 padding + 6 ring)"
+    );
+}
+
+/// 3.100: the wheel over the transactions table scrolls the table
+/// inside its own panel — the other panels do not move and the page
+/// does not scroll.
+#[gpui::test]
+fn wheel_over_the_table_scrolls_the_table_only(cx: &mut TestAppContext) {
     let (handle, shell) = open_dashboard_for_geometry(cx, 1200., 720.);
     settle(cx, handle);
-    let mut window = VisualTestContext::from_window(handle, cx);
-    let filters = window
-        .debug_bounds("filters:region")
-        .expect("the filter row paints");
-    let table = window
-        .debug_bounds("panel:table")
-        .expect("the table panel paints");
-    let table_h = f32::from(table.size.height);
-    // The box below the filter row: everything above it is pinned, and
-    // only the row's gap and the page's bottom padding come off the
-    // window height.
-    let below = 720. - (f32::from(filters.origin.y) + f32::from(filters.size.height));
-    assert!(
-        table_h <= below && table_h >= below - 48.,
-        "the table is {table_h:.1} px tall; the page leaves {below:.1} px \
-         below the filter row (viewport minus pinned row, gaps and padding)"
+    let chart_top = f32::from(bounds(cx, handle, "panel:chart").origin.y);
+    let summary_top = f32::from(bounds(cx, handle, "panel:summary").origin.y);
+    let at = viewport_centre(bounds(cx, handle, "panel:table"));
+    wheel(cx, handle, at, 0., -120.);
+    draw_frame(cx, handle);
+    assert_eq!(
+        f32::from(bounds(cx, handle, "panel:chart").origin.y),
+        chart_top,
+        "the chart moved while the table scrolled"
     );
-    // The stored mirror equals the painted height (the probe is wired).
-    let stored = cx.update(|cx| dash(cx, &shell).read(cx).tx_panel_h);
+    assert_eq!(
+        f32::from(bounds(cx, handle, "panel:summary").origin.y),
+        summary_top,
+        "the summary moved while the table scrolled"
+    );
+    let off = cx.update(|cx| dash(cx, &shell).read(cx).summary_rows_scroll.offset().y);
+    assert_eq!(off, px(0.), "the wheel over the table reached the summary");
+}
+
+/// 3.100: entering the dashboard resets the summary panel's own
+/// scroller — 3.45's page position is gone, and a page entry starts
+/// every panel at its top.
+#[gpui::test]
+fn entering_the_dashboard_starts_at_the_top_of_the_panels(cx: &mut TestAppContext) {
+    let (handle, shell) = open_dashboard_for_geometry(cx, 1200., 720.);
+    settle(cx, handle);
+    cx.update(|cx| {
+        dash(cx, &shell).update(cx, |d, _cx| {
+            d.summary_rows_scroll.set_offset(point(px(0.), px(-80.)));
+        })
+    });
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Categories, cx)));
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
+    wait_idle(cx, &shell);
+    settle(cx, handle);
+    let off = cx.update(|cx| dash(cx, &shell).read(cx).summary_rows_scroll.offset().y);
+    assert_eq!(off, px(0.), "the revisit starts the summary at the top");
     assert!(
-        (stored - table_h).abs() <= 0.5,
-        "the probe stored {stored:.1}px but `panel:table` painted {table_h:.1}px"
+        f32::from(bounds(cx, handle, "panel:table").origin.y) > 0.,
+        "the dock is laid out below the filter row"
     );
 }
 
 // -- categories page -------------------------------------------------------
+
