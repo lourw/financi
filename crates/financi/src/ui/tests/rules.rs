@@ -59,7 +59,8 @@ fn creating_a_rule_categorizes_matching_rows(cx: &mut TestAppContext) {
 }
 
 /// Type into the open editor's Pattern input (the same `set_value` a user's
-/// keystrokes end up as; it drives the live preview like a keystroke).
+/// keystrokes end up as; it drives the live preview like a keystroke, so
+/// the fake clock runs past the 150 ms debounce).
 fn set_edit_pattern(
     cx: &mut TestAppContext,
     handle: AnyWindowHandle,
@@ -76,6 +77,8 @@ fn set_edit_pattern(
             s.rules_page.update(cx, |p, cx| p.preview_rule_match(cx));
         });
     });
+    cx.executor().advance_clock(Duration::from_millis(160));
+    cx.run_until_parked();
 }
 
 /// Press the editor's Save — the same `save_rule_edit` the button calls.
@@ -128,12 +131,7 @@ fn the_rule_editor_is_prefilled_from_the_rule(cx: &mut TestAppContext) {
         "the editor paints its pattern field and Save"
     );
     wait_until(cx, "live match count for the edit", |cx| {
-        shell
-            .read(cx)
-            .rules_page
-            .read(cx)
-            .rule_match_count
-            .is_some()
+        shell.read(cx).rules_page.read(cx).pattern_preview.is_some()
     });
 }
 
@@ -666,15 +664,10 @@ fn the_rule_editor_gives_the_pattern_room(cx: &mut TestAppContext) {
 
     resize_and_draw(cx, handle, 1200., 720.);
     start_rule_edit(cx, handle, &shell, rule);
-    // The steady editor: preview count in, error none — the tallest the
+    // The steady editor: preview rows in, error none — the tallest the
     // no-error form grows.
     wait_until(cx, "the editor preview", |cx| {
-        shell
-            .read(cx)
-            .rules_page
-            .read(cx)
-            .rule_match_count
-            .is_some()
+        shell.read(cx).rules_page.read(cx).pattern_preview.is_some()
     });
     draw_frame(cx, handle);
 
@@ -734,12 +727,7 @@ fn the_add_rule_preview_stays_hidden_while_editing(cx: &mut TestAppContext) {
     let (handle, shell, rule, _first, _second) = open_rule_fixture(cx);
     start_rule_edit(cx, handle, &shell, rule);
     wait_until(cx, "the editor preview", |cx| {
-        shell
-            .read(cx)
-            .rules_page
-            .read(cx)
-            .rule_match_count
-            .is_some()
+        shell.read(cx).rules_page.read(cx).pattern_preview.is_some()
     });
     let mut window = VisualTestContext::from_window(handle, cx);
     draw_frame(cx, handle);
@@ -763,19 +751,127 @@ fn the_add_rule_preview_stays_hidden_while_editing(cx: &mut TestAppContext) {
             s.rules_page.update(cx, |p, cx| p.preview_rule_match(cx));
         });
     });
+    cx.executor().advance_clock(Duration::from_millis(160));
+    cx.run_until_parked();
     wait_until(cx, "the add-rule preview", |cx| {
-        shell
-            .read(cx)
-            .rules_page
-            .read(cx)
-            .rule_match_count
-            .is_some()
+        shell.read(cx).rules_page.read(cx).pattern_preview.is_some()
     });
     draw_frame(cx, handle);
     assert!(
         window.debug_bounds("cat:add-rule-preview").is_some(),
         "the add-rule row shows its own count once not editing"
     );
+}
+
+/// 3.103: fixture for the editor's preview — a rule `OLDPAT` and rows the
+/// draft `NEWPAT` matches (two it would decide, one locked), plus one row
+/// only the rule's own pattern matches. Returns
+/// `(rule, decides_a, decides_b, locked, own_row)`.
+fn seed_editor_preview_fixture(
+    conn: &financi_db::rusqlite::Connection,
+) -> (i64, i64, i64, i64, i64) {
+    let acct = create_account(conn, "amex", "Cobalt", AccountKind::CreditCard).unwrap();
+    conn.execute(
+        "INSERT INTO imports (account_id, parser_id, file_name, imported_at, header_raw,
+                              encoding, has_bom, line_ending, trailing_newline, row_count)
+         VALUES (?1, 'amex', 'seed.csv', '2026-11-01', X'00', 'utf-8', 0, 'lf', 0, 4)",
+        [acct],
+    )
+    .unwrap();
+    let import = conn.last_insert_rowid();
+    let drinks =
+        financi_db::categories::create_parent(conn, "Drinks", CategoryKind::Expense).unwrap();
+    let first = financi_db::categories::create_child(conn, drinks, "First").unwrap();
+    let insert = |n: i64, desc: &str| -> i64 {
+        conn.execute(
+            "INSERT INTO transactions (account_id, import_id, source_line, raw_bytes,
+                                       row_hash, posted_date, amount_cents, description_raw)
+             VALUES (?1, ?2, ?3, X'00', ?4, '2026-11-01', -1000, ?5)",
+            (acct, import, n, format!("edprev-hash-{n}"), desc),
+        )
+        .unwrap();
+        conn.last_insert_rowid()
+    };
+    let a = insert(0, "NEWPAT ONE");
+    let b = insert(1, "NEWPAT TWO");
+    let locked = insert(2, "NEWPAT LOCKED");
+    let own = insert(3, "OLDPAT ROW");
+    let rule = financi_db::rules::add_rule(conn, "OLDPAT", false, first).unwrap();
+    conn.execute(
+        "UPDATE transactions SET category_locked = 1 WHERE id = ?1",
+        [locked],
+    )
+    .unwrap();
+    (rule, a, b, locked, own)
+}
+
+/// 3.103: the editor previews the draft with the edited rule excluded —
+/// rows its own pattern matches drop out, the summary counts only what
+/// the edit would newly move, and a locked row previews tagged.
+#[gpui::test]
+fn the_editor_preview_excludes_the_edited_rule(cx: &mut TestAppContext) {
+    let mut ids = (0i64, 0i64, 0i64, 0i64, 0i64);
+    let (handle, shell) = open_shell(cx, |c| ids = seed_editor_preview_fixture(c));
+    let (rule, a, b, locked, own) = ids;
+    wait_until(cx, "the fixture loaded", |cx| {
+        shell.read(cx).rules.len() == 1
+    });
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Rules, cx)));
+    start_rule_edit(cx, handle, &shell, rule);
+    // The pre-filled draft is the rule's own pattern: every row it matches
+    // is excluded, so the editor opens on "No transactions match".
+    wait_until(cx, "the editor preview", |cx| {
+        shell
+            .read(cx)
+            .rules_page
+            .read(cx)
+            .pattern_preview
+            .as_deref()
+            .is_some_and(|p| p.rows.is_empty())
+    });
+    draw_frame(cx, handle);
+    assert!(
+        paints(cx, handle, "rules:preview-empty"),
+        "the edited rule's own rows are not counted"
+    );
+    set_edit_pattern(cx, handle, &shell, "NEWPAT");
+    wait_until(cx, "the new preview", |cx| {
+        shell
+            .read(cx)
+            .rules_page
+            .read(cx)
+            .pattern_preview
+            .as_deref()
+            .is_some_and(|p| p.total == 3 && p.decides == 2)
+    });
+    draw_frame(cx, handle);
+    assert!(
+        paints(cx, handle, "rules:edit-preview"),
+        "the editor's summary counts what the edit would newly categorize"
+    );
+    for id in [a, b] {
+        assert!(
+            paints(cx, handle, format!("rules:preview-row:{id}")),
+            "the draft's row {id} previews"
+        );
+    }
+    assert!(
+        paints(cx, handle, format!("rules:preview-tag:{locked}")),
+        "the locked row previews with its tag"
+    );
+    assert!(
+        !paints(cx, handle, format!("rules:preview-row:{own}")),
+        "the edited rule's own row stays out of the preview"
+    );
+    // Closing the editor takes the preview with it.
+    with_window(cx, handle, |_window, cx| {
+        shell.update(cx, |s, cx| {
+            s.rules_page.update(cx, |p, cx| p.cancel_edit_rule(cx))
+        });
+    });
+    wait_until(cx, "the preview cleared", |cx| {
+        shell.read(cx).rules_page.read(cx).pattern_preview.is_none()
+    });
 }
 
 /// 3.24: Cancel and Escape both close the editor without touching the
@@ -949,12 +1045,7 @@ fn selecting_another_category_cancels_the_rule_editor(cx: &mut TestAppContext) {
     let (handle, shell, rule, first, _second) = open_rule_fixture(cx);
     start_rule_edit(cx, handle, &shell, rule);
     wait_until(cx, "the editor preview", |cx| {
-        shell
-            .read(cx)
-            .rules_page
-            .read(cx)
-            .rule_match_count
-            .is_some()
+        shell.read(cx).rules_page.read(cx).pattern_preview.is_some()
     });
     with_window(cx, handle, |window, cx| {
         shell.update(cx, |s, cx| s.select_category(first, window, cx));
@@ -968,7 +1059,7 @@ fn selecting_another_category_cancels_the_rule_editor(cx: &mut TestAppContext) {
             "selecting a category cancels the edit"
         );
         assert!(
-            s.rules_page.read(cx).rule_match_count.is_none(),
+            s.rules_page.read(cx).pattern_preview.is_none(),
             "closing the editor clears the shared preview count"
         );
         assert_eq!(s.rules[0].pattern, "COFFEE");
@@ -1052,12 +1143,7 @@ fn the_armed_rule_delete_is_transient(cx: &mut TestAppContext) {
     // in one go.
     start_rule_edit(cx, handle, &shell, rule);
     wait_until(cx, "the editor preview", |cx| {
-        shell
-            .read(cx)
-            .rules_page
-            .read(cx)
-            .rule_match_count
-            .is_some()
+        shell.read(cx).rules_page.read(cx).pattern_preview.is_some()
     });
     with_window(cx, handle, |window, cx| {
         shell.update(cx, |s, cx| {
@@ -1074,7 +1160,7 @@ fn the_armed_rule_delete_is_transient(cx: &mut TestAppContext) {
             "the page switch closed the editor"
         );
         assert!(
-            s.rules_page.read(cx).rule_match_count.is_none(),
+            s.rules_page.read(cx).pattern_preview.is_none(),
             "and cleared the shared preview count"
         );
         assert_eq!(

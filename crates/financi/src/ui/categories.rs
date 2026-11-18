@@ -1515,7 +1515,8 @@ impl Render for CategoriesPage {
         let editing = rp.editing_rule;
         let rule_error = rp.rule_error.clone();
         let edit_error = rule_error.is_some();
-        let rule_match_count = rp.rule_match_count;
+        // 3.103: the editor row grows by its preview's height.
+        let preview_extra = rp.editor_preview_extra_h();
         let rule_pattern = rp.rule_pattern.clone();
         let rule_regex = rp.rule_regex;
         let add_pending = rp.rule_action_pending(PendingRuleAction::Add);
@@ -1544,15 +1545,14 @@ impl Render for CategoriesPage {
                 .map(|r| {
                     if Some(r.id) == editing {
                         // 3.48: the editor's reserved height is shared
-                        // with the Rules page (see `RULE_EDITOR_H`).
-                        size(
-                            px(0.),
-                            if edit_error {
-                                px(RULE_EDITOR_ERROR_H)
-                            } else {
-                                px(RULE_EDITOR_H)
-                            },
-                        )
+                        // with the Rules page (see `RULE_EDITOR_H`);
+                        // 3.103 adds the preview block's height.
+                        let h = if edit_error {
+                            RULE_EDITOR_ERROR_H
+                        } else {
+                            RULE_EDITOR_H
+                        };
+                        size(px(0.), px(h + preview_extra))
                     } else {
                         size(px(0.), px(24.))
                     }
@@ -1560,14 +1560,35 @@ impl Render for CategoriesPage {
                 .collect::<Vec<_>>(),
         );
 
-        let preview = match rule_match_count.filter(|_| editing.is_none()) {
-            Some(n) => div()
-                .text_sm()
-                .text_color(muted)
-                .debug_selector(|| "cat:add-rule-preview".into())
-                .child(format!("matches {} transactions", flow::count(n)))
-                .into_any_element(),
-            None => div().into_any_element(),
+        // 3.103: the add form's match summary, in the form's second line at
+        // the right; while a row's editor is open the preview belongs to it
+        // (like `rule_error`), so the add form shows nothing.
+        let add_summary = rp
+            .pattern_preview
+            .clone()
+            .filter(|_| editing.is_none())
+            .map(|preview| {
+                div()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .text_sm()
+                    .text_color(muted)
+                    .debug_selector(|| "cat:add-rule-preview".into())
+                    .child(format!(
+                        "Matches {} transactions · {} would move here",
+                        flow::count(preview.total),
+                        flow::count(preview.decides)
+                    ))
+            });
+        // 3.103: the live match preview under the form — the rows the editor
+        // shows too, or "No transactions match", or the bad-regex words in
+        // place of the rows. Empty pattern or a first read in flight:
+        // nothing.
+        let add_preview = if editing.is_none() {
+            pattern_preview_block(rp, &self.rules_page, "cat", None, cx)
+        } else {
+            div().into_any_element()
         };
 
         // Detail panel: the selected category, or the prompt to pick one.
@@ -1614,10 +1635,8 @@ impl Render for CategoriesPage {
                         .unwrap_or(0);
                     let (trigger_w, menu_w) = subcategory_widths(longest);
                     Some(
-                        v_flex()
+                        div()
                             .flex_shrink_0()
-                            .gap_1()
-                            .child(field_label(muted, "Subcategory"))
                             .child(subcategory_select(
                                 &cat_rule_target,
                                 "cat-add",
@@ -1939,84 +1958,148 @@ impl Render for CategoriesPage {
                                         .child("Add a subcategory first"),
                                 )
                             })
-                            // Add-rule group (3.16): labelled fields; the
-                            // pattern column is the flex one, so the row
-                            // fits the panel's width. The pattern input, the
-                            // regex switch and the pending flag are the
-                            // shell's — the same add-rule flow the Rules
-                            // page drives, through the 3.81 handle.
+                            // Add-rule form (3.103): the 3.48 editor's
+                            // shape — a two-line bordered `inline_form`.
+                            // Line 1 is the "Pattern" label over the full
+                            // width input; line 2 is one `items_center`
+                            // row of the controls with no labels: the
+                            // regex switch at the left, then the
+                            // subcategory picker when the selection is a
+                            // parent (3.53's rules unchanged: a
+                            // subcategory selection adds no picker — the
+                            // form targets it), and the match summary and
+                            // Add rule pushed right. `items_center` lines
+                            // the controls up on its own — no 3.42
+                            // `control_slot`. The live preview sits under
+                            // the form. The pattern input, the regex
+                            // switch and the pending flag are the Rules
+                            // page's — the same add flow the Rules page
+                            // drives (3.80/3.81).
                             .when(!childless_parent, |section| {
                                 section
                                     .child(
-                                        h_flex()
-                                            .gap_2()
-                                            .items_end()
+                                        inline_form(cx)
                                             .debug_selector(|| "cat:add-rule-row".into())
                                             .child(
                                                 v_flex()
-                                                    .flex_1()
-                                                    .min_w_0()
-                                                    .gap_1()
-                                                    .child(field_label(muted, "Pattern"))
+                                                    .w_full()
+                                                    .gap_2()
+                                                    // Line 1: the label
+                                                    // over the input, at
+                                                    // the form's full
+                                                    // width.
                                                     .child(
-                                                        div().w_full().debug_selector(|| {
-                                                            "cat:pattern-input:add".into()
-                                                        }).child(Input::new(&rule_pattern)),
+                                                        v_flex()
+                                                            .gap_1()
+                                                            .child(field_label(muted, "Pattern"))
+                                                            .child(
+                                                                div().w_full().debug_selector(
+                                                                    || {
+                                                                        "cat:pattern-input:add"
+                                                                            .into()
+                                                                    },
+                                                                ).child(Input::new(
+                                                                    &rule_pattern,
+                                                                )),
+                                                            ),
+                                                    )
+                                                    // Line 2: the
+                                                    // controls, no
+                                                    // labels.
+                                                    .child(
+                                                        h_flex()
+                                                            .w_full()
+                                                            .gap_2()
+                                                            .items_center()
+                                                            .child(
+                                                                div()
+                                                                    .flex_shrink_0()
+                                                                    // 3.42's probe selector:
+                                                                    // the alignment test
+                                                                    // measures the switch
+                                                                    // itself, not the row.
+                                                                    .debug_selector(|| {
+                                                                        "cat:switch:add".into()
+                                                                    })
+                                                                    .child(
+                                                                        Switch::new("rule-regex")
+                                                                            .label("regex")
+                                                                            .checked(rule_regex)
+                                                                            // 3.103: a toggle
+                                                                            // re-runs the
+                                                                            // preview at once.
+                                                                            .on_click({
+                                                                                let page =
+                                                                                    self
+                                                                                        .rules_page
+                                                                                        .clone();
+                                                                                move |
+                                                                                    checked: &bool,
+                                                                                    _,
+                                                                                    cx| {
+                                                                                    page.update(
+                                                                                        cx,
+                                                                                        |p, cx| {
+                                                                                            p.rule_regex =
+                                                                                                *checked;
+                                                                                            p.run_pattern_preview(cx);
+                                                                                            cx.notify();
+                                                                                        },
+                                                                                    );
+                                                                                }
+                                                                            }),
+                                                                    ),
+                                                            )
+                                                            .children(sub_picker)
+                                                            .child(
+                                                                h_flex()
+                                                                    .ml_auto()
+                                                                    .min_w_0()
+                                                                    .gap_2()
+                                                                    .items_center()
+                                                                    .children(add_summary)
+                                                                    .child(
+                                                                        Button::new("add-rule")
+                                                                            .label("Add rule")
+                                                                            .primary()
+                                                                            .flex_shrink_0()
+                                                                            // 3.42: the alignment test measures its centre.
+                                                                            .debug_selector(|| {
+                                                                                "cat:add-rule-btn:add"
+                                                                                    .into()
+                                                                            })
+                                                                            // 3.40: loading + disabled while the add runs.
+                                                                            .loading(add_pending)
+                                                                            .disabled(add_pending)
+                                                                            .on_click(cx.listener(
+                                                                                |this,
+                                                                                _,
+                                                                                window,
+                                                                                cx| {
+                                                                                    if let Some(
+                                                                                        shell,
+                                                                                    ) =
+                                                                                        this.shell
+                                                                                            .upgrade()
+                                                                                    {
+                                                                                        shell.update(
+                                                                                            cx,
+                                                                                            |shell,
+                                                                                             cx| {
+                                                                                                shell.add_rule_to_selected(
+                                                                                                    window, cx,
+                                                                                                );
+                                                                                            },
+                                                                                        );
+                                                                                    }
+                                                                                },
+                                                                            )),
+                                                                    ),
+                                                            ),
                                                     ),
-                                            )
-                                            .child(
-                                                // 3.42: control-height slot, centred.
-                                                control_slot(
-                                                    "cat:regex-slot:add".into(),
-                                                    "cat:switch:add".into(),
-                                                    Switch::new("rule-regex")
-                                                        .label("regex")
-                                                        .checked(rule_regex)
-                                                        // 3.80: the add row's controls live on
-                                                        // the Rules page; the handler updates
-                                                        // the entity directly.
-                                                        .on_click({
-                                                            let page = self.rules_page.clone();
-                                                            move |checked: &bool, _, cx| {
-                                                                page.update(cx, |p, cx| {
-                                                                    p.rule_regex = *checked;
-                                                                    p.preview_rule_match(cx);
-                                                                    cx.notify();
-                                                                });
-                                                            }
-                                                        }),
-                                                ),
-                                            )
-                                            // 3.53: a parent selection adds
-                                            // the picker over its own children
-                                            // (`sub_picker`, built above); a
-                                            // subcategory selection adds no
-                                            // picker — the row targets it.
-                                            .children(sub_picker)
-                                            .child(
-                                                Button::new("add-rule")
-                                                    .label("Add rule")
-                                                    .primary()
-                                                    .flex_shrink_0()
-                                                    // 3.42: the alignment test measures its centre.
-                                                    .debug_selector(|| {
-                                                        "cat:add-rule-btn:add".into()
-                                                    })
-                                                    // 3.40: loading + disabled while the add runs.
-                                                    .loading(add_pending)
-                                                    .disabled(add_pending)
-                                                    .on_click(cx.listener(|this, _, window, cx| {
-                                                        if let Some(shell) = this.shell.upgrade() {
-                                                            shell.update(cx, |shell, cx| {
-                                                                shell.add_rule_to_selected(
-                                                                    window, cx,
-                                                                );
-                                                            });
-                                                        }
-                                                    })),
                                             ),
                                     )
-                                    .child(preview)
+                                    .child(add_preview)
                             })
                             .children(
                                 rule_error
