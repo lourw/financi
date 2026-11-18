@@ -561,8 +561,8 @@ impl Shell {
                 cx,
             )
         });
-        // 3.97: the view entity over the state — the panels join it in
-        // the next step of the refactor.
+        // 3.97: the view entity over the state; it owns the four panel
+        // entities.
         let dashboard_view = cx.new(|cx| DashboardPage::new(dashboard.clone(), cx));
         // 3.79: the one page → `Shell` listener: toasts, reloads, page
         // resets and navigation arrive as `PageEvent`s on the page's own

@@ -5,6 +5,7 @@
 
 use super::dashboard::dash;
 use super::*;
+use crate::ui::dashboard::DashboardChanges;
 
 /// The names recorded since the last `clear`.
 fn logged(cx: &App, shell: &Entity<Shell>) -> Vec<String> {
@@ -214,10 +215,11 @@ fn caches_rebuild_only_when_their_inputs_change(cx: &mut TestAppContext) {
         r0 >= 1 && c0 >= 1 && l0 >= 1,
         "the launch load built every cache ({r0}, {c0}, {l0})"
     );
-    // An unrelated notify and repaint rebuild nothing: the caches live in
-    // `merge`, not in a render path.
+    // An unrelated change report and a real repaint rebuild nothing: the
+    // caches live in `merge`, not in a render path. MEASURED repaints
+    // every dashboard panel and invalidates no cache.
     with_window(cx, handle, |_window, cx| {
-        dash(cx, &shell).update(cx, |_d, cx| cx.notify());
+        dash(cx, &shell).update(cx, |d, cx| d.changed(DashboardChanges::MEASURED, cx));
     });
     draw_frame(cx, handle);
     assert_eq!(counts(cx), (r0, c0, l0), "a repaint rebuilt something");

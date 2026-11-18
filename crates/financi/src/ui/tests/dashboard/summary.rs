@@ -249,9 +249,12 @@ fn summary_views_are_built_once_per_load_and_never_per_repaint(cx: &mut TestAppC
     let built = |cx: &App| dash(cx, &shell).read(cx).summary_views_built.get();
     let before = cx.update(|cx| built(cx));
     assert!(before > 0, "the first painted frame built the views");
-    // An unrelated notify and a repaint rebuild nothing: the grid paints
-    // the cached views (3.85).
-    cx.update(|cx| dash(cx, &shell).update(cx, |_, cx| cx.notify()));
+    // An unrelated change report and a repaint rebuild nothing: the grid
+    // paints the cached views (3.85). MEASURED is what a bounds probe
+    // reports — it repaints every panel and invalidates no cache.
+    cx.update(|cx| {
+        dash(cx, &shell).update(cx, |d, cx| d.changed(DashboardChanges::MEASURED, cx));
+    });
     draw_frame(cx, handle);
     cx.update(|cx| {
         assert_eq!(built(cx), before, "a repaint must not rebuild views");

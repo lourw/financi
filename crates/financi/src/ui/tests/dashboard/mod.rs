@@ -6,7 +6,7 @@
 //! New tests go next to related ones in the right sub-file.
 
 use super::*;
-use crate::ui::dashboard::DashboardState;
+use crate::ui::dashboard::{DashboardChanges, DashboardState};
 
 mod accounts;
 mod chart;

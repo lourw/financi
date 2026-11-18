@@ -78,9 +78,12 @@ fn table_cells_are_built_once_per_load_and_never_per_repaint(cx: &mut TestAppCon
     };
     let before = cx.update(|cx| built(cx));
     assert!(before > 0, "the first load built the cells");
-    // An unrelated notify and a repaint rebuild nothing: the cells live
-    // in the delegate, not in `render_td` (3.85).
-    cx.update(|cx| dash(cx, &shell).update(cx, |_, cx| cx.notify()));
+    // An unrelated change report and a repaint rebuild nothing: the
+    // cells live in the delegate, not in `render_td` (3.85). MEASURED
+    // repaints every panel and invalidates no cache.
+    cx.update(|cx| {
+        dash(cx, &shell).update(cx, |d, cx| d.changed(DashboardChanges::MEASURED, cx));
+    });
     draw_frame(cx, handle);
     cx.update(|cx| {
         assert_eq!(built(cx), before, "a repaint must not rebuild cells");
