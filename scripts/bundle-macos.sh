@@ -17,8 +17,10 @@ cargo build --release -p financi
 # The version the app itself shows (3.39): build.rs bakes in
 # `git describe --tags`; CFBundleShortVersionString wants digits only, so
 # keep the tag minus the leading v and any -N-g<hash> suffix, falling back
-# to the package version when git has nothing.
-version=$(git describe --tags --always 2>/dev/null | sed 's/^v//' | cut -d- -f1)
+# to the package version when git has nothing. The `|| true` keeps
+# `set -o pipefail` from aborting the script when git is missing — the
+# empty result is what reaches the check below.
+version=$(git describe --tags --always 2>/dev/null | sed 's/^v//' | cut -d- -f1 || true)
 if [ -z "$version" ]; then
     version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)
 fi
