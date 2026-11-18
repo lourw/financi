@@ -2652,3 +2652,61 @@ are `.ghost().text_xs()` at medium size; `.text_xs()` there is inert
 (button sets button_text_size itself). ui-conventions.md wants list-row
 buttons `xsmall` `ghost` — open task to make them xsmall (touches 3.43
 metric tests).
+
+- [x] **3.100 The dashboard is a dock of resizable, movable panels.**
+  The four panels stacked in one scrolling column (chart, monthly bars,
+  summary, transactions) aren't usable: the user wants to rearrange
+  them and resize them both ways (user request, 2026-11-17). Two related
+  reports from the same day are fixed here too: the panels touch with no
+  gap between them, and the dashboard has no scrollbar.
+  - **Component:** gpui-base's dock (`gpui_base::dock`: `DockArea`,
+    `DockLayout`, `PaneTree`, `TabGroup`, the `Panel` trait; module docs
+    in `gpui-base-0.9.0/src/dock/mod.rs`). It supplies splits with
+    draggable dividers, drag-and-drop of panels into other splits or tab
+    groups, and keyboard handling. We supply the appearance through
+    `DockAreaRenderer` / `TabGroupRenderer`. Don't hand-roll splits.
+  - **Default layout** (the user's pick): a vertical split of two rows,
+    top row Chart | Monthly bars, bottom row Summary | Transactions, all
+    halves 50 %. The filter row stays pinned above the dock, outside it.
+  - **Appearance:** each panel keeps the `Panel` look (border, radius,
+    `region_title`). The title row is the drag handle (`cursor_grab`).
+    Gutters between panels are 12 px (`gap_3`, "between page regions"),
+    with the divider's hit area in the gutter and a `border` colored
+    line on hover or drag. The drop indicator is a `list_active` overlay
+    of the target half or tab. Tabs appear only when two panels share a
+    group: a `text_xs` tab strip in the title row.
+  - **No page scroll:** the dashboard scroller and its
+    `bounds_height_probe` go away, and the dock fills the space under
+    the filter row. Each panel scrolls inside itself when its content is
+    taller (summary rows, legend, stacked months sideways; the table
+    already does), with gpui-base's `Scrollbar` always visible while the
+    content overflows. That answers "no scrollbar on the dashboard" now,
+    without waiting for 3.26.
+  - **Minimum sizes:** a panel can't be dragged smaller than 240 × 160
+    (the table 320 × 200). Dividers stop there. Everything must still
+    fit at 1200 × 720.
+  - **Gaps trap:** the missing gap came from `.gap_3()` on the old
+    scroller, which wasn't a flex container (GPUI applies `gap` only to
+    flex and grid). Grep `ui/` for other `.gap_*` calls on non-flex divs
+    and fix them; add the pitfall to `docs/tasks/gpui.md`.
+  - Update the *Dashboard* paragraph and *Layout* section of
+    `ui-conventions.md` (dock, gutters, drag handle, per-panel scroll)
+    and the *Dashboard* list in `plan.md`.
+  - Tests (`ui/tests/dashboard/layout.rs`, plus a `dock.rs`): the
+    default layout puts the four panels in a 2 × 2 grid with 12 px
+    between neighbours (bounds) at 1200 × 720 and 1600 × 1000; dragging
+    the vertical divider widens one half and narrows the other, and stops at
+    the minimum; dragging the Summary title onto the Chart's right half
+    moves it there; dropping it on the Chart's title makes a tab group
+    and switching tabs shows each panel; a summary with 40 rows shows a
+    scrollbar inside `panel:summary` and the amounts don't sit under it;
+    filters, drill-down and selection still reach every panel after a
+    move.
+
+Follow-ups (3.100 review, 2026-11-18):
+- categories.rs:2211 `v_virtual_list(...).gap_1()` — gap is a no-op on a virtual
+  list's manual layout; remove or convert to row padding (categories lane).
+- 3.101: persistence via DockArea::dump()/load() + register_panel for the four
+  panel names; default_layout lives in ui/dashboard/dock.rs.
+- 3.26: per-Scrollbar .mode(Always) is set locally on the dashboard panels;
+  the app-wide ScrollbarTheme mode change is still 3.26's job.
