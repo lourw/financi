@@ -79,7 +79,7 @@ fn account_labels(accounts: &[Account]) -> Vec<String> {
         .collect()
 }
 
-impl DashboardPage {
+impl DashboardState {
     /// 3.46: the filter chips row (ui-conventions *Interaction*): each
     /// narrowing filter the row itself doesn't show — the category and
     /// month selections, the search term and "Uncategorized only" — is a

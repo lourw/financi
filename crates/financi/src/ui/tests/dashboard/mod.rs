@@ -6,7 +6,7 @@
 //! New tests go next to related ones in the right sub-file.
 
 use super::*;
-use crate::ui::dashboard::DashboardPage;
+use crate::ui::dashboard::DashboardState;
 
 mod accounts;
 mod chart;
@@ -15,7 +15,7 @@ mod chart;
 // accessor instead of `shell.read(cx).dashboard`, and drive its handlers on
 // the page entity. Shell stays free whenever a test updates an entity, so
 // a handler that forwards to Shell (a toast, a page switch) works.
-pub(super) fn dash<C: gpui::AppContext>(cx: &C, shell: &Entity<Shell>) -> Entity<DashboardPage> {
+pub(super) fn dash<C: gpui::AppContext>(cx: &C, shell: &Entity<Shell>) -> Entity<DashboardState> {
     shell.read_with(cx, |s, _| s.dashboard.clone())
 }
 mod chart_labels;

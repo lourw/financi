@@ -1,4 +1,6 @@
-//! The page's `Render` impl (3.35, 3.82).
+//! The page's render (3.35, 3.82): the body lives on the shared state
+//! as [`DashboardState::render_dashboard`] (3.97), and the thin view
+//! entity in [`entity`](super::entity) forwards to it.
 
 use super::*;
 use crate::ui::dashboard_filters::{
@@ -6,8 +8,16 @@ use crate::ui::dashboard_filters::{
 };
 use crate::ui::page::Cancel;
 
-impl Render for DashboardPage {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+impl DashboardState {
+    /// The whole page body (3.97): the filter row, the chips and the
+    /// panel stack, painted from the shared state. Called by
+    /// [`DashboardPage`]'s `Render` impl; it returns `AnyElement`
+    /// because the body's shape (empty state vs. scroller) varies.
+    pub(in crate::ui) fn render_dashboard(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         // 3.82: the page takes focus on the frame it is first shown, like
         // the other extracted pages — deferred so no element is borrowed
         // while the focus moves, and only once (D5).

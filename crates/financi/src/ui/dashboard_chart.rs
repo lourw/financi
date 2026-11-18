@@ -306,7 +306,7 @@ pub(crate) struct StackSegment {
 ///
 /// `categories` is the category tree: the summary's rows are parents
 /// each followed by their children, and only the tree says which is
-/// which (the same lookup as [`DashboardPage::parent_of`]).
+/// which (the same lookup as [`DashboardState::parent_of`]).
 pub(crate) fn monthly_stacks(
     summary: &MonthlySummary,
     drill: Option<i64>,
@@ -443,7 +443,7 @@ pub(super) struct StackColPaint {
     pub(super) segments: Vec<StackSegPaint>,
 }
 
-impl DashboardPage {
+impl DashboardState {
     /// Click a legend row (3.5). A parent at the top level drills the chart
     /// and legend into its children and filters the table to that parent;
     /// a child filters the table to itself, and clicking the selected child
@@ -491,7 +491,7 @@ impl DashboardPage {
         // the selection (the chips and Clear all take the month).
         // 3.65: the legend highlight paints with this click, not with the
         // answer (the rows and totals are the only part that waits).
-        cx.notify();
+        self.changed(DashboardChanges::SELECTION, cx);
         self.reload(cx);
     }
     /// Click a monthly summary cell (3.6): narrow the table to that
@@ -533,7 +533,7 @@ impl DashboardPage {
             self.sync_chart_to_selection();
         }
         // 3.65: the cell and legend highlights paint with this click.
-        cx.notify();
+        self.changed(DashboardChanges::SELECTION, cx);
         self.reload(cx);
     }
     /// Move the chart so a selection made outside the legend (a summary
@@ -580,7 +580,7 @@ impl DashboardPage {
         } else {
             Some(month.to_string())
         };
-        cx.notify();
+        self.changed(DashboardChanges::SELECTION, cx);
         self.reload(cx);
     }
     /// The id of `id`'s parent in the category tree, `None` for a
@@ -685,7 +685,7 @@ impl DashboardPage {
     }
 }
 
-impl DashboardPage {
+impl DashboardState {
     /// The plot's width the last probe measured (3.86): the `chart:plot`
     /// container's own laid-out width, reported from its `bounds_probe`
     /// as the view tree paints. `0.` until the first frame has measured
@@ -701,7 +701,7 @@ impl DashboardPage {
             return;
         }
         self.plot_w = w;
-        cx.notify();
+        self.changed(DashboardChanges::MEASURED, cx);
     }
     /// Store a freshly measured table-container width (3.86, from the
     /// probe on `panel:table`) and re-flex the table's columns to it —
@@ -716,7 +716,7 @@ impl DashboardPage {
             t.delegate_mut().flex_widths = flex;
             t.refresh(cx);
         });
-        cx.notify();
+        self.changed(DashboardChanges::MEASURED, cx);
     }
     /// Store the page scroller's measured viewport height (3.45, from the
     /// `bounds_height_probe` on its wrapper): the transactions table's
@@ -728,7 +728,7 @@ impl DashboardPage {
             return;
         }
         self.tx_panel_h = h;
-        cx.notify();
+        self.changed(DashboardChanges::MEASURED, cx);
     }
     /// The chart's label plan (3.15) for the measured plot: how many
     /// characters a band label may use and how many labels are drawn.
@@ -1100,7 +1100,7 @@ impl DashboardPage {
             return;
         }
         self.stacks_plot_w = w;
-        cx.notify();
+        self.changed(DashboardChanges::MEASURED, cx);
     }
     /// The stacked bars' shaped months (3.93), from the cached summary —
     /// rebuilt when the summary, the tree or the chart's drill level
@@ -1806,7 +1806,7 @@ impl DashboardPage {
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                             if let Some(id) = id {
                                 this.toggle_summary_parent(id);
-                                cx.notify();
+                                this.changed(DashboardChanges::SELECTION, cx);
                             }
                         }))
                 })

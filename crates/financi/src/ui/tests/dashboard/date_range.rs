@@ -10,7 +10,7 @@ fn shell_starts_on_the_default_last_three_months(cx: &mut TestAppContext) {
     wait_until(cx, "default date range restored", |cx| {
         dash(cx, &shell).read(cx).view_filter.from > ViewFilter::default().from
     });
-    let (from, to) = preset_range(DatePreset::Last3Months, DashboardPage::today());
+    let (from, to) = preset_range(DatePreset::Last3Months, DashboardState::today());
     let state = cx.update(|cx| {
         let d = dash(cx, &shell).read(cx);
         (d.filter.date_range, d.view_filter.from, d.view_filter.to)
@@ -36,7 +36,7 @@ fn choosing_a_preset_updates_the_filter_and_persists(cx: &mut TestAppContext) {
         });
     });
 
-    let (from, to) = preset_range(DatePreset::LastMonth, DashboardPage::today());
+    let (from, to) = preset_range(DatePreset::LastMonth, DashboardState::today());
     let state = cx.update(|cx| {
         let d = dash(cx, &shell).read(cx);
         (d.filter.date_range, d.view_filter.from, d.view_filter.to)
@@ -55,7 +55,7 @@ fn choosing_a_preset_updates_the_filter_and_persists(cx: &mut TestAppContext) {
 /// One spend and one income row in the current month and one pair three
 /// calendar months back (just outside "Last 3 months"), so the default
 /// preset and "All time" show different totals. Dates are derived from
-/// `DashboardPage::today()`, so the test passes whenever it runs.
+/// `DashboardState::today()`, so the test passes whenever it runs.
 fn seed_preset_totals_rows(conn: &financi_db::rusqlite::Connection) {
     let acct = create_account(conn, "amex", "Cobalt", AccountKind::CreditCard).unwrap();
     conn.execute(
@@ -75,7 +75,7 @@ fn seed_preset_totals_rows(conn: &financi_db::rusqlite::Connection) {
     // "Last 3 months" (which opens on the first of two months back) and
     // exactly three month columns away, so the All-time grid is four
     // months wide whatever day the test runs.
-    let today = DashboardPage::today();
+    let today = DashboardState::today();
     let old = today
         .with_day(1)
         .expect("first of the month")
@@ -142,7 +142,7 @@ fn dashboard_totals(
 #[gpui::test]
 fn changing_the_preset_updates_the_dashboard_totals(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, seed_preset_totals_rows);
-    let today = DashboardPage::today();
+    let today = DashboardState::today();
     let month_label = |n: u32| {
         today
             .checked_sub_months(chrono::Months::new(n))
