@@ -2309,7 +2309,6 @@ impl Render for CategoriesPage {
                                     )
                                     // 3.21: page-owned handle (see the tree).
                                     .track_scroll(&self.rule_scroll)
-                                    .gap_1()
                                     .flex_1()
                                     .min_h_0(),
                                 )
