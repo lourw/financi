@@ -1697,7 +1697,7 @@ impl RulesPage {
                 .hide_heading()
                 .scroll(self.matches_scroll.clone())
                 .selector("rules:matches-list")
-                .cells(move |_this, item, _window, _cx| {
+                .cells(move |_this, item, _measuring, _window, _cx| {
                     let DataItem::Row { id, .. } = item else {
                         return Vec::new();
                     };
@@ -2008,7 +2008,7 @@ impl Render for RulesPage {
                 }
                 DataItem::Group { .. } => LIST_GROUP_HEIGHT,
             })
-            .cells(move |this, item, _window, cx| match item {
+            .cells(move |this, item, _measuring, _window, cx| match item {
                 DataItem::Row { id, .. } => {
                     let id = *id as i64;
                     let Some(rule) = this.rules.iter().find(|r| r.id == id) else {

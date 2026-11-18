@@ -60,6 +60,13 @@ task merges, the rule becomes binding (see *Coding practices*).
 15. **Layout from measured bounds** (3.86): `canvas` / `on_prepaint`
     bounds and `window.text_system()` measurements, not window width minus
     constants.
+16. **A `v_virtual_list` row closure runs twice a frame** (3.105):
+    gpui-base 0.9.0 calls it once to measure a single row (range `0..1`,
+    from `request_layout`) and once for the visible range (from `prepaint`).
+    Code that treats every call as a paint pass shrinks its idea of the
+    visible window to row 0 — `DataList` hid this behind a `measuring` flag
+    (the first call per render); pages must not build entities or prune
+    caches during that call.
 
 ## Coding practices (all UI tasks)
 

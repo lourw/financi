@@ -280,7 +280,7 @@ impl Render for TransfersPage {
             let list = DataList::new(cx.entity(), columns, items)
                 .cells({
                     let candidates = candidates.clone();
-                    move |_, item, _, _| match item {
+                    move |_, item, _measuring, _, _| match item {
                         DataItem::Row { id, .. } => {
                             let c = &candidates[*id].1;
                             vec![

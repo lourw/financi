@@ -196,7 +196,7 @@ Order: 3.102 → 3.103 → 3.47 + 3.54 (one branch).
 
 Order: 3.105 → 3.95 → 3.104 (3.105 and 3.95 both change `ui/queue.rs`).
 
-- [ ] **3.105 To categorize buttons work after scrolling.** Scroll far
+- [x] **3.105 To categorize buttons work after scrolling.** Scroll far
   enough down the To categorize page and no Categorize button works
   (user report, 2026-11-17). Reproduced headlessly: a visible row's
   picker is a new entity on every frame, so its menu never opens and a

@@ -642,17 +642,39 @@ impl Render for QueuePage {
                         // builds (and picks) only what can be on screen;
                         // 3.83: it is also where the prune runs, so
                         // pickers retire once their rows stop being built.
-                        .cells(move |this, item, window, cx| {
+                        .cells(move |this, item, measuring, window, cx| {
                             let DataItem::Row { id, .. } = item else {
                                 return Vec::new();
                             };
                             let g = &this.groups[*id];
                             let merchant = g.merchant.clone();
-                            let picker = this.picker_for_row(&merchant, window, cx);
+                            // 3.105: the list's per-frame measure call
+                            // (row 0, before the visible pass) must not
+                            // create entities or prune: creating a picker
+                            // for row 0 and pruning with that window
+                            // dropped every un-picked picker below the
+                            // viewport and rebuilt the visible rows' as
+                            // new entities each frame — the menu never
+                            // opened and a pick never landed. While
+                            // measuring, take the row's entities from the
+                            // maps as they stand; a not-yet-built row
+                            // paints an empty cell (its column is a fixed
+                            // width, so the measured row is unchanged).
+                            let picker = if measuring {
+                                this.pickers.borrow().get(&merchant).cloned()
+                            } else {
+                                Some(this.picker_for_row(&merchant, window, cx))
+                            };
                             // 3.95: the row's rule pattern, built lazily
                             // with the picker (and pruned with it below).
-                            let input = this.input_for_row(&merchant, window, cx);
-                            this.prune_visible(cx);
+                            let input = if measuring {
+                                this.inputs.borrow().get(&merchant).cloned()
+                            } else {
+                                Some(this.input_for_row(&merchant, window, cx))
+                            };
+                            if !measuring {
+                                this.prune_visible(cx);
+                            }
                             // 3.34: `list_hover`, dividers and the 40 px
                             // `text_sm` row come from the list; the cells
                             // are the page's own elements so every test
@@ -759,9 +781,18 @@ impl Render for QueuePage {
                                                     let m = merchant.clone();
                                                     move || format!("queue:rule-input:{m}")
                                                 })
-                                                .child(
-                                                    Input::new(&input).aria_label("Rule pattern"),
-                                                ),
+                                                .child(match &input {
+                                                    // 3.105: while
+                                                    // measuring an
+                                                    // un-built row there
+                                                    // is no entity yet —
+                                                    // the fixed-width
+                                                    // column paints empty.
+                                                    Some(input) => Input::new(input)
+                                                        .aria_label("Rule pattern")
+                                                        .into_any_element(),
+                                                    None => div().into_any_element(),
+                                                }),
                                         )
                                         .child(control_slot(
                                             format!("queue:regex-slot:{merchant}"),
@@ -789,11 +820,13 @@ impl Render for QueuePage {
                                     let m = merchant.clone();
                                     move || format!("queue:picker-col:{m}")
                                 })
-                                .child(
-                                    Select::new(&picker)
+                                .child(match &picker {
+                                    Some(picker) => Select::new(picker)
                                         .menu_width(picker_menu_w)
-                                        .placeholder("Category…"),
-                                );
+                                        .placeholder("Category…")
+                                        .into_any_element(),
+                                    None => div().into_any_element(),
+                                });
                             // 3.34: quiet and disabled until the row's
                             // picker holds a category; `small` and outline
                             // once one is picked — row-level buttons are
@@ -801,7 +834,9 @@ impl Render for QueuePage {
                             // one primary and only rows ready to apply are
                             // clickable. The debug selector records the
                             // state for tests.
-                            let picked = picker.read(cx).selected_value().is_some();
+                            let picked = picker
+                                .as_ref()
+                                .is_some_and(|picker| picker.read(cx).selected_value().is_some());
                             let categorize_cell = div()
                                 .w_full()
                                 .debug_selector({

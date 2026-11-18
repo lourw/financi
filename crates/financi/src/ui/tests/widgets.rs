@@ -2,11 +2,14 @@
 
 use super::*;
 
+use std::cell::RefCell;
+
 use crate::ui::widgets::{
     Col, ColAlign, DataCol, DataItem, DataList, LIST_GROUP_HEIGHT, LIST_HEADING_HEIGHT,
     LIST_ROW_HEIGHT, ListCell, SortState, filter_row, inline_form, page_header, panel,
     row_action_button, swatch, type_tag,
 };
+use gpui_kit::component::VirtualListScrollHandle;
 use gpui_kit::component::theme::ActiveTheme as _;
 
 // ---------------------------------------------------------------------------
@@ -34,6 +37,14 @@ struct ListHost {
     /// When set, the `Col::Flex` column's cells are [`ListCell::text`]
     /// carrying this full text, to show the list's ellipsis tooltip.
     tip: Option<String>,
+    /// 3.105: every range `DataList::on_pass` reported — one entry per
+    /// paint pass, so a test can pin that the measure call (the list's
+    /// one-row call before the visible pass) is never reported.
+    passes: RefCell<Vec<(usize, usize)>>,
+    /// 3.105: the list's page-owned scroll handle (pitfall 3.21: a
+    /// per-render handle resets the offset every frame), so a test can
+    /// scroll and pin what the passes cover.
+    scroll: VirtualListScrollHandle,
 }
 
 impl Render for ListHost {
@@ -64,49 +75,49 @@ impl Render for ListHost {
                 }
             }
         }
-        let mut list =
-            DataList::new(cx.entity(), self.columns.clone(), items).cells(|view, item, _, _| {
-                match item {
-                    DataItem::Row { id, selector, .. } => view
-                        .columns
-                        .iter()
-                        .enumerate()
-                        .map(|(c, col)| -> ListCell {
-                            if let Some(tip) = &view.tip
-                                && matches!(col.width, Col::Flex)
-                            {
-                                return ListCell::text(tip.clone());
-                            }
-                            let text = if view.long && c > 0 {
-                                "x".repeat(400)
-                            } else {
-                                format!("r{id}c{c}")
-                            };
-                            div()
-                                .w_full()
-                                .min_w_0()
-                                .overflow_hidden()
-                                .text_ellipsis()
-                                .child(text)
-                                .debug_selector({
-                                    let s = format!("{selector}:c{c}");
-                                    move || s.clone()
-                                })
-                                .into_any_element()
-                                .into()
-                        })
-                        .collect(),
-                    DataItem::Group { selector, .. } => vec![
+        let mut list = DataList::new(cx.entity(), self.columns.clone(), items)
+            .on_pass(|view, range| view.passes.borrow_mut().push((range.start, range.end)))
+            .scroll(self.scroll.clone())
+            .cells(|view, item, _, _, _| match item {
+                DataItem::Row { id, selector, .. } => view
+                    .columns
+                    .iter()
+                    .enumerate()
+                    .map(|(c, col)| -> ListCell {
+                        if let Some(tip) = &view.tip
+                            && matches!(col.width, Col::Flex)
+                        {
+                            return ListCell::text(tip.clone());
+                        }
+                        let text = if view.long && c > 0 {
+                            "x".repeat(400)
+                        } else {
+                            format!("r{id}c{c}")
+                        };
                         div()
-                            .child("sum")
+                            .w_full()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .child(text)
                             .debug_selector({
-                                let s = format!("{selector}:sum");
+                                let s = format!("{selector}:c{c}");
                                 move || s.clone()
                             })
                             .into_any_element()
-                            .into(),
-                    ],
-                }
+                            .into()
+                    })
+                    .collect(),
+                DataItem::Group { selector, .. } => vec![
+                    div()
+                        .child("sum")
+                        .debug_selector({
+                            let s = format!("{selector}:sum");
+                            move || s.clone()
+                        })
+                        .into_any_element()
+                        .into(),
+                ],
             });
         list = list.toggle(|this, gid, _, cx| {
             match this.collapsed.iter().position(|g| *g == gid) {
@@ -176,6 +187,8 @@ fn wh_host(rows: usize) -> ListHost {
         sorted: None,
         long: false,
         tip: None,
+        passes: RefCell::new(Vec::new()),
+        scroll: VirtualListScrollHandle::new(),
     }
 }
 
@@ -400,6 +413,63 @@ fn a_flex_text_cell_tooltips_its_full_text(cx: &mut TestAppContext) {
         paints(cx, handle, format!("financi:tooltip:{tip}")),
         "hovering the flex text cell shows no tooltip with the full text",
     );
+}
+
+/// 3.105: `on_pass` sees only the visible range, once per frame. The
+/// `VirtualList` calls its row closure twice a frame — first from
+/// `request_layout` to measure one row (`render_items(0..1)`), then
+/// from `prepaint` for the visible range. Reporting the measure call
+/// too would hand pages a pass of row 0's neighbourhood every frame,
+/// and a prune keyed to it drops every picker below the viewport (the
+/// 3.105 queue bug). So each drawn frame reports exactly one pass, and
+/// the scrolled frames report the window they show, never `0..1`.
+#[gpui::test]
+fn on_pass_sees_only_the_visible_range_once_per_frame(cx: &mut TestAppContext) {
+    let (handle, _vtc, host) = open_list_host(cx, wh_host(300));
+    let drain = |cx: &mut TestAppContext| host.update(cx, |h, _| h.passes.take());
+    // Whatever the window's first frames recorded, start clean.
+    drain(cx);
+    // One frame, one pass: the visible window at the top of the list.
+    draw_frame(cx, handle);
+    let passes = drain(cx);
+    assert_eq!(
+        passes.len(),
+        1,
+        "on_pass saw {passes:?} — one pass per frame"
+    );
+    assert!(
+        passes[0].0 == 0 && passes[0].1 > 0 && passes[0].1 < 300,
+        "the pass must be the visible window, was {:?}",
+        passes[0],
+    );
+    // Scrolled to row 150 (40 px rows, 20 px into the row so the
+    // window boundary is unambiguous): the pass starts there. Had the
+    // measure call been reported, the frame would also carry `0..1` —
+    // the window a page must never key its prune to.
+    host.update(cx, |h, _| h.scroll.set_offset(point(px(0.), px(-6_020.))));
+    draw_frame(cx, handle);
+    let passes = drain(cx);
+    assert_eq!(
+        passes.len(),
+        1,
+        "on_pass saw {passes:?} while scrolled — the measure call must \
+         not be reported"
+    );
+    assert_eq!(passes[0].0, 150, "the pass starts at the scrolled row");
+    assert!(
+        passes[0].1 > 150 && passes[0].1 - passes[0].0 < 300,
+        "the pass is the visible window, was {:?}",
+        passes[0],
+    );
+    // A second frame at the same offset: one more pass, same window.
+    draw_frame(cx, handle);
+    let passes = drain(cx);
+    assert_eq!(
+        passes.len(),
+        1,
+        "on_pass saw {passes:?} — one pass per frame"
+    );
+    assert_eq!(passes[0].0, 150);
 }
 
 /// The direction the heading arrow paints for `col`
