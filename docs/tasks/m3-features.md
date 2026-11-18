@@ -170,7 +170,9 @@ Order: 3.105 → 3.95 → 3.104 (3.105 and 3.95 both change `ui/queue.rs`).
   Escape "context-less binding" sentence (reworded accurately at 3.82)
   and the `note_painted` pair (both helpers died with H4's `7c072ac`).
   Left: the three `ui/dashboard/**` bullets, after the dashboard feature
-  (3.100) merges.
+  (3.100) merges; and renaming `count_rule_matches` →
+  `preview_pattern_matches` in `docs/tasks/final.md` (3.55's live-preview
+  description and perf budget still name the deleted function).
 
 ## Last in M3
 
