@@ -18,6 +18,7 @@ use super::*;
 
 mod actions;
 pub(in crate::ui) mod dock;
+pub(in crate::ui) mod dock_layout;
 mod entity;
 mod load;
 pub(super) mod panels;

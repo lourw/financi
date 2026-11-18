@@ -5,6 +5,7 @@
 //! the panels (`ui/dashboard/panels/…`) and the page subscribe to the
 //! change events emitted here instead of sharing one repaint.
 
+use super::panels::DashboardPanels;
 use super::*;
 use crate::ui::page::{PageEntity, PageEvent, watch_catalog};
 use gpui_kit::base::dock::DockArea;
@@ -153,6 +154,22 @@ pub(crate) struct DashboardState {
     /// 3.100: the dock's subscriptions (the min-size clamp); live as
     /// long as the dock.
     pub(in crate::ui) _dock_subs: Vec<Subscription>,
+    /// 3.101: the four panel entities, stashed when the dock is built so
+    /// a layout reset can rebuild the default 2×2 without the page
+    /// entity (cheap `Entity` clones).
+    pub(in crate::ui::dashboard) dock_panels: Option<DashboardPanels>,
+    /// 3.101: the pending debounced dock-layout save — every
+    /// `DockEvent::LayoutChanged` replaces it, so a drag writes once,
+    /// 500 ms after the last event (the 3.56 search-debounce pattern).
+    pub(in crate::ui) layout_save_task: Option<Task<()>>,
+    /// 3.101: true once the stored-layout read has resolved. Gates the
+    /// saves so the dock's own start-up edits — `set_center(default)`
+    /// and a restore's own `load` — never write over the stored layout.
+    pub(in crate::ui) layout_ready: bool,
+    /// 3.101: bumped by a reset; a restore read still in flight is then
+    /// stale (the reset wins), and a reset applied before the read even
+    /// started is not overwritten by it.
+    pub(in crate::ui) layout_restore_gen: u64,
     /// The [`ViewFilter`] the newest applied load ran with — the record
     /// of what produced the rows on screen (3.56). The pickers and the
     /// checkbox handlers keep it mirrored so it can be read directly.
@@ -448,6 +465,10 @@ impl DashboardState {
             summary_rows_scroll: ScrollHandle::new(),
             dock: None,
             _dock_subs: Vec::new(),
+            dock_panels: None,
+            layout_save_task: None,
+            layout_ready: false,
+            layout_restore_gen: 0,
             view_filter: ViewFilter::default(),
             date_preset_select,
             date_from_picker,

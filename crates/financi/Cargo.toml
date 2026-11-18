@@ -18,6 +18,9 @@ chrono.workspace = true
 directories.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
+# 3.101: encode/decode the dashboard dock layout JSON. Same version
+# GPUI and financi-db already pull in.
+serde_json = "1.0"
 # 3.63: decode the embedded app-icon PNG for `WindowOptions::icon`. Same
 # version GPUI already pulls in; png-only to keep the tree small.
 image = { version = "0.25", default-features = false, features = ["png"] }

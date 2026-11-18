@@ -245,7 +245,10 @@ fn launch_runs_one_refresh_with_the_saved_date_range(cx: &mut TestAppContext) {
             d.view_filter.to,
         )
     });
-    assert_eq!(jobs, 2, "one launch = the full reload + the dashboard load");
+    assert_eq!(
+        jobs, 3,
+        "one launch = the full reload + the dashboard load + the saved-layout read (3.101)"
+    );
     let day = NaiveDate::from_ymd_opt(2026, 11, 5).unwrap();
     assert_eq!(range, DateRange::Custom { from: day, to: day });
     assert_eq!(

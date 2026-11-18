@@ -11,7 +11,7 @@ Order: 3.98 → 3.97 → 3.100 → 3.101 → 3.99. The dashboard becomes a dock
 of resizable, rearrangeable panels (user decision, 2026-11-17: dock
 splits, not a scrolling grid).
 
-- [ ] **3.101 The dashboard layout is remembered, and can be reset.**
+- [x] **3.101 The dashboard layout is remembered, and can be reset.**
   After 3.100.
   - Save `DockArea::dump()` (`DockAreaState`, JSON) to the `settings`
     table under `dashboard.layout` through `DbWorker`, 500 ms after the

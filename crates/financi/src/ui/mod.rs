@@ -122,19 +122,34 @@ impl Page {
     }
 }
 
+// 3.101: the *View* menu's actions. Like the file actions (3.7) these
+// reach the window's `Shell` through `route_to_shell`, so the menu
+// works whatever has focus; the dashboard's filter-row button is the
+// Linux-visible twin of the one item here.
+actions!(financi_view, [ResetDashboardLayout]);
+
 /// The application's native menus (3.7). macOS shows this as the menu bar
 /// (its first menu is the app menu); Linux has no native menu bar, which is
 /// why every item here also lives on the Imports page header.
 fn app_menus() -> Vec<Menu> {
-    vec![Menu::new("File").items(vec![
-        MenuItem::action("Import CSV…", ImportCsv),
-        MenuItem::action("Undo last import", UndoLastImport),
-        MenuItem::separator(),
-        MenuItem::action("Export…", ExportData),
-        MenuItem::action("Restore…", RestoreBackup),
-        MenuItem::separator(),
-        MenuItem::action("Quit", QuitApp),
-    ])]
+    vec![
+        Menu::new("File").items(vec![
+            MenuItem::action("Import CSV…", ImportCsv),
+            MenuItem::action("Undo last import", UndoLastImport),
+            MenuItem::separator(),
+            MenuItem::action("Export…", ExportData),
+            MenuItem::action("Restore…", RestoreBackup),
+            MenuItem::separator(),
+            MenuItem::action("Quit", QuitApp),
+        ]),
+        // 3.101: the View menu's one item so far; the dashboard's layout
+        // reset. Its twin is the icon button on the dashboard's filter
+        // row, which is also the Linux path (no native menu bar here).
+        Menu::new("View").items(vec![MenuItem::action(
+            "Reset dashboard layout",
+            ResetDashboardLayout,
+        )]),
+    ]
 }
 
 /// One-time global UI wiring (3.76): the key bindings, the macOS menu bar
@@ -197,6 +212,14 @@ pub fn init(cx: &mut App) {
         route_to_shell(cx, |this, window, cx| this.restore_backup(window, cx));
     });
     cx.on_action(|_: &QuitApp, cx| cx.quit());
+    // 3.101: *View ▸ Reset dashboard layout* — routed like the file
+    // actions, so it works whatever has focus (the dashboard's own
+    // button dispatches nothing; it calls the same state method).
+    cx.on_action(|_: &ResetDashboardLayout, cx| {
+        route_to_shell(cx, |this, window, cx| {
+            this.reset_dashboard_layout(window, cx);
+        });
+    });
     cx.set_global(UiInitialized);
 }
 
@@ -854,6 +877,15 @@ impl Shell {
         // old database's ids and categories into the restored one.
         self.imports.update(cx, |p, cx| p.reset_after_restore(cx));
         self.refresh(window, cx);
+    }
+
+    /// *View ▸ Reset dashboard layout* (3.101): forward to the
+    /// dashboard's own reset, which rebuilds the default 2×2 and saves
+    /// it. The dock lives on the dashboard state, so the layout is
+    /// remembered even while another page shows.
+    pub(super) fn reset_dashboard_layout(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.dashboard
+            .update(cx, |p, cx| p.reset_dock_layout(window, cx));
     }
 
     // -- Forwarders (3.79): the file actions live on the Imports page and
