@@ -386,8 +386,21 @@ on the still-selected parent — the name field clears, stays focused, and
 Enter submits the next name, so subcategories go in a row (3.51, 3.96).
 Its Rules section is a `DataList` of the category's
 rules (a category's include its subcategories'; "No rules for this
-category yet" when empty) with an add-rule row (Pattern, regex switch in a
-`control_slot`, Add rule) showing a live "matches N transactions" count.
+category yet" when empty). The add-rule form (3.103) is the 3.48
+editor's two-line `InlineForm` shape, so adding and editing look
+alike: "Pattern" labelled at full width over the input, then a
+label-less controls line — the regex `Switch` at the left, the
+"Subcategory…" `Select` when a parent is selected, and the live match
+summary and **Add rule** right-aligned (no `control_slot`;
+`items_center` lines the controls up). While the pattern is non-empty
+a compact heading-less `DataList` previews up to 8 matching
+transactions under the form — Date, Merchant (ellipsized, full
+description in a tooltip), Amount, with a muted "kept by `PATTERN`"
+or "locked" tag after the amount — under the summary "Matches N
+transactions · M would move here"; "No transactions match" when
+empty, nothing at all for an empty pattern, the query reruns 150 ms
+after the last keystroke (latest wins), and an invalid regex shows
+the error text in place of the rows.
 Where a rule goes follows the selection (3.53): a selected subcategory is
 the target and the row carries no picker; a selected parent picks among
 its own subcategories in a "Subcategory…" `Select` — their own names, no
@@ -397,7 +410,8 @@ never cut off; a parent without subcategories shows a muted "Add a
 subcategory first" in place of the row. Edit swaps a row for a two-line
 `InlineForm` (Pattern labelled at full width over the input, then a
 label-less controls line: the regex switch at the left, Save and Cancel
-right-aligned; 3.48), one at a time; the editor has no category picker —
+right-aligned; 3.48) with the same live match preview underneath, the
+edited rule excluded (3.103), one at a time; the editor has no category picker —
 Save keeps the rule's category, and a muted "To move rules to another
 category, use the Rules page." sits under a non-empty rule list. Delete
 is a two-click confirm. Selecting a category or leaving the page closes

@@ -151,7 +151,7 @@ splits, not a scrolling grid).
 
 Order: 3.102 → 3.103 → 3.47 + 3.54 (one branch).
 
-- [ ] **3.103 A tidier add-rule form with a match preview.** On the
+- [x] **3.103 A tidier add-rule form with a match preview.** On the
   Categories page, the add-rule row under a category's rules crams a
   Pattern input, the regex switch, the Subcategory picker (when a
   category is selected), the Add rule button and the "matches N" count
