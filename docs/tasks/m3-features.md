@@ -151,31 +151,6 @@ splits, not a scrolling grid).
 
 Order: 3.102 → 3.103 → 3.47 + 3.54 (one branch).
 
-- [x] **3.102 Preview a pattern's matches, backend.** For 3.103 (user
-  request, 2026-11-17). Backend only.
-  - `preview_pattern_matches(conn, pattern, is_regex, exclude_rule_id,
-    limit) -> Result<PatternPreview>` in `financi-db/src/rules.rs`, with
-    `PatternPreview { total: i64, decides: i64, rows: Vec<RuleMatchRow> }`.
-    It compiles the pattern once (as `count_rule_matches` does) and
-    computes each matching row's status **as if the pattern were a new
-    rule**: `Decides` if it would win, `WonBy(id)` if an existing rule
-    would still win (same tie-break as `CompiledRules::pick`; a new rule
-    gets the highest id, so it loses ties), `Locked` for locked rows.
-    Hidden and card-payment rows are excluded, as in `rule_matches`.
-    Rows: `Decides` first, then newest posted date, capped at `limit`;
-    `total` and `decides` count every match. An empty or invalid pattern
-    returns an empty preview, never an error. `exclude_rule_id` is the
-    rule being edited, as in `count_rule_matches`.
-  - Expose it through `DbWorker` as a keyed latest-wins read (3.77), the
-    way the live count already runs. `count_rule_matches` stays for its
-    other callers unless this replaces all of them.
-  - Tests: total / decides / rows on the dev seed for a substring and a
-    regex pattern; a pattern an existing longer rule beats reports
-    `WonBy` that rule; a tie with an existing equal-length rule reports
-    `WonBy` it; locked, hidden and card-payment rows behave as above; the
-    cap limits rows but not the counts; empty and invalid patterns give
-    an empty preview.
-
 - [ ] **3.103 A tidier add-rule form with a match preview.** On the
   Categories page, the add-rule row under a category's rules crams a
   Pattern input, the regex switch, the Subcategory picker (when a
