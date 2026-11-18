@@ -2061,6 +2061,81 @@ fn the_detail_title_row_fits_a_sixty_character_name(cx: &mut TestAppContext) {
     );
 }
 
+/// 3.104: every title-row action is `small`, so all buttons in the row
+/// paint at the same height — Rename used to sit at the default size and
+/// towered over Add subcategory, Move and Delete. Checked on both shapes
+/// of the row: a category (Rename, Add subcategory, Delete) and a
+/// subcategory (Rename, Move, Delete). The group also reads in the order
+/// ui-conventions.md lists it: Rename first, Delete last.
+#[gpui::test]
+fn every_title_row_button_is_the_same_size(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |conn| {
+        let parent =
+            financi_db::categories::create_parent(conn, "Drinks", CategoryKind::Expense).unwrap();
+        financi_db::categories::create_child(conn, parent, "Coffee").unwrap();
+    });
+    wait_until(cx, "the tree loads", |cx| {
+        shell.read(cx).categories.len() == 2
+    });
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Categories, cx)));
+    select_parent(cx, handle, &shell, "Drinks");
+    resize_and_draw(cx, handle, 1200., 720.);
+
+    let rename_sel = "cat:title-rename:icons/pencil.svg";
+
+    // The category row: Rename, Add subcategory, Delete.
+    let mut sels = [rename_sel, "cat:title-add-sub", "cat:title-delete"];
+    let mut last_height = f32::NAN;
+    let mut last_x = f32::NAN;
+    for (n, sel) in sels.iter().enumerate() {
+        let b = bounds(cx, handle, *sel);
+        let (h, x) = (f32::from(b.size.height), f32::from(b.origin.x));
+        if n == 0 {
+            last_height = h;
+        } else {
+            assert_eq!(
+                h, last_height,
+                "{sel} is the same height as the row's other actions"
+            );
+            assert!(
+                x > last_x,
+                "the actions read Rename, Add subcategory, Delete: \
+                 {sel} at x {x} after x {last_x}"
+            );
+        }
+        last_x = x;
+    }
+
+    // And the subcategory row: Rename, Move, Delete.
+    let child = cx.update(|cx| find_child(&shell, cx, "Coffee").unwrap());
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| s.select_category(child, window, cx));
+    });
+    cx.run_until_parked();
+    draw_frame(cx, handle);
+    sels[1] = "cat:title-move";
+    last_height = f32::NAN;
+    last_x = f32::NAN;
+    for (n, sel) in sels.iter().enumerate() {
+        let b = bounds(cx, handle, *sel);
+        let (h, x) = (f32::from(b.size.height), f32::from(b.origin.x));
+        if n == 0 {
+            last_height = h;
+        } else {
+            assert_eq!(
+                h, last_height,
+                "{sel} is the same height as the row's other actions on a subcategory"
+            );
+            assert!(
+                x > last_x,
+                "the actions read Rename, Move, Delete: {sel} at x {x} \
+                 after x {last_x}"
+            );
+        }
+        last_x = x;
+    }
+}
+
 /// Two parents, each with one subcategory whose rules target that
 /// subcategory (3.23: the rule list filters on the selection). Returns
 /// `(drinks, transport, coffee_rule, fuel_rule)`.
@@ -3372,21 +3447,47 @@ fn the_category_buttons_paint_icons_instead_of_ellipses(cx: &mut TestAppContext)
             ("ref:cat-edit", "Edit"),
         ],
     );
-    for (what, btn, text_sel) in [
-        ("the New category button", new_btn, "ref:cat-new"),
-        ("the Rename button", rename, "ref:cat-rename"),
-        ("the delete form's confirm", del_go, "ref:cat-delete"),
-        ("the rule row's Edit", edit, "ref:cat-edit"),
-        ("the rule row's Delete", delete, "ref:cat-delete"),
-    ] {
-        assert_button_paints_icon(
-            &mut refs,
-            what,
-            btn,
-            text_sel,
+    // 3.104: Rename is `small` like the title row's other actions, so it
+    // is measured with the small icon block and padding; the rest are
+    // still medium.
+    for (what, btn, text_sel, icon_w, pad_x) in [
+        (
+            "the New category button",
+            new_btn,
+            "ref:cat-new",
             MEDIUM_ICON_BLOCK_W,
             MEDIUM_BUTTON_PAD_X,
-        );
+        ),
+        (
+            "the Rename button",
+            rename,
+            "ref:cat-rename",
+            SMALL_ICON_BLOCK_W,
+            SMALL_BUTTON_PAD_X,
+        ),
+        (
+            "the delete form's confirm",
+            del_go,
+            "ref:cat-delete",
+            MEDIUM_ICON_BLOCK_W,
+            MEDIUM_BUTTON_PAD_X,
+        ),
+        (
+            "the rule row's Edit",
+            edit,
+            "ref:cat-edit",
+            MEDIUM_ICON_BLOCK_W,
+            MEDIUM_BUTTON_PAD_X,
+        ),
+        (
+            "the rule row's Delete",
+            delete,
+            "ref:cat-delete",
+            MEDIUM_ICON_BLOCK_W,
+            MEDIUM_BUTTON_PAD_X,
+        ),
+    ] {
+        assert_button_paints_icon(&mut refs, what, btn, text_sel, icon_w, pad_x);
     }
 
     // 3.43: 3.23's fit rule with the icons in (≈ 24 px per button): at

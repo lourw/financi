@@ -1668,8 +1668,10 @@ impl Render for CategoriesPage {
                     .rounded_lg()
                     .debug_selector(|| "cat:detail-panel".into())
                     // Title line (3.23): the name, its kind and transaction
-                    // count, Rename at the right end; the rename editor
-                    // (3.16) replaces this line in place.
+                    // count, then the action group at the right end (3.104:
+                    // Rename, Add subcategory, Move, Delete per
+                    // ui-conventions.md); the rename editor (3.16) replaces
+                    // this line in place.
                     .child(if renaming {
                         h_flex()
                             .gap_2()
@@ -1723,13 +1725,34 @@ impl Render for CategoriesPage {
                             // 3.51: Organize and Delete hide behind these
                             // title-row buttons — small, icon + label, no
                             // "…"; the open form's button reads selected.
-                            // Rename keeps its place at the right end.
+                            // 3.104: every button in the group is `small`,
+                            // ordered as ui-conventions.md lists it:
+                            // Rename, Add subcategory, Move, Delete.
                             .child(
                                 h_flex()
                                     .gap_2()
                                     .items_center()
                                     .ml_auto()
                                     .flex_shrink_0()
+                                    // 3.43: Rename carries a `pencil` icon
+                                    // and no "…"; the selector names the
+                                    // icon so a test can pin both (the
+                                    // path is interpolated so the 3.75
+                                    // selector guard sees `cat:title-rename`).
+                                    .child(
+                                        Button::new("rename-category")
+                                            .small()
+                                            .icon(IconName::Pencil)
+                                            .label("Rename")
+                                            .debug_selector(|| {
+                                                format!("cat:title-rename:{}", "icons/pencil.svg")
+                                            })
+                                            .disabled(is_system)
+                                            .flex_shrink_0()
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.start_rename(window, cx)
+                                            })),
+                                    )
                                     .when(!is_child, |group| {
                                         group.child(
                                             Button::new("title-add-sub")
@@ -1778,25 +1801,7 @@ impl Render for CategoriesPage {
                                                     cx.notify();
                                                 })),
                                         )
-                                    })
-                                    // 3.43: Rename carries a `pencil` icon
-                                    // and no "…"; the selector names the
-                                    // icon so a test can pin both (the
-                                    // path is interpolated so the 3.75
-                                    // selector guard sees `cat:title-rename`).
-                                    .child(
-                                        Button::new("rename-category")
-                                            .icon(IconName::Pencil)
-                                            .label("Rename")
-                                            .debug_selector(|| {
-                                                format!("cat:title-rename:{}", "icons/pencil.svg")
-                                            })
-                                            .disabled(is_system)
-                                            .flex_shrink_0()
-                                            .on_click(cx.listener(|this, _, window, cx| {
-                                                this.start_rename(window, cx)
-                                            })),
-                                    ),
+                                    }),
                             )
                             .into_any_element()
                     })
