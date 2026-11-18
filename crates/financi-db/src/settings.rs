@@ -25,6 +25,11 @@ pub const UI_DATE_RANGE: &str = "ui.date_range";
 /// (task 3.3). Stored as `"1"` (on) or `"0"` (off).
 pub const UI_INCLUDE_TRANSFERS: &str = "ui.include_transfers";
 
+/// The `settings` key holding the dashboard's saved dock layout (task
+/// 3.101): the JSON that `DockArea::dump` produced, whose version lives
+/// inside the JSON itself.
+pub const DASHBOARD_LAYOUT: &str = "dashboard.layout";
+
 /// Read a raw setting value.
 pub fn get(conn: &Connection, key: &str) -> Result<Option<String>> {
     let value = conn
@@ -159,6 +164,19 @@ pub fn set_include_transfers(conn: &Connection, on: bool) -> Result<()> {
     set(conn, UI_INCLUDE_TRANSFERS, if on { "1" } else { "0" })
 }
 
+/// The stored dashboard dock layout (task 3.101), as the raw JSON
+/// `DockArea::dump` wrote it; `None` when nothing is stored yet. Whether
+/// the JSON is *usable* is the UI's call — it lives with the dock code
+/// that knows the panel names and the current layout version.
+pub fn dashboard_layout(conn: &Connection) -> Result<Option<String>> {
+    get(conn, DASHBOARD_LAYOUT)
+}
+
+/// Store the dashboard dock layout under [`DASHBOARD_LAYOUT`].
+pub fn set_dashboard_layout(conn: &Connection, json: &str) -> Result<()> {
+    set(conn, DASHBOARD_LAYOUT, json)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -264,5 +282,20 @@ mod tests {
         // Anything but exactly "1" reads as off rather than erroring.
         set(&conn, UI_INCLUDE_TRANSFERS, "yes").unwrap();
         assert!(!include_transfers(&conn).unwrap());
+    }
+
+    #[test]
+    fn dashboard_layout_round_trips_and_starts_unset() {
+        let conn = open_in_memory().unwrap();
+        // Nothing stored yet: no layout, the UI shows the default.
+        assert_eq!(dashboard_layout(&conn).unwrap(), None);
+
+        // The JSON survives byte-for-byte, and overwriting replaces.
+        let json = r#"{"version":1,"direction":"Row","children":[]}[]"#;
+        set_dashboard_layout(&conn, json).unwrap();
+        assert_eq!(dashboard_layout(&conn).unwrap().as_deref(), Some(json));
+
+        set_dashboard_layout(&conn, "{}").unwrap();
+        assert_eq!(dashboard_layout(&conn).unwrap().as_deref(), Some("{}"));
     }
 }
