@@ -147,6 +147,10 @@ pub(crate) struct DashboardState {
     /// old page scroller — the dock panels scroll inside themselves).
     /// `set_visible` resets it to the top on page entry.
     pub(in crate::ui) summary_rows_scroll: ScrollHandle,
+    /// 3.26: the Accounts filter popover's list scroller — the list is
+    /// capped in height so many accounts can't push the popover past the
+    /// window, and this handle drives its always-visible scrollbar.
+    pub(in crate::ui) accounts_filter_scroll: ScrollHandle,
     /// 3.100: the panel dock entity — created on the first dashboard
     /// paint (building it needs a window) and holding the 2×2 layout;
     /// 3.101 dumps and loads the user's arrangement through it.
@@ -468,6 +472,7 @@ impl DashboardState {
             stacks_scroll: ScrollHandle::new(),
             stacks_plot_w: 0.,
             summary_rows_scroll: ScrollHandle::new(),
+            accounts_filter_scroll: ScrollHandle::new(),
             dock: None,
             _dock_subs: Vec::new(),
             dock_panels: None,

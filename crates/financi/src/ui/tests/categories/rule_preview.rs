@@ -436,3 +436,38 @@ fn a_childless_parent_offers_no_rule_row(cx: &mut TestAppContext) {
         "the parent with children keeps the add-rule row"
     );
 }
+/// 3.26: the preview region is sized to its [`PREVIEW_ROWS`] rows, so
+/// even a pattern with more matches never overflows it — no thumb shows.
+#[gpui::test]
+fn the_preview_region_shows_no_scrollbar(cx: &mut TestAppContext) {
+    let (handle, shell, _tea, _coffees, _locked, _tie) = open_preview_fixture(cx);
+    set_add_pattern(cx, handle, &shell, "COFFEE");
+    wait_until(cx, "the preview", |cx| {
+        shell
+            .read(cx)
+            .rules_page
+            .read(cx)
+            .pattern_preview
+            .as_deref()
+            .is_some_and(|p| p.rows.len() == 8)
+    });
+    draw_frame(cx, handle);
+    assert!(
+        paints(cx, handle, "cat:preview-list"),
+        "the preview list paints"
+    );
+    let max = cx.update(|cx| {
+        shell
+            .read(cx)
+            .rules_page
+            .read(cx)
+            .preview_scroll
+            .max_offset()
+            .y
+    });
+    assert_eq!(
+        f32::from(max),
+        0.,
+        "the 8-row region fits its rows by design"
+    );
+}

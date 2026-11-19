@@ -164,6 +164,16 @@ pub fn init(cx: &mut App) {
     if cx.try_global::<UiInitialized>().is_some() {
         return;
     }
+    // 3.26: every scrollable region shows its scrollbar while its content
+    // overflows — `Always`, app-wide, replacing gpui-base's default
+    // (`Scrolling`, which hides the bar until the user scrolls). One
+    // setting on the component theme, which projects it onto gpui-base's
+    // `ScrollbarTheme` (the layer that paints the bars) and refreshes
+    // every window; the component `Select` menus and `DataTable`s read
+    // their scrollbars' mode from the same theme, so they follow too. A
+    // per-`Scrollbar` `.mode(…)` call still wins over the theme, and the
+    // bar paints nothing while its content fits, whatever the mode.
+    gpui_kit::component::Theme::set_scrollbar_mode(ScrollbarMode::Always, cx);
     // Esc clears the dashboard's category selection (3.5), and 3.82 moved
     // it onto the dashboard's own key context with the page: like the
     // 3.79/3.81 pages below, Escape is `Cancel` on "Dashboard" and the

@@ -282,6 +282,13 @@ or changing the selection disarms it. No modals, no native alerts.
 
 - Every scrollable region shows a scrollbar while its content overflows,
   visible without scrolling first, and none when it fits (3.26).
+  `ui::init` sets the theme's scrollbar mode to `Always` app-wide, so new
+  regions add no local `.mode(…)`. The bar overlays the region's right
+  edge inside its border, and content reserves the bar's 16 px
+  (`SCROLLBAR_GUTTER`) on the right so the thumb never covers amounts,
+  counts or buttons. A `DataList` (3.89) gets the bar and the gutter by
+  itself; any other scrolling region reuses gpui-base's `Scrollbar` with
+  a handle kept as state, never created in render.
 - **Text never pushes its container wider.** Any flex child holding text
   gets `min_w_0` plus `overflow_hidden`/`text_ellipsis`; ellipsized text
   carries a tooltip with the full text. Amount and percent columns have

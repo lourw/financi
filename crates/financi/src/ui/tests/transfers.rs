@@ -84,6 +84,116 @@ fn seed_paired_transfer(conn: &financi_db::rusqlite::Connection) -> (i64, i64) {
     (out, incoming)
 }
 
+/// 3.26: `n` independent ties — each debit has two equal credits, so the
+/// engine opens one review per tie and the review list overflows.
+fn seed_transfer_ties(conn: &financi_db::rusqlite::Connection, n: usize) {
+    let alpha = create_account(conn, "simplii", "Alpha Chequing", AccountKind::Chequing).unwrap();
+    let beta = create_account(conn, "simplii", "Beta Savings", AccountKind::Savings).unwrap();
+    let ai = seed_import(conn, alpha);
+    let bi = seed_import(conn, beta);
+    for i in 0..n {
+        let amount = ((i + 1) * 10_000) as i64;
+        seed_txn(
+            conn,
+            ai,
+            alpha,
+            i as i64,
+            "2026-11-05",
+            -amount,
+            "INTERAC TRANSFER SEND",
+        );
+        seed_txn(
+            conn,
+            bi,
+            beta,
+            (2 * i) as i64,
+            "2026-11-05",
+            amount,
+            "INTERAC TRANSFER RECEIVE",
+        );
+        seed_txn(
+            conn,
+            bi,
+            beta,
+            (2 * i + 1) as i64,
+            "2026-11-06",
+            amount,
+            "INTERAC TRANSFER RECEIVE",
+        );
+    }
+    financi_db::run_transfer_pairing(conn).unwrap();
+}
+
+/// 3.26: while the review list overflows, its scrollbar paints inside the
+/// list's bounds and the rows stop short of it; `set_offset` moves the
+/// rows and the offset survives an unrelated `cx.notify()`.
+#[gpui::test]
+fn the_transfers_list_shows_a_scrollbar_while_it_overflows(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |c| seed_transfer_ties(c, 40));
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Transfers, cx)));
+    wait_until(cx, "40 reviews", |cx| {
+        shell.read(cx).transfers.read(cx).transfer_reviews.len() == 40
+    });
+    resize_and_draw(cx, handle, 900., 560.);
+
+    let list = bounds(cx, handle, "transfers:list");
+    let bar = bounds(cx, handle, "transfers:list-vscrollbar");
+    assert_eq!(f32::from(bar.size.width), 16.0, "the gutter's width");
+    assert!(
+        f32::from(bar.left()) >= f32::from(list.left())
+            && f32::from(bar.right()) <= f32::from(list.right()) + 1.0
+            && f32::from(bar.top()) >= f32::from(list.top()) - 1.0
+            && f32::from(bar.bottom()) <= f32::from(list.bottom()) + 1.0,
+        "the bar sits inside the list's bounds: {bar:?} in {list:?}"
+    );
+    let max = cx.update(|cx| shell.read(cx).transfers.read(cx).scroll.max_offset().y);
+    assert!(f32::from(max) > 0., "40 reviews overflow the list");
+    let first =
+        cx.update(|cx| shell.read(cx).transfers.read(cx).transfer_reviews[0].transaction_id);
+    let row = bounds(cx, handle, format!("transfers:review:{first}"));
+    assert!(
+        f32::from(row.right()) <= f32::from(bar.left()) + 1.0,
+        "row right {} vs bar left {}",
+        f32::from(row.right()),
+        f32::from(bar.left())
+    );
+
+    let before = f32::from(row.origin.y);
+    cx.update(|cx| {
+        shell
+            .read(cx)
+            .transfers
+            .read(cx)
+            .scroll
+            .set_offset(point(px(0.), px(-24.)));
+    });
+    draw_frame(cx, handle);
+    let moved = bounds(cx, handle, format!("transfers:review:{first}"));
+    assert!(
+        (f32::from(moved.origin.y) - (before - 24.0)).abs() < 1.0,
+        "the rows scrolled up with the bar"
+    );
+    cx.update(|cx| shell.update(cx, |_, cx| cx.notify()));
+    draw_frame(cx, handle);
+    let held = bounds(cx, handle, format!("transfers:review:{first}"));
+    assert_eq!(f32::from(held.origin.y), f32::from(moved.origin.y));
+}
+
+/// 3.26: one review fits, so nothing scrolls and the bar paints no thumb.
+#[gpui::test]
+fn the_transfers_list_shows_no_scrollbar_when_it_fits(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |c| {
+        seed_transfer_tie(c);
+    });
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Transfers, cx)));
+    wait_until(cx, "one review", |cx| {
+        shell.read(cx).transfers.read(cx).transfer_reviews.len() == 1
+    });
+    resize_and_draw(cx, handle, 900., 560.);
+    let max = cx.update(|cx| shell.read(cx).transfers.read(cx).scroll.max_offset().y);
+    assert_eq!(f32::from(max), 0.0, "one review fits, so nothing scrolls");
+}
+
 #[gpui::test]
 fn the_transfers_page_offers_every_candidate_for_a_tie_and_pairs_the_chosen_one(
     cx: &mut TestAppContext,

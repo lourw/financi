@@ -874,3 +874,78 @@ fn on_db_passes_ordinary_job_errors_through_unchanged() {
     .expect("a job that succeeds still returns its value");
     assert_eq!(value, 1);
 }
+
+/// 3.26: `ui::init` sets the theme's scrollbar mode to `Always` once,
+/// app-wide — every region's bar shows while it overflows, without the
+/// user scrolling first, and `Select` menus and `DataTable`s read the
+/// same theme setting.
+#[gpui::test]
+fn the_app_wide_scrollbar_mode_is_always(cx: &mut TestAppContext) {
+    let (_handle, _shell) = open_shell(cx, |_conn| {});
+    cx.update(|cx| {
+        assert_eq!(
+            cx.theme().scrollbar_mode,
+            gpui_kit::base::ScrollbarMode::Always,
+            "3.26: scrollbars are visible without scrolling first"
+        );
+    });
+}
+
+/// 3.26 review: the bar's own bounds *are* the thumb's viewport
+/// (`viewport_from_layout`), and gpui-base paints the thumb only while
+/// the content is taller than that viewport
+/// (`scrollbar.rs`: the track is skipped when
+/// `scroll_area_size <= scroll_viewport_size`). With the old `.top_0()`
+/// overlay the 32 px heading counted as viewport too, so a list whose
+/// rows overflowed the strip by 1..32 px scrolled (`max_offset > 0`)
+/// while painting no thumb — the dead zone. Four 40 px rows in a
+/// ~140 px strip sit inside it: today's failure is the bar geometry
+/// and the viewport inequality, both pinned below.
+#[gpui::test]
+fn a_list_overflowing_its_strip_by_less_than_a_heading_still_paints_the_thumb(
+    cx: &mut TestAppContext,
+) {
+    use gpui_kit::base::ScrollbarHandle as _;
+
+    let host = wh_host(4);
+    let (handle, _vtc, entity) = open_list_host(cx, host);
+    resize_and_draw(cx, handle, 600., 192.);
+
+    let heading = bounds(cx, handle, "wh:heading");
+    let root = bounds(cx, handle, "wh:list");
+    let bar = bounds(cx, handle, "wh:list-vscrollbar");
+    let (max, content) = cx.update(|cx| {
+        let host = entity.read(cx);
+        (
+            f32::from(host.scroll.max_offset().y),
+            f32::from(host.scroll.content_size().height),
+        )
+    });
+    let strip = f32::from(root.bottom()) - f32::from(heading.bottom());
+    // The fixture sits in the dead zone: the rows overflow the strip,
+    // but by less than the heading's height.
+    assert!(
+        max > 0. && max < LIST_HEADING_HEIGHT && content - strip < LIST_HEADING_HEIGHT,
+        "fixture outside the 1..{LIST_HEADING_HEIGHT} px dead zone: \
+         strip {strip} px, content {content} px, max offset {max} px"
+    );
+    // The bar spans exactly the strip: its top is the heading's bottom
+    // edge, not the heading's top where the old overlay started.
+    assert!(
+        f32::from(bar.top()) >= f32::from(heading.bottom()) - 1.0,
+        "the bar must start below the heading: bar {bar:?}, heading {heading:?}"
+    );
+    assert!(
+        (f32::from(bar.size.height) - strip).abs() <= 1.0,
+        "the bar spans the strip: bar {bar:?} in root {root:?}, heading {heading:?}"
+    );
+    // gpui-base's thumb test now holds: the content is taller than the
+    // bar's own viewport, so the thumb paints — while the heading sat
+    // inside that viewport (content ≤ strip + 32 px of bar) it did not,
+    // even though the list scrolled.
+    assert!(
+        content > f32::from(bar.size.height),
+        "thumb viewport: content {content} px vs bar {:?}",
+        bar.size.height
+    );
+}

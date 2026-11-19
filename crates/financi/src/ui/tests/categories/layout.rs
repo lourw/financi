@@ -243,18 +243,20 @@ fn the_categories_page_fits_the_minimum_window(cx: &mut TestAppContext) {
 
     // A tree row fills its panel: a content-width row would leave the
     // counts floating mid-panel and a long name would never truncate, so
-    // the row's right edge is the tree panel's content edge — 3.91: the
-    // shared list runs edge to edge, so only the panel's 1 px border
-    // stands between the row and the panel's outer edge.
+    // the row's right edge is the tree panel's content edge minus the
+    // scrollbar gutter — 3.91: the shared list runs edge to edge, so only
+    // the panel's 1 px border stands between the row and the panel's
+    // outer edge; 3.26: the list reserves the 16 px gutter inside its
+    // content, where the always-visible scrollbar overlays.
     let tree = window
         .debug_bounds("cat:tree-panel")
         .expect("the tree panel");
     let row = bounds(cx, handle, format!("cat:tree-row:{child}"));
-    let tree_content_right = tree.origin.x + tree.size.width - px(1.);
+    let tree_content_right = tree.origin.x + tree.size.width - px(1. + 16.);
     assert!(
         (row.origin.x + row.size.width - tree_content_right).abs() < px(1.),
-        "the tree row fills the panel to its content edge: row right {:?}, \
-         content edge {tree_content_right:?}",
+        "the tree row fills the panel to its content edge, short of the \
+         scrollbar gutter: row right {:?}, content edge {tree_content_right:?}",
         row.origin.x + row.size.width,
     );
     // A fixed control pinned to the detail panel: the add-rule row's last

@@ -543,18 +543,13 @@ impl DashboardState {
                     .top(px(4.))
                     .bottom(px(4.))
                     .w(px(12.))
-                    .child(
-                        Scrollbar::vertical(&self.summary_rows_scroll)
-                            .mode(ScrollbarMode::Always)
-                            .viewport_from_layout(),
-                    ),
+                    .child(Scrollbar::vertical(&self.summary_rows_scroll).viewport_from_layout()),
             )
             // The month strip's horizontal scrollbar (3.30): a thin overlay
             // pinned to the panel's bottom edge, inset to span only the
             // month zone — the name column and `Total` stay clear of it.
-            // `Always` so it shows while the strip overflows (the theme
-            // default hides it until hover); it disappears by itself when
-            // every month fits.
+            // 3.26: `Always` comes from the app-wide theme mode now; it
+            // disappears by itself when every month fits.
             .child(
                 div()
                     .id("summary-hscrollbar")
@@ -563,11 +558,7 @@ impl DashboardState {
                     .right(px(20. + TOTAL_W + 8.))
                     .bottom(px(4.))
                     .h(px(12.))
-                    .child(
-                        Scrollbar::horizontal(&self.summary_scroll)
-                            .mode(ScrollbarMode::Always)
-                            .viewport_from_layout(),
-                    ),
+                    .child(Scrollbar::horizontal(&self.summary_scroll).viewport_from_layout()),
             )
             .into_any_element()
     }

@@ -34,7 +34,7 @@ pub(super) struct TransfersPage {
     /// Review ids whose candidate rows are hidden (3.89).
     collapsed: HashSet<i64>,
     /// Keeps the list's scroll position across re-renders (3.89).
-    scroll: VirtualListScrollHandle,
+    pub(super) scroll: VirtualListScrollHandle,
 }
 
 impl EventEmitter<PageEvent> for TransfersPage {}

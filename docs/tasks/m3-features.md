@@ -67,7 +67,7 @@ Order: 3.105 → 3.95 → 3.104 (3.105 and 3.95 both change `ui/queue.rs`).
 
 ## Last in M3
 
-- [ ] **3.26 A scrollbar on everything that scrolls.** Most scrolling
+- [x] **3.26 A scrollbar on everything that scrolls.** Most scrolling
   areas give no sign that there is more content or where you are in it.
   Every scrollable region shows a vertical scrollbar whenever its content
   is taller than its viewport, and none when it fits. Do this last in

@@ -192,22 +192,48 @@ impl DashboardState {
         let ids: Vec<i64> = self.accounts.iter().map(|a| a.id).collect();
         let labels = account_labels(&self.accounts);
         let excluded = self.filter.excluded_accounts.clone();
+        // 3.26: the list caps at `max_h` so many accounts can't push the
+        // popover past the window; the always-visible bar (app-wide
+        // `ScrollbarMode::Always`) overlays its right edge inside the
+        // popover, and the rows reserve the gutter (ui-conventions,
+        // *Scrolling and overflow*).
+        let scroll = self.accounts_filter_scroll.clone();
         Popover::new("accounts-filter")
             .trigger(Button::new("accounts-filter-trigger").label(self.account_filter_label()))
             .content(move |_, _, _| {
-                v_flex()
-                    .gap_1()
-                    .children(ids.iter().zip(labels.iter()).map(|(id, name)| {
-                        let id = *id;
-                        let shell = shell.clone();
-                        filter_checkbox(format!("account-{id}"), !excluded.contains(&id))
-                            .label(name.clone())
-                            .on_click(move |on: &bool, window, cx| {
-                                shell.update(cx, |this, cx| {
-                                    this.set_account_checked(id, *on, window, cx);
-                                });
-                            })
-                    }))
+                let bar = div()
+                    .absolute()
+                    .right_0()
+                    .top_0()
+                    .bottom_0()
+                    .w(px(SCROLLBAR_GUTTER))
+                    .id("accounts:filter-list-vscrollbar")
+                    .debug_selector(|| "accounts:filter-list-vscrollbar".into())
+                    .child(Scrollbar::vertical(&scroll).viewport_from_layout());
+                div()
+                    .relative()
+                    .child(
+                        v_flex()
+                            .id("accounts:filter-list")
+                            .debug_selector(|| "accounts:filter-list".into())
+                            .gap_1()
+                            .max_h(px(240.))
+                            .overflow_y_scroll()
+                            .track_scroll(&scroll)
+                            .pr(px(SCROLLBAR_GUTTER))
+                            .children(ids.iter().zip(labels.iter()).map(|(id, name)| {
+                                let id = *id;
+                                let shell = shell.clone();
+                                filter_checkbox(format!("account-{id}"), !excluded.contains(&id))
+                                    .label(name.clone())
+                                    .on_click(move |on: &bool, window, cx| {
+                                        shell.update(cx, |this, cx| {
+                                            this.set_account_checked(id, *on, window, cx);
+                                        });
+                                    })
+                            })),
+                    )
+                    .child(bar)
             })
     }
     /// Options popover (3.35): the three filter toggles that used to sit in

@@ -2814,3 +2814,178 @@ fn leaving_the_page_or_picking_a_category_clears_the_focus(cx: &mut TestAppConte
         "no panel on return"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 3.26: scrollbars on the Rules page regions — the bar is always visible
+// while the region overflows and gone when everything fits.
+// ---------------------------------------------------------------------------
+
+/// 3.26: a rule list taller than its region paints a scrollbar inside the
+/// list's right edge, and a scrolled position survives an unrelated
+/// redraw.
+#[gpui::test]
+fn the_rules_list_shows_a_scrollbar_when_it_overflows(cx: &mut TestAppContext) {
+    let mut ids = (0i64, 0i64, 0i64, [0i64; 4]);
+    let (handle, shell) = open_shell(cx, |c| {
+        ids = seed_rules_page(c);
+        for n in 0..60 {
+            // Extra rules, none of which match anything: only the list
+            // length matters.
+            financi_db::rules::add_rule(c, &format!("EXTRA {n}"), false, ids.0).unwrap();
+        }
+    });
+    wait_until(cx, "64 rules loaded", |cx| shell.read(cx).rules.len() == 64);
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Rules, cx)));
+    resize_and_draw(cx, handle, 900., 560.);
+
+    let max = cx.update(|cx| {
+        shell
+            .read(cx)
+            .rules_page
+            .read(cx)
+            .rules_scroll
+            .max_offset()
+            .y
+    });
+    assert!(f32::from(max) > 0., "the 64-row list overflows its region");
+    let region = bounds(cx, handle, "rules:list");
+    let bar = bounds(cx, handle, "rules:list-vscrollbar");
+    assert!(
+        bar.origin.y >= region.origin.y
+            && bar.origin.y + bar.size.height <= region.origin.y + region.size.height
+            && bar.origin.x <= region.origin.x + region.size.width
+            && bar.origin.x + bar.size.width <= region.origin.x + region.size.width,
+        "the bar sits inside the list's right edge: bar {bar:?} region {region:?}"
+    );
+
+    // Scrolling moves the rows and the position survives a redraw. The
+    // scroll is half a row so the first row stays (partly) painted.
+    let row_id = ids.3[0];
+    let row = bounds(cx, handle, format!("rules:row-{row_id}"));
+    with_window(cx, handle, |_, cx| {
+        shell
+            .read(cx)
+            .rules_page
+            .read(cx)
+            .rules_scroll
+            .set_offset(point(px(0.), px(-12.)));
+    });
+    draw_frame(cx, handle);
+    let moved = bounds(cx, handle, format!("rules:row-{row_id}"));
+    assert!(
+        (f32::from(moved.origin.y) - (f32::from(row.origin.y) - 12.0)).abs() < 1.0,
+        "the rows scrolled up with the bar"
+    );
+    cx.update(|cx| shell.update(cx, |_, cx| cx.notify()));
+    draw_frame(cx, handle);
+    let held = bounds(cx, handle, format!("rules:row-{row_id}"));
+    assert_eq!(f32::from(held.origin.y), f32::from(moved.origin.y));
+}
+
+/// 3.26: the four-rule fixture list fits its region, so no thumb shows.
+#[gpui::test]
+fn the_rules_list_shows_no_scrollbar_when_it_fits(cx: &mut TestAppContext) {
+    let (handle, shell, _coffee, _snacks, _games, _rules) = open_rules_page(cx);
+    resize_and_draw(cx, handle, 900., 560.);
+    let max = cx.update(|cx| {
+        shell
+            .read(cx)
+            .rules_page
+            .read(cx)
+            .rules_scroll
+            .max_offset()
+            .y
+    });
+    assert_eq!(f32::from(max), 0., "four rules fit the region");
+}
+
+/// 3.26: a matches panel with more rows than it shows paints a scrollbar
+/// within the panel; scrolling to the bottom brings the last row in, and
+/// the position survives an unrelated redraw.
+#[gpui::test]
+fn the_matches_panel_shows_a_scrollbar_when_it_overflows(cx: &mut TestAppContext) {
+    // 15 more COFFEE rows, one per posted date, oldest last: `rule_matches`
+    // orders newest first, so the 2026-10-01 row is the list's last.
+    let mut ids = (0i64, 0i64, 0i64, [0i64; 4]);
+    let mut last = 0i64;
+    let (handle, shell) = open_shell(cx, |c| {
+        ids = seed_rules_page(c);
+        let acct: i64 = c
+            .query_row("SELECT id FROM accounts LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        let import: i64 = c
+            .query_row("SELECT id FROM imports LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        for n in 0..15i64 {
+            c.execute(
+                "INSERT INTO transactions (account_id, import_id, source_line, raw_bytes,
+                                           row_hash, posted_date, amount_cents, description_raw)
+                 VALUES (?1, ?2, ?3, X'00', ?4, ?5, -1000, 'COFFEE ARENA')",
+                (
+                    acct,
+                    import,
+                    100 + n,
+                    format!("matches-bar-hash-{n}"),
+                    format!("2026-10-{:02}", 15 - n),
+                ),
+            )
+            .unwrap();
+            if n == 14 {
+                last = c.last_insert_rowid();
+            }
+        }
+    });
+    let r1 = ids.3[0];
+    wait_until(cx, "rules page fixture loaded", |cx| {
+        shell.read(cx).rules.len() == 4
+    });
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Rules, cx)));
+    click(cx, handle, format!("rules:row-{r1}"));
+    wait_until(cx, "19 matches loaded", |cx| {
+        let p = shell.read(cx).rules_page.read(cx);
+        !p.rule_matches_loading && p.rule_matches.len() == 19
+    });
+    resize_and_draw(cx, handle, 900., 560.);
+
+    let region = bounds(cx, handle, "rules:matches-list");
+    let bar = bounds(cx, handle, "rules:matches-list-vscrollbar");
+    assert!(
+        bar.origin.y >= region.origin.y
+            && bar.origin.y + bar.size.height <= region.origin.y + region.size.height
+            && bar.origin.x <= region.origin.x + region.size.width
+            && bar.origin.x + bar.size.width <= region.origin.x + region.size.width,
+        "the bar sits inside the panel's right edge: bar {bar:?} region {region:?}"
+    );
+    let last = leaked(format!("rules:match-{last}"));
+    assert!(
+        !paints(cx, handle, last),
+        "the last match starts scrolled out of view"
+    );
+
+    let max = cx.update(|cx| {
+        shell
+            .read(cx)
+            .rules_page
+            .read(cx)
+            .matches_scroll
+            .max_offset()
+            .y
+    });
+    assert!(f32::from(max) > 0., "19 matches overflow the panel");
+    with_window(cx, handle, |_, cx| {
+        shell
+            .read(cx)
+            .rules_page
+            .read(cx)
+            .matches_scroll
+            .set_offset(point(px(0.), -max));
+    });
+    draw_frame(cx, handle);
+    assert!(
+        paints(cx, handle, last),
+        "scrolling to the bottom brings the last match in"
+    );
+    cx.update(|cx| shell.update(cx, |_, cx| cx.notify()));
+    draw_frame(cx, handle);
+    assert!(paints(cx, handle, last), "the position holds a redraw");
+}
