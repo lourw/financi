@@ -66,7 +66,8 @@ fn a_filter_change_runs_only_the_dashboard_job(cx: &mut TestAppContext) {
     assert_eq!(
         names,
         vec![
-            "list_transactions_filtered".to_string(),
+            "count_transactions_filtered".to_string(),
+            "list_transactions_page".to_string(),
             "dashboard".to_string()
         ],
         "a filter change must run the dashboard's one load and nothing else"

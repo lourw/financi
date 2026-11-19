@@ -58,7 +58,7 @@ fn an_import_commit_still_reloads_every_page(cx: &mut TestAppContext) {
         "uncategorized_by_merchant",
         "list_transfer_reviews",
         "list_imports",
-        "list_transactions_filtered",
+        "list_transactions_page",
         "dashboard",
     ] {
         assert!(

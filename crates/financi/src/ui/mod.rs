@@ -60,9 +60,9 @@ use financi_db::settings::{self, DateRange};
 use financi_db::{
     Account, CategorySpend, DbError, DbWorker, MonthlySummary, MonthlySummaryRow, TransferReview,
     TxSort, TxSortColumn, TxTableFilter, ViewFilter, ViewNarrow, apply_rule_from_merchant,
-    create_account, list_accounts, list_transactions_filtered, list_transfer_reviews,
-    monthly_summary, resolve_transfer_review, rusqlite::Connection, set_category, set_hidden,
-    sidebar_counts, spend_by_category, unpair_transaction,
+    count_transactions_filtered, create_account, list_accounts, list_transactions_page,
+    list_transfer_reviews, monthly_summary, resolve_transfer_review, rusqlite::Connection,
+    set_category, set_hidden, sidebar_counts, spend_by_category, unpair_transaction,
 };
 use gpui_kit::assets::IconName;
 use gpui_kit::base::{Scrollbar, ScrollbarMode};

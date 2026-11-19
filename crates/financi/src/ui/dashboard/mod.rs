@@ -39,7 +39,7 @@ pub(super) use self::load::{DashboardData, DashboardFilter, load_dashboard};
 pub(super) use self::state::{DashboardChanges, DashboardEvent, DashboardState};
 #[allow(unused_imports)] // used by tests via `ui::…`
 pub use self::table::{RowMenuItem, RowShowRule, TxTable, row_menu_items, row_show_rule};
-pub(super) use self::table::{ShowRuleFn, UnpairFn};
+pub(super) use self::table::{LoadMoreFn, ShowRuleFn, UnpairFn};
 #[allow(unused_imports)] // used by tests via `ui::…`
 pub(super) use self::view::{
     ChartRow, DashboardBody, LegendSelection, SummaryRowKind, SummaryRowView, TX_FIXED_W,

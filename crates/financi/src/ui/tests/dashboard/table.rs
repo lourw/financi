@@ -518,3 +518,118 @@ fn every_transactions_table_column_sorts(cx: &mut TestAppContext) {
 }
 
 // ------------------------------------------------------------------ 3.5 chart
+
+// ------------------------------------------------------- 3.55 paging
+
+/// More rows than one page, so the delegate loads, reports `has_more`
+/// and appends.
+fn seed_paged_rows(conn: &financi_db::rusqlite::Connection) {
+    let acct = create_account(conn, "amex", "Cobalt", AccountKind::CreditCard).unwrap();
+    conn.execute(
+        "INSERT INTO imports (account_id, parser_id, file_name, imported_at, header_raw,
+                              encoding, has_bom, line_ending, trailing_newline, row_count)
+         VALUES (?1, 'amex', 'seed.csv', '2026-11-01', X'00', 'utf-8', 0, 'lf', 0, 250)",
+        [acct],
+    )
+    .unwrap();
+    let import = conn.last_insert_rowid();
+    for line in 0..250i64 {
+        seed_txn(
+            conn,
+            import,
+            acct,
+            line,
+            "2026-11-05",
+            -(100 + line),
+            &format!("PAGED STORE {line:03}"),
+        );
+    }
+}
+
+/// 3.55: the launch load fetches one page; the label counts every match.
+#[gpui::test]
+fn the_table_loads_one_page_and_counts_the_total(cx: &mut TestAppContext) {
+    let (_handle, shell) = open_shell(cx, seed_paged_rows);
+    wait_until(cx, "total counts every match", |cx| {
+        dash(cx, &shell).read(cx).row_count == 250
+    });
+    cx.update(|cx| {
+        let d = dash(cx, &shell).read(cx);
+        assert_eq!(d.loaded_rows, 200, "one page is on screen");
+        let delegate = d.table.read(cx).delegate();
+        assert_eq!(delegate.rows.len(), 200);
+        assert_eq!(delegate.total_rows, 250);
+        assert!(delegate.has_more(cx), "50 rows still behind the page");
+    });
+}
+
+/// 3.55: asking for more appends the next page — same order, no
+/// duplicates — and the table then reports no more to load.
+#[gpui::test]
+fn load_more_appends_the_next_page(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_paged_rows);
+    wait_until(cx, "first page", |cx| {
+        dash(cx, &shell).read(cx).loaded_rows == 200
+    });
+    with_window(cx, handle, |_, cx| {
+        dash(cx, &shell).update(cx, |d, cx| d.load_more(cx));
+    });
+    wait_until(cx, "second page appended", |cx| {
+        dash(cx, &shell).read(cx).loaded_rows == 250
+    });
+    cx.update(|cx| {
+        let d = dash(cx, &shell).read(cx);
+        assert_eq!(d.row_count, 250, "the total does not move");
+        let delegate = d.table.read(cx).delegate();
+        assert_eq!(delegate.rows.len(), 250);
+        assert!(!delegate.has_more(cx));
+        let mut ids: Vec<i64> = delegate.rows.iter().map(|r| r.id).collect();
+        let sorted = {
+            let mut v = ids.clone();
+            v.sort();
+            v.dedup();
+            v.len() == 250
+        };
+        ids.dedup();
+        assert_eq!(ids.len(), 250, "no row arrived twice");
+        assert!(sorted, "the pages keep the query's order");
+    });
+    // Everything is on screen: asking again dispatches nothing.
+    with_window(cx, handle, |_, cx| {
+        dash(cx, &shell).update(cx, |d, cx| d.load_more(cx));
+    });
+    cx.update(|cx| {
+        let d = dash(cx, &shell).read(cx);
+        assert_eq!(d.loaded_rows, 250);
+        assert!(!d.loading_more);
+    });
+}
+
+/// 3.55: a filter change replaces the rows whole — back to one page —
+/// and an append dispatched for the old query lands nowhere.
+#[gpui::test]
+fn a_filter_change_resets_the_table_to_the_first_page(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_paged_rows);
+    wait_until(cx, "first page", |cx| {
+        dash(cx, &shell).read(cx).loaded_rows == 200
+    });
+    with_window(cx, handle, |_, cx| {
+        dash(cx, &shell).update(cx, |d, cx| d.load_more(cx));
+    });
+    wait_until(cx, "both pages", |cx| {
+        dash(cx, &shell).read(cx).loaded_rows == 250
+    });
+    with_window(cx, handle, |window, cx| {
+        dash(cx, &shell).update(cx, |d, cx| d.apply_search("STORE 007", window, cx));
+    });
+    wait_until(cx, "one match", |cx| {
+        dash(cx, &shell).read(cx).row_count == 1
+    });
+    cx.update(|cx| {
+        let d = dash(cx, &shell).read(cx);
+        assert_eq!(d.loaded_rows, 1, "the narrowed filter shows its own rows");
+        let delegate = d.table.read(cx).delegate();
+        assert_eq!(delegate.rows[0].description, "PAGED STORE 007");
+        assert!(!delegate.has_more(cx));
+    });
+}

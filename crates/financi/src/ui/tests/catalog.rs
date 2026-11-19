@@ -48,7 +48,7 @@ fn a_rule_edit_reloads_only_the_sections_it_touches(cx: &mut TestAppContext) {
     let names = cx.update(|cx| logged(cx, &shell));
     for expected in [
         "list_rules",
-        "list_transactions_filtered",
+        "list_transactions_page",
         "dashboard",
         "sidebar_counts",
         "uncategorized_by_merchant",
@@ -105,7 +105,7 @@ fn a_full_reload_loads_every_section(cx: &mut TestAppContext) {
         "uncategorized_by_merchant",
         "list_transfer_reviews",
         "list_imports",
-        "list_transactions_filtered",
+        "list_transactions_page",
         "dashboard",
     ] {
         assert!(

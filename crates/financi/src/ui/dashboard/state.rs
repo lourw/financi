@@ -88,6 +88,19 @@ pub(crate) struct DashboardState {
     /// — the newer load's result replaces it, so the stale one is
     /// dropped whole.
     pub(super) load_gen: u64,
+    /// 3.55 paging: rows currently loaded in the table (the loaded pages).
+    /// Mirrors the delegate's row count — read here instead of through
+    /// the table entity because the component calls `load_more` from
+    /// inside its own update, where reading it back would re-enter.
+    pub(in crate::ui) loaded_rows: usize,
+    /// 3.55 paging: an append job is in flight. The component keeps
+    /// calling `load_more` every frame the user stays near the bottom,
+    /// so dispatches are guarded by this.
+    pub(in crate::ui) loading_more: bool,
+    /// 3.55 paging: counts append dispatches. A full load replaces the
+    /// rows whole, so appends older than the newest dispatch are
+    /// discarded when they arrive.
+    pub(in crate::ui) load_more_gen: u64,
     // -- Page state (3.74).
     /// 3.56: the whole filter state, one comparable value (see
     /// [`DashboardFilter`]).
@@ -320,6 +333,14 @@ impl DashboardState {
         let chart_char_px =
             gpui_kit::base::plot::label::measure_text_width(&"MMMMMMMMMM".into(), px(10.), window)
                 / 10.;
+        // 3.55: the table asks for the next page when the user scrolls
+        // near its bottom; the page owns the job.
+        let on_load_more = {
+            let page = cx.weak_entity();
+            Rc::new(move |_: &mut Window, cx: &mut App| {
+                let _ = page.update(cx, |this, cx| this.load_more(cx));
+            }) as LoadMoreFn
+        };
         // 3.98: the month-label row's height, measured from the real
         // font — never a literal (the stacked panel and its axis inset
         // both derive from it).
@@ -329,6 +350,8 @@ impl DashboardState {
                 TxTable {
                     rows: Vec::new(),
                     cells: Vec::new(),
+                    total_rows: 0,
+                    on_load_more: Some(on_load_more),
                     #[cfg(test)]
                     cells_built: std::cell::Cell::new(0),
                     child_choices: Vec::new(),
@@ -449,6 +472,9 @@ impl DashboardState {
             shell,
             rules_page,
             load_gen: 0,
+            loaded_rows: 0,
+            loading_more: false,
+            load_more_gen: 0,
             filter: DashboardFilter::default(),
             include_transfers_task: None,
             startup_settings: true,

@@ -50,8 +50,8 @@ pub use transfers::{
 pub mod views;
 pub use views::{
     CategorySpend, FilterSql, MonthlySummary, MonthlySummaryRow, TxSort, TxSortColumn,
-    TxTableFilter, ViewFilter, ViewNarrow, dashboard, list_transactions_filtered, monthly_summary,
-    spend_by_category,
+    TxTableFilter, ViewFilter, ViewNarrow, count_transactions_filtered, dashboard,
+    list_transactions_filtered, list_transactions_page, monthly_summary, spend_by_category,
 };
 
 #[cfg(feature = "dev-seed")]

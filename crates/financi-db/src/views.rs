@@ -267,7 +267,23 @@ pub fn list_transactions_filtered(
     filter: &ViewFilter,
     table: &TxTableFilter,
 ) -> Result<Vec<TransactionRow>> {
-    let fs = FilterSql::new(filter, &table.narrow, Some(table));
+    list_transactions_page(conn, filter, table, None, 0)
+}
+
+/// One page of [`list_transactions_filtered`] (3.55 table paging): at
+/// most `limit` rows (all of them when `None`), starting at `offset`, in
+/// the same order. The dashboard loads its table a page at a time —
+/// `TableDelegate::load_more` appends the next page — so "All time" never
+/// reads every row. [`count_transactions_filtered`] is the total behind
+/// the delegate's `has_more`.
+pub fn list_transactions_page(
+    conn: &Connection,
+    filter: &ViewFilter,
+    table: &TxTableFilter,
+    limit: Option<i64>,
+    offset: i64,
+) -> Result<Vec<TransactionRow>> {
+    let mut fs = FilterSql::new(filter, &table.narrow, Some(table));
     let mut sql = format!(
         "SELECT t.id, i.name || ' · ' || a.name, t.posted_date, t.description_raw, t.merchant,
                 c.name, t.amount_cents, t.category_id, t.hidden, t.transfer_pair_id,
@@ -298,6 +314,12 @@ pub fn list_transactions_filtered(
     };
     sql.push_str(&format!(" ORDER BY {order}"));
 
+    if let Some(limit) = limit {
+        let a = fs.push_arg(Box::new(limit));
+        let b = fs.push_arg(Box::new(offset));
+        sql.push_str(&format!(" LIMIT {a} OFFSET {b}"));
+    }
+
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(params_from_iter(fs.args), |r| {
         Ok(TransactionRow {
@@ -315,6 +337,32 @@ pub fn list_transactions_filtered(
         })
     })?;
     Ok(rows.collect::<Result<_, _>>()?)
+}
+
+/// The number of rows [`list_transactions_filtered`] would return for the
+/// same filters — the `COUNT(*)` behind the dashboard table's paging
+/// (3.55): the delegate's `has_more` compares its loaded rows against
+/// this, and the filter row's "N transactions" label reads it, so the
+/// count is exact without the table ever loading every row. The joins
+/// keep it one row per transaction (`LEFT JOIN categories` never
+/// multiplies).
+pub fn count_transactions_filtered(
+    conn: &Connection,
+    filter: &ViewFilter,
+    table: &TxTableFilter,
+) -> Result<i64> {
+    let fs = FilterSql::new(filter, &table.narrow, Some(table));
+    let sql = format!(
+        "SELECT COUNT(*)
+           FROM transactions t
+           JOIN accounts a ON a.id = t.account_id
+           JOIN institutions i ON i.id = a.institution_id
+           LEFT JOIN categories c ON c.id = t.category_id
+          WHERE 1 = 1{}",
+        fs.sql
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    Ok(stmt.query_row(params_from_iter(fs.args), |r| r.get(0))?)
 }
 
 /// One row of [`spend_by_category`]: a parent category (or the
@@ -1195,6 +1243,67 @@ mod tests {
         // The sidebar counts every visible row whatever the dashboard
         // filter (transfers in, hidden out): 10 visible, 1 uncategorized.
         assert_eq!(crate::sidebar_counts(&f.conn).unwrap(), (10, 1));
+    }
+
+    /// 3.55: pages of `list_transactions_page` walk the full list in
+    /// order, and `count_transactions_filtered` is the total behind the
+    /// table's paging.
+    #[test]
+    fn paged_rows_match_the_full_list_and_the_count() {
+        let f = fixture();
+        for day in 1..=12 {
+            add_txn(
+                &f.conn,
+                f.account_id,
+                f.import_id,
+                &format!("2026-10-{day:02}"),
+                -100 * day,
+                if day % 4 == 0 {
+                    None
+                } else {
+                    Some(f.groceries)
+                },
+            );
+        }
+        let filter = range("2026-01-01", "2026-12-31", &[f.account_id], true);
+        let table = TxTableFilter::default();
+        let all = list_transactions_filtered(&f.conn, &filter, &table).unwrap();
+        assert_eq!(all.len(), 12);
+        assert_eq!(
+            count_transactions_filtered(&f.conn, &filter, &table).unwrap(),
+            12,
+            "the count is the full list's length"
+        );
+
+        // Two pages of 7 walk the whole list in exactly the full order.
+        let p1 = list_transactions_page(&f.conn, &filter, &table, Some(7), 0).unwrap();
+        let p2 = list_transactions_page(&f.conn, &filter, &table, Some(7), 7).unwrap();
+        assert_eq!(p1.len(), 7);
+        assert_eq!(p2.len(), 5);
+        let walked: Vec<i64> = p1.iter().chain(&p2).map(|r| r.id).collect();
+        let all_ids: Vec<i64> = all.iter().map(|r| r.id).collect();
+        assert_eq!(walked, all_ids);
+
+        // A page fully past the end is empty; the count narrows with the
+        // filters (hidden rows are out, as in the list).
+        assert!(
+            list_transactions_page(&f.conn, &filter, &table, Some(7), 50)
+                .unwrap()
+                .is_empty()
+        );
+        let uncategorized = TxTableFilter {
+            narrow: ViewNarrow {
+                uncategorized_only: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert_eq!(
+            count_transactions_filtered(&f.conn, &filter, &uncategorized).unwrap(),
+            list_transactions_filtered(&f.conn, &filter, &uncategorized)
+                .unwrap()
+                .len() as i64
+        );
     }
 
     #[test]

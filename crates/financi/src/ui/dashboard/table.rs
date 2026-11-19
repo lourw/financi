@@ -115,6 +115,13 @@ pub fn row_show_rule(
 
 pub struct TxTable {
     pub(in crate::ui) rows: Vec<TransactionRow>,
+    /// 3.55 paging: every row the current filter matches (`COUNT(*)`),
+    /// which can outgrow `rows` — the loaded pages. `has_more` compares
+    /// the two; the page's [`Self::on_load_more`] appends the next one.
+    pub(in crate::ui) total_rows: usize,
+    /// Fired when the user scrolls near the bottom while [`Self::has_more`]
+    /// holds (3.55); the dashboard starts the append job.
+    pub(in crate::ui) on_load_more: Option<LoadMoreFn>,
     /// One entry per row of `rows`, built by [`TxTable::set_rows`]: the
     /// formatted cell text and parsed merchant, so `render_td` never
     /// works per frame (3.85).
@@ -159,6 +166,10 @@ pub struct TxTable {
 /// Callback from a sortable table header back to the [`Shell`] (task 3.4).
 type SortFn = Rc<dyn Fn(TxSort, &mut Window, &mut App)>;
 
+/// 3.55: the table's *load more* callback, wired to the dashboard's
+/// append job.
+pub(in crate::ui) type LoadMoreFn = Rc<dyn Fn(&mut Window, &mut App)>;
+
 impl TableDelegate for TxTable {
     fn columns_count(&self, _: &App) -> usize {
         5
@@ -166,6 +177,18 @@ impl TableDelegate for TxTable {
 
     fn rows_count(&self, _: &App) -> usize {
         self.rows.len()
+    }
+
+    fn has_more(&self, _: &App) -> bool {
+        self.rows.len() < self.total_rows
+    }
+
+    fn load_more(&mut self, window: &mut Window, cx: &mut Context<TableState<Self>>) {
+        // The component calls this repeatedly while the user stays near
+        // the bottom; the page guards against dispatching twice.
+        if let Some(on_load_more) = &self.on_load_more {
+            on_load_more(window, cx);
+        }
     }
 
     fn column(&self, col_ix: usize, _: &App) -> Column {
@@ -395,27 +418,39 @@ impl TxTable {
     /// and their rollbacks, which take the vec, change it and hand it
     /// back, so a repaint always draws the model.
     pub(in crate::ui) fn set_rows(&mut self, rows: Vec<TransactionRow>) {
-        self.cells = rows
-            .iter()
-            .map(|r| TxRowCells {
-                text: [
-                    r.posted_date.clone().into(),
-                    r.account.clone().into(),
-                    r.description.trim().into(),
-                    r.category
-                        .clone()
-                        .unwrap_or_else(|| "Uncategorized".into())
-                        .into(),
-                    flow::money(r.amount_cents).into(),
-                ],
-                merchant: financi_core::parse::merchant(&r.description).into(),
-            })
-            .collect();
+        self.cells = rows.iter().map(row_cells).collect();
         self.rows = rows;
         #[cfg(test)]
         self.cells_built.set(self.cells_built.get() + 1);
     }
 
+    /// 3.55: the next page arrived — build its cells the same way and
+    /// append, so the rows already on screen keep their position.
+    pub(in crate::ui) fn append_rows(&mut self, rows: Vec<TransactionRow>) {
+        self.cells.extend(rows.iter().map(row_cells));
+        self.rows.extend(rows);
+    }
+}
+
+/// One row's cached display cells (3.85); shared by `set_rows` and
+/// `append_rows` so the two can never drift.
+fn row_cells(r: &TransactionRow) -> TxRowCells {
+    TxRowCells {
+        text: [
+            r.posted_date.clone().into(),
+            r.account.clone().into(),
+            r.description.trim().into(),
+            r.category
+                .clone()
+                .unwrap_or_else(|| "Uncategorized".into())
+                .into(),
+            flow::money(r.amount_cents).into(),
+        ],
+        merchant: financi_core::parse::merchant(&r.description).into(),
+    }
+}
+
+impl TxTable {
     pub(in crate::ui) fn text(&self, row_ix: usize, col_ix: usize) -> SharedString {
         self.cells[row_ix].text[col_ix].clone()
     }

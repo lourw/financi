@@ -87,13 +87,23 @@ impl DashboardFilter {
     }
 }
 
+/// 3.55 table paging: the rows one dashboard load fetches. "All time"
+/// over 100 000 rows must not read every row on each change; the table
+/// shows this many and [`TableDelegate::load_more`] appends another page
+/// when the user scrolls near the bottom. (Larger than the component's
+/// 20-row threshold, as its docs require.)
+pub(in crate::ui) const TX_PAGE_SIZE: i64 = 200;
+
 /// The result of the dashboard's one load (3.56): everything the page
 /// renders from the database, and the [`ViewFilter`] the queries actually
 /// ran with — the shell stamps it as the record of the last applied
 /// query. `settings` carries the persisted pair the launch load reads
 /// inside its own query (3.65), so the first frame shows the saved view.
+/// 3.55: `rows` is the first page and `total` the `COUNT(*)` behind
+/// paging — the label and `has_more` read the total, not the page.
 pub(crate) struct DashboardData {
     pub(in crate::ui) rows: Vec<TransactionRow>,
+    pub(in crate::ui) total: usize,
     pub(in crate::ui) chart: Vec<CategorySpend>,
     pub(in crate::ui) summary: MonthlySummary,
     pub(in crate::ui) view_filter: ViewFilter,
@@ -110,12 +120,19 @@ pub(crate) struct DashboardData {
 /// list is on screen already); `None` makes the job read the list itself,
 /// which is what the launch and the after-a-write reloads need
 /// so account changes resolve in the same round trip (3.17).
+///
+/// 3.55: the table query is paged — at most `limit` rows plus a
+/// `COUNT(*)` — so a filter change on "All time" costs one page, not the
+/// whole range. `limit` comes from [`start_load`](DashboardState::start_load):
+/// [`TX_PAGE_SIZE`], or the rows already on screen when a write reloads
+/// deeper than one page, so the loaded rows and the scroll survive it.
 pub(crate) fn load_dashboard(
     c: &mut Connection,
     log: &QueryLog,
     mut filter: DashboardFilter,
     accounts: Option<Vec<Account>>,
     startup: bool,
+    limit: i64,
 ) -> Result<DashboardData, DbError> {
     let settings = if startup {
         log.record("settings::date_range");
@@ -149,6 +166,7 @@ pub(crate) fn load_dashboard(
         let view_filter = filter.view_filter(DashboardState::today(), ids);
         return Ok(DashboardData {
             rows: Vec::new(),
+            total: 0,
             chart: Vec::new(),
             summary: MonthlySummary {
                 months: Vec::new(),
@@ -161,8 +179,12 @@ pub(crate) fn load_dashboard(
     let view_filter = filter.view_filter(DashboardState::today(), ids);
     let table_filter = filter.table_filter();
     let narrow = filter.view_narrow();
-    log.record("list_transactions_filtered");
-    let rows = list_transactions_filtered(c, &view_filter, &table_filter)?;
+    // 3.55 paging: the total drives the label and `has_more`, the page
+    // is what the table builds cells for.
+    log.record("count_transactions_filtered");
+    let total = count_transactions_filtered(c, &view_filter, &table_filter)? as usize;
+    log.record("list_transactions_page");
+    let rows = list_transactions_page(c, &view_filter, &table_filter, Some(limit), 0)?;
     let (chart, summary) = match filter.chart_parent {
         None => {
             // Both aggregations in one pass (3.88); the selected month
@@ -186,6 +208,7 @@ pub(crate) fn load_dashboard(
     };
     Ok(DashboardData {
         rows,
+        total,
         chart,
         summary,
         view_filter,
@@ -230,6 +253,18 @@ impl DashboardState {
     ) {
         let generation = self.next_generation();
         self.load_gen = generation;
+        // 3.55: a full load replaces the rows whole, so an append still
+        // in flight belongs to the rows this dispatch is about to drop.
+        self.load_more_gen += 1;
+        self.loading_more = false;
+        // 3.55: one page per load. A reload keeps whatever depth the user
+        // has already loaded (3.84 keeps rows in place across a reload,
+        // and the table's scroll survives it too), so their edited row
+        // is not dropped back off the screen; from the top that is
+        // exactly one page. (The count is mirrored on the state, not
+        // read back from the table: a sort reaches here from inside the
+        // table's own update.)
+        let limit = TX_PAGE_SIZE.max(self.loaded_rows as i64);
         let filter = self.filter.clone();
         let db = self.db.clone();
         let log = db.query_log();
@@ -238,7 +273,7 @@ impl DashboardState {
         cx.spawn(async move |this, cx| {
             let result = db
                 .call_keyed("dashboard", move |c| {
-                    load_dashboard(c, &log, filter, accounts, startup)
+                    load_dashboard(c, &log, filter, accounts, startup, limit)
                 })
                 .await;
             let _ = this.update(cx, |this, cx| match result {
@@ -300,6 +335,80 @@ impl DashboardState {
         self.start_load(accounts, false, cx);
     }
 
+    /// 3.55 paging: the table scrolled near its bottom and more rows
+    /// remain — fetch the next page and append it. Its own keyed job
+    /// (`"dashboard:more"`), so an append never supersedes a full load
+    /// in flight, and the guards below drop appends that a newer full
+    /// load or filter change has overtaken.
+    pub(in crate::ui) fn load_more(&mut self, cx: &mut Context<Self>) {
+        if self.loading_more {
+            return; // the next page is already on its way
+        }
+        // The mirror, not the entity: the component calls this from
+        // inside the table's own update, where reading it back re-enters.
+        let offset = self.loaded_rows as i64;
+        if offset >= self.row_count as i64 {
+            return; // everything the filter matches is on screen
+        }
+        let filter = self.view_filter.clone();
+        let table_filter = self.filter.table_filter();
+        self.loading_more = true;
+        self.load_more_gen += 1;
+        let generation = self.load_more_gen;
+        let db = self.db.clone();
+        let log = db.query_log();
+        cx.spawn(async move |this, cx| {
+            let result = db
+                .call_keyed("dashboard:more", move |c| {
+                    log.record("list_transactions_page");
+                    list_transactions_page(c, &filter, &table_filter, Some(TX_PAGE_SIZE), offset)
+                })
+                .await;
+            let _ = this.update(cx, |this: &mut DashboardState, cx| match result {
+                Ok(rows) => this.finish_load_more(generation, rows, cx),
+                // Superseded by a newer append, or a full load landed
+                // meanwhile: either way the screen moves on and this
+                // page belongs to a stale query.
+                Err(DbError::Superseded) => this.dismiss_load_more(generation),
+                Err(e) => {
+                    this.notify_err(format!("Database error: {e}"), cx);
+                    this.dismiss_load_more(generation);
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// An append page arrived: drop it if a full load was dispatched or
+    /// landed while it ran (its rows replace everything), else append.
+    fn finish_load_more(
+        &mut self,
+        generation: u64,
+        rows: Vec<TransactionRow>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.load_more_gen != generation {
+            return; // a newer append owns the screen now
+        }
+        self.loading_more = false;
+        if rows.is_empty() {
+            return;
+        }
+        self.loaded_rows += rows.len();
+        self.table.update(cx, |t, cx| {
+            t.delegate_mut().append_rows(rows);
+            t.refresh(cx);
+        });
+    }
+
+    /// Release the append guard after a page that never applied (3.55):
+    /// the next near-bottom frame may ask again.
+    fn dismiss_load_more(&mut self, generation: u64) {
+        if self.load_more_gen == generation {
+            self.loading_more = false;
+        }
+    }
+
     /// Feedback out: the shell paints toasts (3.27); the page only
     /// reports what happened.
     pub(super) fn notify_err(&self, message: impl Into<String>, cx: &mut Context<Self>) {
@@ -324,7 +433,11 @@ impl DashboardState {
     /// and the half-matched rows are *not* applied (3.56: the screen
     /// never shows rows queried under a filter the controls no longer
     /// hold).
-    fn apply_dashboard_rows(&mut self, data: DashboardData, cx: &mut Context<Self>) {
+    pub(in crate::ui) fn apply_dashboard_rows(
+        &mut self,
+        data: DashboardData,
+        cx: &mut Context<Self>,
+    ) {
         // Revalidate the legend state against the rows we can actually
         // show: a date/accounts change can empty the chart out from under
         // a selection or a drill-down, and the table filter must not keep
@@ -369,7 +482,10 @@ impl DashboardState {
             self.reload(cx);
             return;
         }
-        self.row_count = data.rows.len();
+        // 3.55: the label and paging read the total, not the loaded page.
+        self.row_count = data.total;
+        let total_rows = data.total;
+        self.loaded_rows = data.rows.len();
         self.chart_rows = data.chart;
         // A range change shows new months: park the month strip (3.30) at
         // its right end so the most recent month sits beside the pinned
@@ -417,6 +533,7 @@ impl DashboardState {
         self.table.update(cx, |t, cx| {
             let delegate = t.delegate_mut();
             delegate.set_rows(rows);
+            delegate.total_rows = total_rows;
             delegate.child_choices = child_choices;
             delegate.rule_offer = rule_offer;
             delegate.rules = compiled_rules;
