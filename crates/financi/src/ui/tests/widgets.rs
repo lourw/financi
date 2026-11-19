@@ -874,3 +874,19 @@ fn on_db_passes_ordinary_job_errors_through_unchanged() {
     .expect("a job that succeeds still returns its value");
     assert_eq!(value, 1);
 }
+
+/// 3.26: `ui::init` sets the theme's scrollbar mode to `Always` once,
+/// app-wide — every region's bar shows while it overflows, without the
+/// user scrolling first, and `Select` menus and `DataTable`s read the
+/// same theme setting.
+#[gpui::test]
+fn the_app_wide_scrollbar_mode_is_always(cx: &mut TestAppContext) {
+    let (_handle, _shell) = open_shell(cx, |_conn| {});
+    cx.update(|cx| {
+        assert_eq!(
+            cx.theme().scrollbar_mode,
+            gpui_kit::base::ScrollbarMode::Always,
+            "3.26: scrollbars are visible without scrolling first"
+        );
+    });
+}
