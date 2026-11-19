@@ -2,7 +2,7 @@
 //!
 //! H1 split this file by feature: each sub-module below holds one feature's
 //! tests, and the seeds and click helpers used by two or more of them (plus
-//! the three `pub(super)` ones `tests/categories.rs` imports) live here.
+//! the three `pub(super)` ones `tests/categories/` imports) live here.
 //! New tests go next to related ones in the right sub-file.
 
 use super::*;

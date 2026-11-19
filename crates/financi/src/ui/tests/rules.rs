@@ -1,4 +1,4 @@
-//! Tests for `ui/rules.rs` (3.62 split from `ui_tests.rs`).
+//! Tests for `ui/rules/` (3.62 split from `ui_tests.rs`).
 
 use gpui_kit::component::input::InputEvent;
 
