@@ -284,13 +284,19 @@ pub fn list_transactions_page(
     offset: i64,
 ) -> Result<Vec<TransactionRow>> {
     let mut fs = FilterSql::new(filter, &table.narrow, Some(table));
+    // `CROSS JOIN` fixes the join order (SQLite, unlike with plain
+    // `JOIN`): drive from `transactions` through the date index, then
+    // rowid-look up the names. Left free, the planner drives from
+    // `institutions` → `accounts` → `transactions` over the wide
+    // `tx_reconcile` index, which reads every row in the range before
+    // the sort and defeats paging (3.55).
     let mut sql = format!(
         "SELECT t.id, i.name || ' · ' || a.name, t.posted_date, t.description_raw, t.merchant,
                 c.name, t.amount_cents, t.category_id, t.hidden, t.transfer_pair_id,
                 t.category_locked
            FROM transactions t
-           JOIN accounts a ON a.id = t.account_id
-           JOIN institutions i ON i.id = a.institution_id
+           CROSS JOIN accounts a ON a.id = t.account_id
+           CROSS JOIN institutions i ON i.id = a.institution_id
            LEFT JOIN categories c ON c.id = t.category_id
           WHERE 1 = 1{}",
         fs.sql
@@ -352,15 +358,19 @@ pub fn count_transactions_filtered(
     table: &TxTableFilter,
 ) -> Result<i64> {
     let fs = FilterSql::new(filter, &table.narrow, Some(table));
-    let sql = format!(
-        "SELECT COUNT(*)
-           FROM transactions t
-           JOIN accounts a ON a.id = t.account_id
-           JOIN institutions i ON i.id = a.institution_id
-           LEFT JOIN categories c ON c.id = t.category_id
-          WHERE 1 = 1{}",
-        fs.sql
-    );
+    // Only the tables the conditions actually reference: the account
+    // filter is `t.account_id IN (…)`, so the name joins the table query
+    // needs are dead weight here, and `categories` only matters for the
+    // transfer exclusion and the parent-category selection. Driving from
+    // `accounts` instead (which the planner prefers when the FROM lists
+    // it first) turns the count into a full scan of the wide
+    // `tx_reconcile` index; from `transactions` it uses the date index.
+    let joins = if !filter.include_transfers || table.category_id.is_some() {
+        " FROM transactions t LEFT JOIN categories c ON c.id = t.category_id"
+    } else {
+        " FROM transactions t"
+    };
+    let sql = format!("SELECT COUNT(*){joins} WHERE 1 = 1{}", fs.sql);
     let mut stmt = conn.prepare(&sql)?;
     Ok(stmt.query_row(params_from_iter(fs.args), |r| r.get(0))?)
 }
