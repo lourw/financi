@@ -2787,3 +2787,15 @@ Notes (3.101 review, benign, recorded not fixed):
   description and perf budget still name the deleted function).
 
 Completed 2026-11-18 in three passes: H5-lite (rules/categories/tests/scripts/count_rule_matches removal, merged v0.50.4), dashboard pass (comments + STACKED_ROW_GAP derivation, merged v0.52.2), and the `docs/tasks/final.md` rename of the deleted `count_rule_matches` → `preview_pattern_matches`.
+
+## S1 — Split oversized files (rules, categories, categories tests) — from AGENTS.md file-size policy, 2026-11-18
+
+- [x] **S1. Split oversized files** — `ui/rules.rs` (2,957 lines) → `ui/rules/`
+  {`mod`,`editor`,`rows`,`list`,`render`}; `ui/categories.rs` (2,463) → `ui/categories/`
+  {`mod`,`pickers`,`shell`,`mutations`,`render`}; `ui/tests/categories.rs` (3,884) →
+  `ui/tests/categories/` feature sub-files with shared helpers in `mod.rs`. Pure moves
+  (reviewer line-multiset diff: only visibility/use/mod/doc/fmt lines differ); public paths
+  unchanged via re-exports. Also: deleted the Categories rule-list `.gap_1()` — found NOT to
+  be a no-op (gpui VirtualList consumes `style.gap`): rows 28px→24px pitch, matching the Rules
+  page DataList (accepted); and `ui/tests/mod.rs` source-walk guards now recurse over `ui/`,
+  which fixes a latent gap (the flat scan had been silently skipping `dashboard/`).
