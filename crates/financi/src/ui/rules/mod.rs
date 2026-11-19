@@ -198,7 +198,7 @@ pub(super) struct RulesPage {
     pub(super) rule_matches_loading: bool,
     /// 3.52: the matches panel's own scroll handle (the list and the
     /// matches scroll independently).
-    matches_scroll: VirtualListScrollHandle,
+    pub(in crate::ui) matches_scroll: VirtualListScrollHandle,
     /// 3.58: the search text the list filters by — applied 150 ms after
     /// typing stops (or on Enter), so a burst of keystrokes rebuilds the
     /// list once. The input's own value may run ahead of it.
@@ -272,7 +272,7 @@ pub(super) struct RulesPage {
     /// compile, worded by the same check `new_rule` applies.
     pub(super) pattern_preview_error: Option<SharedString>,
     /// Keeps the preview list's scroll position across re-renders (3.103).
-    preview_scroll: VirtualListScrollHandle,
+    pub(in crate::ui) preview_scroll: VirtualListScrollHandle,
     pub(super) rule_error: Option<String>,
     /// 3.24: the rule whose row currently shows the in-place editor. One at
     /// a time; `select_category` and `go_page` close it. `start_edit_rule`

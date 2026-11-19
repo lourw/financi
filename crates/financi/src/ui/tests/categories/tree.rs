@@ -495,6 +495,96 @@ fn the_category_tree_keeps_its_scroll_offset(cx: &mut TestAppContext) {
         );
     });
 }
+/// 3.26: while the tree overflows, the list shows a scrollbar inside its
+/// right edge and the rows stop short of it; `set_offset` moves the rows
+/// and the offset survives an unrelated `cx.notify()`.
+#[gpui::test]
+fn the_category_tree_shows_a_scrollbar_while_it_overflows(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_thousands);
+    wait_until(cx, "2001 category parents", |cx| {
+        shell.read(cx).categories.len() == 2_001
+    });
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Categories, cx)));
+    resize_and_draw(cx, handle, 900., 560.);
+
+    let list = bounds(cx, handle, "cat:tree-list");
+    let bar = bounds(cx, handle, "cat:tree-list-vscrollbar");
+    assert_eq!(f32::from(bar.size.width), 16.0, "the gutter's width");
+    assert!(
+        f32::from(bar.left()) >= f32::from(list.left())
+            && f32::from(bar.right()) <= f32::from(list.right()) + 1.0
+            && f32::from(bar.top()) >= f32::from(list.top()) - 1.0
+            && f32::from(bar.bottom()) <= f32::from(list.bottom()) + 1.0,
+        "the bar sits inside the list's bounds: {bar:?} in {list:?}"
+    );
+    let max = cx.update(|cx| {
+        shell
+            .read(cx)
+            .categories_view
+            .read(cx)
+            .tree_scroll
+            .max_offset()
+            .y
+    });
+    assert!(f32::from(max) > 0., "2001 parents overflow the tree");
+    // The Txns count column stops at the bar, not under it.
+    let first = cx.update(|cx| shell.read(cx).categories[0].id);
+    let row = bounds(cx, handle, format!("cat:tree-row:{first}"));
+    assert!(
+        f32::from(row.right()) <= f32::from(bar.left()) + 1.0,
+        "row right {} vs bar left {}",
+        f32::from(row.right()),
+        f32::from(bar.left())
+    );
+
+    // `set_offset` scrolls: a row further down (which stays on screen)
+    // moves up by the offset.
+    let kid = cx.update(|cx| shell.read(cx).categories[1].children[0].id);
+    let before = bounds(cx, handle, format!("cat:tree-row:{kid}"));
+    cx.update(|cx| {
+        shell
+            .read(cx)
+            .categories_view
+            .read(cx)
+            .tree_scroll
+            .set_offset(point(px(0.), px(-72.)));
+    });
+    draw_frame(cx, handle);
+    let moved = bounds(cx, handle, format!("cat:tree-row:{kid}"));
+    assert!(
+        (f32::from(moved.origin.y) - (f32::from(before.origin.y) - 72.0)).abs() < 1.0,
+        "the rows scrolled up with the bar"
+    );
+    cx.update(|cx| shell.update(cx, |_, cx| cx.notify()));
+    draw_frame(cx, handle);
+    let held = bounds(cx, handle, format!("cat:tree-row:{kid}"));
+    assert_eq!(f32::from(held.origin.y), f32::from(moved.origin.y));
+}
+
+/// 3.26: a tree that fits its panel has nothing to scroll, so no thumb.
+#[gpui::test]
+fn the_category_tree_shows_no_scrollbar_when_it_fits(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |c| {
+        financi_db::categories::create_parent(c, "Drinks", CategoryKind::Expense).unwrap();
+        financi_db::categories::create_parent(c, "Food", CategoryKind::Expense).unwrap();
+    });
+    wait_until(cx, "categories load", |cx| {
+        shell.read(cx).categories.len() == 3
+    });
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Categories, cx)));
+    resize_and_draw(cx, handle, 900., 560.);
+    let max = cx.update(|cx| {
+        shell
+            .read(cx)
+            .categories_view
+            .read(cx)
+            .tree_scroll
+            .max_offset()
+            .y
+    });
+    assert_eq!(f32::from(max), 0.0, "three rows fit, so nothing scrolls");
+}
+
 /// 3.21: the Categories-page rule list keeps its scroll offset across
 /// frames and across a plain refresh — only a content replacement (3.23:
 /// the selected category changes) may reset it.

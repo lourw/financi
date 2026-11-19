@@ -801,6 +801,9 @@ impl Render for CategoriesPage {
                                 let heading = h_flex()
                                     .gap_2()
                                     .items_end()
+                                    // 3.26: the same gutter as the rows, so
+                                    // the headings stay over their columns.
+                                    .pr(px(SCROLLBAR_GUTTER))
                                     .debug_selector(|| "cat:rule-heading-row".into())
                                     .child(
                                         div().flex_1().min_w_0().child(
@@ -913,11 +916,23 @@ impl Render for CategoriesPage {
                                 // row on both pages.
                                 let rule_shell = shell.clone();
                                 section.child(heading).child(
-                                    v_virtual_list(
-                                        cx.entity(),
-                                        "rule-list",
-                                        rule_sizes,
-                                        move |this, range, _window, cx| {
+                                    // 3.26: the rule list's scrollbar — a
+                                    // relative wrapper with the bar as an
+                                    // absolutely positioned sibling over
+                                    // the right edge, and a gutter on the
+                                    // rows (same shape as `DataList`).
+                                    div()
+                                        .relative()
+                                        .flex_1()
+                                        .min_h_0()
+                                        .flex()
+                                        .flex_col()
+                                        .child(
+                                            v_virtual_list(
+                                                cx.entity(),
+                                                "rule-list",
+                                                rule_sizes,
+                                                move |this, range, _window, cx| {
                                             let rows: Vec<AnyElement> = visible
                                                 .iter()
                                                 .skip(range.start)
@@ -959,8 +974,25 @@ impl Render for CategoriesPage {
                                     )
                                     // 3.21: page-owned handle (see the tree).
                                     .track_scroll(&self.rule_scroll)
+                                    // 3.26: rows stop short of the bar.
+                                    .pr(px(SCROLLBAR_GUTTER))
                                     .flex_1()
                                     .min_h_0(),
+                                )
+                                .child(
+                                    div()
+                                        .absolute()
+                                        .right_0()
+                                        .top_0()
+                                        .bottom_0()
+                                        .w(px(SCROLLBAR_GUTTER))
+                                        .id("cat:rule-list-vscrollbar")
+                                        .debug_selector(|| "cat:rule-list-vscrollbar".into())
+                                        .child(
+                                            Scrollbar::vertical(&self.rule_scroll)
+                                                .viewport_from_layout(),
+                                        ),
+                                ),
                                 )
                                 // 3.53: the editor changes pattern and kind
                                 // only — moving a rule to another category

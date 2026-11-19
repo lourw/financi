@@ -228,6 +228,106 @@ fn the_rule_list_points_at_the_rules_page(cx: &mut TestAppContext) {
         "a ruleless category shows no move hint"
     );
 }
+
+/// 3.26: while the rule list overflows, its scrollbar paints inside the
+/// rules section's right edge and the rows stop short of it; `set_offset`
+/// moves the rows and the offset survives an unrelated `cx.notify()`.
+#[gpui::test]
+fn the_rule_list_shows_a_scrollbar_while_it_overflows(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_thousands);
+    wait_until(cx, "2001 category parents", |cx| {
+        shell.read(cx).categories.len() == 2_001
+    });
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Categories, cx)));
+    resize_and_draw(cx, handle, 900., 1_000.);
+    select_parent(cx, handle, &shell, "Cat 0000");
+    draw_frame(cx, handle);
+    let built = cx.update(|cx| shell.read(cx).categories_page.rule_rows_built.get());
+    assert!(built > 4, "rows built: {built}");
+
+    let section = bounds(cx, handle, "cat:rules-section");
+    let bar = bounds(cx, handle, "cat:rule-list-vscrollbar");
+    assert_eq!(f32::from(bar.size.width), 16.0, "the gutter's width");
+    assert!(
+        f32::from(bar.left()) >= f32::from(section.left())
+            && f32::from(bar.right()) <= f32::from(section.right()) + 1.0
+            && f32::from(bar.top()) >= f32::from(section.top()) - 1.0
+            && f32::from(bar.bottom()) <= f32::from(section.bottom()) + 1.0,
+        "the bar sits inside the rules section: {bar:?} in {section:?}"
+    );
+    let max = cx.update(|cx| {
+        shell
+            .read(cx)
+            .categories_view
+            .read(cx)
+            .rule_scroll
+            .max_offset()
+            .y
+    });
+    assert!(f32::from(max) > 0., "2000 rules overflow the list");
+
+    let pat0 = cx.update(|cx| {
+        shell
+            .read(cx)
+            .rules
+            .iter()
+            .find(|r| r.pattern == "PAT0000")
+            .unwrap()
+            .id
+    });
+    let row = bounds(cx, handle, format!("cat:rule-row:{pat0}"));
+    assert!(
+        f32::from(row.right()) <= f32::from(bar.left()) + 1.0,
+        "row right {} vs bar left {}",
+        f32::from(row.right()),
+        f32::from(bar.left())
+    );
+
+    let before = f32::from(row.origin.y);
+    cx.update(|cx| {
+        shell
+            .read(cx)
+            .categories_view
+            .read(cx)
+            .rule_scroll
+            .set_offset(point(px(0.), px(-12.)));
+    });
+    draw_frame(cx, handle);
+    let moved = bounds(cx, handle, format!("cat:rule-row:{pat0}"));
+    assert!(
+        (f32::from(moved.origin.y) - (before - 12.0)).abs() < 1.0,
+        "the rows scrolled up with the bar"
+    );
+    cx.update(|cx| shell.update(cx, |_, cx| cx.notify()));
+    draw_frame(cx, handle);
+    let held = bounds(cx, handle, format!("cat:rule-row:{pat0}"));
+    assert_eq!(f32::from(held.origin.y), f32::from(moved.origin.y));
+}
+
+/// 3.26: one rule fits the list, so there is nothing to scroll and the
+/// bar paints no thumb.
+#[gpui::test]
+fn the_rule_list_shows_no_scrollbar_when_it_fits(cx: &mut TestAppContext) {
+    let mut ids = (0i64, 0i64, 0i64, 0i64);
+    let (handle, shell) = open_shell(cx, |c| ids = seed_split_rules(c));
+    let (_drinks, _transport, _coffee_rule, _fuel_rule) = ids;
+    wait_until(cx, "both rules loaded", |cx| {
+        shell.read(cx).rules.len() == 2 && shell.read(cx).categories.len() == 3
+    });
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Categories, cx)));
+    select_parent(cx, handle, &shell, "Drinks");
+    resize_and_draw(cx, handle, 900., 1_000.);
+    let max = cx.update(|cx| {
+        shell
+            .read(cx)
+            .categories_view
+            .read(cx)
+            .rule_scroll
+            .max_offset()
+            .y
+    });
+    assert_eq!(f32::from(max), 0.0, "one rule fits, so nothing scrolls");
+}
 /// 3.49: the rule list's third column is Uses — the transactions a rule
 /// categorizes, the same number the Rules page shows — and nothing of the
 /// old Category column paints. The COFFEE rule wins the fixture's two
