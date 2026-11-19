@@ -883,11 +883,20 @@ impl<V: Render> RenderOnce for DataList<V> {
 
         // 3.26 (ui-conventions, *Scrolling and overflow*): the vertical
         // scrollbar, an absolutely-positioned sibling overlaying the
-        // region's right edge inside its border. `viewport_from_layout`
-        // ties it to this strip; the bar paints only while the content
-        // overflows, and `ScrollbarMode::Always` — visible without
-        // scrolling first — is the app-wide theme default set in
-        // `ui::init`, not a local `.mode(…)`.
+        // list strip's right edge inside the panel's border. The bar's
+        // own bounds *are* the thumb's viewport (`viewport_from_layout`),
+        // so it spans exactly the scrolling strip, never the heading:
+        // gpui-base hides the thumb while the content is no taller than
+        // that viewport, and an overlay under the heading counted its
+        // 32 px as viewport — swallowing the thumb for every overflow
+        // of 1..`LIST_HEADING_HEIGHT` px even though the list scrolled,
+        // and mapping the thumb's travel over the heading. The heading
+        // is exactly `LIST_HEADING_HEIGHT` tall and sits flush above the
+        // list, so this top offset lands on the strip's top edge. The
+        // bar paints only while the content overflows, and
+        // `ScrollbarMode::Always` — visible without scrolling first — is
+        // the app-wide theme default set in `ui::init`, not a local
+        // `.mode(…)`.
         let bar_sel = format!(
             "{}-vscrollbar",
             self.selector.as_deref().unwrap_or("financi-data-list")
@@ -895,7 +904,11 @@ impl<V: Render> RenderOnce for DataList<V> {
         let scrollbar = div()
             .absolute()
             .right_0()
-            .top_0()
+            .top(px(if self.hide_heading {
+                0.
+            } else {
+                LIST_HEADING_HEIGHT
+            }))
             .bottom_0()
             .w(px(SCROLLBAR_GUTTER))
             .id(SharedString::from(bar_sel.clone()))
