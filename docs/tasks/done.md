@@ -2911,3 +2911,24 @@ Completed 2026-11-18 in three passes: H5-lite (rules/categories/tests/scripts/co
   .top(LIST_HEADING_HEIGHT) so the overlay == the scroll strip (heading-span made
   gpui-base suppress the thumb for 1..32px overflows; regression test pins the
   inequality, verified to fail pre-fix).
+
+- [x] **5.4 Acceptance tests** (all must pass):
+  - Overlapping re-import adds 0 rows (exists; keep it) and leaves the
+    master CSVs byte-identical.
+  - Totals match `fixtures/demo/expected.json` (from 3.1).
+  - **Export round-trip, byte-exact:** import every demo file, hide a row,
+    export, then import the zip's CSVs into a fresh database whose accounts
+    use the manifest's account keys → same multiset of
+    `(account_key, row_hash)` and identical row bytes, and the fresh
+    database's master CSVs are byte-identical to the zip's; re-importing into
+    the source database adds 0 rows; restore from the zip gives an identical
+    database (same rows, categories, rules, locks, hidden flags) and `csv/`.
+  - Also include the dashboard layout setting (3.101) in the restore check:
+    a restored database brings back the saved layout.
+
+**Done when:** 5.4 passes. Then do the final task (`docs/tasks/final.md`).
+  Reviewer confirmed no vacuity: raw-byte tree comparisons, true-multiset row
+  fingerprints, restore dump covers accounts/rows/category/locked/hidden/categories/rules/
+  settings, layout test non-vacuous (target DB seeded with a different value first). Existing
+  adds-0 (import.rs) and expected.json (views.rs) tests kept untouched; acceptance.rs header
+  maps spec bullets to all three homes. 514 lines, hermetic, no ignores.
