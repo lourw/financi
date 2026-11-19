@@ -2851,3 +2851,63 @@ Completed 2026-11-18 in three passes: H5-lite (rules/categories/tests/scripts/co
   chart_layout() plans the stacked legend (rare ~25px spill when drilled+narrow; reorder
   if touched); chart:empty debug_selector + positive paint assert (empty test only
   asserts absence). Deleted tests (bar share labels/band thinning) genuinely obsolete.
+
+- [x] **3.26 A scrollbar on everything that scrolls.** Most scrolling
+  areas give no sign that there is more content or where you are in it.
+  Every scrollable region shows a vertical scrollbar whenever its content
+  is taller than its viewport, and none when it fits. Do this last in
+  M3: 3.45, 3.52, 3.58 and 3.59 added or re-laid out scrolling regions, and 3.93 / 3.99 change the dashboard panels.
+  - **Review update (2026-11-11):** After 3.86 (measured layout), since the 16 px scrollbar gutter would break window-width arithmetic. Give `DataList` (3.89) a scrollbar so every list gets one. The dashboard no longer has a page scroll: 3.100 already gives each dock panel its own scrollbar, so here just check those follow the app-wide mode.
+  - **Find every region at the time:** grep the UI code for
+    `overflow_y_scroll`, `overflow_x_scroll` and `v_virtual_list`. Besides
+    the lists below, that includes the Rules page list (`rules_scroll`),
+    the dashboard dock panels (3.100, already done there), the rule matches panel (3.52), the add-rule preview (3.103) and
+    the summary's month strip (3.30 already has its horizontal bar). 3.36
+    removes the scrolling legend list.
+  - Use gpui-base's `Scrollbar` (`gpui-base-0.9.0/src/scrollbar.rs`:
+    `Scrollbar::vertical(&handle)`); it takes a `ScrollHandle`, and
+    `VirtualListScrollHandle` implements `ScrollbarHandle` too. Don't
+    hand-roll one.
+  - **Always visible while the content overflows:** set
+    `ScrollbarMode::Always` once, app-wide, on the theme's
+    `ScrollbarTheme` at startup. The default (`Scrolling`) only shows the
+    bar while scrolling, which is the behaviour being replaced.
+  - **Virtualized lists** (category tree, rule list, To categorize queue):
+    reuse the handle each list already keeps on `Shell` (`tree_scroll`,
+    `rule_scroll`, `queue_scroll`, from 3.21).
+  - **Plain scrolling divs** (`overflow_y_scroll` in `ui.rs`: the chart
+    legend `legend-list`, the monthly summary `summary-rows`, the Transfers
+    list `transfer-reviews`): give each a `ScrollHandle` kept as a `Shell`
+    field (one per region, never created in `render`; same trap as 3.21)
+    and `track_scroll` it.
+  - **Popovers and dropdowns** that can outgrow their height: the Accounts
+    filter popover gets a max height, scrolls, and shows a scrollbar; check
+    that `Select` menus already show one for long lists (category pickers)
+    and fix them if not.
+  - **`DataTable`s** (transactions, import history) draw their own
+    scrollbars (`scrollbar_visible`); confirm they follow the app-wide
+    mode and show both when the content overflows.
+  - **Placement:** the bar overlays the region's right edge inside its
+    border (wrap the region in a `relative()` container and add the
+    `Scrollbar` as an absolutely positioned sibling). Content reserves the
+    bar's width (16 px) on the right so the thumb never covers amounts,
+    counts or buttons.
+  - Add a rule to `docs/ui-conventions.md` (*Layout*): every scrollable
+    region has a visible scrollbar while it overflows, and new scrolling
+    regions must add one.
+  - Tests: for each region above, with enough rows to overflow, the
+    scrollbar paints inside the region's bounds and the right-most content
+    (amount, count or button) doesn't overlap it; with content that fits,
+    no scrollbar paints; dragging the thumb (or `set_offset` on the handle)
+    moves the content, and the offset survives an unrelated `cx.notify()`.
+
+**Done when:** on the demo data the dashboard totals match
+`expected.json`, filters compose, and every M3 task above is merged.
+  Accepted decisions (review PASS): two horizontal-scroll regions deliberately have no
+  bar — dock tab strip (dock chrome) and the stacked chart's month pan (3.93, a bar would
+  overlap month labels; spec mandates vertical bars only, and the month strip, the one
+  horizontal case named, has its bar). Select menus + DataTables confirmed to follow the
+  app-wide mode (no local .mode() in gpui-component). Round-1 fix: DataList bar offset
+  .top(LIST_HEADING_HEIGHT) so the overlay == the scroll strip (heading-span made
+  gpui-base suppress the thumb for 1..32px overflows; regression test pins the
+  inequality, verified to fail pre-fix).
