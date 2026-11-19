@@ -52,7 +52,9 @@ Dev switches (debug builds only):
 
 - `FINANCI_DB=/tmp/dev.sqlite` — use a scratch DB, never the real one in the
   OS app data dir.
-- `FINANCI_DEV_SEED=1` — fill an empty DB with synthetic data.
+- `FINANCI_DEV_SEED=1` — fill an empty DB with synthetic data;
+  `FINANCI_DEV_SEED=large` — the 3.55 scale fixture (1 000 rules,
+  80 categories, 100 000 rows over 10 years).
 - `FINANCI_DEV_OPEN=fixtures/demo/amex-sep-nov.csv` — open a file's import
   preview at startup.
 
