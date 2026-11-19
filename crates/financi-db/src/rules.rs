@@ -285,52 +285,53 @@ pub fn rule_matches(conn: &Connection, rule_id: i64) -> Result<Vec<RuleMatchRow>
 /// [`rule_use_stats`]) whose status `status_of` reports — `None` drops the
 /// row. Sorted Decides first, then newest posted date first, then newest
 /// id first.
+///
+/// Cost shape (3.55): no JOINs — account labels come from one small map
+/// (every transaction's account exists, the FK guarantees it), and the
+/// card-payment exclusion is one bound id compared in SQL instead of a
+/// subquery per row. The walk reads six narrow columns per row, borrows
+/// the description without copying, and materialises a full
+/// [`RuleMatchRow`] only for rows `status_of` keeps. (SQL-side substring
+/// prefilters — `instr(lower(…))`, `LIKE` — were measured against the
+/// 100 000-row seed and cost *more* than the plain scan: SQLite filters
+/// faster than rows cost to hand back, and the non-ASCII rows a
+/// Unicode-fold-correct filter must keep anyway dominate. The win has to
+/// come from fewer and cheaper columns, not from filtering in SQLite.)
 fn match_rows(
     conn: &Connection,
     mut status_of: impl FnMut(&str, bool) -> Option<RuleMatchStatus>,
 ) -> Result<Vec<RuleMatchRow>> {
+    let labels = account_display_labels(conn)?;
+    let card_payment = card_payment_category_id(conn)?;
+    // The card-payment exclusion binds NULL when the category doesn't
+    // exist, which keeps every row.
     let mut stmt = conn.prepare(
-        "SELECT t.id, t.description_raw, i.name || ' · ' || a.name,
-                t.amount_cents, t.posted_date, t.category_locked
-           FROM transactions t
-           JOIN accounts a ON a.id = t.account_id
-           JOIN institutions i ON i.id = a.institution_id
-          WHERE t.hidden = 0
-            AND (
-              t.category_id IS NULL
-              OR t.category_id NOT IN (
-                SELECT c.id
-                  FROM categories c
-                  JOIN categories p ON p.id = c.parent_id
-                 WHERE c.name = 'Card Payment' AND p.name = 'Transfers'
-                   AND p.parent_id IS NULL
-              )
-            )",
+        "SELECT id, description_raw, posted_date, amount_cents, account_id, category_locked
+           FROM transactions
+          WHERE hidden = 0
+            AND (?1 IS NULL OR category_id IS NULL OR category_id <> ?1)",
     )?;
     let mut rows: Vec<RuleMatchRow> = Vec::new();
-    let found = stmt.query_map([], |r| {
-        Ok((
-            r.get::<_, i64>(0)?,
-            r.get::<_, String>(1)?,
-            r.get::<_, String>(2)?,
-            r.get::<_, i64>(3)?,
-            r.get::<_, String>(4)?,
-            r.get::<_, i64>(5)? != 0,
-        ))
-    })?;
-    for row in found {
-        let (transaction_id, description, account, amount_cents, posted_date, locked) = row?;
-        let Some(status) = status_of(&description, locked) else {
-            continue;
-        };
-        rows.push(RuleMatchRow {
-            transaction_id,
-            description,
-            account,
-            amount_cents,
-            posted_date,
-            status,
-        });
+    {
+        let mut found = stmt.query(rusqlite::params![card_payment])?;
+        while let Some(row) = found.next()? {
+            // Borrowed from the statement: valid until the next `next()`
+            // (`description_raw` is TEXT NOT NULL).
+            let description = borrow_text(&row.get_ref(1)?)?;
+            let locked = row.get::<_, i64>(5)? != 0;
+            let Some(status) = status_of(description, locked) else {
+                continue;
+            };
+            let account_id: i64 = row.get(4)?;
+            rows.push(RuleMatchRow {
+                transaction_id: row.get(0)?,
+                description: description.to_string(),
+                account: labels.get(&account_id).cloned().unwrap_or_default(),
+                amount_cents: row.get(3)?,
+                posted_date: row.get(2)?,
+                status,
+            });
+        }
     }
     rows.sort_by(|a, b| {
         let decides = |r: &RuleMatchRow| matches!(r.status, RuleMatchStatus::Decides);
@@ -340,6 +341,57 @@ fn match_rows(
             .then_with(|| b.transaction_id.cmp(&a.transaction_id))
     });
     Ok(rows)
+}
+
+/// A borrowed `&str` for a [`rusqlite::Row::get_ref`] value — the
+/// zero-copy column read [`match_rows`] uses. The borrow is valid until
+/// the statement advances.
+fn borrow_text<'a>(value: &rusqlite::types::ValueRef<'a>) -> Result<&'a str> {
+    match value {
+        rusqlite::types::ValueRef::Text(text) => Ok(std::str::from_utf8(text).map_err(|err| {
+            rusqlite::Error::FromSqlConversionFailure(1, rusqlite::types::Type::Text, Box::new(err))
+        })?),
+        other => Err(DbError::from(rusqlite::Error::InvalidColumnType(
+            1,
+            "description_raw".into(),
+            other.data_type(),
+        ))),
+    }
+}
+
+/// The id of the system `Card Payment` child of `Transfers` (migration
+/// 0002), if it exists — the one category [`rule_use_stats`] and
+/// [`match_rows`] exclude besides locked and hidden rows.
+fn card_payment_category_id(conn: &Connection) -> Result<Option<i64>> {
+    Ok(conn
+        .query_row(
+            "SELECT c.id
+               FROM categories c
+               JOIN categories p ON p.id = c.parent_id
+              WHERE c.name = 'Card Payment' AND p.name = 'Transfers'
+                AND p.parent_id IS NULL",
+            [],
+            |r| r.get(0),
+        )
+        .optional()?)
+}
+
+/// Display labels (`"Institution · name"`, same as
+/// [`crate::Account::display_name`]) for every account, so
+/// [`match_rows`] can resolve them without joining per row.
+fn account_display_labels(conn: &Connection) -> Result<HashMap<i64, String>> {
+    let mut stmt = conn.prepare(
+        "SELECT a.id, i.name || ' · ' || a.name
+           FROM accounts a
+           JOIN institutions i ON i.id = a.institution_id",
+    )?;
+    let found = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
+    let mut labels = HashMap::new();
+    for row in found {
+        let (id, label) = row?;
+        labels.insert(id, label);
+    }
+    Ok(labels)
 }
 
 /// What [`preview_pattern_matches`] reports for an unsaved pattern (3.102).

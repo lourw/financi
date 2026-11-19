@@ -1790,6 +1790,7 @@ dependencies = [
 name = "financi-core"
 version = "0.1.0"
 dependencies = [
+ "aho-corasick",
  "chrono",
  "regex",
  "sha2 0.10.9",
