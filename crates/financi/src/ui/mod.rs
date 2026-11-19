@@ -357,7 +357,7 @@ pub struct Shell {
     // 3.80: the add-rule row and its in-place editor moved to `RulesPage`,
     // which also owns the list's search, filters, sort and checked rows.
     // The Categories page renders the shared rule rows through thin
-    // wrappers here (see `ui/rules.rs`).
+    // wrappers here (see `ui/rules/`).
     // -- Feedback (3.27): toasts, never inline status lines
     // (`docs/ui-conventions.md`, *Feedback*). 3.85: the stack is a child
     // entity of its own (`widgets::ToastLayer`): it owns the mounted

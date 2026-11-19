@@ -40,7 +40,7 @@ use gpui_kit::base::Selectable as _;
 /// Rules page becomes its own entity (3.80).
 pub(in crate::ui) struct CategoriesState {
     /// The selected category, mirrored from the page (see the module
-    /// docs): `rules.rs` reads it next to the tree's own copy.
+    /// docs): `rules/` reads it next to the tree's own copy.
     pub(in crate::ui) selected_category: Option<i64>,
     /// 3.53: the Categories page's add-rule picker, shown only when the
     /// selection is a parent: its own child categories by their own names
@@ -133,7 +133,7 @@ pub(in crate::ui) struct CategoriesPage {
     /// step whichever page the click arrives on.
     rules_page: Entity<RulesPage>,
     // `pub(super)` like the other extracted pages: the Escape tests focus
-    // the page root the way `go_page` does (see `ui/tests/categories.rs`).
+    // the page root the way `go_page` does (see `ui/tests/categories/`).
     pub(in crate::ui) focus: FocusHandle,
     visible: bool,
     dirty: bool,
