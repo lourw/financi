@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use regex::Regex;
 
-use super::{CompiledRules, Rule, TEST_SET_SIZE_LIMIT};
+use super::{CompiledPattern, CompiledRules, Rule, TEST_SET_SIZE_LIMIT};
 
 /// The pre-3.55 loop, verbatim in semantics: substring rules first, then
 /// regex rules only if no substring matched; within each kind the longest
@@ -226,6 +226,40 @@ fn unicode_folding_and_original_length_survive_the_rewrite() {
     .map(|s| s.to_string())
     .collect();
     assert_engine_matches_reference(&rules, &descriptions);
+}
+
+/// The [`CompiledPattern`] ASCII fast path (3.55) must only apply when the
+/// description is ASCII too. Unicode lowering (3.72) can turn non-ASCII
+/// characters into ASCII — `İ` lowers to `i` plus a combining dot, Kelvin
+/// `U+212a` lowers to `k` — and byte-level comparison misses those, while
+/// the pre-3.55 loop folded both sides and matched. Every case is asserted
+/// equal to that fold: `description.to_lowercase().contains(lowered)`.
+#[test]
+fn compiled_pattern_fast_path_agrees_with_unicode_folding() {
+    let cases: &[(&str, &str)] = &[
+        // ASCII needle, non-ASCII description folding to it: the bug.
+        ("I", "İ RESTAURANT"),
+        ("i", "İ RESTAURANT"),
+        ("k", "\u{212a}ELVIN"),
+        ("K", "\u{212a}ELVIN"),
+        // Non-ASCII needle, ASCII description: always took the fold path.
+        ("\u{212a}", "KELVIN"),
+        ("İ", "İ RESTAURANT"),
+        // Sanity: plain ASCII both ways, and non-ASCII that must not match.
+        ("COFFEE", "my coffee shop"),
+        ("COFFEE", "CAFÉ SHOP"),
+        ("SS", "Straße"),
+        ("I", "I"),
+    ];
+    for (pattern, description) in cases {
+        let lowered = pattern.to_lowercase();
+        let expected = description.to_lowercase().contains(&lowered);
+        assert_eq!(
+            CompiledPattern::new(pattern, false).is_match(description),
+            expected,
+            "pattern {pattern:?} vs description {description:?}"
+        );
+    }
 }
 
 #[test]

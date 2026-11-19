@@ -88,14 +88,19 @@ impl CompiledPattern {
     /// invalid regex never matches.
     pub fn is_match(&self, description: &str) -> bool {
         match &self.kind {
-            // 3.55 fast path: with an ASCII needle, comparing bytes
+            // 3.55 fast path: when both sides are ASCII, comparing bytes
             // case-insensitively folds exactly like Unicode lowering both
-            // sides (and a non-ASCII needle could never match an all-ASCII
-            // description anyway), so no lowercased copy is needed.
-            Pattern::Substring(needle) if needle.is_ascii() => description
-                .as_bytes()
-                .windows(needle.len())
-                .any(|window| window.eq_ignore_ascii_case(needle.as_bytes())),
+            // sides, so no lowercased copy is needed. A non-ASCII
+            // description still needs folding: Unicode lowering can turn
+            // non-ASCII characters into ASCII (3.72 — `İ` lowers to `i`
+            // plus a combining dot, Kelvin `U+212A` to `k`), which
+            // byte-level comparison would miss.
+            Pattern::Substring(needle) if needle.is_ascii() && description.is_ascii() => {
+                description
+                    .as_bytes()
+                    .windows(needle.len())
+                    .any(|window| window.eq_ignore_ascii_case(needle.as_bytes()))
+            }
             Pattern::Substring(needle) => description.to_lowercase().contains(needle.as_str()),
             Pattern::Regex(re) => re.is_match(description),
             Pattern::Never => false,
