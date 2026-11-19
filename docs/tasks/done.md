@@ -2799,3 +2799,55 @@ Completed 2026-11-18 in three passes: H5-lite (rules/categories/tests/scripts/co
   be a no-op (gpui VirtualList consumes `style.gap`): rows 28px→24px pitch, matching the Rules
   page DataList (accepted); and `ui/tests/mod.rs` source-walk guards now recurse over `ui/`,
   which fixes a latent gap (the flat scan had been silently skipping `dashboard/`).
+
+- [x] **3.99 Spending by category as a pie chart.** Replace the
+  *Spending by category* `BarChart` with a donut chart (user request,
+  2026-11-17). Do it last in the lane, after the dock layout (3.100), so
+  it is laid out for a resizable panel; it reworks the chart panel.
+  - **Component:** gpui-kit's `PieChart`
+    (`gpui_kit::component::chart::PieChart`, source in
+    `gpui-component-0.9.0/src/chart/pie_chart.rs`). It draws arcs with a
+    hover lift and tooltip (`name`, `value`, `inner_radius`,
+    `outer_radius`, `pad_angle`, `interactive`). It takes no clicks,
+    same as the bar chart today, so the legend stays the click target.
+  - **Shape:** a donut (`inner_radius` about 60 % of the outer one) with
+    the range's total spend in the hole (`text_lg` semibold amount,
+    `text_xs` muted "Expense" under it; the drilled parent's name and
+    total while drilled). Slices keep the category palette and order of
+    today's bars (largest first, clockwise from 12 o'clock).
+  - **Many categories:** the largest 8 slices are shown, the rest are merged
+    into one muted "Other" slice. The legend still lists every category,
+    and Other is a legend chip too (tooltip lists what it holds; clicking it
+    does nothing). Drilled into a parent, its children get the same rule.
+  - **Selection:** a selected category (legend or summary click) shows
+    the way the bar chart shows it: other slices dim to about 35 %.
+    Tooltips stay `Name` over `amount · share`.
+  - **Layout:** the panel is resizable (3.100), so it adapts to its
+    measured bounds (3.86 probes): wider than tall, the donut sits left
+    as a square of the panel's inner height with the legend chips
+    wrapping to its right; otherwise the legend wraps under the donut.
+    The donut never drops below 120 px across; under that the panel
+    shows the legend alone.
+    Drop the share labels and band-label thinning (3.15 / 3.31) that only
+    the bars need, together with their tests. Keep refunds netting as
+    today; a category whose net is ≤ 0 has no slice. Fit 1200 × 720.
+  - Update the *Dashboard* paragraph of `ui-conventions.md` (the chart
+    `Panel` description) and the *Category chart* line of `plan.md`
+    (UI requirements).
+  - Tests (`ui/tests/dashboard/chart.rs`, replacing the bar-only ones):
+    the slice values equal `spend_by_category` for the range; with 12
+    parents there are 8 named slices plus Other summing to the total;
+    drilling shows the children's slices and the parent's total in the
+    hole; a selected category dims the others; an empty range shows the
+    existing empty state; at the default layout and at the panel's
+    minimum size the donut and legend fit inside the panel and switch
+    between side-by-side and stacked as its aspect changes (bounds).
+    `expected.json` totals still match.
+  Accepted deviations (review PASS): "Other" legend chip click is a no-op by design
+  (drill lives in the individual legend chips; Other's tooltip lists members); hole shows
+  the Summary-consistent net total (can differ from the positive-slice sum when a category
+  is net-negative); "+N more" chip needs LEGEND_CHIP_H (19.5) per planned line, not the
+  text line height. Follow-ups: the "All categories" chip width is inserted after
+  chart_layout() plans the stacked legend (rare ~25px spill when drilled+narrow; reorder
+  if touched); chart:empty debug_selector + positive paint assert (empty test only
+  asserts absence). Deleted tests (bar share labels/band thinning) genuinely obsolete.
