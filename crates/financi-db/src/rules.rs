@@ -5,7 +5,7 @@
 //! rules over the unlocked transactions ([`reapply_rules`]) in the same SQL
 //! transaction as the rule change.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use financi_core::rules::{CompiledPattern, CompiledRules, Rule, validate_regex};
 use rusqlite::{Connection, OptionalExtension, params};
@@ -71,6 +71,17 @@ pub fn list_rules(conn: &Connection) -> Result<Vec<Rule>> {
 /// Create a rule targeting the child category `category_id`. Returns its
 /// id. Rejects empty patterns, invalid regex patterns and parent targets.
 pub fn add_rule(conn: &Connection, pattern: &str, is_regex: bool, category_id: i64) -> Result<i64> {
+    add_rule_with_use(conn, pattern, is_regex, category_id).map(|(id, _)| id)
+}
+
+/// [`add_rule`] plus the fresh [`reapply_rules_with_use`] counts, so the
+/// Rules view refreshes without a separate `rule_use_stats` pass (3.55).
+pub fn add_rule_with_use(
+    conn: &Connection,
+    pattern: &str,
+    is_regex: bool,
+    category_id: i64,
+) -> Result<(i64, HashMap<i64, RuleUse>)> {
     let tx = conn.unchecked_transaction()?;
     let pattern = validate_rule(&tx, pattern, is_regex, category_id)?;
     tx.execute(
@@ -78,9 +89,9 @@ pub fn add_rule(conn: &Connection, pattern: &str, is_regex: bool, category_id: i
         (pattern, is_regex, category_id),
     )?;
     let id = tx.last_insert_rowid();
-    reapply_rules(&tx)?;
+    let rule_use = reapply_rules_with_use(&tx)?;
     tx.commit()?;
-    Ok(id)
+    Ok((id, rule_use))
 }
 
 /// Replace a rule's pattern, kind and target category, with the same
@@ -92,6 +103,17 @@ pub fn update_rule(
     is_regex: bool,
     category_id: i64,
 ) -> Result<()> {
+    update_rule_with_use(conn, id, pattern, is_regex, category_id).map(|_| ())
+}
+
+/// [`update_rule`] plus the fresh [`reapply_rules_with_use`] counts (3.55).
+pub fn update_rule_with_use(
+    conn: &Connection,
+    id: i64,
+    pattern: &str,
+    is_regex: bool,
+    category_id: i64,
+) -> Result<HashMap<i64, RuleUse>> {
     let tx = conn.unchecked_transaction()?;
     let pattern = validate_rule(&tx, pattern, is_regex, category_id)?;
     let updated = tx.execute(
@@ -101,20 +123,25 @@ pub fn update_rule(
     if updated == 0 {
         return Err(DbError::UnknownRule(id));
     }
-    reapply_rules(&tx)?;
+    let rule_use = reapply_rules_with_use(&tx)?;
     tx.commit()?;
-    Ok(())
+    Ok(rule_use)
 }
 
 /// Delete a rule. Rows it used to match are recategorized by the remaining
 /// rules (or become Uncategorized) via [`reapply_rules`].
 pub fn delete_rule(conn: &Connection, id: i64) -> Result<()> {
+    delete_rule_with_use(conn, id).map(|_| ())
+}
+
+/// [`delete_rule`] plus the fresh [`reapply_rules_with_use`] counts (3.55).
+pub fn delete_rule_with_use(conn: &Connection, id: i64) -> Result<HashMap<i64, RuleUse>> {
     let tx = conn.unchecked_transaction()?;
     fetch_rule(&tx, id)?;
     tx.execute("DELETE FROM category_rules WHERE id = ?1", [id])?;
-    reapply_rules(&tx)?;
+    let rule_use = reapply_rules_with_use(&tx)?;
     tx.commit()?;
-    Ok(())
+    Ok(rule_use)
 }
 
 /// Move every rule in `ids` to the child category `category_id` — the
@@ -123,6 +150,15 @@ pub fn delete_rule(conn: &Connection, id: i64) -> Result<()> {
 /// an existing child (as [`add_rule`] does) or an unknown rule id, and on
 /// any error nothing moves. Single-rule moves go through [`update_rule`].
 pub fn move_rules(conn: &Connection, ids: &[i64], category_id: i64) -> Result<()> {
+    move_rules_with_use(conn, ids, category_id).map(|_| ())
+}
+
+/// [`move_rules`] plus the fresh [`reapply_rules_with_use`] counts (3.55).
+pub fn move_rules_with_use(
+    conn: &Connection,
+    ids: &[i64],
+    category_id: i64,
+) -> Result<HashMap<i64, RuleUse>> {
     let tx = conn.unchecked_transaction()?;
     ensure_assignable(&tx, category_id)?;
     for id in ids {
@@ -134,9 +170,9 @@ pub fn move_rules(conn: &Connection, ids: &[i64], category_id: i64) -> Result<()
             return Err(DbError::UnknownRule(*id));
         }
     }
-    reapply_rules(&tx)?;
+    let rule_use = reapply_rules_with_use(&tx)?;
     tx.commit()?;
-    Ok(())
+    Ok(rule_use)
 }
 
 /// Re-run every rule over all unlocked transactions: each row gets the
@@ -149,22 +185,52 @@ pub fn move_rules(conn: &Connection, ids: &[i64], category_id: i64) -> Result<()
 /// so a save takes milliseconds instead of seconds even with thousands of
 /// rows and dozens of regex rules.
 pub fn reapply_rules(conn: &Connection) -> Result<()> {
+    reapply_rules_with_use(conn).map(|_| ())
+}
+
+/// [`reapply_rules`] plus the fresh per-rule use counts, counted in the
+/// same pass (3.55). The map equals what [`rule_use_stats`] returns on the
+/// just-re-applied database — same rows (unlocked, and hidden rows counted
+/// nowhere), same winning rule per row, same card-payment exclusion — so a
+/// caller that just wrote a rule can cache these and skip the separate
+/// `rule_use_stats` full-table pass.
+pub fn reapply_rules_with_use(conn: &Connection) -> Result<HashMap<i64, RuleUse>> {
     let rules = CompiledRules::new(&list_rules(conn)?);
-    let rows: Vec<(i64, String, Option<i64>)> = {
+    let excluded = card_payment_category_ids(conn)?;
+    let rows: Vec<(i64, String, Option<i64>, i64, i64)> = {
         let mut stmt = conn.prepare(
-            "SELECT id, description_raw, category_id FROM transactions WHERE category_locked = 0",
+            "SELECT id, description_raw, category_id, amount_cents, hidden \
+             FROM transactions WHERE category_locked = 0",
         )?;
-        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+        let rows = stmt.query_map([], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+        })?;
         rows.collect::<Result<_, _>>()?
     };
     let mut update = conn.prepare("UPDATE transactions SET category_id = ?1 WHERE id = ?2")?;
-    for (id, description, current) in rows {
-        let category_id = rules.pick(&description);
+    let mut rule_use: HashMap<i64, RuleUse> = HashMap::new();
+    for (id, description, current, amount_cents, hidden) in rows {
+        let winner = rules.winner_ids(&description);
+        let category_id = winner.map(|(_, category)| category);
         if category_id != current {
             update.execute(params![category_id, id])?;
         }
+        // The row counts for its winning rule, with `rule_use_stats`'
+        // exclusions: hidden rows never count, and neither does a row
+        // whose category (the winner here) is a Card Payment category.
+        if hidden == 0
+            && let Some((rule_id, category_id)) = winner
+            && !excluded.contains(&category_id)
+        {
+            let entry = rule_use.entry(rule_id).or_insert(RuleUse {
+                count: 0,
+                total_cents: 0,
+            });
+            entry.count += 1;
+            entry.total_cents += amount_cents;
+        }
     }
-    Ok(())
+    Ok(rule_use)
 }
 
 /// What [`rule_use_stats`] reports for one rule: how many transactions it
@@ -187,26 +253,26 @@ pub struct RuleUse {
 /// zero.
 pub fn rule_use_stats(conn: &Connection) -> Result<HashMap<i64, RuleUse>> {
     let rules = CompiledRules::new(&list_rules(conn)?);
+    let excluded = card_payment_category_ids(conn)?;
     let mut stmt = conn.prepare(
-        "SELECT t.description_raw, t.amount_cents
+        "SELECT t.description_raw, t.amount_cents, t.category_id
            FROM transactions t
           WHERE t.category_locked = 0
-            AND t.hidden = 0
-            AND (
-              t.category_id IS NULL
-              OR t.category_id NOT IN (
-                SELECT c.id
-                  FROM categories c
-                  JOIN categories p ON p.id = c.parent_id
-                 WHERE c.name = 'Card Payment' AND p.name = 'Transfers'
-                   AND p.parent_id IS NULL
-              )
-            )",
+            AND t.hidden = 0",
     )?;
-    let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
+    let rows = stmt.query_map([], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, i64>(1)?,
+            r.get::<_, Option<i64>>(2)?,
+        ))
+    })?;
     let mut stats: HashMap<i64, RuleUse> = HashMap::new();
     for row in rows {
-        let (description, amount_cents) = row?;
+        let (description, amount_cents, category_id) = row?;
+        if category_id.is_some_and(|id| excluded.contains(&id)) {
+            continue;
+        }
         if let Some(rule_id) = rules.winning(&description) {
             let entry = stats.entry(rule_id).or_insert(RuleUse {
                 count: 0,
@@ -217,6 +283,27 @@ pub fn rule_use_stats(conn: &Connection) -> Result<HashMap<i64, RuleUse>> {
         }
     }
     Ok(stats)
+}
+
+/// The Card Payment category ids — children of the root `Transfers`
+/// category — rows in which never count as rule use (they're locked at
+/// import; the category check is belt-and-braces). One list shared by
+/// [`rule_use_stats`] and [`reapply_rules_with_use`] so the two exclusions
+/// can't drift.
+fn card_payment_category_ids(conn: &Connection) -> Result<HashSet<i64>> {
+    let mut ids = HashSet::new();
+    let mut stmt = conn.prepare(
+        "SELECT c.id
+           FROM categories c
+           JOIN categories p ON p.id = c.parent_id
+          WHERE c.name = 'Card Payment' AND p.name = 'Transfers'
+            AND p.parent_id IS NULL",
+    )?;
+    let rows = stmt.query_map([], |r| r.get::<_, i64>(0))?;
+    for row in rows {
+        ids.insert(row?);
+    }
+    Ok(ids)
 }
 
 /// How one transaction relates to one rule in the 3.52 matches list.
@@ -927,6 +1014,55 @@ mod tests {
             stats,
             rule_use_stats(&conn).unwrap(),
             "re-running rules changes nothing, so neither do the stats"
+        );
+    }
+
+    /// 3.55: the counts the re-apply pass returns equal what
+    /// [`rule_use_stats`] returns for the re-applied database — same rows,
+    /// same winners, same exclusions (locked, hidden, card-payment).
+    #[test]
+    fn reapply_rules_with_use_matches_rule_use_stats() {
+        let conn = open_in_memory().unwrap();
+        let groceries = child_category(&conn);
+        let home = create_parent(&conn, "Home", CategoryKind::Expense).unwrap();
+        let cafes = create_child(&conn, home, "Cafes").unwrap();
+
+        add_transaction(&conn, "COFFEE VANCOUVER", false, None);
+        add_transaction(&conn, "CORNER COFFEE SHOP", false, None);
+        add_transaction(&conn, "CAFE MILANO", false, None);
+        add_transaction(&conn, "NOTHING MATCHES THIS ROW", false, None);
+        add_transaction(&conn, "COFFEE LOCKED", true, Some(groceries));
+        let hidden = add_transaction(&conn, "COFFEE MARKET", false, None);
+        set_hidden(&conn, hidden, true).unwrap();
+
+        let loose = add_rule(&conn, "COFFEE", false, groceries).unwrap();
+        let shop = add_rule(&conn, "COFFEE SHOP", false, cafes).unwrap();
+        let cafe = add_rule(&conn, r"CAFE\s\w+", true, cafes).unwrap();
+
+        // Stale stored state: wipe the unlocked rows' categories so the
+        // re-apply below has real work to do.
+        conn.execute(
+            "UPDATE transactions SET category_id = NULL WHERE category_locked = 0",
+            [],
+        )
+        .unwrap();
+
+        let rule_use = reapply_rules_with_use(&conn).unwrap();
+        assert_eq!(
+            rule_use,
+            rule_use_stats(&conn).unwrap(),
+            "the counts taken in the re-apply pass equal the separate query"
+        );
+        assert!(
+            rule_use.contains_key(&loose)
+                && rule_use.contains_key(&shop)
+                && rule_use.contains_key(&cafe),
+            "every kind of winner is in the map, so the equality above is not two empty maps"
+        );
+        assert_eq!(
+            rule_use.get(&loose).unwrap().count,
+            1,
+            "the locked and hidden COFFEE rows stay out of the count"
         );
     }
 

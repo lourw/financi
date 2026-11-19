@@ -233,7 +233,12 @@ impl RulesPage {
         // 3.64: detached — a later action must not cancel this write's
         // continuation and swallow its refresh.
         cx.spawn_in(window, async move |this, cx| {
-            let result = on_db(&db, move |c| add_rule(c, &pattern, is_regex, category_id)).await;
+            // 3.55: the write returns the use counts its re-apply counted,
+            // and the event carries them so the reload skips rule_use_stats.
+            let result = on_db(&db, move |c| {
+                add_rule_with_use(c, &pattern, is_regex, category_id)
+            })
+            .await;
             let _ = this.update_in(cx, |this, window, cx| {
                 // 3.64: only clear the pending marker if it still marks
                 // *this* add; a newer action owns the slot now.
@@ -242,7 +247,7 @@ impl RulesPage {
                     this.pending_rule_action = None;
                 }
                 match result {
-                    Ok(new_id) => {
+                    Ok((new_id, rule_use)) => {
                         // 3.47: the provisional row carries its real id.
                         if let Some(rule) = this.rules.iter_mut().find(|r| r.id == temp_id) {
                             rule.id = new_id;
@@ -260,6 +265,7 @@ impl RulesPage {
                         if own && this.editing_rule.is_none() {
                             this.rule_error = None;
                         }
+                        cx.emit(PageEvent::ChangedWithRuleUse(Domains::RULES_TX, rule_use));
                     }
                     // 3.47: a failed add takes the provisional row back
                     // out, whether or not this add still owns the badge.
@@ -277,9 +283,9 @@ impl RulesPage {
                         if own {
                             this.report_rule_error(e, cx);
                         }
+                        cx.emit(PageEvent::Changed(Domains::RULES_TX));
                     }
                 }
-                cx.emit(PageEvent::Changed(Domains::RULES_TX));
                 cx.notify();
             });
         })
@@ -398,7 +404,7 @@ impl RulesPage {
         // 3.64: detached — see `commit_new_rule`.
         cx.spawn_in(window, async move |this, cx| {
             let result = on_db(&db, move |c| {
-                update_rule(c, id, &pattern, is_regex, category_id)
+                update_rule_with_use(c, id, &pattern, is_regex, category_id)
             })
             .await;
             let _ = this.update_in(cx, |this, _window, cx| {
@@ -406,13 +412,14 @@ impl RulesPage {
                     this.pending_rule_action = None;
                 }
                 match result {
-                    Ok(()) => {
+                    Ok(rule_use) => {
                         // The editor may have moved to another rule (or
                         // closed) while this save ran: only the editor on
                         // *this* rule gets its result.
                         if this.editing_rule == Some(id) {
                             this.close_rule_editor();
                         }
+                        cx.emit(PageEvent::ChangedWithRuleUse(Domains::RULES_TX, rule_use));
                     }
                     Err(e) => {
                         // 3.47: roll the optimistic edit back.
@@ -425,9 +432,9 @@ impl RulesPage {
                         if this.editing_rule == Some(id) {
                             this.rule_error = Some(e);
                         }
+                        cx.emit(PageEvent::Changed(Domains::RULES_TX));
                     }
                 }
-                cx.emit(PageEvent::Changed(Domains::RULES_TX));
                 cx.notify();
             });
         })
@@ -468,19 +475,20 @@ impl RulesPage {
             }
             // 3.64: detached — see `commit_new_rule`.
             cx.spawn_in(window, async move |this, cx| {
-                let result = on_db(&db, move |c| delete_rule(c, id)).await;
+                let result = on_db(&db, move |c| delete_rule_with_use(c, id)).await;
                 let _ = this.update_in(cx, |this, _window, cx| {
                     if this.pending_rule_action == Some(PendingRuleAction::Delete(id)) {
                         this.pending_rule_action = None;
                     }
                     match result {
-                        Ok(()) => {
+                        Ok(rule_use) => {
                             if this.armed_delete_rule == Some(id) {
                                 this.armed_delete_rule = None;
                             }
                             if this.editing_rule == Some(id) {
                                 this.close_rule_editor();
                             }
+                            cx.emit(PageEvent::ChangedWithRuleUse(Domains::RULES_TX, rule_use));
                         }
                         // 3.64: the failure of *this* delete never paints
                         // under an editor that belongs to another rule —
@@ -496,10 +504,10 @@ impl RulesPage {
                                 this.rules.insert(ix, rule);
                                 this.rules_gen += 1;
                             }
-                            this.report_rule_error(e, cx)
+                            this.report_rule_error(e, cx);
+                            cx.emit(PageEvent::Changed(Domains::RULES_TX));
                         }
                     }
-                    cx.emit(PageEvent::Changed(Domains::RULES_TX));
                     cx.notify();
                 });
             })

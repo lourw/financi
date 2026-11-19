@@ -48,7 +48,6 @@ fn a_rule_edit_reloads_only_the_sections_it_touches(cx: &mut TestAppContext) {
     let names = cx.update(|cx| logged(cx, &shell));
     for expected in [
         "list_rules",
-        "rule_use_stats",
         "list_transactions_filtered",
         "dashboard",
         "sidebar_counts",
@@ -65,6 +64,9 @@ fn a_rule_edit_reloads_only_the_sections_it_touches(cx: &mut TestAppContext) {
         "list_imports",
         "list_transfer_reviews",
         "list_accounts",
+        // 3.55: the save carries the use counts its re-apply counted, so
+        // the reload must not scan for them again.
+        "rule_use_stats",
         // 3.56: the dashboard's one load replaced the separate chart and
         // summary queries at the top level.
         "spend_by_category",

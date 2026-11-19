@@ -388,6 +388,15 @@ impl CompiledRules {
         self.winner(description).map(|rule| rule.id)
     }
 
+    /// The rule that decides `description` as `(rule id, category id)`, or
+    /// `None` when nothing matches — one scan answering [`winning`](Self::winning)
+    /// and [`pick`](Self::pick) together (3.55: the re-apply needs both per
+    /// row, for the `UPDATE` and the use counts it counts in the same pass).
+    pub fn winner_ids(&self, description: &str) -> Option<(i64, i64)> {
+        self.winner(description)
+            .map(|rule| (rule.id, rule.category_id))
+    }
+
     /// Substring rules beat regex rules even when a regex pattern is
     /// longer; within each kind the longest pattern wins, ties go to the
     /// lowest id.
