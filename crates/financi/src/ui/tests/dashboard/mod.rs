@@ -18,7 +18,6 @@ mod chart;
 pub(super) fn dash<C: gpui::AppContext>(cx: &C, shell: &Entity<Shell>) -> Entity<DashboardState> {
     shell.read_with(cx, |s, _| s.dashboard.clone())
 }
-mod chart_labels;
 mod date_range;
 mod dock;
 mod dock_layout;

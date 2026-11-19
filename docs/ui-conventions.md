@@ -94,9 +94,9 @@ already have are skipped" is plain muted text).
 
 ### Category colors
 
-Each category has one color, the same everywhere: its bar
-(`BarChart::fill`), its legend swatch, its swatch in the summary, the
-category tree and lists.
+Each category has one color, the same everywhere: its donut slice
+(`PieChart`, 3.99) or stacked bar (`BarChart::fill`), its legend swatch,
+its swatch in the summary, the category tree and lists.
 
 - Palette order: `blue`, `cyan`, `magenta`, `yellow`, `green`, `red`, then
   `blue_light` … `red_light` (12). Red and green come last because they
@@ -263,12 +263,12 @@ or changing the selection disarms it. No modals, no native alerts.
   headers set the shared category filter, summary month cells and month
   headings set the month; every dashboard filter (dates, accounts,
   search, options, category, month) narrows chart, summary and table
-  together. The selected item is `list_active`, bars of other categories
-  dim to 35% (a drilled-into selection's own bars never dim), and
-  clicking again, Escape or Clear all clears it.
+  together. The selected item is `list_active`, slices and bars of other
+  categories dim to 35% (a drilled-into selection's own slices and bars
+  never dim), and clicking again, Escape or Clear all clears it.
 - **Hints go in hover tooltips, never captions** (`.tooltip(...)`, needs an
   `id`). Summary cell: `Shopping · Oct 2026 · 14 transactions` over "Click
-  to show them in the table". Chart bar and legend item: the full name over
+  to show them in the table". Chart slice and legend item: the full name over
   `amount · share` (`Restaurants · $642.15 · 31.4% of Food`).
 - **Filter chips:** each active narrowing filter (category, month,
   search, Uncategorized only) is a chip with a × in a row under the
@@ -292,8 +292,7 @@ or changing the selection disarms it. No modals, no native alerts.
 - **Money:** `$1,234.56`. Tables are signed: `-$86.42` out, `$2,105.00` in
   (`success`). Chart, tooltips and summary show positive spend; Net is the
   one signed summary row.
-- **Shares:** one decimal, `22.4%`. Over chart bars: whole percent
-  (`18%`), one decimal only below 1 % (`0.4%`).
+- **Shares:** one decimal, `22.4%`.
 - **Dates:** `2026-11-06` in tables; summary months `Sep 2026`; ranges
   `Sep 1 – Nov 30, 2026`.
 - **Accounts:** "Institution · Account" everywhere (`Amex · Cobalt`).
@@ -351,13 +350,22 @@ key and restored at launch; a stored layout that is corrupt, of another
 version, or missing a panel falls back to the default 2×2. The Reset
 button (and *View ▸ Reset dashboard layout*) puts the default back and
 saves that (3.101). Top-left, the chart `Panel`
-(*Spending by category*: `BarChart`, share labels over bars, band labels
-shortened and thinned to fit the live width, full names in legend and
-tooltips; the plot takes the panel's full inner width, with the legend a
-wrapping chip row under it — 10 px swatch + name `text_xs` ellipsized at
-120 px, click drills, tooltip `amount · share`, `list_active` selected,
-"← All categories" first while drilled, at most two lines with a muted
-"+N more" chip whose tooltip lists the hidden names). Top-right, the
+(*Spending by category*: donut `PieChart` — 3.99, which replaced the
+`BarChart`, its share labels over bars and thinned band labels; the range
+total sits in the hole, `text_lg` semibold amount over `text_xs` muted
+"Expense", the drilled parent's name and total while drilled; inner
+radius 60 % of the outer, the largest 8 categories plus a muted "Other"
+slice whose tooltip lists its members and whose click does nothing,
+categories netting ≤ 0 get no slice; full names in legend and tooltips).
+The legend is a wrapping chip row (10 px swatch + name `text_xs`
+ellipsized at 120 px, click drills, tooltip `amount · share`,
+`list_active` selected, "← All categories" first while drilled, muted
+"+N more" chip whose tooltip lists the hidden names) laid out from the
+panel's measured content area (3.86): wider than tall, the donut sits
+left as a square of the area's height with the legend wrapping to its
+right as far down as the height fits; otherwise the legend wraps under
+the donut, at most two lines. The donut never drops below 120 px across;
+under that the panel shows the legend alone). Top-right, the
 *Monthly spending by category* `Panel` (3.93: `StackedBarChart`,
 one stacked bar per month from the summary — parents, `Uncategorized` and
 `Transfers` when included, the drilled-in parent's children when drilled;
@@ -500,7 +508,7 @@ Confirmed with the user. Don't reopen without asking.
 
 | # | Date | Question | Decision |
 |---|---|---|---|
-| D1 | 2026-11-07 | Category chart | gpui-kit `BarChart` with a clickable legend, beside the summary; bars aren't drawn into the legend. 3.36 moved the legend under the chart as a wrapping chip row (≤ 2 lines, "+N more" overflow), and 3.45 puts chart and summary on their own rows. |
+| D1 | 2026-11-07 | Category chart | gpui-kit `BarChart` with a clickable legend, beside the summary; bars aren't drawn into the legend. 3.36 moved the legend under the chart as a wrapping chip row (≤ 2 lines, "+N more" overflow), and 3.45 puts chart and summary on their own rows. 3.99 redrew it as a donut (`PieChart`) with the range total in the hole and the top 8 plus "Other"; the legend stays the click target and the panel picks side-by-side or stacked from its measured size. |
 | D2 | 2026-11-07 | Category label in tables | `Category › Subcategory`, the category muted. |
 | D3 | 2026-11-07 | Money going out | Plain `foreground`; only money in is colored. |
 | D4 | 2026-11-07 | Undo last import | Imports page (header and newest row) and File → Undo last import. |

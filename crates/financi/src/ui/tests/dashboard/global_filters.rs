@@ -9,10 +9,10 @@ use super::summary::{
 use super::*;
 use crate::ui::dashboard::DashboardFilter;
 
-/// 3.46: selecting a category keeps its bar at full colour and dims the
-/// others to about a third rather than filtering them away (`BarChart`
-/// has no click handler, so the summary grid and the legend rows are the
-/// selection paths the tests drive; the bars paint from `chart_bars`).
+/// 3.46: selecting a category keeps its slice at full colour and dims the
+/// others to about a third rather than filtering them away (`PieChart`
+/// takes no clicks, so the summary grid and the legend rows are the
+/// selection paths the tests drive; the donut paints from `chart_slices`).
 /// The summary row highlights through the same `legend_selection` the
 /// legend and the summary share, and the table filters to the category.
 #[gpui::test]
@@ -24,11 +24,10 @@ fn a_selection_dims_the_other_bars_and_filters_the_table(cx: &mut TestAppContext
     });
     let food = cx.update(|cx| summary_parent_id(&shell, cx, "Food"));
     let bars = |cx: &App| {
-        // Same inputs the share-label test uses: an empty id→index map
-        // and palette, so every category paints `muted` and only the
-        // 3.46 dimming changes the alpha.
-        dash(cx, &shell).read(cx).chart_bars(
-            800.,
+        // Same inputs the dimming test uses: an empty id→index map and
+        // palette, so every category paints `muted` and only the 3.46
+        // dimming changes the alpha.
+        dash(cx, &shell).read(cx).chart_slices(
             &Default::default(),
             Default::default(),
             gpui::black(),
@@ -38,7 +37,7 @@ fn a_selection_dims_the_other_bars_and_filters_the_table(cx: &mut TestAppContext
         bars(cx)
             .into_iter()
             .find(|b| b.name == name)
-            .unwrap_or_else(|| panic!("{name} is a bar"))
+            .unwrap_or_else(|| panic!("{name} is a slice"))
             .color
             .a
     };
@@ -50,7 +49,7 @@ fn a_selection_dims_the_other_bars_and_filters_the_table(cx: &mut TestAppContext
         dash(cx, &shell).read(cx).row_count == 3
     });
     cx.update(|cx| {
-        assert_eq!(bars(cx).len(), 3, "a selection dims, never filters, bars");
+        assert_eq!(bars(cx).len(), 3, "a selection dims, never filters, slices");
         assert!((alpha(cx, "Food") - 1.0).abs() < 0.01);
         assert!((alpha(cx, "Transport") - 0.35).abs() < 0.01);
         assert!((alpha(cx, "Uncategorized") - 0.35).abs() < 0.01);

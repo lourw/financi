@@ -34,17 +34,12 @@ pub(crate) enum DashboardBody {
 }
 
 /// A `spend_by_category` row prepared for drawing: the resolved palette
-/// color and the fields `BarChart` and the legend render. `name` is the
-/// full category name (legend, tooltip); `short` is the fitted band-axis
-/// label (3.15), produced by [`short_chart_labels`]; `bar_label` is the
-/// share drawn above the bar (3.31), empty when the bar is thinned out
-/// of the label plan by [`bar_label_plan`].
+/// color and the fields the donut and the legend render (3.99). `name`
+/// is the full category name (legend chip, tooltip, hole).
 #[derive(Clone)]
 pub(crate) struct ChartRow {
     pub(in crate::ui) id: Option<i64>,
     pub(in crate::ui) name: SharedString,
-    pub(in crate::ui) short: SharedString,
-    pub(in crate::ui) bar_label: SharedString,
     pub(in crate::ui) cents: i64,
     pub(in crate::ui) share: f64,
     pub(in crate::ui) color: Hsla,
