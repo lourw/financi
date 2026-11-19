@@ -209,9 +209,14 @@ pub(crate) struct DashboardState {
     pub(super) refresh_started: Rc<Cell<u64>>,
     pub(super) refresh_applied: Rc<Cell<u64>>,
     /// 3.86: the chart's plot-area width in px, measured by the
-    /// `chart:plot` bounds probe (0. until the first frame paints it). The
-    /// label plan reads this, never window-width arithmetic.
+    /// `chart:plot-area` bounds probe (0. until the first frame paints
+    /// it). The donut's layout reads this, never window-width arithmetic.
     pub(in crate::ui) plot_w: f32,
+    /// 3.99: the chart's content area height in px, measured by the same
+    /// probe as [`Self::plot_w`] (0. until the first frame paints it). The
+    /// donut's layout — side-by-side or stacked, and its size — reads
+    /// this, never window-height arithmetic.
+    pub(in crate::ui) plot_h: f32,
     /// 3.86: one 10 px chart label's advance width, measured once against
     /// the real text system at construction — the old `CHART_CHAR_PX`
     /// guess lives on only as the seed of that measurement's docs. The
@@ -487,6 +492,7 @@ impl DashboardState {
             // probes fill them on the first painted frame (the flex plan
             // is seeded collapsed to match).
             plot_w: 0.,
+            plot_h: 0.,
             chart_char_px,
             chart_label_h,
             tx_panel_w: 0.,

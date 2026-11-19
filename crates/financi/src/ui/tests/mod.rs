@@ -30,19 +30,17 @@ use gpui_kit::{
 };
 
 use super::dashboard::panels::chart::{
-    BAR_LABEL_MAX_CHARS, CHART_LABEL_GAP, CHART_LABEL_MAX_CHARS, CHART_LABEL_MIN_CHARS,
-    LEGEND_GAP_X, LEGEND_LINES, LEGEND_MAX_H, band_label_budget, bar_label_plan, bar_label_slots,
-    bar_share_label, chart_tooltip_value, legend_chip_w, legend_lines, legend_more_w,
-    legend_visible, short_chart_labels,
+    DONUT_GAP, DONUT_MIN, LEGEND_GAP_X, LEGEND_LINES, LEGEND_MAX_H, OTHER_NAME, PIE_TOP_N,
+    chart_layout, chart_tooltip_value, donut_radii, legend_chip_w, legend_lines, legend_more_w,
+    legend_visible,
 };
 use super::{
-    BUTTON_PAD_X, CELL_PAD_X, CHART_CHAR_PX, DashboardBody, ExportData, HISTORY_DATES_W,
-    HISTORY_FLEX_MIN_W, HISTORY_ROWS_W, HISTORY_TIME_W, ImportCsv, ImportPanel, LegendSelection,
-    NEW_ACCOUNT, NEW_CATEGORY, NEW_RULE, PAGE_PAD, Page, PendingCatWrite, PendingRuleAction,
-    PlanState, RestoreBackup, RowMenuItem, RowShowRule, SIDEBAR_W, SUBCATEGORY_PH, Shell,
-    SummaryRowKind, TABLE_BORDER_X, TEXT_SM_CHAR_PX, TX_FIXED_W, UNDO_ICON_W, UNDO_LABEL_MAX,
-    UndoLastImport, history_flex_widths, history_undo_col_w, row_menu_items, row_show_rule,
-    tx_flex_widths,
+    BUTTON_PAD_X, CELL_PAD_X, DashboardBody, ExportData, HISTORY_DATES_W, HISTORY_FLEX_MIN_W,
+    HISTORY_ROWS_W, HISTORY_TIME_W, ImportCsv, ImportPanel, LegendSelection, NEW_ACCOUNT,
+    NEW_CATEGORY, NEW_RULE, PAGE_PAD, Page, PendingCatWrite, PendingRuleAction, PlanState,
+    RestoreBackup, RowMenuItem, RowShowRule, SIDEBAR_W, SUBCATEGORY_PH, Shell, SummaryRowKind,
+    TABLE_BORDER_X, TEXT_SM_CHAR_PX, TX_FIXED_W, UNDO_ICON_W, UNDO_LABEL_MAX, UndoLastImport,
+    history_flex_widths, history_undo_col_w, row_menu_items, row_show_rule, tx_flex_widths,
 };
 use crate::ui::sidebar::NAV_ROW_INSET;
 
@@ -673,9 +671,13 @@ fn centre_y(cx: &mut TestAppContext, handle: AnyWindowHandle, sel: impl Into<Str
 /// paint in a real frame, so this paints one first; afterwards the
 /// executor is parked, so handlers and the state changes they start have
 /// run (wait for the state itself, or `wait_idle`, before asserting on it).
+/// 3.99: `settle`, not one frame — a probe-driven layout (the donut's
+/// plan off `chart:plot-area`) repaints one frame after the first draw,
+/// and clicking the stale first frame's bounds would mouse-down on a
+/// widget that has already moved out from under the pointer.
 fn click(cx: &mut TestAppContext, handle: AnyWindowHandle, sel: impl Into<String>) {
     let sel = sel.into();
-    draw_frame(cx, handle);
+    settle(cx, handle);
     let mut window = VisualTestContext::from_window(handle, cx);
     let b = window
         .debug_bounds(leaked(sel.clone()))

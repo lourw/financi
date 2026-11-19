@@ -1,146 +1,35 @@
-//! The chart panel (3.97): the category bar chart, its label and legend
-//! math, the legend/drill selection handlers, and the `ChartPanel`
-//! entity. Split out of `ui/dashboard_chart.rs` (3.74's file, 3.97's
-//! entities); the render methods stay on [`DashboardState`] — the panel
-//! entity mounts them and subscribes to what they read.
+//! The chart panel (3.97, donut in 3.99): the category donut chart, its
+//! layout and legend math, the legend/drill selection handlers, and the
+//! `ChartPanel` entity. Split out of `ui/dashboard_chart.rs` (3.74's
+//! file, 3.97's entities); the render methods stay on [`DashboardState`]
+//! — the panel entity mounts them and subscribes to what they read.
+//!
+//! 3.99 replaced the `BarChart` with gpui-kit's `PieChart`: a donut of
+//! the range's spend per category (largest first, clockwise from 12
+//! o'clock, the total in the hole), sized and placed from the measured
+//! content bounds. `PieChart` takes no clicks, so the legend chips stay
+//! the only click target, exactly as the bars were.
 
 use super::*;
 use crate::ui::widgets::*;
 use gpui_kit::base::dock::{Panel, PanelEvent};
+use gpui_kit::component::chart::PieChart;
 
-/// Minimum horizontal gap between two neighbouring drawn band labels.
-pub(in crate::ui) const CHART_LABEL_GAP: f32 = 8.;
-/// Cap on a band label, so a wide chart never paints a sentence.
-pub(in crate::ui) const CHART_LABEL_MAX_CHARS: usize = 16;
-/// Smallest budget that makes a label worth drawing; below it labels are
-/// thinned out instead of reduced to unreadable slivers.
-pub(in crate::ui) const CHART_LABEL_MIN_CHARS: usize = 4;
-/// The chart's label plan for `chart_width` pixels across `count` bands:
-/// band labels are truncated to `chars` characters (with an ellipsis)
-/// and only `labels` of them are drawn, spread evenly first-to-last by
-/// `BarChart::band_tick_count`. A centred label cannot collide with its
-/// neighbours once every drawn label owns `chart_width / labels` pixels,
-/// so that slice always buys `chars · char_px + CHART_LABEL_GAP`.
-/// `char_px` is the chart font's per-character width — measured from the
-/// rendered font (3.86), or `CHART_CHAR_PX` as the pre-measurement seed.
-pub(in crate::ui) fn band_label_budget(
-    chart_width: f32,
-    count: usize,
-    char_px: f32,
-) -> (usize, usize) {
-    if count == 0 {
-        return (0, 0);
-    }
-    let char_px = char_px.max(1.);
-    let chars_for = |labels: usize| {
-        let per = chart_width / labels as f32;
-        (((per - CHART_LABEL_GAP) / char_px).max(0.)) as usize
-    };
-    // Prefer labelling every band.
-    if chars_for(count) >= CHART_LABEL_MIN_CHARS {
-        return (chars_for(count).min(CHART_LABEL_MAX_CHARS), count);
-    }
-    // Too tight: thin the labels out until each drawn one buys the
-    // minimum budget, then truncate to what its wider slice allows.
-    let min_spacing = CHART_LABEL_MIN_CHARS as f32 * char_px + CHART_LABEL_GAP;
-    let labels = ((chart_width / min_spacing) as usize).clamp(1, count);
-    (chars_for(labels).clamp(1, CHART_LABEL_MAX_CHARS), labels)
-}
-/// Fit `names` into the band axis (3.15): a name longer than `chars`
-/// becomes `chars − 1` characters plus `…` (trailing whitespace is
-/// dropped first). Shortenings that collide fall back to the full name,
-/// because each row's band text is also its unique key in `BarChart`'s
-/// band scale (sibling category names are unique in the database).
-/// `chars == 0` means "no budget": the full names come back untouched.
-pub(in crate::ui) fn short_chart_labels(names: &[String], chars: usize) -> Vec<SharedString> {
-    if chars == 0 {
-        return names
-            .iter()
-            .map(|n| SharedString::from(n.clone()))
-            .collect();
-    }
-    let shorts: Vec<String> = names
-        .iter()
-        .map(|name| {
-            if name.chars().count() <= chars {
-                return name.clone();
-            }
-            let mut head: String = name.chars().take(chars - 1).collect();
-            while head.ends_with(char::is_whitespace) {
-                head.pop();
-            }
-            head.push('…');
-            head
-        })
-        .collect();
-    let mut counts: HashMap<&str, usize> = HashMap::new();
-    for short in &shorts {
-        *counts.entry(short.as_str()).or_default() += 1;
-    }
-    shorts
-        .iter()
-        .zip(names)
-        .map(|(short, name)| {
-            if counts[short.as_str()] > 1 {
-                SharedString::from(name.clone())
-            } else {
-                SharedString::from(short.clone())
-            }
-        })
-        .collect()
-}
-/// Widest share label: `100%`, or `0.4%` below one percent — four
-/// characters of the 10px chart font.
-pub(in crate::ui) const BAR_LABEL_MAX_CHARS: usize = 4;
-/// A bar's share label: whole percent (`18%`), one decimal only below
-/// one percent (`0.4%`) so a thin slice still reads — and never `0.0%`:
-/// a sliver too small to round to a tenth of a percent reads `0.1%`.
-pub(in crate::ui) fn bar_share_label(share: f64) -> String {
-    let percent = share * 100.;
-    if percent <= 0. {
-        "0%".into()
-    } else if percent < 1. {
-        if percent < 0.05 {
-            "0.1%".into()
-        } else {
-            format!("{percent:.1}%")
-        }
-    } else {
-        format!("{percent:.0}%")
-    }
-}
-/// The tooltip body of a chart row (3.31), shared by the bar's own
+/// The tooltip body of a chart row (3.31), shared by the slice's own
 /// tooltip and the legend row's: `$1,234.56 · 18.2% of Food`. `parent`
 /// carries the ` of …` suffix when the chart is drilled into a category,
 /// and is empty at the top level.
 pub(in crate::ui) fn chart_tooltip_value(cents: i64, share: f64, parent: &str) -> String {
     format!("{} · {:.1}%{parent}", flow::money(cents), share * 100.)
 }
-/// How many of `count` bars carry their share label across
-/// `chart_width` pixels. A drawn label is at most `BAR_LABEL_MAX_CHARS`
-/// characters wide and keeps `CHART_LABEL_GAP` from its neighbours, so
-/// their band centres must sit
-/// `BAR_LABEL_MAX_CHARS · char_px + CHART_LABEL_GAP` apart; the
-/// even first-to-last spread keeps the closest pair
-/// `floor((count − 1) / (labels − 1))` bands apart, which the formula
-/// below inverts. `char_px` is the measured chart-font character width
-/// (3.86), as in [`band_label_budget`].
-pub(in crate::ui) fn bar_label_plan(chart_width: f32, count: usize, char_px: f32) -> usize {
-    if count <= 1 {
-        return count;
-    }
-    let band_w = chart_width / count as f32;
-    let need = BAR_LABEL_MAX_CHARS as f32 * char_px.max(1.) + CHART_LABEL_GAP;
-    // Whole bands a drawn label needs beside it; at least one. A zero
-    // width saturates `step`, and the division below leaves one label.
-    let step = (need / band_w).ceil().max(1.) as usize;
-    (count - 1) / step + 1
-}
-/// Which bars carry a share label: `labels` of the `count` bars, spread
-/// evenly from the first to the last — the thinning
+
+/// Which of `count` slots carry a label — `labels` of them, spread
+/// evenly from the first to the last: the thinning
 /// `BarChart::band_tick_count` applies to band labels (3.15), done here
 /// because `BarChart::label` paints whatever text it is handed for
-/// every bar.
+/// every slot. The 3.99 donut dropped its share labels and needs this
+/// no more; the monthly stacked panel (3.93) still thins its month
+/// labels with it.
 pub(in crate::ui) fn bar_label_slots(count: usize, labels: usize) -> Vec<bool> {
     let mut slots = vec![false; count];
     match labels {
@@ -156,19 +45,6 @@ pub(in crate::ui) fn bar_label_slots(count: usize, labels: usize) -> Vec<bool> {
     }
     slots
 }
-/// Fill each row's `bar_label` with its share of the spend (3.31): on the
-/// bars the plan fits across `plot_width`, nothing on the thinned-out
-/// ones. The tooltip carries the exact amount and share for every bar,
-/// labelled or not. `char_px` is the measured chart-font character width
-/// the plan uses (3.86).
-fn bar_share_labels(rows: &mut [ChartRow], plot_width: f32, char_px: f32) {
-    let slots = bar_label_slots(rows.len(), bar_label_plan(plot_width, rows.len(), char_px));
-    for (row, labeled) in rows.iter_mut().zip(slots) {
-        if labeled {
-            row.bar_label = bar_share_label(row.share).into();
-        }
-    }
-}
 
 // ------------------------------------------------------------- 3.36 legend
 
@@ -180,9 +56,21 @@ pub(in crate::ui) const LEGEND_CHIP_NAME_MAX_W: f32 = 120.;
 pub(in crate::ui) const LEGEND_GAP_X: f32 = 12.;
 /// The gap between two legend lines (3.36): `gap_y_1`.
 pub(in crate::ui) const LEGEND_GAP_Y: f32 = 4.;
-/// How many lines of chips the legend gets (3.36): the panel is a fixed
-/// height, so the legend caps at two lines and the categories past them
-/// hide behind a "+N more" chip.
+/// A legend chip's painted line box (3.99): the swatch and the text line
+/// with the chip's own padding, measured at 19.5 px — what
+/// [`LEGEND_MAX_H`] budgets two of plus a gap. The side-by-side plan
+/// counts lines with this, not with the bare text line, or the "+N more"
+/// chip plans below the box it is clipped to and can't be hovered.
+pub(in crate::ui) const LEGEND_CHIP_H: f32 = 19.5;
+/// The gap between a month label and its bar on the stacked chart (3.31):
+/// the donut paints no band labels, but [`super::stacked`] still spaces
+/// its labels by this, so the constant stays here with the shared
+/// label-planning helpers.
+pub(in crate::ui) const CHART_LABEL_GAP: f32 = 8.;
+/// How many lines of chips the legend gets when it wraps *under* the
+/// donut (3.36): the legend caps at two lines and the categories past
+/// them hide behind a "+N more" chip. Beside the donut (3.99) the lines
+/// are whatever the panel's measured height fits.
 pub(in crate::ui) const LEGEND_LINES: usize = 2;
 /// The legend row's height cap (3.36): two `text_xs` lines plus the gap
 /// between them, with room to spare. The row is clipped to it, so even a
@@ -270,6 +158,146 @@ pub(in crate::ui) fn legend_visible(
         }
     }
     Some(0)
+}
+
+// -------------------------------------------------------- 3.99 donut model
+
+/// How many slices the donut shows (3.99): the largest `PIE_TOP_N`
+/// categories keep their own slice and the rest merge into one muted
+/// "Other" slice. The legend still lists every category.
+pub(in crate::ui) const PIE_TOP_N: usize = 8;
+/// The merged tail slice's name (3.99). It is never clickable: its
+/// tooltip lists the categories it holds.
+pub(in crate::ui) const OTHER_NAME: &str = "Other";
+/// The donut never drops below this across (3.99); under it the panel
+/// shows the legend alone.
+pub(in crate::ui) const DONUT_MIN: f32 = 120.;
+/// The gap between the donut and the legend, and between the legend and
+/// the donut, in px (`gap_2`).
+pub(in crate::ui) const DONUT_GAP: f32 = 8.;
+/// The ring's outer radius sits this far inside half the donut box, so a
+/// slice lifting out on hover (gpui-kit lifts it 6 px) never paints over
+/// the panel's padding.
+const DONUT_EDGE_MARGIN: f32 = 8.;
+/// The hole's inner radius as a fraction of the outer one (3.99): "about
+/// 60 %", room for the total in the middle.
+const DONUT_INNER_FRACTION: f32 = 0.6;
+
+/// One slice of the donut: a category (or the merged `Other`), already
+/// carrying the palette colour — dimmed when another category is
+/// selected — and the amount and share for the tooltips. `Other` is
+/// marked by [`PieSlice::is_other`].
+#[derive(Clone, Debug)]
+pub(in crate::ui) struct PieSlice {
+    pub(in crate::ui) is_other: bool,
+    pub(in crate::ui) name: SharedString,
+    pub(in crate::ui) cents: i64,
+    pub(in crate::ui) share: f64,
+    pub(in crate::ui) color: Hsla,
+}
+
+/// The radii of a donut drawn in a box `side` px across: `(inner, outer)`,
+/// the outer one clear of the hover lift, the inner 60 % of it.
+pub(in crate::ui) fn donut_radii(side: f32) -> (f32, f32) {
+    let outer = (side / 2. - DONUT_EDGE_MARGIN).max(0.);
+    (outer * DONUT_INNER_FRACTION, outer)
+}
+
+/// Merge everything past the top [`PIE_TOP_N`] into one muted "Other"
+/// slice (3.99): the rows arrive in draw order (largest first,
+/// `Uncategorized` last) and only positive ones are here, so a tail of
+/// `rows.len() − PIE_TOP_N` categories folds into the final slice. With
+/// `PIE_TOP_N` or fewer rows nothing merges and the input comes back.
+pub(in crate::ui) fn merge_top_slices(rows: &[PieSlice], muted: Hsla) -> Vec<PieSlice> {
+    if rows.len() <= PIE_TOP_N {
+        return rows.to_vec();
+    }
+    let mut slices = rows[..PIE_TOP_N].to_vec();
+    let rest = &rows[PIE_TOP_N..];
+    slices.push(PieSlice {
+        is_other: true,
+        name: OTHER_NAME.into(),
+        cents: rest.iter().map(|s| s.cents).sum(),
+        share: rest.iter().map(|s| s.share).sum(),
+        color: muted,
+    });
+    slices
+}
+
+/// The donut/legend split of the measured content area (3.99): which
+/// side the legend takes, how big the donut is, and what the legend may
+/// wrap within. `donut == 0.` means the area is too small for a donut
+/// (or unmeasured) and the panel shows the legend alone.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(in crate::ui) struct ChartLayout {
+    pub(in crate::ui) side_by_side: bool,
+    pub(in crate::ui) donut: f32,
+    pub(in crate::ui) legend_w: f32,
+    pub(in crate::ui) legend_lines: usize,
+    pub(in crate::ui) legend_h: f32,
+}
+
+/// The donut's layout for a content area of `w` × `h` px (3.99, from
+/// the 3.86 probe): wider than tall, the donut sits left as a square of
+/// the area's height with the legend chips wrapping to its right;
+/// otherwise the legend wraps under the donut, capped at
+/// [`LEGEND_LINES`] lines. The donut never drops below [`DONUT_MIN`]
+/// across — under that the legend takes the panel alone. `chip_widths`
+/// are the [`legend_chip_w`] widths of the chips (the stacked legend's
+/// height, and with it the donut's share of the column, follow how they
+/// wrap); `line_h` is the measured `text_xs` line height.
+///
+/// An unmeasured area (either dimension `0.`) yields the legend alone
+/// with its unmeasured plan — every chip shown — so the first painted
+/// frame flashes nothing; the probe settles the plan one frame later.
+pub(in crate::ui) fn chart_layout(w: f32, h: f32, chip_widths: &[f32], line_h: f32) -> ChartLayout {
+    if w <= 0. || h <= 0. {
+        return ChartLayout {
+            side_by_side: false,
+            donut: 0.,
+            legend_w: w,
+            legend_lines: LEGEND_LINES,
+            legend_h: LEGEND_MAX_H,
+        };
+    }
+    if w > h {
+        let donut = if h >= DONUT_MIN { h } else { 0. };
+        let legend_w = if donut > 0. {
+            (w - donut - DONUT_GAP).max(1.)
+        } else {
+            w
+        };
+        // Beside the donut the legend gets as many lines as the area's
+        // height fits (3.99), counting [`LEGEND_CHIP_H`] per line — the
+        // chip's real line box, not the text's. The two-line cap is the
+        // stacked form's.
+        let legend_lines =
+            (((h + LEGEND_GAP_Y) / (LEGEND_CHIP_H + LEGEND_GAP_Y)).floor() as usize).max(1);
+        let legend_h = (legend_lines as f32 * (LEGEND_CHIP_H + LEGEND_GAP_Y) - LEGEND_GAP_Y).min(h);
+        ChartLayout {
+            side_by_side: true,
+            donut,
+            legend_w,
+            legend_lines,
+            legend_h,
+        }
+    } else {
+        let lines = legend_lines(chip_widths, w, LEGEND_GAP_X).min(LEGEND_LINES);
+        let legend_h = if lines <= 1 {
+            line_h.min(h)
+        } else {
+            LEGEND_MAX_H.min(h)
+        };
+        let avail = (h - DONUT_GAP - legend_h).max(0.);
+        let donut = w.min(avail);
+        ChartLayout {
+            side_by_side: false,
+            donut: if donut >= DONUT_MIN { donut } else { 0. },
+            legend_w: w,
+            legend_lines: LEGEND_LINES,
+            legend_h,
+        }
+    }
 }
 
 impl DashboardState {
@@ -365,59 +393,44 @@ impl DashboardState {
             .find(|p| p.children.iter().any(|c| c.id == id))
             .map(|p| p.id)
     }
-    /// The plot's width the last probe measured (3.86): the `chart:plot`
-    /// container's own laid-out width, reported from its `bounds_probe`
-    /// as the view tree paints. `0.` until the first frame has measured
-    /// it, which the label plans degrade safely.
-    pub(in crate::ui) fn chart_plot_width(&self) -> f32 {
-        self.plot_w
+    /// The donut's content area measured the last probe (3.86, 3.99): the
+    /// `chart:plot-area` container's own laid-out `(width, height)`,
+    /// reported from its probe as the view tree paints. `0.` until the
+    /// first frame has measured it, which the layout degrades safely
+    /// (legend alone, every chip shown).
+    pub(in crate::ui) fn chart_area(&self) -> (f32, f32) {
+        (self.plot_w, self.plot_h)
     }
-    /// Store a freshly measured plot width (3.86, from the probe on the
-    /// `chart:plot` container); repaint for the new label plan only when
-    /// the width actually moved, so the measure-then-repaint loop settles.
-    pub(in crate::ui) fn set_plot_width(&mut self, w: f32, cx: &mut Context<Self>) {
-        if (self.plot_w - w).abs() < 0.5 {
+    /// Store a freshly measured content area (3.86, 3.99, from the probe
+    /// on the `chart:plot-area` container); repaint for the new layout
+    /// only when a dimension actually moved, so the measure-then-repaint
+    /// loop settles.
+    pub(in crate::ui) fn set_plot_size(&mut self, w: f32, h: f32, cx: &mut Context<Self>) {
+        if (self.plot_w - w).abs() < 0.5 && (self.plot_h - h).abs() < 0.5 {
             return;
         }
         self.plot_w = w;
+        self.plot_h = h;
         self.changed(DashboardChanges::MEASURED, cx);
     }
-    /// The chart's label plan (3.15) for the measured plot: how many
-    /// characters a band label may use and how many labels are drawn.
-    pub(in crate::ui) fn chart_label_plan(&self) -> (usize, usize) {
-        band_label_budget(
-            self.chart_plot_width(),
-            self.chart_rows.len(),
-            self.chart_char_px,
-        )
-    }
-    /// The chart's rows prepared for drawing (3.15, 3.31): band labels
-    /// fitted to the current budget, each row's share over its bar
-    /// thinned to `plot_width`, and `Uncategorized` last whatever its
+    /// The legend's rows (3.15, 3.31, 3.99): every `chart_rows` category
+    /// with its palette colour, dimmed to about a third when another
+    /// category is selected, and `Uncategorized` last whatever its
     /// amount. `colors` maps category ids to palette indices (3.85, the
     /// Catalog's map); `palette` is the current theme's 12 colours and
     /// `muted` paints the `Uncategorized` swatch.
-    pub(in crate::ui) fn chart_bars(
+    pub(in crate::ui) fn legend_rows(
         &self,
-        plot_width: f32,
         colors: &HashMap<i64, usize>,
         palette: [Hsla; 12],
         muted: Hsla,
     ) -> Vec<ChartRow> {
-        let (label_chars, _) = self.chart_label_plan();
-        let shorts = short_chart_labels(
-            &self
-                .chart_rows
-                .iter()
-                .map(|r| r.name.clone())
-                .collect::<Vec<String>>(),
-            label_chars,
-        );
         // 3.46: a selection keeps its bar and dims the others to about a
-        // third rather than filtering them away, so the bars stay
-        // comparable. `BarChart` has no per-row alpha, so the colour is
-        // dimmed before it goes in. Drilled into the selected parent,
-        // every bar is part of the selection, so nothing dims there.
+        // third rather than filtering them away, so the slices stay
+        // comparable. `PieChart` has no per-slice alpha beyond the colour,
+        // so the colour is dimmed before it goes in. Drilled into the
+        // selected parent, every row is part of the selection, so nothing
+        // dims there.
         let selected = match &self.filter.legend_selection {
             Some(LegendSelection::Category(id)) => Some(*id),
             _ => None,
@@ -430,8 +443,7 @@ impl DashboardState {
         let mut rows: Vec<ChartRow> = self
             .chart_rows
             .iter()
-            .zip(shorts)
-            .map(|(r, short)| {
+            .map(|r| {
                 let color = r.id.map_or(muted, |id| {
                     colors.get(&id).map(|ix| palette[ix % 12]).unwrap_or(muted)
                 });
@@ -449,8 +461,6 @@ impl DashboardState {
                 ChartRow {
                     id: r.id,
                     name: r.name.clone().into(),
-                    short,
-                    bar_label: SharedString::default(),
                     cents: r.spend_cents,
                     share: r.share,
                     color: if dimmed { color.opacity(0.35) } else { color },
@@ -459,13 +469,62 @@ impl DashboardState {
             .collect();
         // Uncategorized is always the last category row, whatever its amount.
         rows.sort_by_key(|r| r.id.is_none());
-        bar_share_labels(&mut rows, plot_width, self.chart_char_px);
         rows
     }
-    /// The chart's row (3.5, 3.45): the `BarChart` of spend per category
-    /// with a clickable chip legend under it (3.36), full width and 340 px
-    /// tall, above the summary's own row. `BarChart` takes
-    /// no clicks, so all interactivity lives in the legend chips
+    /// The donut's slices (3.99): the legend's rows with a net of more
+    /// than zero — refunds net as today, and a category whose net is ≤ 0
+    /// has no slice — merged down to [`PIE_TOP_N`] named slices plus a
+    /// muted "Other". Draw order is legend order: largest first,
+    /// `Uncategorized` last, `Other` last; `PieChart` sweeps them
+    /// clockwise from 12 o'clock.
+    pub(in crate::ui) fn chart_slices(
+        &self,
+        colors: &HashMap<i64, usize>,
+        palette: [Hsla; 12],
+        muted: Hsla,
+    ) -> Vec<PieSlice> {
+        let positive: Vec<PieSlice> = self
+            .legend_rows(colors, palette, muted)
+            .into_iter()
+            .filter(|r| r.cents > 0)
+            .map(|r| PieSlice {
+                is_other: false,
+                name: r.name,
+                cents: r.cents,
+                share: r.share,
+                color: r.color,
+            })
+            .collect();
+        let mut merged = merge_top_slices(&positive, muted);
+        // 3.99: `Other` is never the selection, so it dims with the
+        // rest of the unselected categories; drilled into the selected
+        // parent, every slice is part of the selection and none dims.
+        if let Some(other) = merged.last_mut().filter(|s| s.is_other) {
+            let selected = match &self.filter.legend_selection {
+                Some(LegendSelection::Category(id)) => Some(*id),
+                _ => None,
+            };
+            let unc_active = matches!(
+                self.filter.legend_selection,
+                Some(LegendSelection::Uncategorized)
+            ) || self.filter.uncategorized_only;
+            let drilled_into_selection = selected.is_some() && self.filter.chart_parent == selected;
+            if (selected.is_some() || unc_active) && !drilled_into_selection {
+                other.color = muted.opacity(0.35);
+            }
+        }
+        merged
+    }
+    /// The total painted in the donut's hole (3.99): the sum of the
+    /// range's (or the drilled parent's) `chart_rows` — the same total
+    /// the shares are taken over.
+    pub(in crate::ui) fn donut_total(&self) -> i64 {
+        self.chart_rows.iter().map(|r| r.spend_cents).sum()
+    }
+    /// The chart's row (3.5, 3.45, donut since 3.99): the category donut
+    /// with its total in the hole, a clickable chip legend (3.36), and
+    /// the 3.100 dock giving it the panel's size. `PieChart` takes no
+    /// clicks, so all interactivity lives in the legend chips
     /// (ui-conventions, *Interaction*).
     pub(in crate::ui) fn chart_panel(&mut self, cx: &mut Context<Self>) -> AnyElement {
         // 3.85: the palette-index map comes from the Catalog, built once
@@ -480,121 +539,156 @@ impl DashboardState {
                 category_palette(theme),
             )
         };
-        // Band label thinning for the axis (3.15); the rows themselves —
-        // fitted names and share labels (3.15, 3.31) — come from the same
-        // preparation the tests exercise.
-        let label_count = self.chart_label_plan().1;
-        let rows = self.chart_bars(self.chart_plot_width(), &colors, palette, muted);
+        let rows = self.legend_rows(&colors, palette, muted);
+        let slices = self.chart_slices(&colors, palette, muted);
         let selection = self.filter.legend_selection;
         // The `Uncategorized` row is active when the 3.4 checkbox drives the
         // same clause, so the legend never contradicts the toolbar.
         let uncategorized_active = matches!(selection, Some(LegendSelection::Uncategorized))
             || self.filter.uncategorized_only;
         // The parent suffix of the tooltip text (" of Food" once drilled
-        // in); empty at the top level.
-        let parent_name = self
+        // in); empty at the top level. The bare name labels the hole.
+        let drilled_name = self
             .filter
             .chart_parent
             .and_then(|p| self.categories.iter().find(|n| n.id == p))
-            .map(|n| format!(" of {}", n.name))
+            .map(|n| n.name.clone());
+        let parent_name = drilled_name
+            .as_ref()
+            .map(|n| format!(" of {n}"))
             .unwrap_or_default();
         let bar_parent_name = parent_name.clone();
 
-        let chart = if rows.is_empty() {
-            div()
-                .flex_1()
-                .min_w_0()
-                .min_h_0()
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_sm()
-                .text_color(muted)
-                .child("No spending in this range")
-                .into_any_element()
-        } else {
-            div()
-                .flex_1()
-                .min_w_0()
-                .min_h_0()
-                .relative()
-                .debug_selector(|| "chart:plot".into())
-                // 3.86: the plot's width comes from this container's own
-                // measured bounds (the probe paints nothing and takes no
-                // part in layout), not from window-width arithmetic.
-                .child(bounds_probe(cx.entity().downgrade(), |this, w, cx| {
-                    this.set_plot_width(w, cx)
-                }))
-                .child(
-                    BarChart::new(rows.clone())
-                        .id("category-chart")
-                        // The band text doubles as the axis label (3.15):
-                        // the fitted short name, drawn on only
-                        // `label_count` evenly spread bands so labels
-                        // never overlap each other or the bars.
-                        .band(|r| r.short.clone())
-                        .band_tick_count(label_count)
-                        .value(|r| r.cents as f64)
-                        .fill(|r, _, _, _| r.color)
-                        // The share above each bar (3.31): empty text on
-                        // the bars the plan thinned out.
-                        .label(|r| r.bar_label.clone())
-                        .label_color(move |_| muted)
-                        .tooltip_title(|r| r.name.clone())
-                        .tooltip_value(move |r, _| {
-                            chart_tooltip_value(r.cents, r.share, &bar_parent_name).into()
-                        }),
-                )
-                .into_any_element()
-        };
-
-        // 3.36: the legend sits under the plot, not beside it, so the
-        // plot takes the panel's full inner width. The chips wrap into at
-        // most `LEGEND_LINES` lines and the categories past them hide
-        // behind a "+N more" chip. The plan's available width is the one
-        // the plot's own probe measures (the legend spans the same panel
-        // inner width); the chip character estimate is the measured `M`
-        // advance scaled from the chart's 10 px font to the chips' 12 px
-        // `text_xs`.
+        // 3.99: the donut and legend are laid out from the measured
+        // content area (3.86): side-by-side when it's wider than tall,
+        // stacked otherwise, legend alone under the 120 px floor.
+        let (area_w, area_h) = self.chart_area();
         let char_xs = self.chart_char_px * 12. / 10.;
         let drilled = self.filter.chart_parent.is_some();
-        let mut widths: Vec<f32> = Vec::with_capacity(rows.len() + 1);
-        if drilled {
-            widths.push(legend_all_w(char_xs));
-        }
+        // 3.99: the merged "Other" slice and the names its tooltip lists.
+        let positive: Vec<&str> = rows
+            .iter()
+            .filter(|r| r.cents > 0)
+            .map(|r| r.name.as_str())
+            .collect();
+        let has_other = positive.len() > PIE_TOP_N;
+        let other_members = positive.get(PIE_TOP_N..).unwrap_or(&[]).join(", ");
+        let other = slices.iter().find(|s| s.is_other);
+
+        let mut widths: Vec<f32> = Vec::with_capacity(rows.len() + 2);
         widths.extend(
             rows.iter()
                 .map(|r| legend_chip_w(r.name.chars().count(), char_xs)),
         );
+        if has_other {
+            widths.push(legend_chip_w(OTHER_NAME.chars().count(), char_xs));
+        }
+        let layout = chart_layout(area_w, area_h, &widths, self.chart_label_h);
+        // The chip plan spans the legend's laid-out width; the "← All
+        // categories" chip leads the row while drilled.
+        if drilled {
+            widths.insert(0, legend_all_w(char_xs));
+        }
         let shown = legend_visible(
             &widths,
-            self.chart_plot_width(),
+            layout.legend_w,
             LEGEND_GAP_X,
-            LEGEND_LINES,
+            layout.legend_lines,
             char_xs,
         )
         .unwrap_or(widths.len());
         let hidden = widths.len() - shown;
-        // The names the "+N more" tooltip lists.
+        // The names the "+N more" tooltip lists (3.36), the "Other" chip
+        // among them (3.99).
         let hidden_names: String = rows
             .iter()
+            .map(|r| r.name.as_str())
+            .chain(has_other.then_some(OTHER_NAME))
             .enumerate()
             .filter(|(ix, _)| ix + drilled as usize >= shown)
-            .map(|(_, r)| r.name.as_str())
+            .map(|(_, name)| name)
             .collect::<Vec<_>>()
             .join(", ");
 
+        let donut = if rows.is_empty() || layout.donut < DONUT_MIN || slices.is_empty() {
+            None
+        } else {
+            let side = layout.donut;
+            let (inner, outer) = donut_radii(side);
+            let amount = flow::money(self.donut_total());
+            let hole_sub = drilled_name.clone().unwrap_or_else(|| "Expense".into());
+            Some(
+                div()
+                    .flex_none()
+                    .size(px(side))
+                    .relative()
+                    .debug_selector(|| "chart:plot".into())
+                    .child(
+                        div().absolute().inset_0().child(
+                            PieChart::new(slices.clone())
+                                .id("category-chart")
+                                .value(|s| s.cents as f32)
+                                .color(|s| s.color)
+                                .inner_radius(inner)
+                                .outer_radius(outer)
+                                .tooltip_name(|s| s.name.clone())
+                                .tooltip_value(move |s, _, _| {
+                                    chart_tooltip_value(s.cents, s.share, &bar_parent_name).into()
+                                }),
+                        ),
+                    )
+                    // The range's total spend sits in the hole (3.99):
+                    // the amount over a muted "Expense", the drilled
+                    // parent's name over its total while drilled. It
+                    // takes no clicks; the ring's hover and the legend
+                    // chips stay live.
+                    .child(
+                        div()
+                            .absolute()
+                            .inset_0()
+                            .flex()
+                            .flex_col()
+                            .items_center()
+                            .justify_center()
+                            .gap_0p5()
+                            .debug_selector({
+                                let amount = amount.clone();
+                                move || format!("chart:donut-center:{amount}")
+                            })
+                            .child(
+                                div()
+                                    .text_lg()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(amount.clone()),
+                            )
+                            .child(div().text_xs().text_color(muted).child(hole_sub.clone())),
+                    ),
+            )
+        };
+
+        // 3.36: the legend is a wrapping chip row capped at
+        // `layout.legend_lines` lines, the categories past them hidden
+        // behind a "+N more" chip. The plan's available width is the
+        // legend's own laid-out width from the layout; the chip
+        // character estimate is the measured `M` advance scaled from the
+        // chart's 10 px font to the chips' 12 px `text_xs`.
         let legend = div()
             .id("legend-list")
             .debug_selector(|| "chart:legend".into())
-            .w_full()
-            .flex_none()
+            .when(!layout.side_by_side, |list| list.w_full().flex_none())
+            .when(layout.side_by_side, |list| list.flex_1().min_w_0())
             .flex()
             .flex_wrap()
+            .content_start()
             .gap_x(px(LEGEND_GAP_X))
             .gap_y(px(LEGEND_GAP_Y))
-            .max_h(px(LEGEND_MAX_H))
-            .overflow_hidden()
+            // 3.99: the chip plan already keeps the stacked legend to
+            // two lines, and the donut takes only the height left over;
+            // capping the box (or letting the donut crowd it out) would
+            // clip the chips' hit area and swallow their clicks.
+            .when(layout.side_by_side, |list| {
+                list.max_h(px(layout.legend_h)).overflow_hidden()
+            })
             .when(drilled && shown >= 1, |list| {
                 list.child(
                     div()
@@ -614,8 +708,8 @@ impl DashboardState {
                 )
             })
             .children(rows.iter().enumerate().filter_map(|(ix, r)| {
-                // 3.36: chips past the two lines are not built at all —
-                // a clipped-but-laid-out chip would still answer
+                // 3.36: chips past the planned lines are not built at
+                // all — a clipped-but-laid-out chip would still answer
                 // `debug_bounds` and steal a click.
                 if ix + drilled as usize >= shown {
                     return None;
@@ -628,7 +722,7 @@ impl DashboardState {
                 };
                 // The chip is just the key (3.31): swatch and name. What
                 // the amount and share columns used to carry lives in
-                // the hover tooltip, in the bar's own tooltip text.
+                // the hover tooltip, in the slice's own tooltip text.
                 let value = chart_tooltip_value(r.cents, r.share, &parent_name);
                 // 3.65: the selector records the highlight, so a test can
                 // see the row paint selected in the frame right after the
@@ -690,6 +784,60 @@ impl DashboardState {
                         }),
                 )
             }))
+            // 3.99: "Other" is a legend chip too — a muted swatch and the
+            // merged amount — but it is not a click target: its tooltip
+            // lists the categories the slice holds.
+            .when(
+                has_other && (rows.len() + drilled as usize) < shown,
+                |list| {
+                    let (cents, share) = other.map_or((0, 0.), |s| (s.cents, s.share));
+                    let value = chart_tooltip_value(cents, share, &parent_name);
+                    list.child(
+                        div()
+                            .id("legend-other")
+                            .debug_selector(|| "chart:legend-other".into())
+                            .flex()
+                            .flex_none()
+                            .items_center()
+                            .gap_1()
+                            .px_1()
+                            .rounded(radius)
+                            .child(
+                                div()
+                                    .size(px(10.))
+                                    .flex_none()
+                                    .rounded(px(2.))
+                                    .bg(other.map_or(muted, |s| s.color)),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .debug_selector(|| format!("chart:legend-text:{OTHER_NAME}"))
+                                    .child(OTHER_NAME),
+                            )
+                            .tooltip(move |window, cx| {
+                                let (value, members) = (value.clone(), other_members.clone());
+                                Tooltip::element(move |_, _| {
+                                    let (value, members) = (value.clone(), members.clone());
+                                    v_flex()
+                                        .gap_0p5()
+                                        .debug_selector({
+                                            let members = members.clone();
+                                            move || format!("chart:legend-other-tooltip:{members}")
+                                        })
+                                        .child(
+                                            div()
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .child(OTHER_NAME),
+                                        )
+                                        .child(value)
+                                        .child(members)
+                                })
+                                .build(window, cx)
+                            }),
+                    )
+                },
+            )
             .when(hidden > 0, |list| {
                 list.child(
                     div()
@@ -722,23 +870,106 @@ impl DashboardState {
                 )
             });
 
+        let chart = if rows.is_empty() {
+            div()
+                .flex_1()
+                .min_w_0()
+                .min_h_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_sm()
+                .text_color(muted)
+                .child("No spending in this range")
+                .into_any_element()
+        } else if let Some(donut) = donut {
+            // 3.99: wider than tall, the donut sits left and the chips
+            // wrap to its right; otherwise the legend wraps under it,
+            // the donut centred over it.
+            if layout.side_by_side {
+                div()
+                    .size_full()
+                    .min_w_0()
+                    .min_h_0()
+                    .flex()
+                    .items_start()
+                    .gap(px(DONUT_GAP))
+                    .child(donut)
+                    .child(legend)
+                    .into_any_element()
+            } else {
+                v_flex()
+                    .size_full()
+                    .min_w_0()
+                    .min_h_0()
+                    .gap(px(DONUT_GAP))
+                    .child(div().w_full().flex().justify_center().child(donut))
+                    .child(legend)
+                    .into_any_element()
+            }
+        } else {
+            // Too small for a donut (3.99): the legend takes the panel.
+            div()
+                .size_full()
+                .min_w_0()
+                .min_h_0()
+                .flex()
+                .items_start()
+                .child(legend)
+                .into_any_element()
+        };
+
         // 3.100: the dock owns the panel box, the title (including the
         // selected-month suffix, 3.46 — the dock paints it) and the size;
         // the panel content is the padded column below the title row.
+        // 3.99: the column is the probe's containing block — the donut
+        // and legend plan is computed from the area this column gets.
         v_flex()
             .size_full()
             .min_w_0()
             .p_4()
-            .gap_2()
-            .child(chart)
-            .child(legend)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .min_h_0()
+                    .relative()
+                    .debug_selector(|| "chart:plot-area".into())
+                    .child(area_probe(cx.entity().downgrade(), |this, w, h, cx| {
+                        this.set_plot_size(w, h, cx)
+                    }))
+                    .child(chart),
+            )
             .into_any_element()
     }
 }
 
-/// The category bar chart and its legend, with `panel:chart`'s probes and selectors (3.97): a dock-shaped entity (3.100) that owns nothing but
-/// its handle on [`DashboardState`] and a subscription narrowed to the
-/// changes it paints from — a repaint of this panel is a `cx.notify()`
+/// The content area's `(width, height)` probe (3.86, 3.99): like
+/// [`bounds_probe`] but reporting both dimensions — the donut's layout
+/// needs the area's aspect, not just its width. Absolutely positioned,
+/// it takes no part in layout and reports in `prepaint` through
+/// `window.defer`; `set` must store and notify only on real movement.
+fn area_probe(
+    observee: WeakEntity<DashboardState>,
+    set: impl Fn(&mut DashboardState, f32, f32, &mut Context<DashboardState>) + 'static,
+) -> impl IntoElement {
+    canvas(
+        move |bounds, window, cx| {
+            let (w, h) = (bounds.size.width.as_f32(), bounds.size.height.as_f32());
+            window.defer(cx, move |_, cx| {
+                observee.update(cx, |this, cx| set(this, w, h, cx)).ok();
+            });
+        },
+        |_, _, _, _| {},
+    )
+    .absolute()
+    .size_full()
+}
+
+/// The category donut chart and its legend, with `panel:chart`'s probes
+/// and selectors (3.97): a dock-shaped entity (3.100) that owns nothing
+/// but its handle on [`DashboardState`] and a subscription narrowed to
+/// the changes it paints from — a repaint of this panel is a `cx.notify()`
 /// on this entity alone, and its paint reads the state back through
 /// [`DashboardState::chart_panel`].
 pub(in crate::ui::dashboard) struct ChartPanel {

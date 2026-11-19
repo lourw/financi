@@ -11,7 +11,7 @@ Order: 3.98 → 3.97 → 3.100 → 3.101 → 3.99. The dashboard becomes a dock
 of resizable, rearrangeable panels (user decision, 2026-11-17: dock
 splits, not a scrolling grid).
 
-- [ ] **3.99 Spending by category as a pie chart.** Replace the
+- [x] **3.99 Spending by category as a pie chart.** Replace the
   *Spending by category* `BarChart` with a donut chart (user request,
   2026-11-17). Do it last in the lane, after the dock layout (3.100), so
   it is laid out for a resizable panel; it reworks the chart panel.

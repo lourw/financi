@@ -216,7 +216,7 @@ Sidebar of pages: Dashboard, To categorize, Categories, Rules, Transfers, Import
 
 - **Filters.** Date range presets (This month, Last month, Last 3 / 6 / 12 months, Year to date, All time) plus custom dates; default Last 3 months as whole calendar months, remembered between launches. Accounts filter: a dropdown of checkboxes built from gpui-kit parts, one per account, default all. "Include transfers", default off.
 - **Layout.** The dashboard panels sit in a dock under the filter row: resizable splits, panels you can drag to another split or into a tab group, each scrolling inside itself, with the layout remembered and a Reset layout command (tasks 3.97, 3.100, 3.101).
-- **Category chart.** A donut chart of the largest 8 categories plus Other (gpui-kit `PieChart`, task 3.99; a `BarChart` until then) with a clickable legend (the chart takes no clicks). Clicking a parent filters the table and drills into its children; clicking a child again or pressing Esc clears.
+- **Category chart.** A donut chart of the largest 8 categories plus Other (gpui-kit `PieChart`, task 3.99) with a clickable legend (the chart takes no clicks). Clicking a parent filters the table and drills into its children; clicking a child again or pressing Esc clears.
 - **Monthly summary.** Parent rows, expandable to children, then Income, Spend and Net, one column per month plus Total. Clicking a cell filters the table to that category and month.
 - **Transaction table.** Date, account, merchant, category, amount. Search, sort by any column, "Uncategorized only" and "Show hidden" toggles. Virtualized. Right-click: Change category, Hide, Unhide.
 
