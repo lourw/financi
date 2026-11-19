@@ -405,3 +405,107 @@ fn a_refresh_resolves_the_account_filter_against_the_accounts_it_loads(cx: &mut 
 }
 
 // Dashboard table search and toggles (task 3.4)
+
+/// 3.26: with more accounts than the popover's capped list shows, the
+/// list scrolls and the always-visible bar paints inside the list's
+/// right edge; a scrolled position survives an unrelated redraw.
+#[gpui::test]
+fn the_accounts_filter_shows_a_scrollbar_when_it_overflows(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |conn| {
+        for n in 0..15 {
+            create_account(
+                conn,
+                "amex",
+                &format!("Acct {n:02}"),
+                AccountKind::CreditCard,
+            )
+            .unwrap();
+        }
+    });
+    wait_until(cx, "15 accounts", |cx| shell.read(cx).accounts.len() == 15);
+    click(cx, handle, "accounts:filter");
+
+    let region = bounds(cx, handle, "accounts-filter-list");
+    let bar = bounds(cx, handle, "accounts-filter-list-vscrollbar");
+    assert!(
+        bar.origin.y >= region.origin.y
+            && bar.origin.y + bar.size.height <= region.origin.y + region.size.height
+            && bar.origin.x <= region.origin.x + region.size.width
+            && bar.origin.x + bar.size.width <= region.origin.x + region.size.width,
+        "the bar sits inside the popover list's right edge: bar {bar:?} region {region:?}"
+    );
+    assert!(
+        f32::from(region.size.height) <= 241.,
+        "the list is capped so the popover stays on screen ({region:?})"
+    );
+
+    let max = cx.update(|cx| {
+        dash(cx, &shell)
+            .read(cx)
+            .accounts_filter_scroll
+            .max_offset()
+            .y
+    });
+    assert!(f32::from(max) > 0., "15 accounts overflow the capped list");
+    // A plain scroll div builds every row, so the last row is recorded
+    // even while clipped: prove it starts below the visible strip.
+    let last = {
+        let id = cx.update(|cx| {
+            shell
+                .read(cx)
+                .accounts
+                .iter()
+                .find(|a| a.name == "Acct 14")
+                .unwrap()
+                .id
+        });
+        leaked(format!("checkbox:account-{id}:checked"))
+    };
+    let row = bounds(cx, handle, last);
+    assert!(
+        f32::from(row.origin.y) > f32::from(region.origin.y + region.size.height),
+        "the last account starts below the clipped strip: row {row:?} region {region:?}"
+    );
+    with_window(cx, handle, |_, cx| {
+        dash(cx, &shell)
+            .read(cx)
+            .accounts_filter_scroll
+            .set_offset(point(px(0.), -max));
+    });
+    draw_frame(cx, handle);
+    let region = bounds(cx, handle, "accounts-filter-list");
+    let row = bounds(cx, handle, last);
+    assert!(
+        f32::from(row.origin.y) >= f32::from(region.origin.y)
+            && f32::from(row.origin.y + row.size.height)
+                <= f32::from(region.origin.y + region.size.height),
+        "scrolling to the bottom brings the last account into the strip: row {row:?} region {region:?}"
+    );
+    cx.update(|cx| shell.update(cx, |_, cx| cx.notify()));
+    draw_frame(cx, handle);
+    let held = bounds(cx, handle, last);
+    assert_eq!(
+        f32::from(held.origin.y),
+        f32::from(row.origin.y),
+        "the position holds a redraw"
+    );
+}
+
+/// 3.26: two accounts fit the popover's list, so no thumb shows.
+#[gpui::test]
+fn the_accounts_filter_shows_no_scrollbar_when_it_fits(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, seed_two_accounts_and_a_transfer);
+    wait_until(cx, "accounts loaded", |cx| {
+        shell.read(cx).accounts.len() == 2
+    });
+    click(cx, handle, "accounts:filter");
+    draw_frame(cx, handle);
+    let max = cx.update(|cx| {
+        dash(cx, &shell)
+            .read(cx)
+            .accounts_filter_scroll
+            .max_offset()
+            .y
+    });
+    assert_eq!(f32::from(max), 0., "two accounts fit the capped list");
+}
