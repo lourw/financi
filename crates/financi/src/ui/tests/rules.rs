@@ -1242,6 +1242,8 @@ fn the_added_rule_shows_at_once_and_takes_its_real_id(cx: &mut TestAppContext) {
 /// after the add runs no `rule_use_stats`, yet the page shows the counts
 /// the re-apply counted (the longer pattern wins its row, `COFFEE` drops
 /// to the one row it still decides, the locked row counts nowhere).
+// Reads the debug-only query log (3.77), so debug-only.
+#[cfg(debug_assertions)]
 #[gpui::test]
 fn the_added_rule_carries_its_uses_count_from_the_write(cx: &mut TestAppContext) {
     let (handle, shell, rule, _first, second) = open_rule_fixture(cx);

@@ -5,6 +5,11 @@
 //! dirty page reloads once when next shown, and the page switch itself
 //! never queries (the switch test lives in `catalog.rs`). The rule-edit
 //! row is already covered there (`a_rule_edit_reloads_only_the_sections_it_touches`).
+//!
+//! Every test here reads the query log, which exists only in debug builds
+//! (3.77), so the module compiles only there too. `cargo test --release`
+//! (the 3.55 perf runs) then builds without it.
+#![cfg(debug_assertions)]
 
 use super::dashboard::dash;
 use super::transfers::seed_transfer_tie;

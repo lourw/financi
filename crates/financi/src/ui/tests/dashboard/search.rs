@@ -1,5 +1,6 @@
 //! Dashboard search box: filtering, debounce, Enter and cancellation.
 
+#[cfg(debug_assertions)]
 use gpui_kit::component::input::InputEvent;
 
 use super::*;
@@ -40,6 +41,8 @@ fn search_filters_the_table_rows(cx: &mut TestAppContext) {
 /// 3.56: a filter change runs the dashboard's one load and nothing
 /// else — the QueryLog shows exactly its two queries, none of the other
 /// pages', and exactly one worker job is accepted.
+// Reads the debug-only query log / job counter (3.77), so debug-only.
+#[cfg(debug_assertions)]
 #[gpui::test]
 fn a_filter_change_runs_only_the_dashboard_job(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, seed_table_filter_rows);
@@ -78,6 +81,7 @@ fn a_filter_change_runs_only_the_dashboard_job(cx: &mut TestAppContext) {
 /// 3.56: typing debounces — five keystrokes replace one another and run
 /// one query after the last key, not five. The clock is virtual, so
 /// nothing fires until the test advances it.
+#[cfg(debug_assertions)]
 #[gpui::test]
 fn typing_debounces_into_one_query(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, seed_table_filter_rows);
@@ -168,6 +172,7 @@ fn a_burst_of_filter_changes_lands_the_last_one(cx: &mut TestAppContext) {
 /// 3.56: Enter applies the search at once — it does not wait for the
 /// debounce — and the pending debounced task is cancelled, not fired
 /// later on top of the applied result.
+#[cfg(debug_assertions)]
 #[gpui::test]
 fn enter_applies_the_search_at_once(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, seed_table_filter_rows);
@@ -211,6 +216,7 @@ fn enter_applies_the_search_at_once(cx: &mut TestAppContext) {
 /// 3.56: "Clear filters" inside the search's 200 ms debounce window drops
 /// the pending task — the cleared box must not be undone by the dead term's
 /// query firing after the click.
+#[cfg(debug_assertions)]
 #[gpui::test]
 fn clearing_filters_cancels_the_pending_search(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, seed_table_filter_rows);

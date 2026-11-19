@@ -7,7 +7,9 @@ use super::dashboard::dash;
 use super::*;
 use crate::ui::dashboard::DashboardChanges;
 
-/// The names recorded since the last `clear`.
+/// The names recorded since the last `clear`. The query log exists only
+/// in debug builds (3.77), so its callers here are gated the same way.
+#[cfg(debug_assertions)]
 fn logged(cx: &App, shell: &Entity<Shell>) -> Vec<String> {
     shell.read(cx).db.query_log().names()
 }
@@ -17,6 +19,7 @@ fn logged(cx: &App, shell: &Entity<Shell>) -> Vec<String> {
 /// and summary, the category counts and the queue (a re-run of the rules
 /// can move unlocked rows), but never the Imports history or the open
 /// transfer reviews: no rule edit touches either.
+#[cfg(debug_assertions)]
 #[gpui::test]
 fn a_rule_edit_reloads_only_the_sections_it_touches(cx: &mut TestAppContext) {
     let (handle, shell, rule, _first, _second) = open_rule_fixture(cx);
@@ -83,6 +86,7 @@ fn a_rule_edit_reloads_only_the_sections_it_touches(cx: &mut TestAppContext) {
 /// run — still loads every section: the nine catalog queries, including
 /// the history and the reviews the partial reloads leave alone, plus the
 /// dashboard's own load alongside (3.56).
+#[cfg(debug_assertions)]
 #[gpui::test]
 fn a_full_reload_loads_every_section(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, |c| {
@@ -180,6 +184,7 @@ fn a_full_reload_superseded_mid_flight_keeps_the_newer_rows(cx: &mut TestAppCont
 
 /// Switching pages reads only what is already loaded: not one query
 /// leaves the shell (3.78's page-switch invariant).
+#[cfg(debug_assertions)]
 #[gpui::test]
 fn switching_pages_issues_no_queries(cx: &mut TestAppContext) {
     let (_handle, shell) = open_shell(cx, |c| {

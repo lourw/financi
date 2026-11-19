@@ -7,6 +7,8 @@ use super::*;
 /// queries plus the dashboard's own load alongside them. The keyed
 /// dashboard job is an addition to the full reload, not a replacement:
 /// the history, tree, rules, queue and reviews all follow an import.
+// Reads the debug-only query log (3.77), so debug-only.
+#[cfg(debug_assertions)]
 #[gpui::test]
 fn an_import_commit_still_reloads_every_page(cx: &mut TestAppContext) {
     let (handle, shell) = open_shell(cx, |_| {});
