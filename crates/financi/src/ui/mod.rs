@@ -51,17 +51,18 @@ use financi_db::import::{
 };
 use financi_db::queue::{UncategorizedGroup, categorize_group, uncategorized_by_merchant};
 use financi_db::rules::{
-    PatternPreview, add_rule, delete_rule, list_rules, move_rules, preview_pattern_matches,
-    rule_matches, rule_use_stats, update_rule,
+    PatternPreview, RuleUse, add_rule_with_use, delete_rule_with_use, list_rules,
+    move_rules_with_use, preview_pattern_matches, rule_matches, rule_use_stats,
+    update_rule_with_use,
 };
 use financi_db::rules::{RuleMatchRow, RuleMatchStatus};
 use financi_db::settings::{self, DateRange};
 use financi_db::{
     Account, CategorySpend, DbError, DbWorker, MonthlySummary, MonthlySummaryRow, TransferReview,
     TxSort, TxSortColumn, TxTableFilter, ViewFilter, ViewNarrow, apply_rule_from_merchant,
-    create_account, list_accounts, list_transactions_filtered, list_transfer_reviews,
-    monthly_summary, resolve_transfer_review, rusqlite::Connection, set_category, set_hidden,
-    sidebar_counts, spend_by_category, unpair_transaction,
+    count_transactions_filtered, create_account, list_accounts, list_transactions_page,
+    list_transfer_reviews, monthly_summary, resolve_transfer_review, rusqlite::Connection,
+    set_category, set_hidden, sidebar_counts, spend_by_category, unpair_transaction,
 };
 use gpui_kit::assets::IconName;
 use gpui_kit::base::{Scrollbar, ScrollbarMode};
@@ -724,9 +725,22 @@ impl Shell {
     /// started here — the page watches the catalog and reloads itself when
     /// a domain it reads changes (its `DEPENDS`).
     fn changed(&mut self, domains: Domains, window: &mut Window, cx: &mut Context<Self>) {
+        self.changed_with_rule_use(domains, None, window, cx);
+    }
+
+    /// [`Self::changed`] with the use counts a rule write counted in its
+    /// own pass (3.55), so the rules section skips the `rule_use_stats`
+    /// scan this reload would otherwise repeat.
+    fn changed_with_rule_use(
+        &mut self,
+        domains: Domains,
+        rule_use: Option<HashMap<i64, RuleUse>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let generation = self.next_generation();
         self.catalog.update(cx, |catalog, cx| {
-            catalog.changed(domains, generation, window, cx);
+            catalog.changed(domains, generation, rule_use, window, cx);
         });
     }
 
@@ -849,6 +863,9 @@ impl Shell {
                 }
             }
             PageEvent::Changed(domains) => self.changed(*domains, window, cx),
+            PageEvent::ChangedWithRuleUse(domains, rule_use) => {
+                self.changed_with_rule_use(*domains, Some(rule_use.clone()), window, cx)
+            }
             PageEvent::Refresh => self.refresh(window, cx),
             PageEvent::ResetPages => self.reset_pages_after_restore(window, cx),
             PageEvent::Go(page) => self.go_page(*page, cx),

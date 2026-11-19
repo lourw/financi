@@ -5,6 +5,11 @@
 //! dirty page reloads once when next shown, and the page switch itself
 //! never queries (the switch test lives in `catalog.rs`). The rule-edit
 //! row is already covered there (`a_rule_edit_reloads_only_the_sections_it_touches`).
+//!
+//! Every test here reads the query log, which exists only in debug builds
+//! (3.77), so the module compiles only there too. `cargo test --release`
+//! (the 3.55 perf runs) then builds without it.
+#![cfg(debug_assertions)]
 
 use super::dashboard::dash;
 use super::transfers::seed_transfer_tie;
@@ -64,7 +69,11 @@ fn setting_a_row_category_reloads_only_transactions(cx: &mut TestAppContext) {
     wait_idle(cx, &shell);
     let names = cx.update(|cx| logged(cx, &shell));
     let mut expected: Vec<&str> = SHARED_TX.to_vec();
-    expected.extend(["list_transactions_filtered", "dashboard"]);
+    expected.extend([
+        "count_transactions_filtered",
+        "list_transactions_page",
+        "dashboard",
+    ]);
     assert_logged(
         &names,
         &expected,
@@ -85,7 +94,11 @@ fn a_category_write_reloads_categories_rules_and_transactions(cx: &mut TestAppCo
     wait_idle(cx, &shell);
     let names = cx.update(|cx| logged(cx, &shell));
     let mut expected: Vec<&str> = SHARED_TX.to_vec();
-    expected.extend(["list_transactions_filtered", "dashboard"]);
+    expected.extend([
+        "count_transactions_filtered",
+        "list_transactions_page",
+        "dashboard",
+    ]);
     assert_logged(
         &names,
         &expected,
@@ -134,7 +147,8 @@ fn pairing_a_transfer_reloads_reviews_and_transactions_only(cx: &mut TestAppCont
             "list_imports",
             // The hidden dashboard defers its load to the visit.
             "dashboard",
-            "list_transactions_filtered",
+            "count_transactions_filtered",
+            "list_transactions_page",
         ],
     );
     cx.update(|cx| assert!(dash(cx, &shell).read(cx).dirty()));
@@ -181,7 +195,8 @@ fn a_new_account_reloads_accounts_and_the_sidebar_only(cx: &mut TestAppContext) 
             "list_transfer_reviews",
             // The hidden dashboard defers its load to the visit.
             "dashboard",
-            "list_transactions_filtered",
+            "count_transactions_filtered",
+            "list_transactions_page",
         ],
     );
     cx.update(|cx| assert!(dash(cx, &shell).read(cx).dirty()));
@@ -232,7 +247,11 @@ fn undoing_an_import_reloads_everything(cx: &mut TestAppContext) {
             "list_transfer_reviews",
             "list_imports",
         ],
-        &["dashboard", "list_transactions_filtered"],
+        &[
+            "dashboard",
+            "count_transactions_filtered",
+            "list_transactions_page",
+        ],
     );
     // Shown again, the dirty hidden dashboard reloads — once.
     cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Dashboard, cx)));
@@ -246,7 +265,7 @@ fn undoing_an_import_reloads_everything(cx: &mut TestAppContext) {
     assert_eq!(
         names
             .iter()
-            .filter(|n| n.as_str() == "list_transactions_filtered")
+            .filter(|n| n.as_str() == "list_transactions_page")
             .count(),
         1,
         "the visit must reload the rows exactly once; ran {names:?}"
@@ -275,7 +294,11 @@ fn a_view_setting_reloads_the_dashboard_rows_only(cx: &mut TestAppContext) {
     let names = cx.update(|cx| logged(cx, &shell));
     assert_logged(
         &names,
-        &["list_transactions_filtered", "dashboard"],
+        &[
+            "count_transactions_filtered",
+            "list_transactions_page",
+            "dashboard",
+        ],
         &[
             "list_accounts",
             "list_categories",
@@ -304,7 +327,7 @@ fn a_dirty_hidden_dashboard_reloads_once_when_shown(cx: &mut TestAppContext) {
     let names = cx.update(|cx| logged(cx, &shell));
     assert!(
         !names.contains(&"dashboard".to_string())
-            && !names.contains(&"list_transactions_filtered".to_string()),
+            && !names.contains(&"list_transactions_page".to_string()),
         "a hidden dashboard must not query; ran {names:?}"
     );
     cx.update(|cx| assert!(dash(cx, &shell).read(cx).dirty()));
@@ -320,7 +343,7 @@ fn a_dirty_hidden_dashboard_reloads_once_when_shown(cx: &mut TestAppContext) {
     assert_eq!(
         names
             .iter()
-            .filter(|n| n.as_str() == "list_transactions_filtered")
+            .filter(|n| n.as_str() == "list_transactions_page")
             .count(),
         1,
         "the visit must reload the rows exactly once; ran {names:?}"

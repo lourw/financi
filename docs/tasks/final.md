@@ -2,7 +2,7 @@
 
 Runs after M5, when every other task is done (user decision, 2026-11-11).
 
-- [ ] **3.55 Fast at real scale: hundreds of rules, dozens of
+- [x] **3.55 Fast at real scale: hundreds of rules, dozens of
   categories.** The user has hundreds of rules and dozens of categories
   and is worried about performance (2026-11-11). The dev seed (18 rules,
   458 rows) hides scale problems. `CompiledRules::pick` loops over **every

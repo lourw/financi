@@ -1238,6 +1238,66 @@ fn the_added_rule_shows_at_once_and_takes_its_real_id(cx: &mut TestAppContext) {
     });
 }
 
+/// 3.55: an add's fresh use counts ride the write result — the reload
+/// after the add runs no `rule_use_stats`, yet the page shows the counts
+/// the re-apply counted (the longer pattern wins its row, `COFFEE` drops
+/// to the one row it still decides, the locked row counts nowhere).
+// Reads the debug-only query log (3.77), so debug-only.
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn the_added_rule_carries_its_uses_count_from_the_write(cx: &mut TestAppContext) {
+    let (handle, shell, rule, _first, second) = open_rule_fixture(cx);
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::Rules, cx)));
+    wait_idle(cx, &shell);
+    shell.update(cx, |s, _| s.db.query_log().clear());
+    with_window(cx, handle, |window, cx| {
+        shell.update(cx, |s, cx| {
+            s.rules_page.update(cx, |p, cx| {
+                p.rule_pattern.update(cx, |i, cx| {
+                    i.set_value("COFFEE SHOP B".to_string(), window, cx)
+                });
+                p.rule_target.update(cx, |sel, cx| {
+                    sel.set_selected_value(&second, window, cx);
+                });
+                p.add_rule(window, cx);
+            });
+        });
+    });
+    wait_until(cx, "the add landed and the counts followed", |cx| {
+        let p = shell.read(cx).rules_page.read(cx);
+        // `COFFEE` dropping to its one remaining row is what the *new*
+        // stats look like: the counts the write returned replaced the
+        // launch-load ones.
+        p.rules
+            .iter()
+            .any(|r| r.pattern == "COFFEE SHOP B" && r.id > 0)
+            && p.rule_uses.get(&rule) == Some(&1)
+    });
+    let uses = cx.update(|cx| {
+        let p = shell.read(cx).rules_page.read(cx);
+        let new_id = p
+            .rules
+            .iter()
+            .find(|r| r.pattern == "COFFEE SHOP B")
+            .map(|r| r.id)
+            .unwrap();
+        (
+            p.rule_uses.get(&new_id).copied(),
+            p.rule_uses.get(&rule).copied(),
+        )
+    });
+    assert_eq!(
+        uses,
+        (Some(1), Some(1)),
+        "the counts arrived with the write"
+    );
+    let names = cx.update(|cx| shell.read(cx).db.query_log().names());
+    assert!(
+        !names.contains(&"rule_use_stats".to_string()),
+        "the reload after the add takes the counts from the write; ran {names:?}"
+    );
+}
+
 /// 3.47: a failed Add takes its provisional row back out — the list ends
 /// with exactly what the database holds — and reports the error.
 #[gpui::test]

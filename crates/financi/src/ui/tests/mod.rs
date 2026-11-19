@@ -50,6 +50,7 @@ mod category_picker;
 mod dashboard;
 mod imports;
 mod page;
+mod perf;
 mod queue;
 mod reloads;
 mod rules;

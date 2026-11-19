@@ -3,7 +3,9 @@
 //! Development switches, honoured only in debug builds:
 //! - `FINANCI_DB=/path/to/file.sqlite` uses that database instead of the
 //!   per-OS app data directory, so dev data never touches the real file.
-//! - `FINANCI_DEV_SEED=1` fills an empty database with synthetic data.
+//! - `FINANCI_DEV_SEED=1` fills an empty database with synthetic data;
+//!   `FINANCI_DEV_SEED=large` fills it with the 3.55 scale fixture
+//!   (1 000 rules, 80 categories, 100 000 rows over 10 years).
 //! - `FINANCI_DEV_OPEN=/path/to/export.csv` opens that file's import
 //!   preview at startup (handy for screenshots and manual checks).
 
@@ -34,14 +36,23 @@ fn open_db() -> anyhow::Result<(PathBuf, DbWorker)> {
     let mut conn =
         financi_db::open(&path).with_context(|| format!("opening {}", path.display()))?;
 
-    if cfg!(debug_assertions) && std::env::var_os("FINANCI_DEV_SEED").is_some() {
+    if cfg!(debug_assertions)
+        && let Some(mode) = std::env::var_os("FINANCI_DEV_SEED")
+    {
         let empty: bool =
             conn.query_row("SELECT NOT EXISTS (SELECT 1 FROM transactions)", [], |r| {
                 r.get(0)
             })?;
         if empty {
             let today = chrono::Local::now().date_naive();
-            let s = financi_db::seed::seed(&mut conn, today, 18)?;
+            // 3.55: `FINANCI_DEV_SEED=large` builds the scale fixture
+            // (1 000 rules, 80 categories, 100 000 rows over 10 years);
+            // any other value keeps the small dev seed.
+            let s = if mode == "large" {
+                financi_db::seed::seed_large(&mut conn, today)?
+            } else {
+                financi_db::seed::seed(&mut conn, today, 18)?
+            };
             eprintln!(
                 "financi: seeded {} categories, {} rules, {} transactions",
                 s.categories, s.rules, s.transactions

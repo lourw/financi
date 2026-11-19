@@ -221,6 +221,8 @@ fn a_saved_custom_range_is_restored_at_launch(cx: &mut TestAppContext) {
 /// the saved settings: the first data frame shows the saved custom
 /// range, and nothing re-queries. `job_count` counts every job the
 /// worker accepted, so two launch jobs mean no fix-up refresh.
+// Counts worker jobs through the debug-only counter (3.77), so debug-only.
+#[cfg(debug_assertions)]
 #[gpui::test]
 fn launch_runs_one_refresh_with_the_saved_date_range(cx: &mut TestAppContext) {
     let (_handle, shell) = open_shell(cx, |c| {

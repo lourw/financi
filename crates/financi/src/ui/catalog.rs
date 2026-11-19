@@ -8,6 +8,7 @@
 use super::*;
 use crate::ui::widgets::on_db;
 use financi_core::rules::{CompiledPattern, CompiledRules};
+use financi_db::rules::RuleUse;
 use financi_db::{DbError, QueryLog};
 
 /// One slice of the shared data.
@@ -332,10 +333,14 @@ impl Catalog {
     /// a burst of the same kind of change runs once (3.77) while different
     /// section sets still run side by side. The dashboard is not one of
     /// these sections (3.56) — `Shell` starts its keyed load alongside.
+    /// `rule_use` (3.55) is the use counts a rule write already counted:
+    /// when present the rules section takes them and skips the
+    /// `rule_use_stats` scan.
     pub(super) fn changed(
         &mut self,
         domains: Domains,
         generation: u64,
+        rule_use: Option<HashMap<i64, RuleUse>>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -360,7 +365,7 @@ impl Catalog {
         let key = format!("catalog:{sections}");
         cx.spawn_in(window, async move |this, cx| {
             let result = db
-                .call_keyed(&key, move |c| load_sections(c, &log, sections))
+                .call_keyed(&key, move |c| load_sections(c, &log, sections, rule_use))
                 .await;
             let _ = this.update_in(cx, |this, _window, cx| match result {
                 Ok(snapshot) => {
@@ -422,7 +427,7 @@ impl Catalog {
                     }
                     None => None,
                 };
-                let snap = load_sections(c, &log, S_ALL)?;
+                let snap = load_sections(c, &log, S_ALL, None)?;
                 Ok::<_, DbError>((snap, csv_check))
             })
             .await;
@@ -576,7 +581,14 @@ impl Catalog {
 /// Run the sections' queries on the worker thread, recording each name so
 /// a test can see exactly what ran (the query-count hook, 3.78). The
 /// dashboard's own queries (3.56) live in `dashboard.rs`, not here.
-fn load_sections(c: &mut Connection, log: &QueryLog, sections: u16) -> Result<Snapshot, DbError> {
+/// `rule_use` (3.55) short-circuits the `rule_use_stats` scan when the
+/// triggering rule write already counted the uses.
+fn load_sections(
+    c: &mut Connection,
+    log: &QueryLog,
+    sections: u16,
+    rule_use: Option<HashMap<i64, RuleUse>>,
+) -> Result<Snapshot, DbError> {
     let mut snap = Snapshot::default();
     if sections & S_ACCOUNTS != 0 {
         log.record("list_accounts");
@@ -593,11 +605,19 @@ fn load_sections(c: &mut Connection, log: &QueryLog, sections: u16) -> Result<Sn
         snap.rules = list_rules(c)?;
         // 3.28: the Rules page Uses column. 3.87 added the per-rule
         // totals; 3.58 renders them as the Total column, so both halves
-        // of the stat ride along now.
-        log.record("rule_use_stats");
+        // of the stat ride along now. 3.55: a rule write hands the fresh
+        // counts to the reload, and only reloads without them — launch,
+        // import, undo — still pay for the scan.
+        let stats = match rule_use {
+            Some(stats) => stats,
+            None => {
+                log.record("rule_use_stats");
+                rule_use_stats(c)?
+            }
+        };
         let mut counts = HashMap::new();
         let mut totals = HashMap::new();
-        for (id, stats) in rule_use_stats(c)? {
+        for (id, stats) in stats {
             counts.insert(id, stats.count);
             totals.insert(id, stats.total_cents);
         }

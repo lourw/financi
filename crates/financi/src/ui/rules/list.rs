@@ -248,18 +248,21 @@ impl RulesPage {
         let db = self.db.clone();
         // 3.64: detached — see `commit_new_rule`.
         cx.spawn_in(window, async move |this, cx| {
-            let result = on_db(&db, move |c| move_rules(c, &ids, category_id)).await;
+            let result = on_db(&db, move |c| move_rules_with_use(c, &ids, category_id)).await;
             let _ = this.update_in(cx, |this, _window, cx| {
                 match result {
-                    Ok(()) => {
+                    Ok(rule_use) => {
                         // Only the moved rules leave the selection: rules
                         // checked while this move ran keep their checkbox.
                         this.selected_rules.retain(|id| !moved.contains(id));
                         this.rules_move_error = None;
+                        cx.emit(PageEvent::ChangedWithRuleUse(Domains::RULES_TX, rule_use));
                     }
-                    Err(e) => this.rules_move_error = Some(e.into()),
+                    Err(e) => {
+                        this.rules_move_error = Some(e.into());
+                        cx.emit(PageEvent::Changed(Domains::RULES_TX));
+                    }
                 }
-                cx.emit(PageEvent::Changed(Domains::RULES_TX));
                 cx.notify();
             });
         })

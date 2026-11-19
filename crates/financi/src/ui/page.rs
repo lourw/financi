@@ -51,6 +51,14 @@ pub enum PageEvent {
     /// A write landed: refresh the shared state the domains feed and keep
     /// the shown page (what `Shell::changed` does).
     Changed(Domains),
+    /// A rule write landed, carrying the use counts the write itself
+    /// counted (3.55): the rules reload takes these instead of running the
+    /// `rule_use_stats` table scan again. Same shape as
+    /// [`financi_db::rules::reapply_rules_with_use`]'s result.
+    ChangedWithRuleUse(
+        Domains,
+        std::collections::HashMap<i64, financi_db::rules::RuleUse>,
+    ),
     /// Reload everything from the DB (launch, import, undo, restore).
     Refresh,
     /// Drop every page's transient state and re-read it from the DB (after
