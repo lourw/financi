@@ -102,6 +102,9 @@ impl Render for CategoriesPage {
                 // the list creates per render — that one resets the
                 // offset to 0 every frame.
                 .scroll(self.tree_scroll.clone())
+                // 3.26: the list selector also names its scrollbar
+                // (`cat:tree-list-vscrollbar`) for the overflow tests.
+                .selector("cat:tree-list")
                 // H4: the counters track the exact pass range (the tests'
                 // own — see [`Self::note_tree_paint_pass`]).
                 .on_pass(move |this, range| this.note_tree_paint_pass(range))

@@ -5,7 +5,7 @@
 use super::*;
 use financi_db::{DbError, on_db_typed};
 use gpui_kit::base::{
-    Toast, ToastManager, ToastMotion, ToastOptions, ToastStack, ToastStackState,
+    Scrollbar, Toast, ToastManager, ToastMotion, ToastOptions, ToastStack, ToastStackState,
     ToastTransitionStatus,
 };
 use gpui_kit::component::tag::Tag;
@@ -135,6 +135,14 @@ pub(super) fn filter_tip(
 
 /// Height of a [`DataList`] heading row (ui-conventions *Lists*).
 pub(super) const LIST_HEADING_HEIGHT: f32 = 32.;
+
+/// 3.26 (ui-conventions, *Scrolling and overflow*): the width of the
+/// scrollbar gutter every scrolling region reserves inside its content.
+/// The bar itself (`gpui-base`'s 16 px track) overlays that strip at the
+/// region's right edge, so the thumb never covers an amount, count or
+/// button; reserving it inside the content keeps each viewport's measured
+/// width (3.86) unchanged.
+pub(super) const SCROLLBAR_GUTTER: f32 = 16.;
 /// Height of a [`DataList`] collapsible group header.
 pub(super) const LIST_GROUP_HEIGHT: f32 = 36.;
 /// Height of a [`DataList`] data row.
@@ -615,7 +623,10 @@ impl<V: Render> RenderOnce for DataList<V> {
         let heading = h_flex()
             .w_full()
             .h(px(LIST_HEADING_HEIGHT))
-            .px_3()
+            // 3.26: the heading keeps the rows' left pad but stops short
+            // of the scrollbar gutter, so its columns stay over the rows'.
+            .pl_3()
+            .pr(px(12. + SCROLLBAR_GUTTER))
             .gap_4()
             .items_end()
             .text_sm()
@@ -861,17 +872,46 @@ impl<V: Render> RenderOnce for DataList<V> {
             },
         )
         .track_scroll(&self.scroll)
+        // 3.26: the scrollbar gutter — rows stop [`SCROLLBAR_GUTTER`]
+        // short of the viewport's right edge and the always-visible bar
+        // below overlays that strip, so the thumb never covers an amount,
+        // count or button. The gutter is inside the content: the list's
+        // own bounds (what 3.86-style measuring reads) are unchanged.
+        .pr(px(SCROLLBAR_GUTTER))
         .flex_1()
         .min_h_0();
 
+        // 3.26 (ui-conventions, *Scrolling and overflow*): the vertical
+        // scrollbar, an absolutely-positioned sibling overlaying the
+        // region's right edge inside its border. `viewport_from_layout`
+        // ties it to this strip; the bar paints only while the content
+        // overflows, and `ScrollbarMode::Always` — visible without
+        // scrolling first — is the app-wide theme default set in
+        // `ui::init`, not a local `.mode(…)`.
+        let bar_sel = format!(
+            "{}-vscrollbar",
+            self.selector.as_deref().unwrap_or("financi-data-list")
+        );
+        let scrollbar = div()
+            .absolute()
+            .right_0()
+            .top_0()
+            .bottom_0()
+            .w(px(SCROLLBAR_GUTTER))
+            .id(SharedString::from(bar_sel.clone()))
+            .debug_selector(move || bar_sel.clone())
+            .child(Scrollbar::vertical(&self.scroll).viewport_from_layout());
+
         let root = div()
+            .relative()
             .w_full()
             .flex_1()
             .min_h_0()
             .flex()
             .flex_col()
             .when(!self.hide_heading, |el| el.child(heading))
-            .child(list);
+            .child(list)
+            .child(scrollbar);
         match self.selector {
             Some(s) => root
                 .debug_selector(move || s.to_string())

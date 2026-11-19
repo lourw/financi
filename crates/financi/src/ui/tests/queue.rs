@@ -512,6 +512,94 @@ fn the_queue_page_builds_only_the_visible_rows(cx: &mut TestAppContext) {
     });
 }
 
+/// 3.26: the queue list shows an always-visible scrollbar inside its right
+/// edge while the groups overflow, and the rows keep clear of the gutter.
+#[gpui::test]
+fn the_queue_list_shows_a_scrollbar_while_it_overflows(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |conn| seed_queue_thousands(conn, 60));
+    wait_until(cx, "60 queue groups", |cx| queue_len(&shell, cx) == 60);
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::ToCategorize, cx)));
+    wait_until(cx, "queue applied", |cx| {
+        shell.read(cx).queue_view.read(cx).groups.len() == 60
+    });
+    resize_and_draw(cx, handle, 900., 560.);
+
+    let list = bounds(cx, handle, "queue:list");
+    let bar = bounds(cx, handle, "queue:list-vscrollbar");
+    assert_eq!(f32::from(bar.size.width), 16.0, "the gutter's width");
+    assert!(
+        f32::from(bar.left()) >= f32::from(list.left())
+            && f32::from(bar.right()) <= f32::from(list.right()) + 1.0
+            && f32::from(bar.top()) >= f32::from(list.top()) - 1.0
+            && f32::from(bar.bottom()) <= f32::from(list.bottom()) + 1.0,
+        "the bar sits inside the list's bounds: {bar:?} in {list:?}"
+    );
+    let max = cx.update(|cx| shell.read(cx).queue_view.read(cx).scroll.max_offset().y);
+    assert!(f32::from(max) > 0., "60 groups overflow a 560-high window");
+    // The content reserves the gutter: the first row's right edge stops at
+    // the bar, so the rule hint and the button never sit under it.
+    let row = bounds(cx, handle, "queue:row:QUEUE MERCHANT 0000");
+    assert!(
+        f32::from(row.right()) <= f32::from(bar.left()) + 1.0,
+        "row right {} vs bar left {}",
+        f32::from(row.right()),
+        f32::from(bar.left())
+    );
+}
+
+/// 3.26: a queue that fits needs no scrollbar (the base paints nothing when
+/// there is nothing to scroll), and scrolling the list moves the rows and
+/// survives an unrelated redraw.
+#[gpui::test]
+fn the_queue_scrollbar_tracks_the_list_and_holds_its_offset(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |conn| seed_queue_thousands(conn, 60));
+    wait_until(cx, "60 queue groups", |cx| queue_len(&shell, cx) == 60);
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::ToCategorize, cx)));
+    wait_until(cx, "queue applied", |cx| {
+        shell.read(cx).queue_view.read(cx).groups.len() == 60
+    });
+    resize_and_draw(cx, handle, 900., 560.);
+    // Row 7 stays on both sides of the scroll (row 0 leaves the window).
+    let row = bounds(cx, handle, "queue:row:QUEUE MERCHANT 0007");
+
+    cx.update(|cx| {
+        shell
+            .read(cx)
+            .queue_view
+            .read(cx)
+            .scroll
+            .set_offset(point(px(0.), px(-120.)));
+    });
+    draw_frame(cx, handle);
+    let moved = bounds(cx, handle, "queue:row:QUEUE MERCHANT 0007");
+    assert!(
+        (f32::from(moved.origin.y) - (f32::from(row.origin.y) - 120.0)).abs() < 1.0,
+        "the rows scrolled up with the bar"
+    );
+    // An unrelated redraw must not reset the offset.
+    cx.update(|cx| shell.update(cx, |_, cx| cx.notify()));
+    draw_frame(cx, handle);
+    let held = bounds(cx, handle, "queue:row:QUEUE MERCHANT 0007");
+    assert_eq!(f32::from(held.origin.y), f32::from(moved.origin.y));
+    let off = cx.update(|cx| shell.read(cx).queue_view.read(cx).scroll.offset().y);
+    assert_eq!(f32::from(off), -120.0);
+}
+
+/// 3.26: with everything visible there is nothing to scroll, so the list
+/// shows no thumb.
+#[gpui::test]
+fn the_queue_list_shows_no_scrollbar_when_it_fits(cx: &mut TestAppContext) {
+    let (handle, shell) = open_shell(cx, |conn| seed_queue_thousands(conn, 3));
+    wait_until(cx, "3 queue groups", |cx| queue_len(&shell, cx) == 3);
+    cx.update(|cx| shell.update(cx, |s, cx| s.go_page(Page::ToCategorize, cx)));
+    wait_until(cx, "queue applied", |cx| {
+        shell.read(cx).queue_view.read(cx).groups.len() == 3
+    });
+    resize_and_draw(cx, handle, 900., 560.);
+    let max = cx.update(|cx| shell.read(cx).queue_view.read(cx).scroll.max_offset().y);
+    assert_eq!(f32::from(max), 0.0, "3 groups fit, so nothing scrolls");
+}
+
 /// 3.19: categorizing still works with a long queue — drive the same
 /// `categorize_merchant` call the row's button makes for the group at the
 /// very bottom, and its rows leave the queue behind a rule.
