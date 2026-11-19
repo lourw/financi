@@ -425,8 +425,8 @@ fn the_accounts_filter_shows_a_scrollbar_when_it_overflows(cx: &mut TestAppConte
     wait_until(cx, "15 accounts", |cx| shell.read(cx).accounts.len() == 15);
     click(cx, handle, "accounts:filter");
 
-    let region = bounds(cx, handle, "accounts-filter-list");
-    let bar = bounds(cx, handle, "accounts-filter-list-vscrollbar");
+    let region = bounds(cx, handle, "accounts:filter-list");
+    let bar = bounds(cx, handle, "accounts:filter-list-vscrollbar");
     assert!(
         bar.origin.y >= region.origin.y
             && bar.origin.y + bar.size.height <= region.origin.y + region.size.height
@@ -473,7 +473,7 @@ fn the_accounts_filter_shows_a_scrollbar_when_it_overflows(cx: &mut TestAppConte
             .set_offset(point(px(0.), -max));
     });
     draw_frame(cx, handle);
-    let region = bounds(cx, handle, "accounts-filter-list");
+    let region = bounds(cx, handle, "accounts:filter-list");
     let row = bounds(cx, handle, last);
     assert!(
         f32::from(row.origin.y) >= f32::from(region.origin.y)
